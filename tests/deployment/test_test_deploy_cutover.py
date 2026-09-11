@@ -604,6 +604,8 @@ def test_release_readiness_container_owner_is_build_scoped_sanitized_and_exactly
     assert pipeline.count('docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}"') >= 3
 
     release_probe = pipeline[pipeline.index("release_operational_readiness() {") : pipeline.index("run_full_cutover()")]
+    candidate_runner = pipeline[pipeline.index("candidate_backend_python() {") : pipeline.index("business_preflight()")]
+    assert "-e DATABASE_HEADS" in candidate_runner
     assert (
         release_probe.index("candidate_backend_python")
         < release_probe.index('docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}"')

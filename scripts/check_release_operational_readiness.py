@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.script.revision import RangeNotAncestorError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -17,11 +22,31 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from src.app.runtime.orchestration.repositories.release_operational_readiness_repository import (  # noqa: E402
+    ReleaseOperationalReadinessRepository,
+)
 from src.app.runtime.orchestration.services.query.release_operational_readiness_service import (  # noqa: E402
     ReleaseOperationalReadinessService,
 )
 
 EXIT_CODES = {"READY": 0, "BLOCK": 2, "WAIT_DRAIN": 3}
+WORKLINE_RETIREMENT_REVISION = "93deacda8c9c"
+
+
+def _inbound_owner_column_for_revision(current_revision: str) -> str:
+    script = ScriptDirectory.from_config(Config(str(BACKEND_ROOT / "alembic.ini")))
+    script.get_revision(current_revision)
+    if current_revision == WORKLINE_RETIREMENT_REVISION:
+        return "workline_id"
+    try:
+        list(script.iterate_revisions(WORKLINE_RETIREMENT_REVISION, current_revision))
+    except RangeNotAncestorError:
+        try:
+            list(script.iterate_revisions(current_revision, WORKLINE_RETIREMENT_REVISION))
+        except RangeNotAncestorError as exc:
+            raise ValueError("database revision is outside the supported migration lineage") from exc
+        return "workline_id"
+    return "line_run_epoch_id"
 
 
 def _canonical_payload(result: object) -> dict[str, object]:
@@ -73,7 +98,17 @@ async def run(
                 if db_module.AsyncSessionLocal is None:
                     raise RuntimeError("database unavailable")
                 session_factory = db_module.AsyncSessionLocal
-            readiness_service = service or ReleaseOperationalReadinessService()
+            readiness_service = service
+            if readiness_service is None:
+                database_heads = [value.strip() for value in os.environ.get("DATABASE_HEADS", "").splitlines() if value]
+                if len(database_heads) > 1:
+                    raise ValueError("multiple database heads are not supported")
+                owner_column = (
+                    _inbound_owner_column_for_revision(database_heads[0]) if database_heads else "workline_id"
+                )
+                readiness_service = ReleaseOperationalReadinessService(
+                    repository=ReleaseOperationalReadinessRepository(inbound_owner_column=owner_column)
+                )
             async with session_factory() as db:
                 result = await readiness_service.check(db)  # type: ignore[attr-defined]
             payload = _canonical_payload(result)
