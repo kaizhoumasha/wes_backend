@@ -12,6 +12,11 @@
 ## 派生资料
 
 - Markdown 转写可能压缩示例、补充检索说明或记录当时联调口径，不能覆盖配对的原始 PDF。
+- `SMT分拣机ECS接口调用说明书V1-20260318.md` 是 2026-09-02 收到的同名 Markdown 更新稿，替换此前的摘要转写；
+  文档内版本仍为 `1.0.0 / 2026-03-18`，其中路径、认证和示例只作为外部输入，不是 WES 当前实施合同。收到的原始字节
+  SHA-256 为 `f79d9bb119f806abcb5dbf14e890e15531f074038c2c52e35d09240f6ca1c4f0`，仓库副本仅移除联调凭据值并清理行尾空白。
+  更新稿引用的 `image-0.png` 至 `image-5.png` 六张图片未随稿提供，当前仓库不含这些附件；布局图请参阅同名 PDF，
+  新稿图片以供应商后续提供的原始附件为准。
 - `粗分机硬件供应商联调操作手册.md` 是历史联调期形成的 WES 派生资料，保留其中现场排查经验，但其 HMAC、旧字段和旧
   路径不是当前 implementation baseline；当前统一接口以 `docs/integration/third_party_integration_whitepaper.md` 为准。
 - `wms_rcs_interface_requirements.md` 是 2026-03 与 WMS 交互约定的初稿，保留当时的 MCS 命名、路径、字段样例和架构假设；
