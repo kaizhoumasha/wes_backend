@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.6.1] - 2026-09-11
+
+### Changed
+
+- 收录供应商 SMT 分拣机 ECS 接口 Markdown 更新稿，保留原始 PDF，注明来源、凭据脱敏及六张图片附件缺失；供应商资料不替代 WES 当前实施合同。
+
 ## [0.42.6.0] - 2026-09-11
 
 ### Fixed
