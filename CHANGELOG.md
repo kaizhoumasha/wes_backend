@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.5.2] - 2026-09-11
+
+### Fixed
+
+- 按当前 HEAVY 映射规模重新校准 selector 的跨 CPU 性能预算，保留缓存退化保护并避免较慢 CI 节点误报。
+
 ## [0.42.5.1] - 2026-09-11
 
 ### Fixed
