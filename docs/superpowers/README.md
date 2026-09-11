@@ -8,8 +8,8 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
-| `specs/2026-09-10-station-driven-execution-recovery-top-level-design.md` | 点位事件驱动、两条恢复路径、命令闭合与 WMS 业务对账分离的顶层目标 | FIX PLANNED；复评 R1–R3 已立项，原工程 CLEAR 失效，外部合同及复核待闭合 |
-| `plans/2026-09-10-station-driven-execution-recovery-implementation-plan.md` | 本站恢复及响应纠正、现场联调消费者、手工接纳的修复切片和测试所有权 | R1–R3 纳入 S0–S6；未实施，不等于供应商或现场验收 |
+| `specs/2026-09-10-station-driven-execution-recovery-top-level-design.md` | 点位事件驱动、两条恢复路径、命令闭合与 WMS 业务对账分离的顶层目标 | CURRENT SCOPE IMPLEMENTED；WES 基础与诊断前端已验证，业务插件和 WMS 扩展为后续独立需求 |
+| `plans/2026-09-10-station-driven-execution-recovery-implementation-plan.md` | 本站恢复基础与诊断切片、验证所有权及后续业务边界 | S1/S2、S3 本地、S5 前后端已交付；无业务插件或新 WMS 合同 blocker，未部署 |
 | `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
 | `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | 后端 A1–A4 实现、评审与验证完成；不依赖具体业务插件，未部署 |
 | `plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面、领域恢复入口和独立消费者验收 | IMPLEMENTING；恢复手册与原消费者验证已推进，前端等待干净 develop 合同 |

@@ -19,7 +19,7 @@
 - [插件顶层设计](../specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md)：声明先行、渐进接入、基础与业务职责。
 - [最新插件声明](../../../workline_plugins/manual-picking/src/manual_picking/definition.py)及 [README](../../../workline_plugins/manual-picking/README.md)。
 - [人工出库货架搬运规则](../../integration/manual-outbound-rack-transport.md)与 [Transport 履约合同](../../contracts/transport-fulfillment-contract.md)：资源角色、模板、位置和实际结果的真源。
-- [点位事件及恢复设计](../specs/2026-09-10-station-driven-execution-recovery-top-level-design.md)：并行任务的设计依赖，不能当作已实现机器合同。
+- [点位事件及恢复设计](../specs/2026-09-10-station-driven-execution-recovery-top-level-design.md)：仅复用已实现的 WES 基础与诊断能力；WMS 纠正/反馈和正式插件业务是本方案自己的后续依赖，不属于基础恢复任务。
 - 决策上下文：任务 `01a0891b-4bac-73f2-a993-269232642e34`、`01a08988-b3d4-7d32-8e95-f9b939852163`；本方案以当前文件和后续冻结合同为实施依据。
 
 ## 1. 成功标准与范围

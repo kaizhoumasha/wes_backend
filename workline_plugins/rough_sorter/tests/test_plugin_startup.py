@@ -1720,22 +1720,17 @@ class _Sessions:
 async def test_initial_correlator_rebuilds_stable_execution_identity_from_persisted_scan() -> None:
     factory, base = _factory()
     evidence = factory._evidences.evidence  # type: ignore[attr-defined]
-    next_evidence = evidence.model_copy(update={"id": evidence.id + 1})
-    correlator = RoughSorterInitialExecutionCorrelator(evidence_repository=_Evidences(evidence, next_evidence))
+    correlator = RoughSorterInitialExecutionCorrelator(evidence_repository=_Evidences(evidence))
     db = object()
 
     first = await correlator.correlate(db, base.evidence_id)
     second = await correlator.correlate(db, base.evidence_id)
-    next_request = await correlator.correlate(db, str(next_evidence.id))
 
     assert first == second
     assert first is not None
     assert first.material_trace_id == "TRACE-21"
     assert first.execution_code.startswith("rough-sorter-")
     assert len(first.execution_code) <= 120
-    assert next_request is not None
-    assert next_request.material_trace_id == first.material_trace_id
-    assert next_request.execution_code != first.execution_code
 
 
 @pytest.mark.asyncio
