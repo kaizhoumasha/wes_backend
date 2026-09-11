@@ -123,7 +123,7 @@ def _member_result_schema(
     success_required = [id_field, "status", "final_position"]
     failed_required = [id_field, "status", "final_position", "failure_code"]
     if arrival_face:
-        arrival_schema = {"anyOf": [_FACE_SCHEMA, {"enum": [None]}]}
+        arrival_schema = {"anyOf": [_FACE_SCHEMA, {"enum": [None, ""]}]}
         success_properties["arrival_face"] = arrival_schema
         failed_properties["arrival_face"] = arrival_schema
     else:
@@ -141,7 +141,7 @@ def _member_result_schema(
                     "position_unknown": _literal(True),
                     "failure_code": _literal("POSITION_UNKNOWN"),
                     "final_position": {"not": {}},
-                    "arrival_face": {"not": {}},
+                    "arrival_face": {"enum": [None, ""]} if arrival_face else {"not": {}},
                 },
             ),
         ]

@@ -69,6 +69,7 @@ def test_sdk_rejects_transport_binding_identity_that_cannot_be_persisted(field_n
         (TransportRackPosition("a"), TransportZonePosition("zone-1"), TransportRcsTemplateId.CTU03),
         (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.CTU03),
         (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.F01),
+        (TransportRackReference("rack-1"), TransportRackPosition("work"), TransportRcsTemplateId.F01),
     ],
 )
 def test_sdk_accepts_only_approved_rack_move_edges(source: object, target: object, template: object) -> None:

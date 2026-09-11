@@ -116,7 +116,9 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 无论输入是哪种位置，WES 创建任务前都必须已有该货架的可信精确 `RACK_POSITION` 与当前工作面；精确输入还必须与投影完全一致。
 当前位置或当前工作面未知时失败关闭，WES 不从旧数据、目标面或业务流程推断当前事实。
 
-货架任务携带真实 `rcs_template_id`。库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
+货架任务携带真实 `rcs_template_id`。五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
+人工出库的转运货架使用 `F01` 出库，支持 `RACK → RACK_POSITION`。已确认的两类货架完整规则及各入口实现范围见
+[人工出库货架搬运规则](../integration/manual-outbound-rack-transport.md)。
 调用方未指定时，WES 在形成不可变请求前规范化为 `F01`。Wire 始终发送明确值，WES 不根据位置编码反推模板，也不建立模板配置映射。
 
 #### 批量搬运料箱 `move_bins()`
@@ -269,8 +271,8 @@ kind
 | `BinTransportData` | `BIN_MOVE` | `move_bins()` | `moves[1..4] { container_id + source + target }` |
 | `BinTransportData` | `BIN_EXCHANGE` | `exchange_bins()` | `moves[2\|4] { container_id + source + target }`，且为 1～2 个二元闭环 |
 
-`CTU03` 未提供 `target_face` 时由 WMS/RCS 决定回库朝向，回调的 `arrival_face` 可省略或为 `null`，WES 将朝向记录为空，不推定实际朝向；提供具体目标面时按其它模板规则处理。
-所有已提供的 `RackTransportData.target_face` 均由调用方冻结，WMS 原样传给 RCS；成功回调的 `arrival_face` 必须按大小写敏感的
+`CTU03` 未提供 `target_face` 时由 WMS/RCS 决定回库朝向，回调的 `arrival_face` 可省略、为 `null` 或空字符串，WES 将朝向记录为空，不推定实际朝向；提供具体目标面时按其它模板规则处理。
+所有已提供的 `RackTransportData.target_face` 均由调用方冻结，WMS 原样传给 RCS；成功回调提供非空 `arrival_face` 且指定了 `target_face` 时，必须按大小写敏感的
 Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要求最终位置相等。对于 `RACK`
 目标，WMS/RCS 必须确认最终位置是按冻结
 货架编号和模板解析出的结果；对于 `ZONE` 目标，最终位置必须属于冻结区域。两种回调都返回精确 `RACK_POSITION`。
@@ -285,6 +287,7 @@ Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要
 | --- | --- | --- | --- | --- |
 | 区域内货架到工作位 | `CTU01` | `ZONE` | `RACK_POSITION` | 等于请求目标 |
 | 指定货架到工作位 | `CTU01` | `RACK` | `RACK_POSITION` | 等于请求目标 |
+| 指定转运货架到工作位 | `F01` | `RACK` | `RACK_POSITION` | 等于请求目标 |
 | 精确库位货架到工作位 | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
 | 指定货架在当前工作位原地换面 | `CTU02` | `RACK` | `RACK_POSITION` | 返回冻结的精确原点位，面向等于 `target_face` |
 | 工作位原地换面 | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 位置不变，面向等于 `target_face` |
@@ -484,13 +487,14 @@ failure_code?
 arrival_face?
 ```
 
-- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position`；未指定 `target_face` 的 CTU03 允许省略 `arrival_face` 或传 `null`，
-  提供实际到达面时原样保存；已指定目标面时 `arrival_face` 必须提供且等于冻结值。对于
+- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position`；所有货架模板的 `arrival_face` 均可省略、传 `null` 或空字符串，
+  若请求指定 `target_face`，依据 WMS/RCS 对成功结果的面向保证，使用冻结的 `target_face` 补齐应用结果；否则保存为未知面向。
+  提供非空实际到达面时原样保存，已指定目标面时必须等于冻结值。对于
   `RACK_POSITION` 目标，最终地码必须等于冻结目标；对于 `RACK` 目标，最终位置必须是 WMS/RCS 按冻结货架编号和模板解析出的
   位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。不得携带 `failure_code` 或 `position_unknown`。
-- `FAILED` 且位置明确时必须携带 `final_position + failure_code`；已指定 `target_face` 时还必须提供实际 `arrival_face`，
-  未指定目标面的 CTU03 允许省略到达面或传 `null`。
-- `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或到达面。
+- `FAILED` 且位置明确时必须携带 `final_position + failure_code`；`arrival_face` 可省略、传 `null` 或空字符串，
+  与是否指定 `target_face` 无关；非空实际面向原样保存。
+- `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或非空到达面；到达面 `null`、空字符串统一视为未提供。
 - 货架结果不使用只有一个成员的 `results[]`。
 
 料箱族 `BIN_MOVE | BIN_EXCHANGE` 的 `data` 为：
@@ -529,13 +533,16 @@ WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evid
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
 
-`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是长度 `1..10` 个 Unicode code point 且不含 NUL 的 UTF-8 string。
+`arrival_face` 省略、`null` 和空字符串在入口统一规范化为 `null`，三者使用相同证据摘要。
+`rack_face`、`target_face`、非空 `arrival_face` 按各自上下文可为 `null`；非空 JSON value 必须是长度 `1..10` 个 Unicode code point 且不含 NUL 的 UTF-8 string。
 持久化列使用 PostgreSQL `VARCHAR(10)`，超长值拒绝且不得截断；HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
 WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
-Unicode normalization、A/B 转换、角度计算或容差处理。CTU03 未指定 `target_face` 时不比较目标朝向；`arrival_face` 省略与 `null` 规范化为相同的空值，
-覆盖此前的面向投影，禁止沿用旧面向或填入默认面；若提供非空值则原样记录。
-任何已指定的目标面都必须与 `arrival_face` 精确相等。缺少应有
-`arrival_face` 的货架结果不得接受为确定结果；WES 接受后同步更新本地面向投影，后续货架和 Bin 任务都使用该投影校验工作面。
+Unicode normalization、A/B 转换、角度计算或容差处理。
+WMS/RCS 保证 `SUCCEEDED` 已按请求的 `target_face` 到位。因此 `RACK_MOVE`、`RACK_ROTATE` 的成功结果缺少到达面时，
+WES 以该 Transport 原请求中冻结的 `target_face` 补齐成员结果、位置面向投影和下游 outcome；Evidence 保留入口规范化后的空值，
+不改写回调正文、幂等摘要或 `outcome_revision`。后续换面、Bin 搬运和到位业务上报可使用该已确认面向。
+请求未指定 `target_face` 时仍保存未知面向，不沿用旧面向；`FAILED` 或位置未知结果不按请求补齐。
+成功回调明确提供非空 `arrival_face` 时原样保存；同时指定目标面时两者必须精确相等，冲突不得被补齐逻辑覆盖。
 
 WMS 为同一 `transport_task_id` 的首条完整搬运最终结果使用 `outcome_revision=1`，每次形成新的完整权威结果时连续加一，技术重试不得改号。
 WES 可靠保存每个合法版本：更高版本可以推进未确定结果；低于已应用版本的迟到消息仍按幂等规则 ACK，但不得回退结果或位置；

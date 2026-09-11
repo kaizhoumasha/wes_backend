@@ -861,7 +861,7 @@ async def test_invalid_rack_slot_result_is_not_reclassified_as_pending(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arrival_face", ["90", None])
-async def test_move_success_requires_the_frozen_target_face(
+async def test_move_success_checks_target_face_only_when_arrival_face_provided(
     outcome_service: TransportService,
     db_engine: object,
     arrival_face: str | None,
@@ -897,13 +897,16 @@ async def test_move_success_requires_the_frozen_target_face(
     async with sessions() as db:
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
 
-    assert evidence is not None and evidence.status == "CONFLICT"
+    assert evidence is not None
+    assert evidence.status == ("CONFLICT" if arrival_face is not None else "APPLIED")
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("arrival_face", ["90", None])
 async def test_rotate_success_requires_the_frozen_target_face(
     outcome_service: TransportService,
     db_engine: object,
+    arrival_face: str | None,
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -936,7 +939,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
         "rack_id": "rack-face",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-        "arrival_face": "90",
+        "arrival_face": arrival_face,
     }
 
     await record_valid_callback(
@@ -959,6 +962,13 @@ async def test_rotate_success_requires_the_frozen_target_face(
     assert task is not None
     assert member is not None
     assert evidence is not None
+    if arrival_face is None:
+        assert evidence.status == "APPLIED"
+        assert evidence.payload_json["arrival_face"] is None
+        assert task.status == "SUCCEEDED"
+        assert member.arrival_face == "270"
+        assert task.outcome_json["members"][0]["arrival_face"] == "270"
+        return
     assert evidence.status == "CONFLICT"
     assert (task.status, task.reason_code, task.outcome_version) == (
         "RECONCILING",

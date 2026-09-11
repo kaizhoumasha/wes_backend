@@ -1514,6 +1514,9 @@ class TransportService:
                     },
                 }
             ]
+            # WMS/RCS 保证成功结果已按请求面向到位；仅补齐应用副本，保留原始 Evidence 与摘要。
+            if raw_results[0].get("status") == "SUCCEEDED" and raw_results[0].get("arrival_face") is None:
+                raw_results[0]["arrival_face"] = task.request_json.get("target_face")
         else:
             external_results = payload.get("results")
             if not isinstance(external_results, list):
@@ -1567,13 +1570,6 @@ class TransportService:
             if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
                 raise TransportContractError("failed member requires failure_code")
             arrival_face = result.get("arrival_face")
-            if (
-                member.object_type == "RACK"
-                and has_position
-                and task.request_json.get("target_face") is not None
-                and (type(arrival_face) is not str or arrival_face == "")
-            ):
-                raise TransportContractError("known rack result requires arrival_face")
             final_position = result.get("final_position") if has_position else None
             if _result_contradicts_definite_member_fact(member, result):
                 raise TransportContractError("result contradicts confirmed member fact")
@@ -2000,6 +1996,7 @@ def _validate_result_frozen_identity(
             task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
             and status == "SUCCEEDED"
             and task.request_json.get("target_face") is not None
+            and result.get("arrival_face") is not None
             and result.get("arrival_face") != task.request_json["target_face"]
         ):
             raise TransportContractError("successful arrival face differs from frozen target")

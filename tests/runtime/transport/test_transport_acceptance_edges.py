@@ -43,7 +43,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_adapter.transport_wire import RESULT_OPERATION, validate_callback_envelope
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
@@ -1540,9 +1540,10 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("arrival_face", ["270", None])
-async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_rack(
-    db_engine: object, arrival_face: str | None
+@pytest.mark.parametrize("face_fields", [{}, {"arrival_face": None}, {"arrival_face": ""}, {"arrival_face": "270"}])
+@pytest.mark.parametrize("target_face", [None, "270"])
+async def test_ctu03_optional_arrival_persists_actual_face_and_releases_rack(
+    db_engine: object, face_fields: dict[str, str | None], target_face: str | None
 ) -> None:
     import json
 
@@ -1554,9 +1555,10 @@ async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_ra
         RackReference("rack-return-any-face"),
         ZonePosition("WH05"),
         rcs_template_id=RcsTemplateId.CTU03,
+        target_face=target_face,
     )
     task = await _load_task(db_engine, handle.transport_task_id)
-    assert "target_face" not in json.loads(task.submit_request_body)["data"]
+    assert json.loads(task.submit_request_body)["data"].get("target_face") == target_face
     assert await service.submit_pending_tasks(1) == 1
     await record_valid_callback(
         service,
@@ -1564,14 +1566,22 @@ async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_ra
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
-        payload={
-            "kind": "RACK_MOVE",
-            "outcome_revision": 1,
-            "rack_id": "rack-return-any-face",
-            "status": "SUCCEEDED",
-            "final_position": {"kind": "RACK_POSITION", "location_code": "STORAGE-17"},
-            "arrival_face": arrival_face,
-        },
+        payload=validate_callback_envelope(
+            {
+                "operation_id": new_uuid7(),
+                "operation": RESULT_OPERATION,
+                "timestamp": 1,
+                "data": {
+                    "transport_task_id": handle.transport_task_id,
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": "rack-return-any-face",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "STORAGE-17"},
+                    **face_fields,
+                },
+            }
+        )["data"],
     )
     assert await service.process_pending_evidence(1) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
@@ -1591,14 +1601,36 @@ async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_ra
             )
         )
     assert projection is not None
-    assert projection.arrival_face == arrival_face
+    expected_face = face_fields.get("arrival_face") or target_face
+    assert projection.arrival_face == expected_face
+    assert task.outcome_json["members"][0]["arrival_face"] == expected_face
+    async with sessions() as db:
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == "ctu03-actual-arrival")
+        )
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == task.transport_task_id)
+        )
+    assert evidence is not None and evidence.status == "APPLIED"
+    assert evidence.payload_json["arrival_face"] == (face_fields.get("arrival_face") or None)
+    assert member is not None and member.arrival_face == expected_face
+    replay = await record_valid_callback(
+        service,
+        operation_id="ctu03-actual-arrival",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=evidence.payload_json,
+    )
+    assert replay["code"] == "DUPLICATE"
+    assert (await _load_task(db_engine, handle.transport_task_id)).outcome_version == task.outcome_version
     assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STORAGE-17"}
     assert bindings and all(binding.released_at is not None for binding in bindings)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_face", [None, "90"])
-async def test_failed_known_rack_result_requires_face_only_when_requested(
+async def test_failed_known_rack_result_accepts_missing_face_even_when_target_requested(
     db_engine: object, target_face: str | None
 ) -> None:
     service = _service(db_engine)
@@ -1658,13 +1690,7 @@ async def test_failed_known_rack_result_requires_face_only_when_requested(
             )
         )
     assert projection is not None and bindings
-    if target_face is not None:
-        assert (task.status, task.reason_code) == ("RECONCILING", "TRANSPORT_EVIDENCE_CONFLICT")
-        assert all(binding.released_at is None for binding in bindings)
-        assert projection.arrival_face == "270"
-        assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "OLD"}
-    else:
-        assert (task.status, task.reason_code) == ("FAILED", "RCS_EXECUTION_FAILED")
-        assert all(binding.released_at is not None for binding in bindings)
-        assert projection.arrival_face is None
-        assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STOPPED"}
+    assert (task.status, task.reason_code) == ("FAILED", "RCS_EXECUTION_FAILED")
+    assert all(binding.released_at is not None for binding in bindings)
+    assert projection.arrival_face is None
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STOPPED"}

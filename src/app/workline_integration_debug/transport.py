@@ -45,7 +45,7 @@ def _bin_position(value: dict[str, str]):  # type: ignore[no-untyped-def]
     raise TransportContractError("bin position kind must be HANDOFF_POSITION or RACK_BIN_SLOT")
 
 
-def build_transport_request(action: IntegrationTransportAction):
+def build_transport_request(action: IntegrationTransportAction, *, bin_moves: tuple[BinMove, ...] | None = None):
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID)
     if action.kind is IntegrationTransportActionKind.MOVE_RACK:
         return MoveRackRequest(
@@ -67,6 +67,8 @@ def build_transport_request(action: IntegrationTransportAction):
             RcsTemplateId(action.rcs_template_id),
         )
     if action.kind is IntegrationTransportActionKind.MOVE_BINS:
+        if bin_moves is not None:
+            return MoveBinsRequest(action.client_request_id, caller, bin_moves)
         if action.bin_code is None:
             raise TransportContractError("MOVE_BINS requires bin_code")
         return MoveBinsRequest(

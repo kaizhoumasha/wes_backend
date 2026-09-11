@@ -206,6 +206,26 @@ async def test_transport_action_passes_frozen_site_values_and_authenticated_acto
 
 
 @pytest.mark.asyncio
+async def test_transport_action_accepts_saved_whole_batch_reference() -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "kind": "MOVE_BINS",
+        "rack_id": "510002",
+        "source": {"kind": "RACK", "location_code": "510002"},
+        "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+        "rcs_template_id": "CTU01",
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post("/api/v1/workline-integration-debug/runs/run-1/transport", json=payload)
+    assert response.status_code == 202
+    action = service.create_transport_action.await_args.kwargs["action"]
+    assert action.bin_code is None
+    assert action.source == payload["source"]
+
+
+@pytest.mark.asyncio
 async def test_device_action_passes_the_selected_manual_outbound_station() -> None:
     service = _service()
     payload = {

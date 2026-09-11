@@ -539,6 +539,7 @@ def test_transport_caller_keeps_only_local_routing_fields() -> None:
         (RackPosition("WORK"), ZonePosition("ZONE-A"), RcsTemplateId.CTU03),
         (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.CTU03),
         (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.F01),
+        (RackReference("rack-1"), RackPosition("WORK"), RcsTemplateId.F01),
     ],
 )
 def test_move_rack_accepts_only_approved_position_and_template_edges(

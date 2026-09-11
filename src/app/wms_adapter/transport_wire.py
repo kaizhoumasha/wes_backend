@@ -158,15 +158,17 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
             raise TransportContractError("invalid failure_code")
         if is_unknown != (failure_code == "POSITION_UNKNOWN"):
             raise TransportContractError("POSITION_UNKNOWN failure_code must match position_unknown=true")
-    if rack_kind and has_position:
+    if rack_kind:
         arrival_face = result.get("arrival_face")
+        if arrival_face == "":
+            arrival_face = None
         if arrival_face is not None:
-            if type(arrival_face) is not str or arrival_face == "":
-                raise TransportContractError("known rack result requires arrival_face")
+            if type(arrival_face) is not str:
+                raise TransportContractError("arrival_face must be a string")
             validate_opaque_face(arrival_face, "arrival_face", error_type=TransportContractError)
-        # 未指定目标面时 WMS/RCS 可不回传朝向；省略与 null 使用相同证据摘要。
+        # 到达面可选；省略、null 和空字符串使用相同证据摘要，不推定实际面向。
         result["arrival_face"] = arrival_face
-    if (not rack_kind or is_unknown) and "arrival_face" in result:
+    if (not rack_kind and "arrival_face" in result) or (is_unknown and result.get("arrival_face") is not None):
         raise TransportContractError("arrival_face is not valid for this result")
     return result
 
