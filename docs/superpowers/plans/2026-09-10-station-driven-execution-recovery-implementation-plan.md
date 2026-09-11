@@ -1,6 +1,6 @@
 # 本站驱动执行恢复实施计划
 
-> 执行入口：遵循项目 `wes-implementation`；本计划按内聚切片顺序执行，不额外串联重复 Review。已有授权已执行到后端本地 Commit 与前端 Push/PR；未授权 Merge 或 Deploy。
+> 执行入口：遵循项目 `wes-implementation`；本计划按内聚切片顺序执行，不额外串联重复 Review。后端与前端分支均已 Push；当前尚未 Merge 或 Deploy。
 
 **目标：** 原任务可在 ECS 排障后按原身份继续；旧异常或结果未知不阻塞独立的新本站请求，相关事实在 WES 内可靠留存并可诊断。
 
@@ -10,11 +10,11 @@
 
 **设计：** [顶层设计](../specs/2026-09-10-station-driven-execution-recovery-top-level-design.md)。本计划只实施其中的 WES 基础恢复与诊断切片；WMS 业务纠正、观察反馈和粗分出口属于后续独立需求，不是本次完成条件。
 
-**状态：** 本次范围 S1、S2、S3 本地观察、既有 WMS operation 安全重试及 S5 前后端诊断已实现并验证。粗分插件的机械摘要传播已从当前工作树撤回；R1 响应纠正、WMS 观察反馈和 S4 粗分出口移为后续独立需求，不阻塞本次收尾。当前实现不修改供应商 ECS wire；后端尚未推送，前端尚未合并，均未部署，也不代表现场验收通过。
+**状态：** 本次范围 S1、S2、S3 本地观察、既有 WMS operation 安全重试及 S5 前后端诊断已实现并验证。粗分插件的机械摘要传播已从当前工作树撤回；R1 响应纠正、WMS 观察反馈和 S4 粗分出口移为后续独立需求，不阻塞本次收尾。当前实现不修改供应商 ECS wire；后端分支已推送，前端尚未合并，均未部署，也不代表现场验收通过。
 
 ## 本次范围与后续独立需求
 
-初始核查基线为 `develop@06e56536`；当前后端实现快照为 `51533683`，前端实现快照为 `5f64da5` / PR #121。历史处理记录不是当前服务器状态。沿用本计划，不另建项目、通用纠错接口或恢复状态机。
+初始核查基线为 `develop@06e56536`；当前后端可执行快照为 `cf2d783c`（主体能力提交 `51533683`），前端实现快照为 `5f64da5` / PR #121。历史处理记录不是当前服务器状态。沿用本计划，不另建项目、通用纠错接口或恢复状态机。
 
 | 项目 | 范围归类 | 当前处理 | 完成判据 |
 | --- | --- | --- | --- |
@@ -22,7 +22,7 @@
 | R2：现场业务消费者 | 后续独立业务需求 | 仅核对现有调用没有签名传播；Run/Step 和插件流程不修改 | 由[人工出库联调台方案](2026-09-10-manual-picking-integration-workbench-optimization.md)独立验收 |
 | R3：手工接纳 | 本次范围，已完成 | 正式业务排队与既有调试安全槽分开，不扩展供应商 Command wire | 有效本站请求不被旧异常锁住；MANUAL_DEBUG、EVENT_DEBUG 仍受本地未闭合命令保护 |
 
-**执行边界：** 本次只落实 WES 基础和诊断能力。生产补丁已按 `wes-implementation` 冻结符号、调用链、测试所有权与风险范围；后端 Commit 与前端 Push/PR 已在各自授权范围内完成，Merge 与 Deploy 仍需独立授权。业务插件、联调台业务流程和新 WMS operation 均不在本次修改范围。
+**执行边界：** 本次只落实 WES 基础和诊断能力。生产补丁已按 `wes-implementation` 冻结符号、调用链、测试所有权与风险范围；后端与前端分支均已 Push，当前尚未 Merge 或 Deploy。业务插件、联调台业务流程和新 WMS operation 均不在本次修改范围。
 
 **当前外部合同闭合项：** 无。本次不依赖新增 ECS 字段、错误码或 WMS operation；供应商物理互锁与现场恢复能力只按原合同在部署后单独验收。
 
@@ -119,7 +119,7 @@ R1 继续保留为独立业务问题。当前补丁只保持 `InboundEvidenceSer
 
 ### S0 执行记录：隔离基线与范围冻结
 
-本轮已进入 Execution Lock，分类 `LARGE/HIGH-RISK`。后端实施目录为 `/Users/kaizhou/.codex/worktrees/d6a5/wes_backend`，分支 `codex/01a0890328f17031919c23095735e1f0`，由基线 `06e56536` 形成提交 `51533683`；本地主工作区 `develop` 已快进到同一提交，`origin/develop` 仍为 `06e56536`。前端同名隔离 worktree 形成提交 `5f64da5` 并已 Push、创建 PR #121。未 Merge 或 Deploy。
+本轮已进入 Execution Lock，分类 `LARGE/HIGH-RISK`。后端实施目录为 `/Users/kaizhou/.codex/worktrees/d6a5/wes_backend`，分支 `codex/01a0890328f17031919c23095735e1f0`，由基线 `06e56536` 形成主体能力提交 `51533683`，最终生产代码快照为 `cf2d783c`，并已随 `0.42.4.0` 发布元数据提交 `82f3fb7e` 推送；本地主工作区 `develop` 已快进到 `51533683`，`origin/develop` 仍为 `06e56536`。前端同名隔离 worktree 形成提交 `5f64da5` 并已 Push、创建 PR #121。均未 Merge 或 Deploy。
 
 迁入的五份文档均保留：本文、顶层设计、人工出库联调台方案、superpowers 索引及架构文件索引，并随后端实现一并提交。实施期间保护主工作区和前端原有无关 dirty；未以主工作区内容覆盖 worktree，也未改写供应商原始协议或硬件资料。
 
@@ -187,7 +187,7 @@ HEAVY mapping 已随生产模块和迁移更新，由 selector 生成精确 mani
 已在实施 worktree 完成按初始 Evidence 唯一的本站上下文及数据库迁移：同一 Evidence 并发幂等，同物料不同 Evidence 独立存在。
 本次不迁移粗分或其他业务插件消费者；未修改供应商 Event/Command wire，也未建立推测性替代关系。
 
-先前包含供应商字段的验证快照已失效，不作为当前证据；S2 完成后的当前快照证据见下节。实现已纳入后端提交 `51533683`；后端未 Push，未 Deploy，也未取得供应商现场验收。
+先前包含供应商字段的验证快照已失效，不作为当前证据；S2 完成后的当前快照证据见下节。主体实现已纳入后端提交 `51533683`，最终生产代码快照为 `cf2d783c`；后端分支已 Push、未 Merge、未 Deploy，也未取得供应商现场验收。
 
 ### S2 — 正式业务排队与原身份派发
 
@@ -211,7 +211,7 @@ HEAVY mapping 已随生产模块和迁移更新，由 selector 生成精确 mani
 - migration/HEAVY selector 选中的隔离 PostgreSQL、Redis、真实 worker、WMS operation wiring 与 schema 集合：升级至 `f7cf0cd8c6d4`，`133 passed`。
 - `./scripts/git-quality-gate.sh --profile quality`：`3668 passed, 5 skipped`，其余静态、安全、架构和脚本门禁全部通过。
 - GitNexus 最终 staged 变更检查覆盖 44 个文件、203 个符号，affected processes 0、risk low；并以精确调用点、测试所有权、HEAVY mapping 和最终 diff 交叉闭合。
-- 后端当前结论为 `IMPLEMENTED - VERIFIED - COMMITTED LOCALLY`，提交 `51533683`；未 Push、Merge、Deploy，也未完成供应商/WMS/现场业务验收。
+- 后端当前结论为 `IMPLEMENTED - VERIFIED - PUSHED`，主体提交 `51533683`、最终生产代码快照 `cf2d783c`；未 Merge、Deploy，也未完成供应商/WMS/现场业务验收。
 
 ### S3 — 本地命令观察和既有可靠义务续送
 
@@ -297,7 +297,7 @@ UI -> 历史/当前分开 -> SSE/快照乱序、断线、空记录、原结果�
 
 事件幂等继续使用现有规范化摘要；初始 Evidence 唯一索引保证上下文幂等，不增加替代关系查询。历史分页及 worker 批量遵循既有请求/任务预算，数据库事务内不进行外部 HTTP。动态 Status 阻塞只更新原命令的 `next_attempt_at`，保留 deadline，不能改写为永久失败或重发已接纳动作。延迟与吞吐以实施环境实测，不承诺未经测量的 p99。
 
-本次按 S0 → S1 → S2 → S3 → S5 → S6 执行；S4 及第 6–7 节业务扩展不参与当前顺序。后端和前端分别在同名隔离 worktree 实施；当前授权已执行到后端本地 Commit 与前端 Push/PR，未经后续授权不合并、部署或清理。
+本次按 S0 → S1 → S2 → S3 → S5 → S6 执行；S4 及第 6–7 节业务扩展不参与当前顺序。后端和前端分别在同名隔离 worktree 实施；两端分支均已 Push，当前尚未合并、部署或清理。
 
 发布前核清真实在途事实，停止旧相关进程，迁移并部署匹配的新核心与前端，再启动并验证数据库路径和真实 worker。业务插件不在本次发布差异中。失败时先停止新触发并保留事实；仅在数据库和原外部合同允许时恢复匹配旧版本，否则修复前进，禁止盲启旧版。未发布不要求兼容双跑；本轮未授权执行以上发布动作。
 
@@ -310,7 +310,7 @@ UI -> 历史/当前分开 -> SSE/快照乱序、断线、空记录、原结果�
 | Outside Voice | 0 | SKIPPED | Codex 宿主按技能跳过嵌套同系统评审，无跨模型结论 |
 | 界面 | 1 | FOCUSED QA PASS | S5 诊断页聚焦测试、全量测试、构建、CI 与本地浏览器 QA 已通过；未做部署环境验收 |
 
-**VERDICT:** 本次 WES 基础与诊断实施范围已完成，业务插件与新 WMS 合同不属于当前收尾条件。后端尚未 Push，前端 PR 尚未合并，均未 Deploy；部署和现场验证仍与代码完成分层记录。
+**VERDICT:** 本次 WES 基础与诊断实施范围已完成，业务插件与新 WMS 合同不属于当前收尾条件。后端分支已 Push、尚未 Merge，前端 PR 尚未合并，均未 Deploy；部署和现场验证仍与代码完成分层记录。
 
 **后续独立业务需求（非当前 blocker）：**
 
