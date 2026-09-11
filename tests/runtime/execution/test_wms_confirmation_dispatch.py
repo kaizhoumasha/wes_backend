@@ -527,7 +527,7 @@ async def test_confirmation_wait_renews_dispatch_window_for_max_delay_and_repeat
 
 
 @pytest.mark.asyncio
-async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reuses_identity() -> None:
+async def test_confirmation_dispatch_keeps_safe_same_identity_retry_after_internal_window() -> None:
     now = datetime(2026, 8, 16, tzinfo=UTC)
     expired = _confirmation(1, now)
     expired.deadline_at = now
@@ -553,12 +553,21 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
     processed = await service.dispatch_batch(limit=2, now=now)
 
     assert processed == 2
-    assert expired.status == WmsConfirmationStatus.RECONCILING
-    assert len(adapter.calls) == 1
-    assert adapter.calls[0]["operation_id"] == retryable.operation_id
-    assert retryable.status == WmsConfirmationStatus.PENDING
-    assert retryable.retry_eligible is True
-    assert retryable.next_attempt_at == now + timedelta(seconds=1)
+    assert [call["operation_id"] for call in adapter.calls] == [expired.operation_id, retryable.operation_id]
+    for confirmation in (expired, retryable):
+        assert confirmation.status == WmsConfirmationStatus.PENDING
+        assert confirmation.retry_eligible is True
+        assert confirmation.next_attempt_at == now + timedelta(seconds=1)
+        assert confirmation.deadline_at == (now if confirmation is expired else now + timedelta(minutes=5))
+
+    assert await service.dispatch_batch(limit=2, now=now + timedelta(seconds=1)) == 2
+    assert [call["operation_id"] for call in adapter.calls] == [
+        expired.operation_id,
+        retryable.operation_id,
+        expired.operation_id,
+        retryable.operation_id,
+    ]
+    assert expired.next_attempt_at == retryable.next_attempt_at == now + timedelta(seconds=2)
 
 
 @pytest.mark.asyncio

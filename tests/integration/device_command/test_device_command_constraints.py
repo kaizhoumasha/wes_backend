@@ -839,9 +839,12 @@ async def test_postgresql_command_frozen_contract_read_does_not_wait_for_worklin
         CommandStatus.DISPATCHING,
         CommandStatus.ACKNOWLEDGED,
         CommandStatus.RECONCILING,
+        CommandStatus.SUCCEEDED,
+        CommandStatus.FAILED,
+        CommandStatus.TIMED_OUT,
     ],
 )
-async def test_postgresql_unclosed_statuses_hold_single_device_slot(
+async def test_postgresql_business_command_status_does_not_create_a_global_device_slot(
     integration_session_factory,
     status: CommandStatus,
 ) -> None:
@@ -851,19 +854,79 @@ async def test_postgresql_unclosed_statuses_hold_single_device_slot(
         db.add(_command(binding, f"CMD-{identity}-1", status))
         await db.flush()
         db.add(_command(binding, f"CMD-{identity}-2", CommandStatus.PENDING))
-        with pytest.raises(IntegrityError):
+        await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_allows_only_one_dispatching_command_per_device(
+    integration_session_factory,
+) -> None:
+    with pytest.raises(IntegrityError):
+        async with integration_session_factory.begin() as db:
+            _, _, binding = await _seed_topology(db)
+            identity = uuid4().hex
+            db.add_all(
+                [
+                    _command(binding, f"CMD-{identity}-1", CommandStatus.DISPATCHING),
+                    _command(binding, f"CMD-{identity}-2", CommandStatus.DISPATCHING),
+                ]
+            )
             await db.flush()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT])
-async def test_postgresql_terminal_statuses_release_device_slot(
+async def test_postgresql_concurrent_claims_dispatch_only_one_command_per_device(
     integration_session_factory,
-    status: CommandStatus,
 ) -> None:
+    now = datetime(2026, 8, 13)
     async with integration_session_factory.begin() as db:
         _, _, binding = await _seed_topology(db)
         identity = uuid4().hex
-        db.add(_command(binding, f"CMD-{identity}-1", status))
-        db.add(_command(binding, f"CMD-{identity}-2", CommandStatus.PENDING))
-        await db.flush()
+        db.add_all(
+            [
+                _command(binding, f"CMD-{identity}-1", CommandStatus.PENDING),
+                _command(binding, f"CMD-{identity}-2", CommandStatus.PENDING),
+            ]
+        )
+
+    async def claim(token: str) -> DeviceCommand | None:
+        async with integration_session_factory.begin() as db:
+            return await device_command_repository.claim_next_pending(
+                db,
+                token=token,
+                now=now,
+                claim_expires_at=datetime(2026, 8, 13, 0, 0, 30),
+            )
+
+    results = await asyncio.gather(claim(f"TOKEN-{identity}-1"), claim(f"TOKEN-{identity}-2"))
+
+    assert sum(command is not None for command in results) == 1
+    assert sum(command is None for command in results) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocking_status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
+async def test_postgresql_claim_keeps_unknown_physical_command_as_device_fence(
+    integration_session_factory,
+    blocking_status: CommandStatus,
+) -> None:
+    now = datetime(2026, 8, 13)
+    async with integration_session_factory.begin() as db:
+        _, _, binding = await _seed_topology(db)
+        identity = uuid4().hex
+        db.add_all(
+            [
+                _command(binding, f"CMD-{identity}-1", blocking_status),
+                _command(binding, f"CMD-{identity}-2", CommandStatus.PENDING),
+            ]
+        )
+
+    async with integration_session_factory.begin() as db:
+        claimed = await device_command_repository.claim_next_pending(
+            db,
+            token=f"TOKEN-{identity}",
+            now=now,
+            claim_expires_at=datetime(2026, 8, 13, 0, 0, 30),
+        )
+
+    assert claimed is None

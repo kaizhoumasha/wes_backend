@@ -13,10 +13,10 @@ from pydantic import BaseModel, StringConstraints, ValidationError
 from starlette.responses import StreamingResponse
 
 from src.app.device.contracts import (
+    DeviceEvidenceKind,
     DeviceEvidenceUpdate,
     DeviceIngressAttempt,
     DeviceIngressHistoryPage,
-    DeviceIngressKind,
 )
 from src.app.device.services.device_ingress_history_service import device_ingress_history_service
 from src.app.execution.models.inbound_evidence import InboundEvidenceApplyStatus  # noqa: TC001
@@ -63,7 +63,7 @@ def _matches_filters(
     event: BaseModel,
     *,
     device_code: str | None,
-    kind: DeviceIngressKind | None,
+    kind: DeviceEvidenceKind | None,
     command_code: str | None,
     apply_status: InboundEvidenceApplyStatus | None,
 ) -> bool:
@@ -84,7 +84,7 @@ def _matches_filters(
 async def evidence_history(
     request: Request,
     device_code: _DEVICE_TOKEN | None = Query(default=None),
-    kind: DeviceIngressKind | None = Query(default=None),
+    kind: DeviceEvidenceKind | None = Query(default=None),
     command_code: _COMMAND_TOKEN | None = Query(default=None),
     apply_status: InboundEvidenceApplyStatus | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
@@ -123,7 +123,7 @@ async def evidence_history(
 async def evidence_stream(
     request: Request,
     device_code: _DEVICE_TOKEN | None = Query(default=None),  # pyright: ignore[reportCallInDefaultInitializer]
-    kind: DeviceIngressKind | None = Query(default=None),  # pyright: ignore[reportCallInDefaultInitializer]
+    kind: DeviceEvidenceKind | None = Query(default=None),  # pyright: ignore[reportCallInDefaultInitializer]
     command_code: _COMMAND_TOKEN | None = Query(default=None),  # pyright: ignore[reportCallInDefaultInitializer]
     apply_status: InboundEvidenceApplyStatus | None = Query(  # pyright: ignore[reportCallInDefaultInitializer]
         default=None

@@ -32,7 +32,7 @@ pytest_plugins = ("tests.integration.conftest",)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
-async def test_inactive_debug_owner_dispatches_with_real_worker(confirmation_database, monkeypatch):
+async def test_inactive_debug_owner_dispatches_expired_window_with_real_worker(confirmation_database, monkeypatch):
     monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", "[]")
     database_url, sessions = confirmation_database
     operation_id = new_uuid7()
@@ -91,7 +91,7 @@ async def test_inactive_debug_owner_dispatches_with_real_worker(confirmation_dat
                 operation_id=operation_id,
                 workline_id=line.id,
                 request_payload=request,
-                deadline_at=now + timedelta(minutes=5),
+                deadline_at=now - timedelta(seconds=1),
                 created_at=now,
             )
         server.start()

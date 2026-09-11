@@ -34,6 +34,14 @@ class MaterialExecutionRepositoryPort(Protocol):
         material_trace_id: str,
     ) -> MaterialExecution | None: ...
 
+    async def lock_initial_evidence(self, db: AsyncSession, evidence_id: int) -> None: ...
+
+    async def get_by_admission_evidence_for_update(
+        self,
+        db: AsyncSession,
+        evidence_id: int,
+    ) -> MaterialExecution | None: ...
+
     async def add(self, db: AsyncSession, execution: MaterialExecution) -> MaterialExecution: ...
 
     async def get_admission_head_for_update(
@@ -101,12 +109,17 @@ class MaterialExecutionService:
         changed_at: datetime,
         evidence_id: int,
     ) -> MaterialExecution:
-        await self._repository.lock_material_trace(db, material_trace_id)
-        active = await self._repository.get_active_by_trace_for_update(db, material_trace_id)
-        if active is not None:
-            if active.execution_code != execution_code or active.workline_id != workline_id:
+        _, evidence_id = _transition_evidence("INITIAL_EVIDENCE", evidence_id)
+        await self._repository.lock_initial_evidence(db, evidence_id)
+        existing = await self._repository.get_by_admission_evidence_for_update(db, evidence_id)
+        if existing is not None:
+            if (
+                existing.execution_code != execution_code
+                or existing.material_trace_id != material_trace_id
+                or existing.workline_id != workline_id
+            ):
                 raise InitialExecutionCorrelationConflictError(material_trace_id)
-            return active
+            return existing
         return await self._repository.add(
             db,
             MaterialExecution(

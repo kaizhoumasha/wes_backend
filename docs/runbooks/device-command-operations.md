@@ -46,7 +46,8 @@ psql "$READ_ONLY_DATABASE_URL"
 
 ## 未闭合命令与设备槽位
 
-`PENDING`、`DISPATCHING`、`ACKNOWLEDGED` 和 `RECONCILING` 都占用设备槽位。同一 `device_code` 不得出现第二条未闭合命令。
+同一 `device_code` 可以保存多条 `PENDING` 正式业务命令，但同时至多一条命令进入 `DISPATCHING`。
+`ACKNOWLEDGED` 和 `RECONCILING` 仍保留物理设备围栏，后续 `PENDING` 命令不得越过；只有匹配的权威终态闭合原命令后才能继续领取。
 
 ```sql
 SELECT
@@ -68,8 +69,8 @@ LIMIT 100;
 
 处理原则：
 
-- `PENDING`：业务命令核对所属 WorkLine 准入、原设备合同和下一次准入时间；`MANUAL_DEBUG` 核对冻结 Endpoint 与审计字段；
-  不要直接触发 HTTP。
+- `PENDING`：业务命令按创建顺序等待领取，并核对所属 WorkLine 准入、原设备合同和下一次准入时间；`MANUAL_DEBUG` 核对冻结
+  Endpoint 与审计字段；不要直接触发 HTTP。
 - `DISPATCHING` 且 claim 过期：delivery 可能未知，只能交给对账扫描，不能换 identity 重发。
 - `ACKNOWLEDGED` 且 deadline 过期：等待匹配 CALLBACK 或权威现场证据；ACK 不能当成功。
 - `RECONCILING`：保留设备槽位，核对 `reconciliation_reason`；`RESULT_BEFORE_DISPATCH` 表示命令尚未下发就收到 RESULT，

@@ -6,11 +6,11 @@ from datetime import datetime
 
 from src.app.callback.services import callback_log_service
 from src.app.device.contracts import (
-    DeviceEvidenceUpdate,
     DeviceIngressAttempt,
     DeviceIngressHistoryItem,
     DeviceIngressHistoryPage,
 )
+from src.app.device.evidence_projection import build_device_evidence_update
 from src.app.device.repositories.ingress_history_repository import (
     DEVICE_INGRESS_CALLBACK_TYPE,
     DeviceIngressHistoryRepository,
@@ -73,26 +73,12 @@ class DeviceIngressHistoryService:
                         row_key=f"attempt:{attempt.request_id}" if attempt is not None else f"evidence:{key['id']}",
                         recorded_at=timezone.to_utc(key["recorded_at"]).isoformat(),
                         attempt=attempt,
-                        latest_update=_evidence_snapshot(evidence) if evidence is not None else None,
+                        latest_update=build_device_evidence_update(evidence) if evidence is not None else None,
                     )
                 )
         return DeviceIngressHistoryPage(
             items=items, next_cursor=_encode_cursor(page_keys[-1]) if len(keys) > limit else None
         )
-
-
-def _evidence_snapshot(evidence) -> DeviceEvidenceUpdate:
-    raw = evidence.normalized_payload
-    return DeviceEvidenceUpdate(
-        evidence_id=evidence.id,
-        kind=evidence.kind,
-        source_event_id=evidence.source_identity,
-        device_code=evidence.device_code or raw.get("device_code", ""),
-        command_code=evidence.command_code,
-        event_type=raw.get("event_type") if evidence.kind == "DEVICE_EVENT" else None,
-        apply_status=evidence.apply_status,
-        processed_at=timezone.to_utc(evidence.processed_at).isoformat() if evidence.processed_at is not None else None,
-    )
 
 
 def _encode_cursor(key) -> str:

@@ -207,14 +207,14 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
             name="device_command_manual_debug_audit_complete",
         ),
         UniqueConstraint("command_code", name="ux_device_commands_command_code"),
+        Index("ix_device_commands_dispatch_claim", "status", "next_attempt_at", "id"),
         Index(
-            "ux_device_commands_unclosed_device",
+            "ux_device_commands_dispatching_device",
             "device_code",
             unique=True,
-            postgresql_where=text("status IN ('PENDING', 'DISPATCHING', 'ACKNOWLEDGED', 'RECONCILING')"),
-            sqlite_where=text("status IN ('PENDING', 'DISPATCHING', 'ACKNOWLEDGED', 'RECONCILING')"),
+            postgresql_where=text("status = 'DISPATCHING'"),
+            sqlite_where=text("status = 'DISPATCHING'"),
         ),
-        Index("ix_device_commands_dispatch_claim", "status", "next_attempt_at", "id"),
         UniqueConstraint(
             "workline_id",
             "device_code",
@@ -271,7 +271,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
 
     @property
     def occupies_device_slot(self) -> bool:
-        """未闭合命令始终占用设备，包括结果不明的对账态。"""
+        """未闭合命令仍参与调试与停线等本地安全判断。"""
 
         return CommandStatus(self.status) in _UNCLOSED_STATUSES
 

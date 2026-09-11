@@ -20,6 +20,11 @@ from src.app.device.contracts import (
 )
 from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
+from src.app.device.evidence_projection import (
+    DeviceEvidenceEventPublisherPort,
+    build_device_evidence_update,
+    publish_device_evidence_update,
+)
 from src.app.device.models.command import (
     DIAGNOSTIC_REF_TYPES,
     EVENT_DEBUG_REF_TYPE,
@@ -36,8 +41,14 @@ from src.app.device.services.device_command_admission import (
     ensure_runtime_admissible,
     ensure_status_fresh,
 )
-from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceApplyStatus
+from src.app.execution.models.inbound_evidence import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+)
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
+from src.app.execution.services.inbound_evidence_service import (
+    InboundEvidenceService,
+)
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.repositories.workline_repository import WorkLineRepository
@@ -200,17 +211,21 @@ class DeviceCommandService:
         command_repository: CommandRepositoryPort | None = None,
         workline_repository: WorkLineRepositoryPort | None = None,
         evidence_repository: EvidenceRepositoryPort | None = None,
+        evidence_service: InboundEvidenceService | None = None,
         adapter_provider: ManualDebugAdapterProviderPort | None = None,
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
         audit_service: AuditServicePort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
         task_queue_gateway: TaskQueueGateway | None = None,
+        event_publisher: DeviceEvidenceEventPublisherPort | None = None,
     ) -> None:
         self._sessions = session_factory
         self._task_queue = task_queue_gateway
+        self._event_publisher = event_publisher
         self._commands = command_repository or device_command_repository
         self._worklines = workline_repository or WorkLineRepository()
         self._evidences = evidence_repository or inbound_evidence_repository
+        self._evidence_service = evidence_service or InboundEvidenceService()
         self._adapter_provider = adapter_provider
         self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
         self._audit = audit_service or audit_log_service
@@ -276,9 +291,6 @@ class DeviceCommandService:
             milliseconds=binding.command_timeout_ms
         ):
             raise DeviceCommandDeadlineError("deadline_at 超出冻结 binding 的 command_timeout_ms")
-        existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
-        if existing is not None:
-            raise DeviceCommandCapacityError(validated.device_code)
         command = DeviceCommand(
             command_code=new_uuid7(),
             device_code=validated.device_code,
@@ -710,15 +722,39 @@ class DeviceCommandService:
                 return False
             status = CommandStatus(command.status)
             if status is CommandStatus.PENDING:
+                observation = "NOT_ACCEPTED"
+                reason_code = "COMMAND_DEADLINE_EXPIRED"
+                observed_at = command.deadline_at
                 command.transition_to(CommandStatus.TIMED_OUT)
             elif status is CommandStatus.DISPATCHING:
+                observation = "RESULT_UNKNOWN"
+                reason_code = "DISPATCH_LEASE_EXPIRED"
+                observed_at = command.claim_expires_at or command.deadline_at
                 command.reconciliation_reason = "DISPATCH_LEASE_EXPIRED"
                 command.transition_to(CommandStatus.RECONCILING)
             elif status is CommandStatus.ACKNOWLEDGED:
+                observation = "RESULT_UNKNOWN"
+                reason_code = "ACK_DEADLINE_EXPIRED"
+                observed_at = command.deadline_at
                 command.reconciliation_reason = "ACK_DEADLINE_EXPIRED"
                 command.transition_to(CommandStatus.RECONCILING)
             else:
                 raise RuntimeError(f"不可对账的 DeviceCommand 状态: {status.value}")
+            accepted = await self._evidence_service.record_device_observation(
+                db,
+                command_code=command.command_code,
+                device_code=command.device_code,
+                observation=observation,
+                reason_code=reason_code,
+                observed_at=observed_at,
+                received_at=now,
+                workline_id=command.workline_id,
+                material_execution_id=command.material_execution_id,
+                contract_key=command.contract_key,
+                contract_version=command.contract_version,
+            )
+            update = build_device_evidence_update(accepted.evidence)
+        await publish_device_evidence_update(self._event_publisher, update)
         return True
 
 

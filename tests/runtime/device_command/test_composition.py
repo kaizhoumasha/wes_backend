@@ -9,6 +9,7 @@ from src.app.device.composition import (
     build_device_command_runtime,
     resolve_device_command_runtime_config,
 )
+from src.app.sys.services.event_stream_service import event_stream_service
 
 
 class FakeTransport:
@@ -104,6 +105,8 @@ async def test_runtime_owns_provider_pool_and_closes_all_transports() -> None:
     adapter = await runtime.provider.get_adapter("http://ecs-a:8080")
     assert await runtime.provider.get_adapter("http://ecs-a:8080") is adapter
     assert runtime.dispatch_service._adapter_provider is runtime.provider
+    assert runtime.command_service._event_publisher is event_stream_service
+    assert runtime.dispatch_service._event_publisher is event_stream_service
     assert runtime.evidence_service._task_queue is task_queue_gateway
     await runtime.aclose()
     assert transports.created[0].close_count == 1

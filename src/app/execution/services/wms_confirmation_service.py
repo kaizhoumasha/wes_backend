@@ -489,9 +489,6 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
                 return
-            if checked_at >= confirmation.deadline_at:
-                _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
-                return
             if confirmation.next_attempt_at is not None and checked_at < confirmation.next_attempt_at:
                 _ = await self.record_delivery_unknown(
                     db,
@@ -658,15 +655,17 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             if code in {"RETRY", "NOT_SENT", "DELIVERY_UNKNOWN"}:
                 retry_delay_ms = result.retry_after_ms if result.retry_after_ms is not None else 1000
                 next_attempt_at = changed_at + timedelta(milliseconds=retry_delay_ms)
-                if next_attempt_at < confirmation.deadline_at:
-                    _ = await self.record_delivery_unknown(
-                        db,
-                        confirmation,
-                        retry_eligible=True,
-                        next_attempt_at=next_attempt_at,
-                        changed_at=changed_at,
-                    )
-                    return
+                # WMS operation 以不可变 operation_id + payload 保证幂等；短期派发窗口只用于观测，
+                # 不得把可安全重试的可靠义务转成人工恢复。
+                # 确定响应或内容冲突仍由上方分支 fail closed。
+                _ = await self.record_delivery_unknown(
+                    db,
+                    confirmation,
+                    retry_eligible=True,
+                    next_attempt_at=next_attempt_at,
+                    changed_at=changed_at,
+                )
+                return
             _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
 
     @asynccontextmanager

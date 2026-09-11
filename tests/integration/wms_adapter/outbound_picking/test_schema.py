@@ -14,7 +14,7 @@ from src.utils.timezone import timezone
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "910b24bb0e05"
+HEAD_REVISION = "f7cf0cd8c6d4"
 
 
 @pytest.mark.asyncio

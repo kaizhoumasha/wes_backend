@@ -1127,6 +1127,9 @@ async def test_applied_evidence_update_is_published_after_processing() -> None:
         "device_code": "ARM-01",
         "command_code": "CMD-001",
         "event_type": None,
+        "observation": None,
+        "reason_code": None,
+        "observed_at": None,
         "apply_status": "APPLIED",
         "processed_at": timezone.to_utc(repository.evidences[receipt.source_event_id].processed_at).isoformat(),
     }

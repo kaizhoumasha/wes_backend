@@ -113,6 +113,69 @@ async def test_same_source_identity_with_different_digest_records_conflict() -> 
 
 
 @pytest.mark.asyncio
+async def test_device_observation_reuses_stable_identity_without_faking_result() -> None:
+    repository = FakeInboundEvidenceRepository()
+    service = InboundEvidenceService(repository=repository)
+    values = {
+        "command_code": "CMD-001",
+        "device_code": "ARM-01",
+        "observation": "RESULT_UNKNOWN",
+        "reason_code": "DELIVERY_UNKNOWN",
+        "observed_at": datetime(2026, 8, 16),
+        "received_at": datetime(2026, 8, 16, 0, 0, 1),
+        "workline_id": 11,
+        "material_execution_id": 21,
+        "contract_key": "rough-sorter-device",
+        "contract_version": "1.1",
+    }
+
+    first = await service.record_device_observation(object(), **values)  # type: ignore[arg-type]
+    duplicate = await service.record_device_observation(object(), **values)  # type: ignore[arg-type]
+
+    assert first.duplicate is False
+    assert duplicate.duplicate is True
+    assert duplicate.evidence is first.evidence
+    assert first.evidence.source_identity == "device:CMD-001:observation:RESULT_UNKNOWN"
+    assert first.evidence.kind == InboundEvidenceKind.DEVICE_OBSERVATION
+    assert first.evidence.normalized_payload == {
+        "command_code": "CMD-001",
+        "device_code": "ARM-01",
+        "observation": "RESULT_UNKNOWN",
+        "observed_at": "2026-08-16T00:00:00",
+        "reason_code": "DELIVERY_UNKNOWN",
+    }
+    assert "result" not in first.evidence.normalized_payload
+
+
+@pytest.mark.asyncio
+async def test_device_observation_rejects_same_identity_payload_drift() -> None:
+    repository = FakeInboundEvidenceRepository()
+    service = InboundEvidenceService(repository=repository)
+    values = {
+        "command_code": "CMD-001",
+        "device_code": "ARM-01",
+        "observation": "RESULT_UNKNOWN",
+        "observed_at": datetime(2026, 8, 16),
+        "received_at": datetime(2026, 8, 16, 0, 0, 1),
+        "workline_id": 11,
+        "material_execution_id": 21,
+        "contract_key": "rough-sorter-device",
+        "contract_version": "1.1",
+    }
+    await service.record_device_observation(object(), reason_code="DELIVERY_UNKNOWN", **values)  # type: ignore[arg-type]
+
+    with pytest.raises(InboundEvidenceIdentityConflictError):
+        await service.record_device_observation(  # type: ignore[arg-type]
+            object(),
+            reason_code="ACK_DEADLINE_EXPIRED",
+            **values,
+        )
+
+    assert len(repository.evidences) == 1
+    assert len(repository.conflicts) == 1
+
+
+@pytest.mark.asyncio
 async def test_same_payload_cannot_rebind_source_identity_to_another_execution() -> None:
     repository = FakeInboundEvidenceRepository()
     service = InboundEvidenceService(repository=repository)
@@ -191,6 +254,7 @@ async def test_transport_evidence_requires_frozen_task_and_version_identity() ->
 def test_kind_is_closed_and_raw_supplier_payload_is_not_an_owner() -> None:
     assert {kind.value for kind in InboundEvidenceKind} == {
         "DEVICE_EVENT",
+        "DEVICE_OBSERVATION",
         "DEVICE_RESULT",
         "TRANSPORT_RESULT",
         "WMS_EVENT",

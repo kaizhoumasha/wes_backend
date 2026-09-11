@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.42.3.0
+**Version**: 0.42.4.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -65,7 +65,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [Transport 运维诊断 Runbook](docs/runbooks/transport-operations.md)：优先通过本地 API、结构化日志和 PostgreSQL 事实诊断任务；数据可丢弃的联调环境可按 `transport_task_id` 预检并清理单个任务的完整本地链路。
 - [WES 第三方设备统一接口白皮书](docs/integration/third_party_integration_whitepaper.md)：所有固定式设备供应商长期遵循的顶层统一接口（wire）真源。
 - [DeviceCommand 核心边界合同](docs/architecture/device-command-contract.md)：设备可靠性、统一接口、设备合同附录与插件的所有权边界。
-- [DeviceCommand 运维诊断 Runbook](docs/runbooks/device-command-operations.md)：按数据库事实排查派发、证据、对账和 Epoch fencing，不直接改表或换身份重放。
+- [DeviceCommand 运维诊断 Runbook](docs/runbooks/device-command-operations.md)：按数据库事实排查派发、证据、对账和设备派发围栏，不直接改表或换身份重放。
 - [项目文档生命周期与外部归档索引](docs/superpowers/README.md)：查看保留/归档判定与外部归档路径。
 
 以下文档承担现场信息采集、发布或机器门禁职责，不是目标架构设计输入：

@@ -13,7 +13,6 @@ from src.app.device.contracts import DeviceCommandRequest, EcsDeviceStatus
 from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import (
-    DeviceCommandCapacityError,
     DeviceCommandDeadlineError,
     DeviceCommandIdentityConflictError,
     DeviceCommandService,
@@ -268,13 +267,14 @@ async def test_unbound_device_fails_before_creating_command() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_device_rejects_second_unclosed_command() -> None:
-    service, _ = _service(_binding())
+async def test_same_device_accepts_independent_unclosed_business_commands() -> None:
+    service, repository = _service(_binding())
 
-    await service.create_command(_request())
+    first = await service.create_command(_request())
+    second = await service.create_command(replace(_request(), execution_ref_id="EXEC-002"))
 
-    with pytest.raises(DeviceCommandCapacityError):
-        await service.create_command(replace(_request(), execution_ref_id="EXEC-002"))
+    assert first.command_code != second.command_code
+    assert len(repository.created) == 2
 
 
 @pytest.mark.asyncio
