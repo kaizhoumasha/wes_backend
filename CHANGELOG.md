@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.5.0] - 2026-09-11
+
+### Fixed
+
+- 发布静默门禁不再将已由 PickingTask 或 WorkLine 完成消费的非执行级 WMS 响应误判为待发布事实；MaterialExecution 结果仍须完成决策发布后方可放行。
+
 ## [0.42.4.0] - 2026-09-11
 
 ### Added

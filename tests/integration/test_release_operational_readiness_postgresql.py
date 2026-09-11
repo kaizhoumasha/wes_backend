@@ -329,6 +329,68 @@ async def test_postgresql_rows_drive_each_category_count_and_final_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ("picking_task", "workline"))
+async def test_completed_non_execution_wms_result_does_not_wait_for_decision_publication(
+    integration_db_session: AsyncSession,
+    owner_kind: str,
+) -> None:
+    identity = uuid4().hex
+    now = timezone.now_for_db()
+    workline, _binding, execution = await _seed_bound_execution(integration_db_session)
+    picking_task = None
+    if owner_kind == "picking_task":
+        picking_task = _PickingTask(
+            task_id=f"READINESS-PICKING-{identity[:12]}",
+            task_type="MANUAL",
+            status="QUEUED",
+            queue_revision=1,
+            dispatch_sequence=int(identity[:12], 16),
+            issued_at_ms=1,
+            issued_evidence_id=execution.admission_evidence_id,
+        )
+        integration_db_session.add(picking_task)
+        await integration_db_session.flush()
+
+    operation = "outbound.picking_task.prepare@v1" if owner_kind == "picking_task" else "outbound.bin.return_batch@v1"
+    evidence = InboundEvidence(
+        kind="WMS_RESULT",
+        source_identity=f"{operation}:{identity}",
+        payload_digest="7" * 64,
+        normalized_payload={},
+        received_at=now,
+        workline_id=workline.id if owner_kind == "workline" else None,
+        operation=operation,
+        operation_id=identity,
+        contract_version="1.0",
+        apply_status="APPLIED",
+        processed_at=now,
+    )
+    integration_db_session.add(evidence)
+    await integration_db_session.flush()
+    confirmation = WmsConfirmation(
+        operation=operation,
+        operation_id=identity,
+        picking_task_id=picking_task.id if picking_task is not None else None,
+        workline_id=workline.id if owner_kind == "workline" else None,
+        request_digest="8" * 64,
+        request_payload={},
+        deadline_at=now,
+        status="COMPLETED",
+        response_evidence_id=evidence.id,
+        response_result="SUCCEEDED",
+        completed_at=now,
+    )
+    integration_db_session.add(confirmation)
+    await integration_db_session.flush()
+
+    repository_module, _service_module = _contract_modules()
+    counts = await repository_module.ReleaseOperationalReadinessRepository().load_counts(integration_db_session)
+
+    assert counts.inbound_evidence_wait_drain == 0
+    assert sum(vars(counts).values()) == 0
+
+
+@pytest.mark.asyncio
 async def test_repository_executes_one_read_only_snapshot_with_ten_second_database_timeout(
     integration_db_session: AsyncSession,
 ) -> None:
