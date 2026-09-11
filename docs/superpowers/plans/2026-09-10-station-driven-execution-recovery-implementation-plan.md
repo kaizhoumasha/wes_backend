@@ -65,12 +65,12 @@
 - MaterialExecution 按初始 Evidence 唯一；同一 Evidence 并发只产生一个上下文，同物料不同事件产生独立上下文。
 - 不新增替代关系、`historical_success_evidence_id` 或历史状态。新任务成功只更新自身，不能覆盖旧任务的 `RECONCILING`、FAILED 或迟到结果。
 - 正式业务 DeviceCommand 不再使用同设备未闭合命令作为创建拒绝；每条命令仍按执行引用和 `command_code` 幂等。
-- 派发领取使用短事务全局闸门，并以唯一索引保证同设备至多一条 `DISPATCHING`；不同设备仍可依次领取并并行执行外部 I/O。设备忙、非 AUTO、离线或状态过旧时，在该命令原 deadline 内延后。已 ACK 或 delivery unknown 不重发。
+- 派发领取使用短事务全局闸门，并以唯一索引保证同设备至多一条 `DISPATCHING`；不同设备仍可依次领取并并行执行外部 I/O。设备忙、非 AUTO、离线或状态过旧时，在该命令原 deadline 内延后。已 ACK 或 delivery unknown 不重发，并继续阻止同设备后续命令越过未知物理事实。
 - MANUAL_DEBUG、EVENT_DEBUG 继续检查本地未闭合命令并使用同设备创建锁；正式业务放宽不扩散到调试动作。
 
 ### 3. 准入与命令结果
 
-- 移除 `ux_device_commands_unclosed_device` 及所有用旧命令生命周期阻塞独立本站请求的准入消费者；新增仅约束同设备 `DISPATCHING` 的唯一索引，并保留 `command_code`、执行引用、调试请求身份的唯一约束与单命令领取 token。
+- 移除 `ux_device_commands_unclosed_device` 及所有用旧命令生命周期阻塞独立本站请求创建的准入消费者；新增仅约束同设备 `DISPATCHING` 的唯一索引，并保留 `command_code`、执行引用、调试请求身份的唯一约束与单命令领取 token。领取时仍把 `DISPATCHING`、`ACKNOWLEDGED`、`RECONCILING` 视为物理围栏，但允许多条 `PENDING` 正式业务命令可靠排队。
 - 不把该索引改成“只有历史归类后才释放”；新请求不等待替代引用、成功结果或旧异常关闭。ECS 负责实际接纳互斥。
 - 手工调试继续要求权限、明确目标、固定上下文和本地停用校验。关联真实本站请求的动作使用已持久化来源，不伪造事件；无来源事件的动作须由自身静态合同规定 ECS 接纳时的适用性、有效期和执行互斥。操作者点击、设备 IDLE 和 WES 发送前检查不能替代接纳时校验。依据不足时拒绝该手工动作；原未知动作保留身份与必要围栏，但不阻断独立事件请求。删除全设备槽与落实这些约束必须在同一切片完成，不能先删索引后补合同。
 - `MaterialExecution` 复用为本站请求的处理上下文：初始事件关联唯一，`material_trace_id` 为业务事实索引而非全局活动唯一键。`create_or_get_for_initial_evidence` 按同一初始 Evidence 幂等返回；同料再次到达或其他点位请求形成独立上下文。不新增 StationSession/全程链。
@@ -193,7 +193,7 @@ HEAVY mapping 已随生产模块和迁移更新，由 selector 生成精确 mani
 
 **修改：** `src/app/device/models/command.py`、`services/device_command_service.py`、`services/device_dispatch_service.py` 及数据库迁移；供应商 Adapter、Command DTO 和结果应用保持原合同。
 
-- [x] 以 PostgreSQL 并发 RED 证明两个 worker 会同时领取同设备命令；增加短事务领取闸门、同设备 `DISPATCHING` 排除查询及数据库唯一约束后转绿。
+- [x] 以 PostgreSQL 并发 RED 证明两个 worker 会同时领取同设备命令；增加短事务领取闸门、同设备活动物理围栏排除查询及 `DISPATCHING` 数据库唯一约束后转绿。
 
 - [x] 在 `test_device_command_service.py`、`test_dispatch_service.py` 以 RED 证明正式业务同设备可并存、动态 Status 忙碌不应永久失败，再修改实现转绿。
 - [x] 移除全设备未闭合命令唯一索引及正式创建路径的 capacity 拒绝；保留命令身份幂等、claim token 和调试创建锁。
@@ -203,7 +203,7 @@ HEAVY mapping 已随生产模块和迁移更新，由 selector 生成精确 mani
 - [x] R3 保留 MANUAL_DEBUG、EVENT_DEBUG 的本地未闭合命令检查；正式业务准入放宽不扩散到调试动作。
 - [x] R2 核对真实联调入口：正式业务只由 `DecisionApplier` 调用 `create_command_in_session`，联调台继续使用隔离的 `create_manual_debug_command`，无需机械签名迁移；相关 runtime/API/DecisionApplier 测试 `129 passed`。Run/Step 业务变更仍由联调台方案承接。
 
-**输出：** 单条命令可靠机制独立可测；没有插件或 WMS 也能验证原结果与后续命令互不阻塞。
+**输出：** 单条命令可靠机制独立可测；没有插件或 WMS 也能验证新请求可独立创建并排队，同时原未知动作在权威闭合前继续阻止同设备后续物理派发。
 
 #### S1/S2、S3 本地观察/安全重试及 S5 后端当前快照验证记录
 

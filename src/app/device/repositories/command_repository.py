@@ -172,17 +172,23 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         # 并在同一份 IDLE Status 快照后并发提交给 ECS。该锁不跨越外部 I/O。
         _ = await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('device-command:dispatch-claim', 0))"))
         columns = cast("Any", DeviceCommand).__table__.c
-        dispatching_commands = cast("Any", DeviceCommand).__table__.alias("dispatching_device_commands")
+        blocking_commands = cast("Any", DeviceCommand).__table__.alias("blocking_device_commands")
         result = await db.execute(
             select(DeviceCommand)
             .where(
                 columns.status == CommandStatus.PENDING,
                 columns.deadline_at > now,
                 (columns.next_attempt_at.is_(None) | (columns.next_attempt_at <= now)),
-                ~select(dispatching_commands.c.id)
+                ~select(blocking_commands.c.id)
                 .where(
-                    dispatching_commands.c.device_code == columns.device_code,
-                    dispatching_commands.c.status == CommandStatus.DISPATCHING,
+                    blocking_commands.c.device_code == columns.device_code,
+                    blocking_commands.c.status.in_(
+                        (
+                            CommandStatus.DISPATCHING,
+                            CommandStatus.ACKNOWLEDGED,
+                            CommandStatus.RECONCILING,
+                        )
+                    ),
                 )
                 .exists(),
             )

@@ -902,3 +902,31 @@ async def test_postgresql_concurrent_claims_dispatch_only_one_command_per_device
 
     assert sum(command is not None for command in results) == 1
     assert sum(command is None for command in results) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocking_status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
+async def test_postgresql_claim_keeps_unknown_physical_command_as_device_fence(
+    integration_session_factory,
+    blocking_status: CommandStatus,
+) -> None:
+    now = datetime(2026, 8, 13)
+    async with integration_session_factory.begin() as db:
+        _, _, binding = await _seed_topology(db)
+        identity = uuid4().hex
+        db.add_all(
+            [
+                _command(binding, f"CMD-{identity}-1", blocking_status),
+                _command(binding, f"CMD-{identity}-2", CommandStatus.PENDING),
+            ]
+        )
+
+    async with integration_session_factory.begin() as db:
+        claimed = await device_command_repository.claim_next_pending(
+            db,
+            token=f"TOKEN-{identity}",
+            now=now,
+            claim_expires_at=datetime(2026, 8, 13, 0, 0, 30),
+        )
+
+    assert claimed is None
