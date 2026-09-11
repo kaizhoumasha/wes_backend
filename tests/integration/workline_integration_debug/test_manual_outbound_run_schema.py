@@ -105,7 +105,7 @@ async def test_completion_report_retirement_preserves_unresolved_state(blocker: 
         constraint_sql = (
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
             "WHERE conrelid='wes_runtime.workline_integration_runs'::regclass "
-            "AND conname='ck_workline_integration_runs_workline_integration_run_phase_valid'"
+            "AND contype='c' AND pg_get_constraintdef(oid) LIKE '%current_phase%'"
         )
         connection = await connect(database)
         try:
