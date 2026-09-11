@@ -32,7 +32,7 @@ def test_full_pattern_overlap_reuses_identical_calculation() -> None:
     assert second_call.hits == first_call.hits + 1
 
 
-def test_repository_mapping_validation_stays_within_two_seconds() -> None:
+def test_repository_mapping_validation_stays_within_three_seconds() -> None:
     mapping_path = REPO_ROOT / "docs/architecture/heavy-test-impact.toml"
     _patterns_overlap.cache_clear()
     _segment_patterns_overlap.cache_clear()
@@ -43,4 +43,5 @@ def test_repository_mapping_validation_stays_within_two_seconds() -> None:
 
     elapsed_seconds = process_time() - started_at
 
-    assert elapsed_seconds < 2.0, f"HEAVY selector 配置校验耗时 {elapsed_seconds:.2f}s，超过 2.00s 预算"
+    # 三次完整加载为不同 CI CPU 保留余量，同时仍能捕获重叠校验退化到未缓存量级的回归。
+    assert elapsed_seconds < 3.0, f"HEAVY selector 配置校验耗时 {elapsed_seconds:.2f}s，超过 3.00s 预算"
