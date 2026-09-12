@@ -147,14 +147,6 @@ class EventDebugModePolicyPort(Protocol):
         device_code: str,
     ) -> bool: ...
 
-    async def should_suppress_event_debug_command_in_session(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int | None,
-        device_code: str,
-    ) -> bool: ...
-
 
 class DeviceEvidenceService:
     """把外部 callback 先固化为证据；不在 ingress 中推进业务对象。"""
