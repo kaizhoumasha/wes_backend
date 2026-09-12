@@ -6,8 +6,8 @@
 **Architecture:** 复用 DeviceCommand、TransportTask、Evidence、WmsConfirmation 和既有 worker；取消 WES 物理占用裁决，保留单消息幂等和短事务领取。业务插件负责有效决策与版本消费，基础不依赖插件。
 **Tech Stack:** Python 3.13、FastAPI、SQLAlchemy、PostgreSQL、Celery；Vue 3、TypeScript、Vitest。
 **Spec:** [无阻塞执行设计](../specs/2026-09-11-wes-nonblocking-execution-design.md)。
-**状态：** IMPLEMENTING（代码实现已本地闭合）；后端主体 PR #246 与诊断合同补充 PR #247 已合并 `develop`。
-前端已从后端 `405d9284` 冻结合同，在独立 worktree 完成实现、测试、lint 与生产构建，尚未提交；部署、供应商接入和现场验收未完成。
+**状态：** IMPLEMENTING（代码实现与仓库合并已闭合）；后端主体 PR #246、诊断合同补充 PR #247 与前端 PR #125 已合并各自 `develop`。
+前端最终合同冻结自后端 `50e974ac`，测试、lint、生产构建与远端 CI 已通过；部署、供应商接入和现场验收未完成。
 
 **CEO 评审 D1 已确认：** 完整职责收敛，复用 ECS/RCS/WMS 现有恢复机制；前端仅面向 IT、设备工程师和运维人员。撤回新增 ECS 必填 result_revision 的预设；本轮工程评审已完成并落入 ENG-D1–D6；实施先完成 T0 的合同核验，不代表接入或现场验收通过。
 
@@ -142,7 +142,7 @@ backend develop `419d2725`，frontend develop `cdaca7a`。开始实施重新记�
 
 **文件：** 本计划、设计验收表、`docs/devops/execution-recovery.md`、两端有效合同/发布文档；HEAVY 所有权以 `docs/architecture/heavy-test-impact.toml` 为准。
 
-当前代码门禁证据（不替代下列部署、供应商和现场验收）：后端 PR #246 的 QUALITY 为 3845 FAST passed、selected HEAVY 为 395 passed；PR #247 的 QUALITY 为 3846 FAST passed、11 个 selector 文件在干净 PostgreSQL/Redis 上为 78 passed。前端最终未提交快照为 884 tests passed，`pnpm lint`、`pnpm build`、合同/权限校验及生成幂等均通过。
+当前代码门禁证据（不替代下列部署、供应商和现场验收）：后端 PR #246 的 QUALITY 为 3845 FAST passed、selected HEAVY 为 395 passed；PR #247 的 QUALITY 为 3846 FAST passed、11 个 selector 文件在干净 PostgreSQL/Redis 上为 78 passed。前端 PR #125 最终快照为 884 tests passed，`pnpm lint`、`pnpm build`、合同/权限校验、生成幂等及远端 CI 均通过。
 
 - [ ] 基础 FAST：汇总 T1–T3/T5 精确快照结果；只重跑被后续改动失效的证据。
 - [ ] 基础真实进程：PostgreSQL 并发、Celery worker、提交后唤醒丢失、进程在持久化/发布边界重启；无具体插件导入。
