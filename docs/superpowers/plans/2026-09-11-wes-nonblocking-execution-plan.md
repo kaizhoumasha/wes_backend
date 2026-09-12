@@ -6,8 +6,8 @@
 **Architecture:** 复用 DeviceCommand、TransportTask、Evidence、WmsConfirmation 和既有 worker；取消 WES 物理占用裁决，保留单消息幂等和短事务领取。业务插件负责有效决策与版本消费，基础不依赖插件。
 **Tech Stack:** Python 3.13、FastAPI、SQLAlchemy、PostgreSQL、Celery；Vue 3、TypeScript、Vitest。
 **Spec:** [无阻塞执行设计](../specs/2026-09-11-wes-nonblocking-execution-design.md)。
-**状态：** IMPLEMENTING；后端为未提交 worktree 实现，聚焦验证、QUALITY 与 selected HEAVY（395 passed）已完成。
-前端合同同步受 clean develop 门禁阻塞；提交、部署与现场验收未完成，不是 merge ready。
+**状态：** IMPLEMENTING（代码实现已本地闭合）；后端主体 PR #246 与诊断合同补充 PR #247 已合并 `develop`。
+前端已从后端 `405d9284` 冻结合同，在独立 worktree 完成实现、测试、lint 与生产构建，尚未提交；部署、供应商接入和现场验收未完成。
 
 **CEO 评审 D1 已确认：** 完整职责收敛，复用 ECS/RCS/WMS 现有恢复机制；前端仅面向 IT、设备工程师和运维人员。撤回新增 ECS 必填 result_revision 的预设；本轮工程评审已完成并落入 ENG-D1–D6；实施先完成 T0 的合同核验，不代表接入或现场验收通过。
 
@@ -104,8 +104,8 @@ backend develop `419d2725`，frontend develop `cdaca7a`。开始实施重新记�
 
 **工程评审 ENG-D5 补充到 T4：** 修改 `src/app/wms_integration/outbound_picking/services/picking_task_plan_delta.py` 的正常接收入口，复用 `validate_plan`、`apply_plan` 自动应用来源合同可确认的合法纠正。历史 blocker 不能提前拒绝所有修正；检查已保存 RECONCILING 消息重报时的快捷返回，避免合法纠正仍需人工应用。
 
-- [x] T4b 已修改原 `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py`、`tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py`，覆盖新修正及已留存修正重报、重复/并发纠正、旧版本迟到、非法版本和归属错误。合法纠正原子更新计划并解除对应 blocker，保留旧 Evidence；无效纠正不推进计划、不阻断独立新任务。真实 PostgreSQL owner 尚未执行。
-- [x] T5c 已退役 `src/app/wms_integration/outbound_picking/v1/plan_correction.py` 人工应用入口及真实消费者、权限/OpenAPI 合同，调整 `tests/api/test_outbound_picking_plan_correction.py`；正常入口复用的校验和应用逻辑保留，不提供兼容管理员恢复接口。最终门禁待 T6。
+- [x] T4b 已修改原 `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py`、`tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py`，覆盖新修正及已留存修正重报、重复/并发纠正、旧版本迟到、非法版本和归属错误。合法纠正原子更新计划并解除对应 blocker，保留旧 Evidence；无效纠正不推进计划、不阻断独立新任务。真实 PostgreSQL owner 已纳入 PR #246 selected HEAVY 通过。
+- [x] T5c 已退役 `src/app/wms_integration/outbound_picking/v1/plan_correction.py` 人工应用入口及真实消费者、权限/OpenAPI 合同，调整 `tests/api/test_outbound_picking_plan_correction.py`；正常入口复用的校验和应用逻辑保留，不提供兼容管理员恢复接口。后端代码门禁已通过，整体 T6 仍待部署与现场验收。
 
 **工程评审 ENG-D6 补充到 T4：** 在 `src/app/transport/debug_run_service.py` 删除 `DEBUG_NO_BATCH_ORIGINAL_SLOTS` 自动原槽位兜底及失去消费者的源任务拼装逻辑。NO_BATCH 保留为 WMS 本次决策，不生成搬运动作或标记执行失败；本步骤等待决策，其他独立任务继续。
 
@@ -119,27 +119,30 @@ backend develop `419d2725`，frontend develop `cdaca7a`。开始实施重新记�
 - [ ] 核对并退役 incident 建立/排空/人工清除链路及权限、生成合同；删除 WES 内 `ESTOP_PRESSED` 的 reserved runtime event/helper/export/normalization 特例和 Evidence 应用语义。先枚举全部消费者，不保留 no-op 或兼容字段。
 - [ ] 修改 `tests/api/test_device_ecs_callbacks.py`、`tests/workline/test_workline_start_service.py`、`tests/contracts/workline/test_callback_runtime_contracts.py`、`tests/api/test_workline_safety_operation_api.py` 及相关架构/selector guardrail。覆盖急停在 Evidence 和 execution/transport-debug wake 前被拒绝、明确停用不被自动解除，并删除原 evidence service 的急停应用测试语义；物理急停/复位/恢复由 ECS 接入验收证明，不用 WES Mock 代替。
 
-**后端（T5b 已实施，最终门禁待 T6）：** 已删除 `src/app/device/v1/reconciliation.py`、`event_block_contracts.py`、`models/event_command_block.py`、`repositories/event_command_block_repository.py` 及 service/composition 引用，并以随机 migration 删除辅助表；对应 blocker/reprocess/reconcile-device-idle 注册、权限和 OpenAPI 入口不保留兼容路径。
-**后端（T5c 已实施，最终门禁待 T6）：** 已删除 plan `apply-correction` route、DTO、service method、人工审计 helper 及注册；合法修正只经正常 plan_delta record/replay 自动校验应用，历史 Evidence 与严格 identity/version/owner/concurrency 校验保留。
+**后端（T5b 已合并且代码门禁通过）：** 已删除 `src/app/device/v1/reconciliation.py`、`event_block_contracts.py`、`models/event_command_block.py`、`repositories/event_command_block_repository.py` 及 service/composition 引用，并以随机 migration 删除辅助表；对应 blocker/reprocess/reconcile-device-idle 注册、权限和 OpenAPI 入口不保留兼容路径。
+**后端（T5c 已合并且代码门禁通过）：** 已删除 plan `apply-correction` route、DTO、service method、人工审计 helper 及注册；合法修正只经正常 plan_delta record/replay 自动校验应用，历史 Evidence 与严格 identity/version/owner/concurrency 校验保留。
 **前端根：** `/Users/kaizhou/codeDev/wes_frontend`。
 **前端入口：** `src/views/ops/device-diagnostics/DeviceEvidenceTable.vue`、`useDeviceEvidenceStream.ts`；`src/views/ops/transport-diagnostics/TransportTaskDetail.vue`、`TransportDebugResetDialog.vue`、`useTransportDiagnostics.ts`；`src/views/ops/transport-debug/useTransportDebugRun.ts` 与当前合同生成物。
 **原测试：** 对应 `tests/unit/views/ops/device-diagnostics/`、`transport-diagnostics/`、`transport-debug/`；后端 `tests/api/test_device_reconciliation_api.py`、`test_transport_tasks.py`、Evidence stream 测试。
 **接口：** 面向 IT、设备工程师、运维人员展示未关联、历史未知、来源结果和近期交互；日常仓库工作人员无需登录；没有“解锁后才能继续”的交互。测试数据清理是独立调试工具，不包装为恢复必需步骤。
 
-- [x] 后端已列出实际路由消费者并整体删除被替代的恢复接口；旧 blocker/reprocess/reconcile-device-idle 测试按 NONE 退役，独立命令行为由既有 T1 owner 承接。前端按钮消费者仍由 frontend 子切片迁移。
-- [ ] 扩展既有组件测试证明异常记录与点位近期正常可同时显示、旧任务修订不会替换新任务、无资源解锁步骤。
-- [ ] 同步 canonical OpenAPI、类型、Zod、权限；删除弃用接口所有生成残留，不提供旧字段默认值或兼容别名。
-- [ ] 运行 `pnpm contract:test`、`pnpm contract:verify` 和相关 Vitest 文件；检查再次生成无差异。浏览器检查有数据的异常/恢复列表和页面关闭后后端继续运行。
+- [x] 后端已列出实际路由消费者并整体删除被替代的恢复接口；旧 blocker/reprocess/reconcile-device-idle 测试按 NONE 退役，独立命令行为由既有 T1 owner 承接；前端按钮消费者已在 frontend worktree 删除。
+- [x] 扩展既有组件测试证明异常记录与点位近期正常可同时显示、旧任务修订不会替换新任务、无资源解锁步骤。
+- [x] 同步 canonical OpenAPI、类型、Zod、权限；删除弃用接口所有生成残留，不提供旧字段默认值或兼容别名。
+- [x] 运行 `pnpm contract:test`、`pnpm contract:verify`、`pnpm permission:verify` 和相关 Vitest 文件；再次生成指纹一致。
+- [ ] 浏览器检查有数据的异常/恢复列表和页面关闭后后端继续运行；此项仍需可用联调数据和运行环境。
 
-- [ ] 实施 CEO 扩展 D3：在现有任务详情串联请求、决策、下发、接纳和结果；复用精确身份查询，缺失环节显示“未观察到”。扩展原组件/API 测试覆盖完整链、部分链、无法关联、分页和查询失败；不建设第二套日志或恢复平台。
+- [x] 实施 CEO 扩展 D3：在现有任务详情串联请求、决策、下发、接纳和结果；复用最新 Evidence 的精确身份查询，缺失环节显示“未观察到”。组件/API 测试覆盖完整链、部分链、无法关联、分页、查询失败和跨任务响应乱序；未建设第二套日志或恢复平台。
 
-- [ ] 实施 CEO 扩展 D4：复用现有持久化状态展示等待环节、时长及尝试时间；扩展原 API/组件测试覆盖退避、已接纳待结果、本地积压、无重试计划、缺失时间及断连陈旧数据。不增加恢复按钮或独立监控平台。
+- [x] 实施 CEO 扩展 D4：复用现有持久化状态展示等待环节、时长及尝试时间；后端任务详情补充 `next_submit_at`，前端测试覆盖真实退避、已接纳待结果、本地积压、无重试计划和缺失时间。不增加恢复按钮或独立监控平台。
 
-- [ ] 实施 CEO 扩展 D5：复用 D3 关联查询导出单任务固定字段 JSON，包含导出时刻、缺失/截断说明并排除凭据；扩展原 API/组件测试覆盖权限、无记录、部分记录、上限、敏感字段排除及下载失败。不得重建查询 owner、自动发送或新增导出平台。
+- [x] 实施 CEO 扩展 D5：复用 D3 关联查询导出单任务固定字段 JSON，包含导出时刻、缺失/截断说明并排除凭据；组件测试覆盖权限、无记录、部分记录、上限、敏感字段排除及下载失败。未重建查询 owner、自动发送或新增导出平台。
 
 ## T6：分层验收与交付
 
 **文件：** 本计划、设计验收表、`docs/devops/execution-recovery.md`、两端有效合同/发布文档；HEAVY 所有权以 `docs/architecture/heavy-test-impact.toml` 为准。
+
+当前代码门禁证据（不替代下列部署、供应商和现场验收）：后端 PR #246 的 QUALITY 为 3845 FAST passed、selected HEAVY 为 395 passed；PR #247 的 QUALITY 为 3846 FAST passed、11 个 selector 文件在干净 PostgreSQL/Redis 上为 78 passed。前端最终未提交快照为 884 tests passed，`pnpm lint`、`pnpm build`、合同/权限校验及生成幂等均通过。
 
 - [ ] 基础 FAST：汇总 T1–T3/T5 精确快照结果；只重跑被后续改动失效的证据。
 - [ ] 基础真实进程：PostgreSQL 并发、Celery worker、提交后唤醒丢失、进程在持久化/发布边界重启；无具体插件导入。
