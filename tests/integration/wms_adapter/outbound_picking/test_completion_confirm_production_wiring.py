@@ -75,6 +75,9 @@ async def test_completion_decision_persists_without_automatic_reissue_or_device_
                 created_at=now,
             )
         worker.start()
+        health_check = "src.celery_app.tasks.core.health_check"
+        health = worker.result(worker.send(health_check))
+        assert health["checks"]["redis"]["status"] == "connected"
         dispatch = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
         assert worker.result(worker.send(dispatch)) == 1
         async with sessions() as db:
