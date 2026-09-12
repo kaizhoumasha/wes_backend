@@ -7,11 +7,17 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from src.app.device.models.command import CommandStatus, DeviceCommandParamValue  # noqa: TC001
 
 _WIRE_TOKEN_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"  # noqa: S105  # nosec B105 - token regex
+
+
+def _reject_ecs_owned_event_type(event_type: str) -> str:
+    if event_type == "ESTOP_PRESSED":
+        raise ValueError("ECS-owned ESTOP is not a WES callback event")
+    return event_type
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +248,11 @@ class EcsDeviceEventReport(BaseModel):
     is_debug: StrictBool = False
     data: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("event_type")
+    @classmethod
+    def reject_ecs_owned_estop(cls, event_type: str) -> str:
+        return _reject_ecs_owned_event_type(event_type)
+
 
 class EcsCommandResult(BaseModel):
     """ECS 上报的命令物理终态公共包络。"""
@@ -284,6 +295,11 @@ class EcsDeviceEvent(BaseModel):
     is_debug: StrictBool
     data: dict[str, Any]
     trace_id: str | None = Field(default=None, min_length=1, max_length=120, pattern=_WIRE_TOKEN_PATTERN)
+
+    @field_validator("event_type")
+    @classmethod
+    def reject_ecs_owned_estop(cls, event_type: str) -> str:
+        return _reject_ecs_owned_event_type(event_type)
 
     @model_validator(mode="after")
     def reject_explicit_null_trace(self) -> EcsDeviceEvent:

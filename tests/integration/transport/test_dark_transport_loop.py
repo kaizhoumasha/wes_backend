@@ -22,7 +22,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
@@ -312,9 +311,6 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     )
                 )
                 await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
-                await db.execute(
-                    delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
-                )
                 await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
                 await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
             await db.execute(

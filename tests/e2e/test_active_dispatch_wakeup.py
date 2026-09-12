@@ -21,7 +21,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.core.task_queue_gateway import CeleryTaskQueueGateway, task_queue_gateway
@@ -136,7 +135,7 @@ async def test_transport_create_and_callback_converge_without_beat(integration_s
                         TransportCallbackReceipt.operation_id == callback_operation_id
                     )
                 )
-                for model in (TransportEvidence, TransportResourceBinding, TransportMember):
+                for model in (TransportEvidence, TransportMember):
                     await db.execute(delete(model).where(model.transport_task_id == handle.transport_task_id))
                 await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack))
                 await db.execute(

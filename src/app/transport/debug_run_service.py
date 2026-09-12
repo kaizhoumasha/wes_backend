@@ -14,6 +14,7 @@ import wes_plugin_sdk as sdk
 from sqlalchemy.exc import IntegrityError
 
 from src.app.device.repositories.device_repository import DeviceRepository
+from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.execution.repositories import InboundEvidenceRepository, WmsConfirmationRepository
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
@@ -52,6 +53,7 @@ from src.app.workline_integration_debug.repository import integration_run_reposi
 from src.core.exceptions import NotFoundException
 from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -115,10 +117,6 @@ class TransportDebugRunContractError(ValueError):
 
 class TransportDebugRunConflict(TransportDebugRunContractError):
     """自动联调轮次与当前执行事实冲突。"""
-
-
-class _TransportTaskIntegrityConflict(Exception):
-    """Transport 意图持久化冲突，需在原事务回滚后记录。"""
 
 
 class TransportDebugRunEventPublisher(Protocol):
@@ -293,7 +291,7 @@ class TransportDebugRunService:
             async with self._sessions() as db:
                 if await self._repository.get_active_run(db) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists") from error
-            raise TransportDebugRunConflict("transport resource is already active") from error
+            raise
         await self._publish_update(event_payload)
         return snapshot
 
@@ -351,8 +349,6 @@ class TransportDebugRunService:
             await self._finalize_provably_unsent_tasks(db, steps)
             if not await self._all_tasks_terminal(db, steps):
                 raise TransportDebugRunConflict("all associated transport tasks must be terminal")
-            if await self._repository.has_active_transport_binding(db, run_id):
-                raise TransportDebugRunConflict("active transport resource binding prevents abort")
             run.status = TransportDebugRunStatus.ABORTED.value
             run.active_scope = None
             run.claim_token = None
@@ -429,65 +425,56 @@ class TransportDebugRunService:
         now = self._clock()
         changed = False
         event_payload: dict[str, object] | None = None
-        try:
-            async with self._sessions.begin() as db:
-                run = await self._repository.get_claimed_run(db, run_id=run_id, token=claim_token, now=now)
-                if run is None:
-                    return False
-                step = await self._repository.get_current_step(db, run, for_update=True)
-                if step is None:
-                    changed = self._set_attention(run, None, "DEBUG_STEP_MISSING", now)
-                elif await self._repository.has_pending_transport_evidence(db, run.run_id):
-                    changed = False
-                elif await self._repository.has_transport_evidence_conflict(db, run.run_id):
-                    changed = self._set_attention(run, step, "TRANSPORT_EVIDENCE_CONFLICT", now)
-                elif await self._repository.has_run_observed_evidence_conflict(db, run.run_id):
-                    changed = self._set_attention(run, step, "EVIDENCE_SOURCE_EVENT_CONFLICT", now)
-                elif run.status == TransportDebugRunStatus.NEEDS_ATTENTION.value and (
-                    run.attention_code not in _RECOVERABLE_ATTENTION_CODES
+        async with self._sessions.begin() as db:
+            run = await self._repository.get_claimed_run(db, run_id=run_id, token=claim_token, now=now)
+            if run is None:
+                return False
+            step = await self._repository.get_current_step(db, run, for_update=True)
+            if step is None:
+                changed = self._set_attention(run, None, "DEBUG_STEP_MISSING", now)
+            elif await self._repository.has_pending_transport_evidence(db, run.run_id):
+                changed = False
+            elif await self._repository.has_transport_evidence_conflict(db, run.run_id):
+                changed = self._set_attention(run, step, "TRANSPORT_EVIDENCE_CONFLICT", now)
+            elif await self._repository.has_run_observed_evidence_conflict(db, run.run_id):
+                changed = self._set_attention(run, step, "EVIDENCE_SOURCE_EVENT_CONFLICT", now)
+            elif run.status == TransportDebugRunStatus.NEEDS_ATTENTION.value and (
+                run.attention_code not in _RECOVERABLE_ATTENTION_CODES
+            ):
+                changed = False
+            elif (
+                not run.configuration_json.get("workline_code")
+                or type(run.configuration_json.get("workline_id")) is not int
+                or (
+                    step.phase == TransportDebugRunPhase.BINS_TO_RACK.value
+                    and step.transport_task_id is not None
+                    and not run.configuration_json.get("return_batches", {}).get(str(step.ordinal), {}).get("moves")
+                )
+            ):
+                changed = self._set_attention(
+                    run,
+                    step,
+                    "DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED",
+                    now,
+                    "旧轮次缺少冻结的工作线或 WMS 分配配置；保留执行身份和围栏，须核对原任务后人工处理",
+                )
+            elif step.phase == TransportDebugRunPhase.WAIT_SCAN12.value:
+                changed = await self._advance_scan_wait(db, run, step, now)
+            elif step.transport_task_id is None:
+                changed = await self._create_transport_task(db, run, step, now)
+            else:
+                changed = await self._advance_transport_step(db, run, step, now)
+            run.claim_token = None
+            run.claim_until = None
+            if changed:
+                if (
+                    self._task_queue is not None
+                    and run.status == TransportDebugRunStatus.RUNNING.value
+                    and step is not None
+                    and run.current_step_ordinal != step.ordinal
                 ):
-                    changed = False
-                elif (
-                    not run.configuration_json.get("workline_code")
-                    or type(run.configuration_json.get("workline_id")) is not int
-                    or (
-                        step.phase == TransportDebugRunPhase.BINS_TO_RACK.value
-                        and step.transport_task_id is not None
-                        and not run.configuration_json.get("return_batches", {}).get(str(step.ordinal), {}).get("moves")
-                    )
-                ):
-                    changed = self._set_attention(
-                        run,
-                        step,
-                        "DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED",
-                        now,
-                        "旧轮次缺少冻结的工作线或 WMS 分配配置；保留执行身份和围栏，须核对原任务后人工处理",
-                    )
-                elif step.phase == TransportDebugRunPhase.WAIT_SCAN12.value:
-                    changed = await self._advance_scan_wait(db, run, step, now)
-                elif step.transport_task_id is None:
-                    changed = await self._create_transport_task(db, run, step, now)
-                else:
-                    changed = await self._advance_transport_step(db, run, step, now)
-                run.claim_token = None
-                run.claim_until = None
-                if changed:
-                    if (
-                        self._task_queue is not None
-                        and run.status == TransportDebugRunStatus.RUNNING.value
-                        and step is not None
-                        and run.current_step_ordinal != step.ordinal
-                    ):
-                        defer_wakeup(db, self._task_queue.enqueue_transport_debug)
-                    event_payload = _event_payload(run)
-        except _TransportTaskIntegrityConflict:
-            return await self._record_claimed_attention(
-                run_id,
-                claim_token,
-                reason_code="TRANSPORT_RESOURCE_CONFLICT",
-                detail="transport resource is already active",
-                now=now,
-            )
+                    defer_wakeup(db, self._task_queue.enqueue_transport_debug)
+                event_payload = _event_payload(run)
         if event_payload is not None:
             await self._publish_update(event_payload)
         return changed
@@ -521,7 +508,9 @@ class TransportDebugRunService:
         if request is None:
             return self._set_attention(run, step, "DEBUG_STEP_CONFIGURATION_INVALID", now)
         try:
-            if (
+            if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value:
+                await self._assert_return_rack_fact(db, run, step)
+            elif (
                 isinstance(request, (MoveBinsRequest, RotateRackRequest))
                 or step.phase == TransportDebugRunPhase.RACK_TO_STORAGE.value
             ):
@@ -534,8 +523,6 @@ class TransportDebugRunService:
             handle = await self._transport.create_debug_task_in_session(db, request)
         except TransportContractError as error:
             return self._set_attention(run, step, "TRANSPORT_CONTRACT_REJECTED", now, str(error))
-        except IntegrityError as error:
-            raise _TransportTaskIntegrityConflict from error
         if handle.client_request_id != step.client_request_id:
             return self._set_attention(run, step, "TRANSPORT_TASK_IDENTITY_CONFLICT", now)
         step.transport_task_id = handle.transport_task_id
@@ -548,13 +535,27 @@ class TransportDebugRunService:
         """在宿主事务中冻结 typed 请求；由公共 dispatcher 发送，这里只消费自己的可靠结果。"""
         batches = dict(run.configuration_json.get("return_batches", {}))
         batch = dict(batches.get(str(step.ordinal), {}))
-        if batch.get("moves"):
-            return "READY"
         retry_at = batch.get("retry_at")
         if retry_at is not None and now < datetime.fromisoformat(retry_at):
             return "WAIT"
+        if (
+            step.run_id != run.run_id
+            or step.ordinal != run.current_step_ordinal
+            or step.group_index != run.current_group_index
+            or step.phase != run.current_phase
+        ):
+            _ = self._set_attention(run, step, "DEBUG_STEP_CONFIGURATION_INVALID", now)
+            return "CHANGED"
         operation_id = batch.get("operation_id")
-        if operation_id is None:
+        if retry_at is not None or batch.get("moves"):
+            try:
+                await self._assert_cached_return_decision(db, run, step, batch)
+            except (ValueError, TypeError, KeyError, IndexError) as error:
+                _ = self._set_attention(run, step, "WMS_RETURN_RECONCILING", now, str(error))
+                return "CHANGED"
+            if batch.get("moves"):
+                return "READY"
+        if operation_id is None or retry_at is not None:
             group = _frozen_face_groups(run.configuration_json)[run.current_group_index]
             returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
             queue = run.configuration_json.get("return_queues", {}).get(str(run.current_group_index), [])
@@ -563,12 +564,7 @@ class TransportDebugRunService:
                 _ = self._set_attention(run, step, "DEBUG_RETURN_FIFO_MISSING", now)
                 return "CHANGED"
             try:
-                await self._transport.assert_debug_rack_position_in_session(
-                    db,
-                    run.rack_id,
-                    RackPosition(_configuration_text(run.configuration_json, "workstation")),
-                    group.face,
-                )
+                await self._assert_return_rack_fact(db, run, step)
             except TransportContractError as error:
                 _ = self._set_attention(run, step, "TRANSPORT_CONTRACT_REJECTED", now, str(error))
                 return "CHANGED"
@@ -606,7 +602,11 @@ class TransportDebugRunService:
                 return "CHANGED" if changed else "WAIT"
             if self._task_queue is not None:
                 defer_wakeup(db, self._task_queue.enqueue_wms_confirmations)
-            batch = {"operation_id": operation_id}
+            batch = {
+                "operation_id": operation_id,
+                "step_client_request_id": step.client_request_id,
+                "workline_id": run.configuration_json["workline_id"],
+            }
         else:
             confirmation = await self._confirmations.get_by_identity_for_update(
                 db, BIN_RETURN_BATCH_OPERATION, operation_id
@@ -633,49 +633,10 @@ class TransportDebugRunService:
             except (ValueError, TypeError) as error:
                 _ = self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now, str(error))
                 return "CHANGED"
+            batch["response_evidence_id"] = confirmation.response_evidence_id
             if isinstance(outcome, sdk.BinBatchNoBatch):
-                # 现场自动联调约定：无 WMS 批次时按本组已成功出库的原槽位退回，保持请求 FIFO。
-                source_steps = [
-                    item
-                    for item in await self._repository.list_steps(db, run.run_id)
-                    if item.group_index == step.group_index
-                    and item.phase == TransportDebugRunPhase.BINS_TO_INFEED.value
-                    and item.status == TransportDebugRunStepStatus.SUCCEEDED.value
-                    and item.transport_task_id is not None
-                ]
-                if len(source_steps) != 1:
-                    _ = self._set_attention(run, step, "DEBUG_RETURN_SOURCE_MISSING", now)
-                    return "CHANGED"
-                source_task_id = source_steps[0].transport_task_id
-                members = await self._repository.list_transport_members(db, source_task_id)
-                sources = {member.object_id: member for member in members}
-                request_data = confirmation.request_payload["data"]
-                moves = []
-                for candidate in request_data["return_candidates"]:
-                    member = sources.get(candidate["bin_code"])
-                    if (
-                        member is None
-                        or member.status != TransportTaskStatus.SUCCEEDED.value
-                        or member.source_json.get("kind") != "RACK_BIN_SLOT"
-                        or member.source_json.get("rack_id") != request_data["rack_id"]
-                        or member.source_json.get("rack_face") != request_data["rack_face"]
-                        or not member.source_json.get("slot_id")
-                    ):
-                        _ = self._set_attention(run, step, "DEBUG_RETURN_SOURCE_MISSING", now)
-                        return "CHANGED"
-                    moves.append(
-                        {
-                            "bin_code": member.object_id,
-                            "rack_id": member.source_json["rack_id"],
-                            "rack_face": member.source_json["rack_face"],
-                            "slot_id": member.source_json["slot_id"],
-                        }
-                    )
-                batch.update(
-                    moves=moves,
-                    allocation_source="DEBUG_NO_BATCH_ORIGINAL_SLOTS",
-                    source_transport_task_id=source_task_id,
-                )
+                # 本请求已确定结束；持久化下一次业务决策时间，公共可靠发送不重开旧确认。
+                batch["retry_at"] = (now + timedelta(milliseconds=outcome.retry_after_ms)).isoformat()
             elif isinstance(outcome, sdk.BinReturnBatchReady):
                 batch["moves"] = [
                     {
@@ -701,29 +662,101 @@ class TransportDebugRunService:
         self._touch(run, now)
         return "CHANGED"
 
-    async def _record_claimed_attention(
-        self,
-        run_id: str,
-        claim_token: str,
-        *,
-        reason_code: str,
-        detail: str,
-        now: datetime,
-    ) -> bool:
-        event_payload: dict[str, object] | None = None
-        async with self._sessions.begin() as db:
-            run = await self._repository.get_claimed_run(db, run_id=run_id, token=claim_token, now=now)
-            if run is None:
-                return False
-            step = await self._repository.get_current_step(db, run, for_update=True)
-            changed = self._set_attention(run, step, reason_code, now, detail)
-            run.claim_token = None
-            run.claim_until = None
-            if changed:
-                event_payload = _event_payload(run)
-        if event_payload is not None:
-            await self._publish_update(event_payload)
-        return changed
+    async def _assert_cached_return_decision(self, db, run, step, batch) -> None:
+        """缓存只记录决策进度；后续动作仍须由原确认、无冲突响应和当前候选共同授权。"""
+        operation_id = batch.get("operation_id")
+        confirmation = await self._confirmations.get_by_identity_for_update(
+            db, BIN_RETURN_BATCH_OPERATION, operation_id
+        )
+        expected_result = "NO_BATCH" if batch.get("retry_at") is not None else "READY"
+        if (
+            confirmation is None
+            or confirmation.status != WmsConfirmationStatus.COMPLETED
+            or confirmation.operation != BIN_RETURN_BATCH_OPERATION
+            or confirmation.operation_id != operation_id
+            or confirmation.response_result != expected_result
+            or confirmation.response_evidence_id is None
+            or confirmation.response_evidence_id != batch.get("response_evidence_id")
+            or confirmation.workline_id != run.configuration_json["workline_id"]
+            or batch.get("workline_id") != confirmation.workline_id
+            or batch.get("step_client_request_id") != step.client_request_id
+            or confirmation.request_payload != run.configuration_json.get("return_requests", {}).get(operation_id)
+            or confirmation.request_digest != canonical_json_digest(confirmation.request_payload)
+        ):
+            raise ValueError("cached return decision confirmation identity or frozen payload changed")
+        request = parse_bin_return_batch_request(confirmation.request_payload)
+        group = _frozen_face_groups(run.configuration_json)[step.group_index]
+        returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
+        queue = run.configuration_json.get("return_queues", {}).get(str(step.group_index), [])
+        candidates = [code for code in queue if code not in returned]
+        if (
+            str(request.operation_id) != operation_id
+            or request.data.workline_code != run.configuration_json["workline_code"]
+            or request.data.rack_id != run.rack_id
+            or request.data.rack_id != run.configuration_json["rack_id"]
+            or request.data.rack_face != group.face
+            or [
+                (candidate.sequence_no, candidate.bin_code, candidate.source.location_code)
+                for candidate in request.data.return_candidates
+            ]
+            != [(index, code, run.configuration_json["outfeed_position"]) for index, code in enumerate(candidates, 1)]
+        ):
+            raise ValueError("cached return decision no longer matches current rack, face, source or FIFO")
+        evidence = await self._wms_evidence.get_by_id_for_update(db, confirmation.response_evidence_id)
+        if (
+            evidence is None
+            or evidence.id != confirmation.response_evidence_id
+            or evidence.kind != InboundEvidenceKind.WMS_RESULT
+            or evidence.operation != BIN_RETURN_BATCH_OPERATION
+            or evidence.operation_id != operation_id
+            or evidence.source_identity != f"{BIN_RETURN_BATCH_OPERATION}:{operation_id}"
+            or evidence.workline_id != confirmation.workline_id
+            or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+            or evidence.payload_digest != canonical_json_digest(evidence.normalized_payload)
+            or await self._repository.has_evidence_conflicts(db, [evidence.id])
+        ):
+            raise ValueError("cached return decision response evidence is missing, mismatched or conflicting")
+        _ = parse_bin_return_batch_response(200, evidence.normalized_payload, request=request)
+        outcome = decode_outcome(evidence.normalized_payload).result
+        if expected_result == "NO_BATCH":
+            if not isinstance(outcome, sdk.BinBatchNoBatch) or batch.get("moves"):
+                raise ValueError("cached NO_BATCH decision no longer has its original NO_BATCH response")
+        elif not isinstance(outcome, sdk.BinReturnBatchReady) or batch["moves"] != [
+            {"bin_code": move.bin_code, **asdict(move.target)} for move in outcome.moves
+        ]:
+            raise ValueError("cached READY moves differ from the original authorized response")
+
+    async def _assert_return_rack_fact(self, db, run, step) -> None:
+        """退箱只采用本组已完成货架步骤的精确任务事实，汇总投影只供诊断。"""
+        rack_steps = [
+            item
+            for item in await self._repository.list_steps(db, run.run_id)
+            if item.run_id == run.run_id
+            and item.group_index == step.group_index
+            and item.ordinal < step.ordinal
+            and item.phase
+            in {
+                TransportDebugRunPhase.RACK_TO_STATION.value,
+                TransportDebugRunPhase.ROTATE_TO_NEXT_FACE.value,
+            }
+        ]
+        rack_step = max(rack_steps, key=lambda item: item.ordinal, default=None)
+        if (
+            rack_step is None
+            or rack_step.status != TransportDebugRunStepStatus.SUCCEEDED.value
+            or rack_step.transport_task_id is None
+            or run.rack_id != run.configuration_json.get("rack_id")
+        ):
+            raise TransportContractError("debug return rack step fact is missing or invalid")
+        task = await self._repository.get_transport_task(db, rack_step.transport_task_id)
+        members = await self._repository.list_transport_members(db, rack_step.transport_task_id)
+        if (
+            task is None
+            or task.transport_task_id != rack_step.transport_task_id
+            or any(member.transport_task_id != rack_step.transport_task_id for member in members)
+            or evaluate_debug_transport_task(rack_step, task, members, run).disposition != "SUCCEEDED"
+        ):
+            raise TransportContractError("debug return rack task has no matching exact terminal fact")
 
     async def _advance_transport_step(
         self,
@@ -1082,15 +1115,12 @@ class TransportDebugRunService:
         tasks = await self._repository.list_transport_tasks(db, task_ids)
         if len(tasks) != len(set(task_ids)):
             return False
-        finalizable_task_ids: set[str] = set()
         for task_id, task in tasks.items():
             if task.status in _TERMINAL_TRANSPORT_STATUSES:
                 continue
             if not await self._transport.is_unsent_debug_task_finalizable_in_session(db, task_id):
                 return False
-            finalizable_task_ids.add(task_id)
-        active_binding_task_ids = await self._repository.list_active_transport_binding_task_ids(db, run.run_id)
-        return active_binding_task_ids <= finalizable_task_ids
+        return True
 
     async def _all_tasks_terminal(
         self,

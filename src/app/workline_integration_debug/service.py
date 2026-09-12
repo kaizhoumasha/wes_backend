@@ -112,8 +112,6 @@ class EventPublisherPort(Protocol):
 class ManualDebugCommandFencePort(Protocol):
     async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
 
-    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> object | None: ...
-
 
 class IntegrationRunWorkLineOwner:
     """只允许已由联调 run 冻结的两个人工 WMS 请求继续收敛。"""
@@ -180,9 +178,6 @@ class IntegrationDebugService:
             device_codes = sorted({request.device_code, *site_device_codes})
             for device_code in device_codes:
                 await self._command_fence.lock_creation_for_device(db, device_code)
-            for device_code in device_codes:
-                if await self._command_fence.get_unclosed_for_device_for_update(db, device_code) is not None:
-                    raise IntegrationDebugConflict(f"设备 {device_code} 存在未闭合指令，不能启动手工出库联调 run")
             run_id = new_uuid7()
             run = IntegrationRun(
                 run_id=run_id,
@@ -1150,13 +1145,22 @@ class IntegrationDebugService:
             confirmation = await self._runs.get_confirmation(db, step.wms_confirmation_id)
             if confirmation is None:
                 raise IntegrationDebugNotFound("WmsConfirmation 不存在")
+            previous_reason_code = step.reason_code
+            updates_current_run = step.phase == run.current_phase and (
+                run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
+                or (
+                    run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    and run.attention_code == previous_reason_code
+                )
+            )
             if confirmation.status == WmsConfirmationStatus.RECONCILING:
                 step.status = "NEEDS_ATTENTION"
                 step.reason_code = "WMS_CONFIRMATION_RECONCILING"
-                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-                run.attention_code = step.reason_code
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    run.attention_code = step.reason_code
             elif confirmation.status == WmsConfirmationStatus.COMPLETED:
-                should_advance = step.status != "SUCCEEDED" and step.phase == run.current_phase
+                should_advance = step.status != "SUCCEEDED" and updates_current_run
                 step.status = "SUCCEEDED"
                 response = (
                     await self._runs.get_evidence(db, confirmation.response_evidence_id)

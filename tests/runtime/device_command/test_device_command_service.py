@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceStatus
-from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
+from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import (
     DeviceCommandDeadlineError,
@@ -53,9 +53,6 @@ class FakeCommandRepository:
 
     async def lock_manual_debug_identity(self, _db: object, _client_request_id: str) -> None:
         return None
-
-    async def get_unclosed_for_device_for_update(self, _db: object, device_code: str) -> DeviceCommand | None:
-        return self.unclosed.get(device_code)
 
     async def get_by_execution_ref_for_update(
         self,
@@ -129,11 +126,31 @@ class FakeWorkLineRepository:
 class FakeEvidenceRepository:
     def __init__(self, evidence: InboundEvidence | None) -> None:
         self.evidence = evidence
+        self.result_locks = []
+
+    async def lock_source_identity(self, db, source_identity):
+        self.result_locks.append(source_identity)
+
+    async def requeue_unassociated_device_results(self, db, **values):
+        evidence = self.evidence
+        if evidence is None or evidence.command_code != values["command_code"]:
+            return 0
+        evidence.workline_id = values["workline_id"]
+        evidence.material_execution_id = values["material_execution_id"]
+        evidence.apply_status = InboundEvidenceApplyStatus.PENDING
+        return 1
 
     async def get_device_result_for_command(self, _db: object, command_code: str) -> InboundEvidence | None:
         if self.evidence is not None and self.evidence.command_code == command_code:
             return self.evidence
         return None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_evidence_repository(monkeypatch):
+    monkeypatch.setattr(
+        "src.app.device.services.device_command_service.inbound_evidence_repository", FakeEvidenceRepository(None)
+    )
 
 
 def _ecs_status(
@@ -232,10 +249,49 @@ def _service(*bindings: WorkLineDeviceBinding) -> tuple[DeviceCommandService, Fa
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
         workline_repository=workline_repository,  # type: ignore[arg-type]
+        evidence_repository=FakeEvidenceRepository(None),
         adapter_provider=FakeAdapterProvider(),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
     )
     return service, command_repository
+
+
+@pytest.mark.asyncio
+async def test_callback_before_creation_registers_original_fact_without_dispatch_or_business_success(monkeypatch):
+    service, commands = _service(_binding())
+    evidence = InboundEvidence(
+        kind=InboundEvidenceKind.DEVICE_RESULT,
+        source_identity="RESULT:frozen-message",
+        command_code="early-command",
+        device_code="ARM-01",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        payload_digest="a" * 64,
+        normalized_payload={"result": "SUCCESS"},
+        received_at=datetime(2026, 8, 13),
+        apply_status=InboundEvidenceApplyStatus.IGNORED,
+    )
+    repository = FakeEvidenceRepository(evidence)
+    service._evidences = repository
+    monkeypatch.setattr("src.app.device.services.device_command_service.new_uuid7", lambda: "early-command")
+    add = commands.add
+
+    async def insert_after_evidence(db, command):
+        assert evidence.apply_status == InboundEvidenceApplyStatus.PENDING
+        assert evidence.workline_id == 11
+        return await add(db, command)
+
+    monkeypatch.setattr(commands, "add", insert_after_evidence)
+
+    handle = await service.create_command(_request())
+
+    assert handle.status == CommandStatus.RECONCILING
+    assert commands.created[0].reconciliation_reason == "RESULT_BEFORE_DISPATCH"
+    assert evidence.apply_status == InboundEvidenceApplyStatus.PENDING
+    assert evidence.workline_id == 11 and evidence.material_execution_id == 21
+    assert repository.result_locks == ["device-result:early-command"]
+    assert evidence.source_identity == "RESULT:frozen-message"
+    assert evidence.payload_digest == "a" * 64
 
 
 @pytest.mark.asyncio
@@ -403,8 +459,13 @@ async def test_manual_debug_idempotency_includes_endpoint_and_command_contract()
 
     assert duplicate == first
     assert len(repository.created) == 1
-    assert adapter.fetch_status_calls == ["RS-MOCK-PLACEMENT-01"]
-    assert provider.requested == ["http://ecs-mock:8080"]
+    assert adapter.fetch_status_calls == []
+    assert provider.requested == []
+    repository.created[0].status = CommandStatus.ACKNOWLEDGED
+    independent = await service.create_manual_debug_command(**{**request, "client_request_id": "SECOND-REQUEST"})
+    assert independent.command_code != first.command_code
+    assert len(repository.created) == 2
+    assert adapter.fetch_status_calls == []
     with pytest.raises(DeviceCommandIdentityConflictError):
         await service.create_manual_debug_command(**{**request, "endpoint_base_url": "http://ecs-other:8080"})
     with pytest.raises(DeviceCommandIdentityConflictError):
@@ -587,7 +648,7 @@ async def test_event_debug_command_uses_configured_endpoint_and_event_data_witho
 
 
 @pytest.mark.asyncio
-async def test_event_debug_command_records_existing_command_without_creating_placeholder() -> None:
+async def test_event_debug_command_is_independent_of_old_unclosed_command() -> None:
     repository = FakeCommandRepository()
     blocking_command = DeviceCommand(
         id=41,
@@ -607,6 +668,14 @@ async def test_event_debug_command_records_existing_command_without_creating_pla
         reconciliation_reason="DELIVERY_UNKNOWN",
     )
     repository.unclosed["STATION_SCAN11"] = blocking_command
+    frozen_old_command = (
+        blocking_command.command_code,
+        blocking_command.execution_ref_id,
+        blocking_command.payload_digest,
+        blocking_command.status,
+        blocking_command.reconciliation_reason,
+        blocking_command.result_evidence_id,
+    )
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=repository,  # type: ignore[arg-type]
@@ -635,13 +704,26 @@ async def test_event_debug_command_records_existing_command_without_creating_pla
 
     result = await service.create_event_debug_command_in_session(object(), evidence=evidence)
 
-    assert result == EventDebugCommandBlocked(
-        blocking_command_id=41,
-        blocking_command_code="CMD-OLD-001",
-        blocking_command_status=CommandStatus.RECONCILING,
-        blocking_reconciliation_reason="DELIVERY_UNKNOWN",
-    )
-    assert repository.created == []
+    assert isinstance(result, EventDebugCommandReady)
+    assert result.created is True
+    assert result.command_code != blocking_command.command_code
+    duplicate = await service.create_event_debug_command_in_session(object(), evidence=evidence)
+    assert duplicate.command_code == result.command_code
+    assert duplicate.created is False
+    assert len(repository.created) == 1
+    assert (
+        blocking_command.command_code,
+        blocking_command.execution_ref_id,
+        blocking_command.payload_digest,
+        blocking_command.status,
+        blocking_command.reconciliation_reason,
+        blocking_command.result_evidence_id,
+    ) == frozen_old_command
+
+    evidence.normalized_payload["data"] = {"target": "OTHER"}
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await service.create_event_debug_command_in_session(object(), evidence=evidence)
+    assert len(repository.created) == 1
 
 
 @pytest.mark.asyncio

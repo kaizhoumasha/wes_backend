@@ -1415,13 +1415,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             ("src/app/workline/services/diagnostic_service.py", "<file>", "runtime", "delete", ""),
             ("src/app/workline/runtime_services.py", "<file>", "wms", "delete", ""),
             (
-                "src/app/workline/services/safety_service.py",
-                "<file>",
-                "runtime",
-                "switch",
-                "WorkLineSafetyService",
-            ),
-            (
                 "src/app/workline/services/workline_service.py",
                 "<file>",
                 "runtime",
@@ -2008,7 +2001,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             ("src/celery_app/outbox_dispatch_composition.py", "delete", ""),
             ("src/celery_app/tasks/runtime_inbox.py", "delete", ""),
             ("src/celery_app/tasks/sys.py", "delete", ""),
-            ("src/celery_app/tasks/workline.py", "switch", "drain_safety_incidents_batch"),
         )
     ),
     (

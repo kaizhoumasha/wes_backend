@@ -33,7 +33,7 @@
 | 结果期限代码与合同不一致 | `src/app/transport/service.py:98` 为 20 分钟；`docs/contracts/transport-fulfillment-contract.md:596` 为 10 分钟 | A1 统一配置和合同；默认保留当前代码 20 分钟作为提案，不代表现场耗时已达标 |
 | Transport 详情不暴露截止时间与发布版本 | `TransportTaskSnapshot`、`TransportTaskResponse` 只有结果与 latest_evidence | A2 扩展原详情，不另建任务模型 |
 | WMS 近期诊断不是可靠恢复源 | `src/app/wms_diagnostics/repository.py` 为有保留期的 Redis Stream；Service 失败允许降级 | A3 直接查询 PostgreSQL 可靠对象；Redis 丢失仍可定位 |
-| 已有恢复动作语义不同 | `requeue_reconciling` 保留身份；`retry_wms_action` 确认原 prepare 作废后生成新身份；设备 blocker 有精确 reprocess | B2 复用并明确展示，不统一成“重试全部” |
+| 已有恢复动作语义不同 | `requeue_reconciling` 保留身份；`retry_wms_action` 确认原 prepare 作废后生成新身份；设备 blocker/reprocess 已由无阻塞设计退役 | B2 仅保留事实诊断，不统一成“重试全部”或重新暴露人工续行 |
 | 热补丁与运行进程基线曾不一致 | 近期发布对话；当前已有 hot-sync/probe、worker/Beat 探针 | C1 核验真实加载结果与制品一致性，不重新开发部署工具 |
 | 备份已有独立计划，未证明异机恢复闭环 | 现存 `2026-08-18-wes-onsite-data-recovery.md` 与生命周期索引 | 保留唯一 owner，C3 衔接；不把历史计划当已部署能力 |
 
@@ -78,7 +78,7 @@ A1、A2、A3、A4 各自可评审；共享 Service、生成物、测试支撑只
 | 已发送、对方可能接收、结果未知 | 冻结并等待匹配终态/合同允许的对账 | 超时自动重发、释放锁、清库 |
 | 对方明确未接收且原合同允许重试 | 原领域动作、原身份、原正文、审计 | 将操作员勾选框当成 WMS 已完成事实 |
 | WMS 明确作废原 prepare 且不再产出旧计划 | 当前 prepare 专属替换入口生成新身份，保留旧义务审计 | 用相同 operation_id 修改正文 |
-| 设备 EVENT 被旧命令阻断 | 已有 blocker 查询、满足条件后精确 reprocess | 把 DEVICE_IDLE 当作任意命令成功结果 |
+| ECS 急停或原设备命令尚未闭合 | ECS 处理急停、复位与恢复；WES 保留原命令身份等待正常结果，且不阻断独立新命令 | 接收急停 Event、伪造 DEVICE_IDLE 或人工重处理原命令 |
 
 表格用于评审和操作说明，不实现为共享状态机。每个领域保留其既有合同与判断。
 

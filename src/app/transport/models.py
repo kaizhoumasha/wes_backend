@@ -231,6 +231,7 @@ class TransportMember(BaseMixin, table=True):
         CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         UniqueConstraint("transport_task_id", "ordinal", name="ux_transport_members_task_ordinal"),
         UniqueConstraint("transport_task_id", "object_id", name="ux_transport_members_task_object"),
+        Index("ix_transport_members_object_fact", "object_type", "object_id", "transport_task_id"),
         {"schema": RUNTIME_SCHEMA},
     )
 
@@ -366,33 +367,6 @@ class TransportCallbackReceipt(BaseMixin, table=True):
     conflict_detected_at: datetime | None = Field(default=None)
 
 
-class TransportResourceBinding(BaseMixin, table=True):
-    __tablename__ = "transport_resource_bindings"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
-    __table_args__ = (
-        Index(
-            "ux_transport_resource_bindings_active",
-            "resource_type",
-            "resource_id",
-            unique=True,
-            postgresql_where=text("released_at IS NULL"),
-            sqlite_where=text("released_at IS NULL"),
-        ),
-        Index("ix_transport_resource_bindings_task", "transport_task_id", "released_at"),
-        {"schema": RUNTIME_SCHEMA},
-    )
-
-    id: int | None = Field(default=None, primary_key=True)
-    transport_task_id: str = Field(
-        foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",
-        max_length=80,
-    )
-    resource_type: str = Field(max_length=10)
-    resource_id: str = Field(max_length=100)
-    created_at: datetime
-    released_at: datetime | None = Field(default=None)
-
-
 __all__ = [
     "TransportCallbackReceipt",
     "TransportDebugPositionProjection",
@@ -400,6 +374,5 @@ __all__ = [
     "TransportDebugRunStep",
     "TransportEvidence",
     "TransportMember",
-    "TransportResourceBinding",
     "TransportTask",
 ]

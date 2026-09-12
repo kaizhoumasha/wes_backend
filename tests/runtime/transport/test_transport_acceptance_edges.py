@@ -38,7 +38,6 @@ from src.app.transport.models import (
     TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -148,7 +147,6 @@ async def _clean_transport_tables(db_engine: object) -> None:
             TransportDebugPositionProjection,
             TransportEvidence,
             TransportCallbackReceipt,
-            TransportResourceBinding,
             TransportMember,
             PositionProjection,
             TransportTask,
@@ -196,11 +194,10 @@ async def test_internal_batch_entries_require_a_positive_bounded_limit(db_engine
 
 
 @pytest.mark.asyncio
-async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db_engine: object) -> None:
+async def test_rotate_uses_explicit_position_without_projection_admission(db_engine: object) -> None:
     service = _service(db_engine)
 
-    with pytest.raises(TransportContractError, match="current face is unknown"):
-        await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), "270")
+    await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), "270")
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -218,11 +215,9 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
             )
         )
 
-    with pytest.raises(TransportContractError, match="current position is not confirmed"):
-        await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("OTHER"), "270")
+    await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("OTHER"), "270")
 
-    with pytest.raises(TransportContractError, match="target face equals current face"):
-        await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), "90")
+    await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), "90")
 
 
 @pytest.mark.asyncio
@@ -254,7 +249,7 @@ async def test_auto_debug_successor_rejects_a_rack_on_the_wrong_face(db_engine: 
 
 
 @pytest.mark.asyncio
-async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: object) -> None:
+async def test_debug_rotate_retains_individual_facts_without_guessing_cross_task_order(db_engine: object) -> None:
     service = _service(db_engine)
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
     move = await service.move_rack(
@@ -300,15 +295,15 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
         new_uuid7(),
         caller,
         "rack-debug-projection",
-        RackReference("rack-debug-projection"),
+        RackPosition("KT19"),
         "270",
     )
 
     task = await _load_task(db_engine, rotate.transport_task_id)
-    assert task.request_json["position"] == {"kind": "RACK", "location_code": "rack-debug-projection"}
+    assert task.request_json["position"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
     assert task.submit_request_body is not None
     wire = json.loads(task.submit_request_body)
-    assert wire["data"]["source"] == {"kind": "RACK", "location_code": "rack-debug-projection"}
+    assert wire["data"]["source"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
     assert wire["data"]["target"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
     assert task.submit_request_body_digest == hashlib.sha256(task.submit_request_body.encode()).hexdigest()
     async with sessions() as db:
@@ -342,8 +337,12 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
             )
         )
         assert debug_projection is not None
-        assert debug_projection.arrival_face == "270"
-        assert debug_projection.source_transport_task_id == rotate.transport_task_id
+        assert debug_projection.arrival_face == "90"
+        assert debug_projection.source_transport_task_id == move.transport_task_id
+        assert debug_projection.position_unknown is True
+        assert (await _load_task(db_engine, rotate.transport_task_id)).outcome_json["members"][0][
+            "arrival_face"
+        ] == "270"
         assert (
             await db.scalar(select(PositionProjection).where(PositionProjection.object_id == "rack-debug-projection"))
             is None
@@ -351,7 +350,7 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
 
 
 @pytest.mark.asyncio
-async def test_debug_rotate_rack_reference_rejects_a_non_exact_current_projection(db_engine: object) -> None:
+async def test_debug_rotate_rejects_reference_even_when_projection_exists(db_engine: object) -> None:
     service = _service(db_engine)
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -368,7 +367,7 @@ async def test_debug_rotate_rack_reference_rejects_a_non_exact_current_projectio
             )
         )
 
-    with pytest.raises(TransportContractError, match="current exact position is unknown"):
+    with pytest.raises(TransportContractError, match="explicit rack position"):
         await service.rotate_rack_for_debug(
             new_uuid7(),
             caller,
@@ -379,7 +378,7 @@ async def test_debug_rotate_rack_reference_rejects_a_non_exact_current_projectio
 
 
 @pytest.mark.asyncio
-async def test_debug_rotate_rack_reference_rejects_success_at_a_different_exact_position(db_engine: object) -> None:
+async def test_debug_rotate_rejects_success_at_a_different_requested_position(db_engine: object) -> None:
     service = _service(db_engine)
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -401,7 +400,7 @@ async def test_debug_rotate_rack_reference_rejects_success_at_a_different_exact_
         new_uuid7(),
         caller,
         "rack-debug-wrong-station",
-        RackReference("rack-debug-wrong-station"),
+        RackPosition("KT16"),
         "270",
     )
     await record_valid_callback(
@@ -431,16 +430,9 @@ async def test_debug_rotate_rack_reference_rejects_success_at_a_different_exact_
                 TransportDebugPositionProjection.object_id == "rack-debug-wrong-station",
             )
         )
-        binding = await db.scalar(
-            select(TransportResourceBinding).where(
-                TransportResourceBinding.transport_task_id == rotate.transport_task_id,
-                TransportResourceBinding.released_at.is_(None),
-            )
-        )
     assert projection is not None
     assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "KT16"}
     assert projection.arrival_face == "90"
-    assert binding is not None
 
 
 @pytest.mark.asyncio
@@ -516,12 +508,11 @@ async def test_create_debug_task_in_session_rejects_bin_move_for_stale_rack_face
         ),
     )
     async with sessions.begin() as db:
-        with pytest.raises(TransportContractError, match="rack current face does not match request"):
-            await service.create_debug_task_in_session(db, request)
+        await service.create_debug_task_in_session(db, request)
 
 
 @pytest.mark.asyncio
-async def test_debug_bin_exchange_uses_debug_rack_face_projections(db_engine: object) -> None:
+async def test_debug_bin_exchange_preserves_requested_faces(db_engine: object) -> None:
     service = _service(db_engine)
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
     for rack_id, face in (("rack-debug-left", "90"), ("rack-debug-right", "270")):
@@ -606,8 +597,7 @@ async def test_debug_bin_move_uses_frozen_request_face_without_business_projecti
         ),
     )
 
-    with pytest.raises(TransportContractError, match="current face is unknown"):
-        await service.move_bins(new_uuid7(), TransportCaller("SORTER", "CTU01"), moves)
+    await service.move_bins(new_uuid7(), TransportCaller("SORTER", "CTU01"), moves)
     with pytest.raises(TransportContractError, match="requires TRANSPORT_DEBUG caller"):
         await service.move_bins_for_debug(new_uuid7(), TransportCaller("SORTER", "CTU01"), moves)
 
@@ -828,12 +818,11 @@ async def test_debug_step_audit_failure_does_not_start_local_deletion(
 
 
 @pytest.mark.asyncio
-async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: object) -> None:
+async def test_bin_move_uses_requested_face_despite_stale_projection(db_engine: object) -> None:
     service = _service(db_engine)
     move_on_face_a = (BinMove("bin-face", RackBinSlot("rack-face", "90", "1"), HandoffPosition("ROLLER_IN")),)
 
-    with pytest.raises(TransportContractError, match="rack current face is unknown"):
-        await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
+    await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -851,8 +840,7 @@ async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: objec
             )
         )
 
-    with pytest.raises(TransportContractError, match="rack current face does not match request"):
-        await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
+    await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
 
     async with sessions.begin() as db:
         await db.execute(
@@ -864,7 +852,7 @@ async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: objec
 
 
 @pytest.mark.asyncio
-async def test_bin_exchange_requires_confirmed_rack_faces(db_engine: object) -> None:
+async def test_bin_exchange_uses_requested_faces_without_projection(db_engine: object) -> None:
     service = _service(db_engine)
     exchange_pairs = (
         BinExchangePair(
@@ -875,17 +863,16 @@ async def test_bin_exchange_requires_confirmed_rack_faces(db_engine: object) -> 
         ),
     )
 
-    with pytest.raises(TransportContractError, match="rack current face is unknown"):
-        await service.exchange_bins(new_uuid7(), _caller(), exchange_pairs)
+    await service.exchange_bins(new_uuid7(), _caller(), exchange_pairs)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("code", "expected_status", "expected_reason", "released"),
+    ("code", "expected_status", "expected_reason"),
     [
-        (TransportSubmitCode.DUPLICATE, "ACCEPTED", None, False),
-        (TransportSubmitCode.REJECTED, "REJECTED", "TRANSPORT_REJECTED", True),
-        (TransportSubmitCode.CONFLICT, "RECONCILING", "TRANSPORT_SUBMIT_CONFLICT", False),
+        (TransportSubmitCode.DUPLICATE, "ACCEPTED", None),
+        (TransportSubmitCode.REJECTED, "REJECTED", "TRANSPORT_REJECTED"),
+        (TransportSubmitCode.CONFLICT, "RECONCILING", "TRANSPORT_SUBMIT_CONFLICT"),
     ],
 )
 async def test_submit_ack_terminal_matrix(
@@ -893,7 +880,6 @@ async def test_submit_ack_terminal_matrix(
     code: TransportSubmitCode,
     expected_status: str,
     expected_reason: str | None,
-    released: bool,
 ) -> None:
     service = _service(db_engine, provider=ConfigurableProvider(code))
     handle = await service.move_rack(
@@ -908,18 +894,6 @@ async def test_submit_ack_terminal_matrix(
     assert await service.submit_pending_tasks(1) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
     assert (task.status, task.reason_code) == (expected_status, expected_reason)
-
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as db:
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
-    assert bindings
-    assert all((binding.released_at is not None) is released for binding in bindings)
 
 
 @pytest.mark.asyncio
@@ -1006,8 +980,6 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_task(db_engine
     assert preview.evidence_count == 0
     assert preview.outcome_version == 0
     assert preview.member_count == 1
-    assert preview.binding_count == 1
-    assert preview.active_binding_count == 1
 
     result = await service.reset_debug_task(target.transport_task_id)
 
@@ -1016,7 +988,6 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_task(db_engine
     assert result.deleted_evidence_count == 0
     assert result.deleted_position_projection_count == 0
     assert result.deleted_member_count == 1
-    assert result.deleted_binding_count == 1
     async with sessions() as db:
         task_ids = set((await db.scalars(select(TransportTask.transport_task_id))).all())
         target_members = (
@@ -1024,16 +995,8 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_task(db_engine
                 select(TransportMember).where(TransportMember.transport_task_id == target.transport_task_id)
             )
         ).all()
-        target_bindings = (
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == target.transport_task_id
-                )
-            )
-        ).all()
     assert task_ids == {keep.transport_task_id}
     assert target_members == []
-    assert target_bindings == []
 
 
 @pytest.mark.asyncio
@@ -1180,7 +1143,8 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
         },
     )
 
-    assert await service.process_pending_evidence(1) == 1
+    assert await service.process_pending_evidence(1) == int(task_id != "missing-task")
+    assert await service.process_pending_evidence(1) == 0
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
@@ -1489,7 +1453,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
 
 
 @pytest.mark.asyncio
-async def test_known_partial_failure_forms_failed_outcome_and_releases_resources(db_engine: object) -> None:
+async def test_known_partial_failure_forms_failed_outcome_with_member_facts(db_engine: object) -> None:
     publisher = RecordingPublisher()
     service = _service(db_engine)
     await confirm_rack_faces(db_engine, {"rack-partial": "90"})
@@ -1542,7 +1506,7 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
 @pytest.mark.asyncio
 @pytest.mark.parametrize("face_fields", [{}, {"arrival_face": None}, {"arrival_face": ""}, {"arrival_face": "270"}])
 @pytest.mark.parametrize("target_face", [None, "270"])
-async def test_ctu03_optional_arrival_persists_actual_face_and_releases_rack(
+async def test_ctu03_optional_arrival_persists_actual_face(
     db_engine: object, face_fields: dict[str, str | None], target_face: str | None
 ) -> None:
     import json
@@ -1593,13 +1557,6 @@ async def test_ctu03_optional_arrival_persists_actual_face_and_releases_rack(
                 TransportDebugPositionProjection.object_id == "rack-return-any-face"
             )
         )
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
     assert projection is not None
     expected_face = face_fields.get("arrival_face") or target_face
     assert projection.arrival_face == expected_face
@@ -1625,7 +1582,6 @@ async def test_ctu03_optional_arrival_persists_actual_face_and_releases_rack(
     assert replay["code"] == "DUPLICATE"
     assert (await _load_task(db_engine, handle.transport_task_id)).outcome_version == task.outcome_version
     assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STORAGE-17"}
-    assert bindings and all(binding.released_at is not None for binding in bindings)
 
 
 @pytest.mark.asyncio
@@ -1682,15 +1638,10 @@ async def test_failed_known_rack_result_accepts_missing_face_even_when_target_re
                 TransportDebugPositionProjection.object_id == "rack-failed-face"
             )
         )
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
-    assert projection is not None and bindings
+    assert projection is not None
     assert (task.status, task.reason_code) == ("FAILED", "RCS_EXECUTION_FAILED")
-    assert all(binding.released_at is not None for binding in bindings)
-    assert projection.arrival_face is None
-    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STOPPED"}
+    assert projection.arrival_face == "270"
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "OLD"}
+    assert projection.position_unknown is True
+    assert task.outcome_json["members"][0]["arrival_face"] is None
+    assert task.outcome_json["members"][0]["final_position"] == {"kind": "RACK_POSITION", "location_code": "STOPPED"}

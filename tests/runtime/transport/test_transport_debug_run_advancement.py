@@ -3,15 +3,17 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
-from src.app.transport.contracts import RackPosition, TransportContractError, TransportHandle
+from src.app.transport.contracts import RackPosition, TransportCaller, TransportContractError, TransportHandle
 from src.app.transport.debug_run_evidence import Scan12EvidenceDisposition, Scan12EvidenceEvaluation
 from src.app.transport.debug_run_service import TransportDebugRunService
 from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember, TransportTask
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 NOW = datetime(2026, 9, 2, 12, 0, 0)
@@ -169,10 +171,6 @@ class _Repository:
         del db, run_id
         return self.steps
 
-    async def has_active_transport_binding(self, db: object, run_id: str) -> bool:
-        del db, run_id
-        return False
-
     async def get_transport_task(self, db: object, transport_task_id: str) -> TransportTask | None:
         del db
         return self.tasks.get(transport_task_id)
@@ -321,6 +319,56 @@ def _harness(
         clock=lambda: NOW,
         event_publisher=_Publisher(),
     )
+    # 通用推进用例隔离货架事实；下方退箱事实用例直接验证真实校验器。
+    service._assert_return_rack_fact = AsyncMock()
+    if phase == "BINS_TO_RACK":
+        payload = {
+            "operation": "outbound.bin.return_batch@v1",
+            "operation_id": CLIENT_IDS[1],
+            "timestamp": NOT_BEFORE_MS,
+            "data": {
+                "workline_code": "DEBUG-LINE",
+                "rack_id": "510056",
+                "rack_face": "90",
+                "return_candidates": [
+                    {
+                        "sequence_no": index,
+                        "bin_code": code,
+                        "source": {"type": "HANDOFF_POSITION", "location_code": "CNV0302"},
+                    }
+                    for index, code in enumerate(run.configuration_json["return_queues"]["0"], 1)
+                ],
+            },
+        }
+        batch = run.configuration_json["return_batches"]["0"]
+        batch.update(
+            operation_id=CLIENT_IDS[1], workline_id=1, step_client_request_id=CLIENT_IDS[0], response_evidence_id=11
+        )
+        run.configuration_json["return_requests"] = {CLIENT_IDS[1]: payload}
+        _install_return_response(
+            service,
+            repository,
+            payload,
+            {
+                "operation_id": CLIENT_IDS[1],
+                "code": "DECIDED",
+                "timestamp": NOT_BEFORE_MS,
+                "data": {
+                    "result": "READY",
+                    "moves": [
+                        {
+                            "sequence_no": index,
+                            "bin_code": move["bin_code"],
+                            "target": {
+                                "type": "RACK_BIN_SLOT",
+                                **{key: move[key] for key in ("rack_id", "rack_face", "slot_id")},
+                            },
+                        }
+                        for index, move in enumerate(batch["moves"], 1)
+                    ],
+                },
+            },
+        )
     return service, repository, transport
 
 
@@ -384,15 +432,20 @@ async def test_transport_contract_rejection_becomes_attention_without_retry_loop
     assert repository.run.claim_token is None
 
 
-async def test_transport_integrity_conflict_becomes_attention_after_rollback() -> None:
+@pytest.mark.parametrize("reason", ["foreign key", "not null", "integrity failure"])
+async def test_transport_integrity_error_propagates_without_resource_attention(reason: str) -> None:
     service, repository, transport = _harness()
-    transport.error = IntegrityError("INSERT", {}, RuntimeError("resource conflict"))
+    error = IntegrityError("INSERT", {}, RuntimeError(reason))
+    transport.error = error
 
-    assert await service.advance_run("debug-run-1") is True
+    with pytest.raises(IntegrityError) as raised:
+        await service.advance_run("debug-run-1")
 
-    assert repository.run.status == "NEEDS_ATTENTION"
-    assert repository.run.attention_code == "TRANSPORT_RESOURCE_CONFLICT"
-    assert repository.run.claim_token is None
+    assert raised.value is error
+    assert repository.run.status == "RUNNING"
+    assert repository.run.attention_code is None
+    assert repository.steps[0].status == "PENDING"
+    assert repository.steps[0].transport_task_id is None
 
 
 async def test_transport_step_without_task_identity_fails_closed() -> None:
@@ -1050,7 +1103,7 @@ async def test_wms_return_request_persists_fifo_identity_without_transport_and_w
 
 
 @pytest.mark.parametrize("invalid_source", [None, "missing", "group", "pending", "rack", "face", "slot", "member"])
-async def test_wms_no_batch_returns_fifo_to_confirmed_original_slots(invalid_source: str | None) -> None:
+async def test_wms_no_batch_waits_without_original_slot_fallback(invalid_source: str | None) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -1096,38 +1149,405 @@ async def test_wms_no_batch_returns_fifo_to_confirmed_original_slots(invalid_sou
         "timestamp": NOT_BEFORE_MS,
         "data": {"result": "NO_BATCH", "retry_after_ms": 1000},
     }
-    service._confirmations = SimpleNamespace(
-        get_by_identity_for_update=AsyncMock(
-            return_value=SimpleNamespace(
-                status="COMPLETED",
-                request_payload=first["request_payload"],
-                response_evidence_id=11,
-            )
-        )
-    )
-    service._wms_evidence = SimpleNamespace(
-        get_by_id_without_lock=AsyncMock(return_value=SimpleNamespace(normalized_payload=response))
-    )
+    _install_return_response(service, repository, first["request_payload"], response)
     assert await service.advance_run("debug-run-1")
     batch = repository.run.configuration_json["return_batches"]["0"]
     assert batch["operation_id"] == first["operation_id"]
     assert service._wms.create_or_get.await_count == 1
     assert repository.steps[0].client_request_id == CLIENT_IDS[0]
-    if invalid_source:
-        assert repository.steps[0].reason_code == "DEBUG_RETURN_SOURCE_MISSING"
-        assert "moves" not in batch
+    assert repository.run.status == "RUNNING"
+    assert repository.steps[0].status == "PENDING"
+    assert repository.steps[0].reason_code is None
+    assert "moves" not in batch
+    assert batch["retry_at"] == (NOW + timedelta(seconds=1)).isoformat()
+    assert transport.calls == []
+    assert not await service.advance_run("debug-run-1")
+    assert service._wms.create_or_get.await_count == 1
+
+
+def _install_return_response(service, repository, payload, response, *, evidence_id=11):
+    confirmation = SimpleNamespace(
+        operation=payload["operation"],
+        operation_id=payload["operation_id"],
+        status="COMPLETED",
+        workline_id=repository.run.configuration_json["workline_id"],
+        request_payload=payload,
+        request_digest=canonical_json_digest(payload),
+        response_evidence_id=evidence_id,
+        response_result=response["data"]["result"],
+    )
+    evidence = InboundEvidence(
+        id=evidence_id,
+        kind=InboundEvidenceKind.WMS_RESULT,
+        source_identity=f"{payload['operation']}:{payload['operation_id']}",
+        operation=payload["operation"],
+        operation_id=payload["operation_id"],
+        workline_id=confirmation.workline_id,
+        payload_digest=canonical_json_digest(response),
+        normalized_payload=response,
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+        received_at=NOW,
+    )
+    read = AsyncMock(return_value=evidence)
+    service._confirmations = SimpleNamespace(get_by_identity_for_update=AsyncMock(return_value=confirmation))
+    service._wms_evidence = SimpleNamespace(get_by_id_without_lock=read, get_by_id_for_update=read)
+    return confirmation
+
+
+async def _no_batch_harness():
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    repository.run.configuration_json["return_batches"] = {}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    assert await service.advance_run("debug-run-1")
+    first = service._wms.create_or_get.call_args.kwargs
+    confirmation = _install_return_response(
+        service,
+        repository,
+        first["request_payload"],
+        {
+            "operation_id": first["operation_id"],
+            "code": "DECIDED",
+            "timestamp": NOT_BEFORE_MS,
+            "data": {"result": "NO_BATCH", "retry_after_ms": 1000},
+        },
+    )
+    assert await service.advance_run("debug-run-1")
+    return service, repository, transport, confirmation, first
+
+
+async def test_no_batch_deadline_survives_restart_then_new_identity_ready_moves_once() -> None:
+    service, repository, transport, confirmation, first = await _no_batch_harness()
+    old_payload = dict(confirmation.request_payload)
+    for milliseconds in (0, 999):
+        restarted = TransportDebugRunService(
+            service._sessions,
+            repository,
+            transport,
+            clock=lambda delay=milliseconds: NOW + timedelta(milliseconds=delay),
+            event_publisher=_Publisher(),
+        )
+        restarted._wms = service._wms
+        restarted._confirmations = service._confirmations
+        restarted._wms_evidence = service._wms_evidence
+        restarted._assert_return_rack_fact = service._assert_return_rack_fact
+        assert not await restarted.advance_run("debug-run-1")
         assert transport.calls == []
-    else:
-        assert batch["allocation_source"] == "DEBUG_NO_BATCH_ORIGINAL_SLOTS"
-        assert batch["source_transport_task_id"] == "outbound-source"
-        assert [(move["bin_code"], move["slot_id"]) for move in batch["moves"]] == [
-            ("A000002653", "CONFIRMED-02"),
-            ("A000001922", "CONFIRMED-01"),
-        ]
-        await service.advance_run("debug-run-1")
-        assert transport.calls == [CLIENT_IDS[0]]
-        assert not await service.advance_run("debug-run-1")
         assert service._wms.create_or_get.await_count == 1
+    restarted._clock = lambda: NOW + timedelta(seconds=1)
+    assert await restarted.advance_run("debug-run-1")
+    second = service._wms.create_or_get.call_args.kwargs
+    assert service._wms.create_or_get.await_count == 2
+    assert second["operation_id"] != first["operation_id"]
+    assert second["request_payload"]["timestamp"] > first["request_payload"]["timestamp"]
+    assert second["request_payload"]["data"] == first["request_payload"]["data"]
+    assert confirmation.status == "COMPLETED"
+    assert confirmation.request_payload == old_payload
+    assert repository.run.configuration_json["return_requests"][first["operation_id"]] == old_payload
+    restarted._confirmations.get_by_identity_for_update.return_value = SimpleNamespace(status="PENDING")
+    assert not await restarted.advance_run("debug-run-1")
+    _install_return_response(
+        restarted,
+        repository,
+        second["request_payload"],
+        {
+            "operation_id": second["operation_id"],
+            "code": "DECIDED",
+            "timestamp": NOT_BEFORE_MS,
+            "data": {
+                "result": "READY",
+                "moves": [
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "A000001922",
+                        "target": {
+                            "type": "RACK_BIN_SLOT",
+                            "rack_id": "510056",
+                            "rack_face": "90",
+                            "slot_id": "WMS-NEW",
+                        },
+                    }
+                ],
+            },
+        },
+        evidence_id=12,
+    )
+    assert await restarted.advance_run("debug-run-1")
+    assert await restarted.advance_run("debug-run-1")
+    assert not await restarted.advance_run("debug-run-1")
+    assert transport.calls == [CLIENT_IDS[0]]
+    assert service._wms.create_or_get.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "invalidation",
+    ["returned", "queue", "group", "step_run", "step_phase", "rack", "source", "owner", "owner_id", "client_id"],
+)
+async def test_no_batch_invalid_candidate_does_not_request_or_move(invalidation) -> None:
+    service, repository, transport, confirmation, first = await _no_batch_harness()
+    configuration = repository.run.configuration_json
+    if invalidation == "returned":
+        configuration["returned_bins"] = [{"bin_code": "A000001922"}]
+    elif invalidation == "queue":
+        configuration["return_queues"]["0"].reverse()
+    elif invalidation == "group":
+        repository.steps[0].group_index = 1
+    elif invalidation == "step_run":
+        repository.steps[0].run_id = "other-run"
+    elif invalidation == "step_phase":
+        repository.run.current_phase = "WAIT_SCAN12"
+    elif invalidation == "rack":
+        repository.run.rack_id = "other-rack"
+    elif invalidation == "source":
+        configuration["outfeed_position"] = "other-position"
+    elif invalidation == "owner_id":
+        configuration["workline_id"] = 2
+    elif invalidation == "client_id":
+        repository.steps[0].client_request_id = CLIENT_IDS[2]
+    else:
+        configuration["workline_code"] = "other-line"
+    service._clock = lambda: NOW + timedelta(seconds=1)
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.status == "NEEDS_ATTENTION"
+    assert service._wms.create_or_get.await_count == 1
+    assert confirmation.status == "COMPLETED"
+    assert repository.run.configuration_json["return_batches"]["0"]["operation_id"] == first["operation_id"]
+    assert transport.calls == []
+    assert not await service.advance_run("debug-run-1")
+
+
+async def test_no_batch_wait_does_not_block_independent_transport(outcome_service) -> None:
+    service, repository, transport, _, _ = await _no_batch_harness()
+    assert not await service.advance_run("debug-run-1")
+    handle = await outcome_service.move_rack(
+        CLIENT_IDS[2], TransportCaller("independent-workline"), "other-rack", RackPosition("A"), RackPosition("B"), "90"
+    )
+    assert await outcome_service.submit_pending_tasks(1) == 1
+    assert handle.transport_task_id
+    assert repository.run.status == "RUNNING"
+    assert repository.run.active_scope == "GLOBAL"
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("confirmation_state", [None, "RECONCILING", "PENDING", "PAYLOAD_CONFLICT"])
+async def test_no_batch_due_never_bypasses_original_confirmation_conflict(confirmation_state) -> None:
+    service, repository, transport, confirmation, _ = await _no_batch_harness()
+    if confirmation_state is None:
+        service._confirmations.get_by_identity_for_update.return_value = None
+    elif confirmation_state == "PAYLOAD_CONFLICT":
+        confirmation.request_payload = {**confirmation.request_payload, "timestamp": 1}
+    else:
+        confirmation.status = confirmation_state
+    service._clock = lambda: NOW + timedelta(seconds=1)
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.status == "NEEDS_ATTENTION"
+    assert service._wms.create_or_get.await_count == 1
+    assert transport.calls == []
+
+
+async def _ready_harness():
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    repository.run.configuration_json["return_batches"]["0"].pop("moves")
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.configuration_json["return_batches"]["0"]["moves"]
+    assert transport.calls == []
+    return service, repository, transport, service._confirmations.get_by_identity_for_update.return_value
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "client_id",
+        "workline_id",
+        "workline_code",
+        "face",
+        "rack",
+        "source",
+        "fifo",
+        "returned",
+        "batch_client",
+        "batch_owner",
+        "moves",
+    ],
+)
+async def test_cached_ready_revalidates_current_context_before_transport(drift) -> None:
+    service, repository, transport, _ = await _ready_harness()
+    configuration = repository.run.configuration_json
+    batch = configuration["return_batches"]["0"]
+    if drift == "client_id":
+        repository.steps[0].client_request_id = CLIENT_IDS[2]
+    elif drift == "workline_id":
+        configuration["workline_id"] = 2
+    elif drift == "workline_code":
+        configuration["workline_code"] = "OTHER-LINE"
+    elif drift == "face":
+        configuration["face_groups"][0]["face"] = "270"
+        for move in batch["moves"]:
+            move["rack_face"] = "270"
+    elif drift == "rack":
+        repository.run.rack_id = configuration["rack_id"] = "OTHER-RACK"
+        for move in batch["moves"]:
+            move["rack_id"] = "OTHER-RACK"
+    elif drift == "source":
+        configuration["outfeed_position"] = "OTHER-SOURCE"
+    elif drift == "fifo":
+        configuration["return_queues"]["0"].reverse()
+    elif drift == "returned":
+        configuration["returned_bins"] = [{"bin_code": "A000001922"}]
+    elif drift == "batch_client":
+        batch["step_client_request_id"] = CLIENT_IDS[2]
+    elif drift == "batch_owner":
+        batch["workline_id"] = 2
+    else:
+        batch["moves"][0]["slot_id"] = "UNAUTHORIZED-SLOT"
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.status == "NEEDS_ATTENTION"
+    assert transport.calls == []
+    service._wms.create_or_get.assert_not_awaited()
+    assert not await service.advance_run("debug-run-1")
+
+
+@pytest.mark.parametrize("decision", ["NO_BATCH", "READY"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "response_id",
+        "evidence_missing",
+        "evidence_id",
+        "response_result",
+        "confirmation_operation",
+        "confirmation_identity",
+        "confirmation_request",
+        "request_digest",
+        "evidence_operation",
+        "evidence_identity",
+        "response_identity",
+        "evidence_conflict",
+        "evidence_status",
+        "evidence_kind",
+        "evidence_source",
+        "evidence_owner",
+        "evidence_result",
+        "evidence_digest",
+    ],
+)
+async def test_cached_decision_requires_original_matching_response_evidence(decision, invalid) -> None:
+    if decision == "NO_BATCH":
+        service, repository, transport, confirmation, _ = await _no_batch_harness()
+        service._clock = lambda: NOW + timedelta(seconds=1)
+    else:
+        service, repository, transport, confirmation = await _ready_harness()
+    evidence = service._wms_evidence.get_by_id_for_update.return_value
+    if invalid == "response_id":
+        confirmation.response_evidence_id = None
+    elif invalid == "evidence_missing":
+        service._wms_evidence.get_by_id_for_update.return_value = None
+    elif invalid == "evidence_id":
+        evidence.id = 12
+    elif invalid == "response_result":
+        confirmation.response_result = "READY" if decision == "NO_BATCH" else "NO_BATCH"
+    elif invalid == "confirmation_operation":
+        confirmation.operation = "outbound.bin.inbound_batch@v1"
+    elif invalid == "confirmation_identity":
+        confirmation.operation_id = CLIENT_IDS[2]
+    elif invalid == "confirmation_request":
+        confirmation.request_payload = {**confirmation.request_payload, "timestamp": 1}
+    elif invalid == "request_digest":
+        confirmation.request_digest = "0" * 64
+    elif invalid == "evidence_operation":
+        evidence.operation = "outbound.bin.inbound_batch@v1"
+    elif invalid == "evidence_identity":
+        evidence.operation_id = CLIENT_IDS[2]
+    elif invalid == "response_identity":
+        evidence.normalized_payload["operation_id"] = CLIENT_IDS[2]
+        evidence.payload_digest = canonical_json_digest(evidence.normalized_payload)
+    elif invalid == "evidence_conflict":
+        repository.conflicting_evidence_ids.add(evidence.id)
+    elif invalid == "evidence_status":
+        evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+    elif invalid == "evidence_kind":
+        evidence.kind = InboundEvidenceKind.WMS_EVENT
+    elif invalid == "evidence_source":
+        evidence.source_identity = "OTHER-SOURCE"
+    elif invalid == "evidence_owner":
+        evidence.workline_id = 2
+    elif invalid == "evidence_result":
+        evidence.normalized_payload["data"] = (
+            {
+                "result": "READY",
+                "moves": [
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "A000001922",
+                        "target": {
+                            "type": "RACK_BIN_SLOT",
+                            "rack_id": "510056",
+                            "rack_face": "90",
+                            "slot_id": "OTHER-SLOT",
+                        },
+                    }
+                ],
+            }
+            if decision == "NO_BATCH"
+            else {"result": "NO_BATCH", "retry_after_ms": 1000}
+        )
+        confirmation.response_result = evidence.normalized_payload["data"]["result"]
+        evidence.payload_digest = canonical_json_digest(evidence.normalized_payload)
+    else:
+        evidence.payload_digest = "0" * 64
+    original_count = service._wms.create_or_get.await_count
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.status == "NEEDS_ATTENTION"
+    assert service._wms.create_or_get.await_count == original_count
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "invalid_fact", [None, "missing", "group", "run", "pending", "task", "face", "position", "member_task"]
+)
+@pytest.mark.parametrize("stage", ["request", "ready"])
+async def test_return_decision_uses_only_exact_same_group_rack_fact(invalid_fact, stage) -> None:
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    del service._assert_return_rack_fact
+    step = repository.steps[0]
+    step.ordinal = 3
+    repository.run.current_step_ordinal = 3
+    repository.get_current_step = AsyncMock(return_value=step)
+    rack_step = TransportDebugRunStep(
+        run_id="other-run" if invalid_fact == "run" else repository.run.run_id,
+        ordinal=0,
+        group_index=1 if invalid_fact == "group" else 0,
+        phase="RACK_TO_STATION",
+        status="PENDING" if invalid_fact == "pending" else "SUCCEEDED",
+        client_request_id=CLIENT_IDS[1],
+        transport_task_id="rack-task",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    repository.steps.append(rack_step)
+    if invalid_fact != "missing":
+        repository.tasks["rack-task"] = _task(
+            "rack-task", CLIENT_IDS[2] if invalid_fact == "task" else CLIENT_IDS[1], "RACK_MOVE", status="SUCCEEDED"
+        )
+    repository.members["rack-task"] = [
+        _member(
+            "other-task" if invalid_fact == "member_task" else "rack-task",
+            object_type="RACK",
+            object_id="510056",
+            source={"kind": "RACK", "location_code": "510056"},
+            target={"kind": "RACK_POSITION", "location_code": "wrong" if invalid_fact == "position" else "KT16"},
+            face="270" if invalid_fact == "face" else "90",
+        )
+    ]
+    batch = repository.run.configuration_json["return_batches"]["0"]
+    repository.run.configuration_json["return_batches"] = {"3": batch} if stage == "ready" else {}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    transport.position_error = TransportContractError("aggregate is unknown due to another task")
+    assert await service.advance_run("debug-run-1")
+    assert transport.position_checks == []
+    assert service._wms.create_or_get.await_count == (1 if not invalid_fact and stage == "request" else 0)
+    assert transport.calls == ([CLIENT_IDS[0]] if not invalid_fact and stage == "ready" else [])
+    assert repository.run.status == ("NEEDS_ATTENTION" if invalid_fact else "RUNNING")
 
 
 async def test_partial_wms_ready_freezes_target_and_remaining_fifo_waits_for_physical_success() -> None:
@@ -1159,16 +1579,7 @@ async def test_partial_wms_ready_freezes_target_and_remaining_fifo_waits_for_phy
             ],
         },
     }
-    service._confirmations = SimpleNamespace(
-        get_by_identity_for_update=AsyncMock(
-            return_value=SimpleNamespace(
-                status="COMPLETED", request_payload=first["request_payload"], response_evidence_id=11
-            )
-        )
-    )
-    service._wms_evidence = SimpleNamespace(
-        get_by_id_without_lock=AsyncMock(return_value=SimpleNamespace(normalized_payload=response))
-    )
+    _install_return_response(service, repository, first["request_payload"], response)
     assert await service.advance_run("debug-run-1")
     assert transport.calls == []
     assert await service.advance_run("debug-run-1")

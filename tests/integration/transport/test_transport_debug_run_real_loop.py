@@ -19,7 +19,6 @@ from src.app.transport.contracts import (
     RackReference,
     RcsTemplateId,
     TransportCaller,
-    TransportResourceConflict,
 )
 from src.app.transport.debug_run_contracts import (
     CreateTransportDebugRun,
@@ -29,7 +28,7 @@ from src.app.transport.debug_run_contracts import (
     TransportDebugRunStatus,
 )
 from src.app.transport.debug_run_repository import TransportDebugRunRepository
-from src.app.transport.debug_run_service import TransportDebugRunConflict, TransportDebugRunService
+from src.app.transport.debug_run_service import TransportDebugRunService
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugPositionProjection,
@@ -37,7 +36,6 @@ from src.app.transport.models import (
     TransportDebugRunStep,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
@@ -322,9 +320,6 @@ async def _cleanup(
         if task_ids:
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
             await db.execute(
-                delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
-            )
-            await db.execute(
                 delete(TransportDebugPositionProjection).where(
                     TransportDebugPositionProjection.source_transport_task_id.in_(task_ids)
                 )
@@ -533,7 +528,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
                 await db.execute(delete(WorkLine).where(WorkLine.id == scan_workline_id))
 
 
-async def test_existing_rack_task_prevents_auto_run_creation_atomically(
+async def test_existing_rack_task_and_new_auto_run_keep_independent_tasks(
     integration_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -550,7 +545,7 @@ async def test_existing_rack_task_prevents_auto_run_creation_atomically(
             transport_submit_path="/api/v1/wes/transport-requests",
             session_factory=integration_session_factory,
         )
-        await runtime.service.move_rack(
+        existing_handle = await runtime.service.move_rack(
             new_uuid7(),
             TransportCaller("SORTER", "STATION-A"),
             rack_id,
@@ -576,11 +571,34 @@ async def test_existing_rack_task_prevents_auto_run_creation_atomically(
             ),
         )
 
-        with pytest.raises(TransportDebugRunConflict, match="resource is already active"):
-            await debug_run_service.create_run(request, actor_id=7)
+        run = await debug_run_service.create_run(request, actor_id=7)
 
         async with integration_session_factory() as db:
-            assert await db.scalar(select(TransportDebugRun).where(TransportDebugRun.rack_id == rack_id)) is None
+            persisted_run = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            assert persisted_run is not None
+            assert persisted_run.status == "RUNNING"
+            assert persisted_run.active_scope == "GLOBAL"
+            step = await db.scalar(select(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run.run_id))
+            assert step is not None
+            assert step.status == "WAITING"
+            assert step.transport_task_id != existing_handle.transport_task_id
+            tasks = list(
+                await db.scalars(
+                    select(TransportTask).where(
+                        TransportTask.transport_task_id.in_([existing_handle.transport_task_id, step.transport_task_id])
+                    )
+                )
+            )
+            assert len(tasks) == 2
+            assert {task.client_request_id for task in tasks} == {
+                existing_handle.client_request_id,
+                step.client_request_id,
+            }
+            members = list(await db.scalars(select(TransportMember).where(TransportMember.object_id == rack_id)))
+            assert {member.transport_task_id for member in members} == {
+                existing_handle.transport_task_id,
+                step.transport_task_id,
+            }
     finally:
         if runtime is not None:
             await runtime.aclose()
@@ -592,7 +610,7 @@ async def test_existing_rack_task_prevents_auto_run_creation_atomically(
         )
 
 
-async def test_concurrent_rack_task_and_auto_run_have_exactly_one_owner(
+async def test_concurrent_rack_task_and_auto_run_are_independent(
     integration_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -641,19 +659,7 @@ async def test_concurrent_rack_task_and_auto_run_have_exactly_one_owner(
         )
 
         failures = [result for result in results if isinstance(result, BaseException)]
-        assert len(failures) == 1
-        assert isinstance(failures[0], (TransportDebugRunConflict, TransportResourceConflict))
-        async with integration_session_factory() as db:
-            active_bindings = list(
-                await db.scalars(
-                    select(TransportResourceBinding).where(
-                        TransportResourceBinding.resource_type == "RACK",
-                        TransportResourceBinding.resource_id == rack_id,
-                        TransportResourceBinding.released_at.is_(None),
-                    )
-                )
-            )
-        assert len(active_bindings) == 1
+        assert failures == []
     finally:
         if runtime is not None:
             await runtime.aclose()

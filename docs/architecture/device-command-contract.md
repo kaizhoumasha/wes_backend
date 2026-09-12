@@ -34,18 +34,17 @@ related:
 
 核心只保证以下不变量：
 
-1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令下发前确认目标状态条目身份一致、
-   `is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令，且 `updated_at` 未超过冻结的允许年龄。合同身份只由 WES
-   命令创建时从 WorkLine 当前绑定取得并冻结，不要求 Status 返回。诊断命令在实际发送前查询目标 ECS Status，并额外要求
-   `task_type` 位于非空 `supported_commands`；`MANUAL_DEBUG` 创建前还执行同样的预检，任一准入失败都不得发送 Command。
+1. 每个 `DeviceCommand` 都是独立可靠义务；WES 在创建时冻结目标设备、执行身份、合同和不可变载荷，派发只依据这些冻结事实
+   及该命令自身的可派发状态。ECS Status 和 WES preflight 只提供现场诊断快照，不作为 Command create/dispatch admission；
+   同设备实时互斥、运行态与设备安全许可由 ECS 在接纳 Command 时原子裁决。
 2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
 3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
 4. 只有匹配原业务命令、WorkLine 及具体执行关联 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG` 和
    `EVENT_DEBUG` CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
-5. `command_code` 最多绑定一个已接纳终态结果；WES 内部使用 `RESULT:{command_code}` 作为结果身份。重复 CALLBACK 不重复推进，
-   同一身份对应不同载荷时拒绝并保留冲突证据。
-6. 未知、乱序或无法关联的结果拒绝接纳且不推进当前对象；`PENDING` 命令收到 RESULT 时必须先进入
-   `RECONCILING` 并占住设备槽，确保 worker 不会继续下发物理动作。
+5. 每条合同有效 RESULT 使用 `RESULT:<完整规范化报文摘要>` 作为消息身份，与 `command_code` 关联身份分离。精确重放保持幂等，
+   内容不同的消息使用不同身份独立可靠留存；只有首个合同有效的关联终态结果闭合命令，后续结果不得覆盖既有终态或重复推进。
+6. 合同有效但未知或尚未关联的 RESULT 可靠持久化且不推进业务对象；`PENDING` 命令先见匹配 RESULT 时，只将该命令转为
+   `RECONCILING` 并记录 `RESULT_BEFORE_DISPATCH`，禁止该命令自身派发，不阻塞同设备的其它独立命令。
 7. 稳定身份始终绑定同一规范化语义载荷，包括明确拒绝的尝试。只有请求可证明未离开 WES 或设备明确返回“未接纳”时才能
    安全重提：载荷不变沿用原身份，合同修正改变载荷摘要时使用新身份。结果可能已送达、已接纳、幂等冲突或 ACK 未知时禁止
    换身份或自动重放；等待匹配回调，状态查询只补充活动证据，仍无法闭合时进入人工对账。
@@ -80,7 +79,8 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 - 仅将 `device_code`、`command_code`、`task_type`、固定 `priority=1`、`timeout`、Unix 毫秒 `timestamp`
   和 `params` 发送给 ECS；WES 合同元数据和 trace 不进入 ECS 包络；
 - 幂等重放先查询既有 `client_request_id`，相同载荷、`reason` 和 `created_by` 直接返回且不访问 ECS；
-- 复用相同的 Celery 扫描派发、统一 ECS wire、CALLBACK ingress、evidence 和 PostgreSQL 生命周期，并在发送前再次执行运行态准入；
+- 复用相同的 Celery 扫描派发、统一 ECS wire、CALLBACK ingress、evidence 和 PostgreSQL 生命周期；preflight 只返回诊断快照，
+  不作为 create/dispatch admission。派发只依据冻结身份、合同、载荷与命令自身状态，实时互斥和安全许可由 ECS 原子接纳裁决；
 - 只能通过查询接口观察命令与规范化 CALLBACK，不触发 WorkLine、插件或业务对象推进。
 
 这是一条受限的联调创建入口，不是供应商私有协议适配层。WES 仍只发送白皮书统一命令包络，供应商 ECS/网关负责内部协议转换。
@@ -89,12 +89,11 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 
 - 先按普通 EVENT 持久化并独立返回 ACK，再由 evidence worker 异步创建命令；创建成功后 evidence 以 `IGNORED` 明确表示不进入
   WorkLine/业务 Decision，不表示联调命令失败；
-- 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令；
-- 同设备已有未终态 `DeviceCommand` 时，不创建失败占位命令，不访问 ECS；evidence 进入 `RECONCILING`，并持久化指向旧命令的 blocker 因果事实；
+- 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令，正文漂移保持冲突；
+- 新 EVENT 使用自己的 identity 创建独立命令，不等待同设备旧 `DeviceCommand` 终态；旧命令的 identity、payload、状态、对账原因、Evidence 和资源围栏保持不变；
 - 联调目标由 `Settings.DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` 指定，新建命令时校验并冻结；Docker 本机开发编排明确指向 ECS Mock，配置变化不改写旧命令。固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
   原样作为 `params`；
-- 复用既有 DeviceCommand、统一 ECS Adapter、worker、运行态准入、CALLBACK 和 evidence；Status 未声明支持
-  `MOVE_FORWARD`、设备不在线、非 `AUTO / IDLE`、存在 `current_command_code` 或其它当前准入失败时，已创建的联调命令直接闭合为失败，不排队等待设备后续可用；
+- 复用既有 DeviceCommand、统一 ECS Adapter、worker、CALLBACK 和 evidence；WES 不以本地 Status 或旧命令快照决定新独立命令能否执行，由 ECS 在接纳时裁决；
 - 本次新建 `PENDING` 命令在事务提交后唤醒既有 DeviceCommand 派发扫描；唤醒失败不改写命令或 evidence，Beat 仍负责补偿扫描；
 - 以 `ECS_EVENT_DEBUG:<event-identity>` 记录系统触发原因，`created_by=null`，不伪装为人工联调。
 
@@ -110,11 +109,9 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 
 首次接收时冻结有效 debug 标志，重复接收沿用原 Evidence 的有效标志，不因轮次结束或新轮次配置变化重新判定。
 外部事件身份仍按原始规范化 EVENT 计算；开关不改变既有事件身份，不重放历史事件。自动提升与显式 debug 共用上述
-设备锁、命令幂等、运行态准入、结果回调及对账约束，不绕过未闭合命令围栏。
+创建锁、命令幂等、结果回调及单命令对账约束，不改写其它命令事实。
 
-blocker 查询返回检测时的旧命令状态与对账原因、当前命令状态和不可变 `block_id`。匹配原 `command_code` 的 Result Callback 仍是闭合旧命令的首选路径。只有 blocker 指向、仍为 `RECONCILING / DELIVERY_UNKNOWN`、且冻结 binding 能提供状态新鲜度合同的业务命令，才允许超级用户在实时证明设备在线、`AUTO / IDLE`、无当前命令且状态未过期后，将旧命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`。该操作不伪造 Result 或成功终态；已接纳但尚未应用的 Result 优先，必须拒绝人工闭合。未冻结状态新鲜度合同的诊断命令只能由 Result Callback 闭合。
-
-旧命令终态不会自动重放 EVENT。超级用户只能携带 GET blocker 返回的当前 `block_id` 显式重处理；锁内确认该 blocker 仍是 latest `BLOCKED`、旧命令已终态且设备没有其它未终态命令后，才可将原 evidence 重置为 `PENDING`。重处理不改写 EVENT 身份、载荷、摘要或原业务关联；旧 `block_id` 不得作用于后续新 blocker。人工闭合和重处理的状态变化与审计必须同事务成功或回滚。
+WES 不保存或查询 EVENT command blocker，不提供人工 reprocess、`reconcile-device-idle`、ECS 空闲探测或人工失败码。旧命令只能由匹配原 `command_code` 的权威 Result Callback 或既有对账事实闭合；新 EVENT 或新命令成功不会自动重放、失败化、释放或覆盖旧命令。
 
 ACK 与命令创建属于两个异步执行路径，WES 不承诺 ECS 在 worker 启动前已经读取到 ACK 字节。
 
@@ -130,8 +127,8 @@ ACK 与命令创建属于两个异步执行路径，WES 不承诺 ECS 在 worker
 - Result 顶层只含 `command_code`、`device_code`、`result`、`finish_time`、`data`、`error_detail`；
 - Event 顶层公共字段为 `device_code`、`event_type`、`timestamp`、可选严格布尔值 `is_debug` 和 `data`，设备专属业务字段由合同
   附录约束；
-- Status 顶层只含 `devices` 数组，每项严格包含 `device` 元数据和 `state`；正常派发只使用 `state` 的身份、在线、模式、
-  状态、活动命令和更新时间字段，元数据与 `scenario` 仅作诊断；
+- Status 顶层只含 `devices` 数组，每项严格包含 `device` 元数据和 `state`；其中 `device`、`state` 与 `scenario` 全部只提供
+  诊断快照。WES dispatch 不查询或依赖 Status，实时互斥、运行态与设备安全许可由 ECS 在原子接纳 Command 时裁决；
 - Command/Result/Event 外部时间统一使用 Unix 毫秒；事件内部身份为
   `EVENT:{sha256(device_code + event_type + timestamp + is_debug + canonical data)}`，省略 `is_debug` 等同于 `false`；
 - ECS 同步接纳应答与 WES CALLBACK 应答统一为整数 `code=200`、`message="ACK"`。

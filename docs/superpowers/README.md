@@ -8,15 +8,15 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
-| `specs/2026-09-10-station-driven-execution-recovery-top-level-design.md` | 点位事件驱动、两条恢复路径、命令闭合与 WMS 业务对账分离的顶层目标 | CURRENT SCOPE IMPLEMENTED；WES 基础与诊断前端已验证，业务插件和 WMS 扩展为后续独立需求 |
-| `plans/2026-09-10-station-driven-execution-recovery-implementation-plan.md` | 本站恢复基础与诊断切片、验证所有权及后续业务边界 | S1/S2、S3 本地、S5 前后端已交付；无业务插件或新 WMS 合同 blocker，未部署 |
+| `specs/2026-09-11-wes-nonblocking-execution-design.md` | ECS/Transport 取消跨任务物理围栏、结果自动归集与 WMS 对账职责的目标设计 | IMPLEMENTING；后端未提交 worktree 已通过 QUALITY 与 selected HEAVY（395 passed）；前端合同同步、部署与供应商/现场验收未完成 |
+| `plans/2026-09-11-wes-nonblocking-execution-plan.md` | 合同、ECS、Transport、事实恢复、业务消费者、前端与现场验收切片 | IMPLEMENTING；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，不是 merge ready |
 | `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
 | `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | 后端 A1–A4 实现、评审与验证完成；不依赖具体业务插件，未部署 |
 | `plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面、领域恢复入口和独立消费者验收 | IMPLEMENTING；恢复手册与原消费者验证已推进，前端等待干净 develop 合同 |
 | `plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据、普通 TEST FULL 验收及既有备份计划接入 | APPROVED；承接旧发布静默计划剩余 Task 5，未部署 |
 | `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 核心退役与三类整线插件分开验收；具体实施、交付及未完成项以该 SPEC 和 S0 记录为准，不复用历史状态作当前部署证据 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
-| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；prepare 所有权已收敛，插件业务触发和联合验收另行跟踪 |
+| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；原 R4 人工 apply-correction 已被 2026-09-11 无阻塞设计取代，修正仅走正常 plan_delta record/replay |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源；[第 7 章插件顶层设计](specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、系统关系、资源装配与验收 | Approved；插件边界于 2026-09-09 汇总，不代表业务插件交付或现场验收 |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、WorkLine 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
@@ -257,3 +257,6 @@
 3. 文档只承担历史决策或发布证据，不再是当前执行入口。
 
 即使实现已完成，只要自动化门禁仍直接读取文档，或文档仍承载明确未完成范围，就继续留在活跃目录。
+
+- `../archive_docs/wes_backend/2026-09-10-station-driven-execution-recovery-top-level-design.md`（由 2026-09-11 无阻塞执行设计替代）。
+- `../archive_docs/wes_backend/2026-09-10-station-driven-execution-recovery-implementation-plan.md`（旧基础交付记录，不能作为新目标验收依据）。

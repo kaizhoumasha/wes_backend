@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import uuid4
 
 import pytest
 
@@ -12,6 +13,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
+from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
 from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceConflictResult,
     InboundEvidenceIdentityConflictError,
@@ -46,6 +48,57 @@ class FakeInboundEvidenceRepository:
     ) -> InboundEvidenceConflict:
         self.conflicts.append(conflict)
         return conflict
+
+
+@pytest.mark.asyncio
+async def test_exact_device_registration_leaves_unrelated_and_rejected_history_quiet(db_session):
+    repository = InboundEvidenceRepository()
+    suffix = uuid4().hex
+    records = []
+    for name, overrides in [
+        ("match", {}),
+        ("other-command", {"command_code": "other-command"}),
+        ("other-device", {"device_code": "other-device"}),
+        ("other-contract", {"contract_version": "unrecognized"}),
+        ("processed", {"processed_at": datetime(2026, 9, 1)}),
+    ]:
+        values = {
+            "kind": InboundEvidenceKind.DEVICE_RESULT,
+            "source_identity": f"RESULT:{suffix}:{name}",
+            "device_code": "device-match",
+            "command_code": "command-match",
+            "contract_key": "third_party_integration",
+            "contract_version": "1.1",
+            "apply_status": InboundEvidenceApplyStatus.IGNORED,
+            "received_at": datetime(2026, 9, 1),
+            "normalized_payload": {"message": name},
+            "payload_digest": "a" * 64,
+        }
+        values.update(overrides)
+        records.append(await repository.add(db_session, InboundEvidence(**values)))
+    assert (
+        await repository.requeue_unassociated_device_results(
+            db_session,
+            command_code="command-match",
+            device_code="device-match",
+            workline_id=None,
+            material_execution_id=None,
+            contract_key="arm.pick",
+            contract_version="2.0",
+            source_contract_key="third_party_integration",
+            source_contract_version="1.1",
+        )
+        == 1
+    )
+    assert records[0].apply_status == InboundEvidenceApplyStatus.PENDING
+    assert records[0].contract_key == "arm.pick"
+    assert records[0].normalized_payload == {"message": "match"}
+    assert records[0].payload_digest == "a" * 64
+    assert all(record.apply_status == InboundEvidenceApplyStatus.IGNORED for record in records[1:])
+    claimed = await repository.claim_next_pending(db_session, kinds=(InboundEvidenceKind.DEVICE_RESULT,))
+    assert claimed.id == records[0].id
+    await repository.mark_reconciling(db_session, claimed, processed_at=datetime(2026, 9, 2))
+    assert await repository.claim_next_pending(db_session, kinds=(InboundEvidenceKind.DEVICE_RESULT,)) is None
 
 
 @pytest.mark.asyncio

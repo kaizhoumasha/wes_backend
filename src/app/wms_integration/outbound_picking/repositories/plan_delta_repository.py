@@ -9,7 +9,6 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, WmsConfirmation
-from src.app.sys.models.audit_log import AuditLog
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
@@ -18,21 +17,8 @@ MEMBER_BATCH_SIZE = 250
 
 
 class PickingTaskPlanDeltaRepository:
-    async def correction_audited(self, db: AsyncSession, args: dict[str, Any]) -> bool:
-        columns = AuditLog.__table__.c
-        return (
-            await db.scalar(
-                select(columns.id).where(columns.title == "PickingTask 计划冲突对账", columns.args == args).limit(1)
-            )
-            is not None
-        )
-
     async def get_evidence(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
         return await db.get(InboundEvidence, evidence_id)
-
-    async def refresh_evidence(self, db: AsyncSession, evidence: InboundEvidence) -> None:
-        # R4 曾读取该 ORM identity；获取 Evidence 锁后刷新并发提交的应用状态。
-        await db.refresh(evidence)
 
     async def first_rejection(self, db: AsyncSession, evidence_id: int) -> str | None:
         columns = InboundEvidenceConflict.__table__.c

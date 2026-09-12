@@ -23,10 +23,6 @@ class TransportIdempotencyConflict(TransportContractError):
     """同一调用幂等号对应了不同请求。"""
 
 
-class TransportResourceConflict(TransportContractError):
-    """请求涉及的资源已被其他非终态搬运任务占用。"""
-
-
 class TransportTaskKind(StrEnum):
     RACK_MOVE = "RACK_MOVE"
     RACK_ROTATE = "RACK_ROTATE"
@@ -171,7 +167,6 @@ class ZonePosition:
 
 
 type RackMovePosition = RackReference | ZonePosition | RackPosition
-type RackRotatePosition = RackReference | RackPosition
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +264,7 @@ class RotateRackRequest:
     client_request_id: str
     caller: TransportCaller
     rack_id: str
-    position: RackRotatePosition
+    position: RackPosition
     target_face: str
     rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_ROTATE, init=False)
@@ -277,10 +272,8 @@ class RotateRackRequest:
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id, self.caller)
         _ = require_transport_text(self.rack_id, "rack_id", max_length=100)
-        if type(self.position) not in {RackReference, RackPosition}:
-            raise TransportContractError("rack rotation position must be a rack reference or rack position")
-        if type(self.position) is RackReference and self.position.location_code != self.rack_id:
-            raise TransportContractError("RACK location_code must match rack_id")
+        if type(self.position) is not RackPosition:
+            raise TransportContractError("rack rotation requires an explicit rack position")
         validate_opaque_face(self.target_face, "target_face", error_type=TransportContractError)
         if self.rcs_template_id is not RcsTemplateId.CTU02:
             raise TransportContractError("rack rotation requires rcs_template_id CTU02")
@@ -376,7 +369,7 @@ class TransportPort(Protocol):
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        position: RackRotatePosition,
+        position: RackPosition,
         target_face: str,
         rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
         *,
@@ -499,7 +492,6 @@ __all__ = [
     "RackMovePosition",
     "RackPosition",
     "RackReference",
-    "RackRotatePosition",
     "RcsTemplateId",
     "RotateRackRequest",
     "TransportCaller",
@@ -518,7 +510,6 @@ __all__ = [
     "TransportPosition",
     "TransportProviderPort",
     "TransportRequest",
-    "TransportResourceConflict",
     "TransportSubmitCode",
     "TransportSubmitResult",
     "TransportTaskKind",

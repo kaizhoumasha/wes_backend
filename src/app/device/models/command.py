@@ -208,13 +208,6 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         ),
         UniqueConstraint("command_code", name="ux_device_commands_command_code"),
         Index("ix_device_commands_dispatch_claim", "status", "next_attempt_at", "id"),
-        Index(
-            "ux_device_commands_dispatching_device",
-            "device_code",
-            unique=True,
-            postgresql_where=text("status = 'DISPATCHING'"),
-            sqlite_where=text("status = 'DISPATCHING'"),
-        ),
         UniqueConstraint(
             "workline_id",
             "device_code",

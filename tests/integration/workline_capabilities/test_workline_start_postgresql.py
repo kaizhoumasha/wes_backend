@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from wes_plugin_sdk import PluginDefinition, WorkLineDeviceRole, WorkLinePositionSlot
 
 from src.app.device.models.device import Device
+from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.activation import (
     WorkLineActivationPlan,
@@ -143,6 +144,22 @@ def test_workline_start_publishes_current_contract_and_serializes_version() -> N
                 line_id, device_id = await _seed_workline(sessions, "CONCURRENT")
                 builder = Builder({line_id: device_id})
                 service = WorkLineStartService(plugins=(_plugin(builder),))
+                async with sessions.begin() as db:
+                    historical = InboundEvidence(
+                        kind=InboundEvidenceKind.DEVICE_EVENT,
+                        source_identity=f"historical-start:{line_id}",
+                        device_code=f"START-PG-DEVICE-{line_id}",
+                        payload_digest="a" * 64,
+                        normalized_payload={"diagnosis": "pending feedback"},
+                        received_at=datetime(2026, 9, 4),
+                        workline_id=line_id,
+                        apply_status=InboundEvidenceApplyStatus.RECONCILING,
+                    )
+                    db.add(historical)
+                    await db.flush()
+                    historical_id = historical.id
+                    disabled = await db.get(WorkLine, line_id)
+                    assert not disabled.is_active
 
                 async def start():
                     async with sessions.begin() as db:
@@ -154,6 +171,10 @@ def test_workline_start_publishes_current_contract_and_serializes_version() -> N
                 assert builder.calls == [line_id]
                 async with sessions() as db:
                     persisted = await db.get(WorkLine, line_id)
+                    persisted_history = await db.get(InboundEvidence, historical_id)
+                    assert persisted_history.apply_status == InboundEvidenceApplyStatus.RECONCILING
+                    assert persisted_history.normalized_payload == {"diagnosis": "pending feedback"}
+                    assert persisted_history.processed_at is None
                     assert persisted.is_active and persisted.version == 1
                     assert persisted.plugin_version == "1.0"
                     assert persisted.flow_mode == "GENERIC_FLOW"

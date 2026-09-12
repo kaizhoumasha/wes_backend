@@ -5,10 +5,6 @@ from .command_repository import (
     device_command_repository,
 )
 from .device_repository import DeviceRepository, device_repository
-from .event_command_block_repository import (
-    DeviceEventCommandBlockRepository,
-    device_event_command_block_repository,
-)
 from .ingress_history_repository import DeviceIngressHistoryRepository
 from .status_observation_repository import (
     DeviceStatusObservationRepository,
@@ -17,12 +13,10 @@ from .status_observation_repository import (
 
 __all__ = [
     "DeviceCommandRepository",
-    "DeviceEventCommandBlockRepository",
     "DeviceIngressHistoryRepository",
     "DeviceRepository",
     "DeviceStatusObservationRepository",
     "device_command_repository",
-    "device_event_command_block_repository",
     "device_repository",
     "device_status_observation_repository",
 ]

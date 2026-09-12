@@ -2,9 +2,8 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-04
+updated_at: 2026-09-12
 contract_version: 0.3.0
-implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -22,14 +21,37 @@ related:
 
 # WES AGV/CTU 通用搬运能力合同
 
+## T0 无阻塞目标与现行合同边界（2026-09-11）
+
+[无阻塞设计](../superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md) 已退出 WES 跨任务 BIN/RACK 占用裁决。
+当前未提交实现已删除 Transport 资源绑定 owner、PositionProjection 准入和 debug run 跨任务货架占用，也不再公开资源绑定计数字段。
+Transport 仍保留同 `client_request_id` 的不可变请求、单任务 claim token、完整成员校验和真实同任务依赖；QUALITY 与隔离 PostgreSQL/Redis
+selected HEAVY（395 passed）已通过，部署及现场验收仍未完成，不得把本地验证视为接入方已经通过。
+
+实际发送继续使用 WmsTransportAdapter → WmsClient → WMS，WES 不直连 RCS。
+§4.1 定义同 operation/operation_id/transport_task_id 的接纳与重试；真实 RCS 同资源排队、跨重启幂等及保存期限均为 UNKNOWN。
+没有这类证据不得开启交付未知重送，也不得宣称无阻塞部署验收通过；已明确接纳任务不再重送 submit。
+
+§5.3 的 outcome_revision 只在同一 transport_task_id 内排序，§6 的 outcome_version 只标识该任务对内发布版本。
+UNKNOWN 可由匹配完整高版本事实收敛；当前合同不允许更高版直接改写已确定 SUCCEEDED/FAILED。
+不同任务的 revision、任务创建时间或 HTTP 到达时间均不能决定同资源物理先后。
+T3 只在来源合同可证明先后时更新聚合位置；否则保存各任务事实，显示当前未确认。
+任务创建、发送、拒绝或超时不是位置变化事实，不得据此写观察占位或改写最近已知位置。
+
+合法未知任务结果当前保存后异步 CONFLICT；目标为保存后退出活跃重试，任务建立时按精确身份可靠登记匹配工作。
+该目标复用 Evidence、既有 worker 和提交后唤醒，不周期扫描全部孤立历史。准入删除不改变身份冲突与结果冲突语义。
+五项外部能力证据见[统一接入核验表](../integration/third_party_integration_whitepaper.md)；当前无真实供应商 PASS。
+
+
 ## 1. 文档定位
 
 本文是 Phase 4 搬运能力的唯一线上接口评审基线。它定义工作线插件如何调用四个通用搬运方法，以及 WES 如何经 WMS
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
-本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-已与本合同对齐，因此 `implementation_alignment=ALIGNED`。该状态只证明当前分支中的 WES 实现；合并、正式部署、WMS 实现、
-双方真实联调、供应商一致性、设备物理和业务验收仍需分别确认。
+本合同生命周期为 `Approved`，表示目标接口契约已经评审，不表示全部目标已经实现。
+无阻塞目标已形成未提交的本地代码、运行时 OpenAPI 与聚焦行为测试；独立 OpenAPI 生成物、最终门禁和部署仍待后续切片对齐，
+因此不声明整份合同 `implementation_alignment=ALIGNED`；此前的 Phase 4 对齐记录不覆盖本次目标。
+合并、正式部署、WMS 实现、双方真实联调、供应商一致性、设备物理和业务验收仍需分别确认。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 
@@ -49,7 +71,7 @@ WES 可以提供本地 TransportTask 运维观察接口；该接口不进入 WMS
 业务完成判定。唯一写入例外是数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
 Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。`TRANSPORT_DEBUG` 的已应用终态只更新 Transport
 自有、可丢弃的联调当前位置投影，供后续 `RACK_ROTATE` / `BIN_EXCHANGE` 校验，不写入活动业务执行使用的核心 `PositionProjection`。
-删除范围包括 Callback Receipt、Evidence、由该任务 Evidence 产生的联调当前位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或
+删除范围包括 Callback Receipt、Evidence、由该任务 Evidence 产生的联调当前位置投影、成员和任务；不扩展到库存、业务单据或
 其它 TransportTask。该动作不是远端取消或重试，
 不得向 WMS/RCS 发送请求，也不能撤销已经发生的物理动作。
 
@@ -324,7 +346,7 @@ CTU 物理动作顺序。
 | --- | --- | --- |
 | `202 / RECEIVED` | WMS 首次可靠接纳 | `PENDING → ACCEPTED` |
 | `200 / DUPLICATE` | 相同身份和请求体已接纳 | 收敛到原接纳事实 |
-| `409 / CONFLICT` | 相同身份对应不同请求体，或与已接纳不可变状态/活动资源冲突 | `RECONCILING` 并告警 |
+| `409 / CONFLICT` | 相同身份对应不同请求体，或同一任务与已接纳不可变事实冲突 | `RECONCILING` 并告警 |
 | `400`，空响应体 | 不是合法 JSON 或无法提取合法 UUIDv7 `operation_id`，确认未接纳 | `REJECTED` |
 | `413`，空响应体 | 原始请求 Body 超限，确认未接纳 | `REJECTED` |
 | `422 / REJECTED` | 已有关联身份，但信封、DTO、闭集枚举或固定能力不符合合同 | `REJECTED` |
@@ -341,7 +363,7 @@ CTU 物理动作顺序。
 `DUPLICATE`，同时复用首次应答的 `timestamp + data`，不能刷新业务应答时间或改写业务数据。首次 `REJECTED/CONFLICT` 的
 同身份同请求体重试必须原样重放首次响应；`503` 不建立幂等记录。
 除 `REJECTED` 在请求中的任务 ID 缺失或非法时可以省略 `transport_task_id` 外，所有带 Body 的搬运提交 ACK 都必须回显本次请求中已解析的
-合法 `transport_task_id`，包括活动资源与另一任务冲突的 `409`；不得改为返回占用资源的旧任务 ID。WES 按响应分支读取 `data`，忽略冗余字段：
+合法 `transport_task_id`，包括同一任务不可变事实冲突的 `409`；不得改为返回其它任务 ID。WES 按响应分支读取 `data`，忽略冗余字段：
 
 - `RECEIVED | DUPLICATE | CONFLICT | UNAVAILABLE`：读取必填的 `transport_task_id`；冗余 `reason_code` 不进入业务结果；
 - `REJECTED`：读取必填的 `reason_code` 和可选的 `transport_task_id`；只有请求中的任务 ID 缺失或非法时才能省略
@@ -357,10 +379,10 @@ WMS 必须原子保存 `operation + operation_id`、`transport_task_id`、首次
 WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_digest`，后续重提必须发送同一字节串，不得重新序列化，
 也不得加入 HTTP Header、连接信息等单次访问元数据。相同身份不同消息必须稳定冲突。
 
-活动资源冲突的最小范围为：同一 `rack_id` 或同一内部 `bin_code` 已绑定另一未闭合任务。接口契约 `container_id` 在 Adapter 边界映射为
-对应内部 `bin_code`。`RACK_BIN_SLOT` 的精确身份 `rack_id + rack_face + slot_id` 用于请求内位置唯一性、成员目标校验和结果匹配，
-不另建活动资源绑定；其所在 `rack_id` 已整体互斥。`HANDOFF_POSITION` 允许由多个任务引用，不能仅因 `location_code` 相同就冲突。
-资源只在前一任务取得确定终态或经人工对账关闭后解除。
+WES 不按相同 `rack_id`、内部 `bin_code` 或历史位置拒绝独立 TransportTask，也不维护跨任务物理占用表。
+接口契约 `container_id` 在 Adapter 边界映射为对应内部 `bin_code`；`RACK_BIN_SLOT` 的精确身份
+`rack_id + rack_face + slot_id` 只用于请求内位置唯一性、成员目标校验和结果匹配。实际资源互斥、排队、拒绝和执行由 WMS/RCS
+在接纳时裁决；`HANDOFF_POSITION` 也不能仅因 `location_code` 相同就在 WES 冲突。
 
 ### 4.3 提交可靠性
 
@@ -428,8 +450,8 @@ WMS 收到 `401` 时必须保留原消息、停止热重试并告警，待配置
 
 合法的成功 BIN 回架结果即使早于前置位置 Evidence 应用，也原子保存 callback receipt 和 `PENDING` Evidence，并返回
 `202 / RECEIVED`。WMS 不负责观察内部 `APPLIED` 状态，也无需为此重发结果。后台只有在所有所需精确目标 `TARGET_PLACED`
-均已应用后才完成任务并释放资源；等待期间让出一次领取租约（30 秒），由既有后台扫描重试，避免阻塞后到的位置事件。
-前置证据一直缺失时仍保留结果与资源围栏，按既有任务超时机制进入对账；不得以等待时间替代位置事实。
+均已应用后才完成任务；等待期间让出一次领取租约（30 秒），由既有后台扫描重试，避免阻塞后到的位置事件。
+前置证据一直缺失时仍保留原任务身份、成员和事实围栏，按既有任务超时机制进入对账；不得以等待时间替代位置事实。
 
 共享 `/api/v1/wms/events` 的每次请求均在返回响应前，通过现有 `callback_logs` 保存请求级收据，包括成功、重复、冲突、
 非法 JSON/UTF-8、错误请求头、超限、认证失败、运行时不可用和处理异常。原始字节以 Base64 保存，最多保留 64 KiB 并明确标记截断；
@@ -529,7 +551,7 @@ WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evid
 
 `failure_code` 只允许 `RCS_TASK_REJECTED | RCS_EXECUTION_FAILED | POSITION_UNKNOWN | MANUAL_ABORTED`。WMS/RCS 私有码必须在 WMS
 边界完成归一化；未映射私有码不得透传或默认归入 `RCS_EXECUTION_FAILED`，而应告警并等待核对。RCS timeout 本身不能形成搬运最终结果
-失败或 `POSITION_UNKNOWN`；只有 RCS 明确结论或人工实物核对才能形成相应权威结果。
+失败或 `POSITION_UNKNOWN`；只有 WMS/RCS 基于实际物理恢复或对账形成的明确结论才能构成相应权威结果。
 
 任务结果只按冻结对象事实聚合：全部对象成功且位置明确才是 `SUCCEEDED`；至少一个对象失败、但全部对象位置均明确时是
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
@@ -551,7 +573,7 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 同一任务、同一版本以 `data` 业务结果为准：`data` 完全相同时，即使 WMS 生成了新的 `operation_id` 或 `timestamp`，WES 也返回
 `200 / DUPLICATE`、保存本次收据且不创建第二份 evidence；`data` 有任何差异时返回 `409 / CONFLICT`。`timestamp` 不参与版本排序。
 `UNKNOWN` 可在取得权威完整位置后由更高版本收敛；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续搬运最终结果自动改写，即使版本更高也按
-证据冲突处理。人工对账只形成独立审计和现场处置，不伪装成普通搬运最终结果改写已释放资源的确定终态。
+证据冲突处理。来源系统的对账记录与现场处置不能伪装成普通搬运最终结果改写已确定终态。
 
 ### 5.4 持久化后应答
 
@@ -606,25 +628,24 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 
 任务首次进入 `ACCEPTED` 时写入唯一截止事实 `result_deadline_at = 当前时间 + Settings.TRANSPORT_RESULT_TIMEOUT_SECONDS`（秒）。无论由同步 ACK 还是先到的位置证据
 首次证明远端已接纳，都执行相同写入；重复 ACK、成员位置事实和其他更新不得刷新该字段。若最终结果先到并直接形成确定终态，
-无须设置截止时间。到期仍无匹配权威结果时发布 `UNKNOWN / TRANSPORT_RESULT_TIMEOUT` 并保持相关资源绑定；超时只是结果
+无须设置截止时间。到期仍无匹配权威结果时发布 `UNKNOWN / TRANSPORT_RESULT_TIMEOUT` 并保留原任务身份、成员和事实围栏；超时只是结果
 不确定，不代表物理失败，也不触发自动补偿。
 
 等待窗口的唯一默认值与合法范围由 `src/core/conf.py` 的 Settings 定义；配置变更须重启消费进程，
 仅影响之后首次接纳且尚未冻结 deadline 的任务，不重算已保存期限。
 
 `reconcile_overdue_tasks(limit)` 只按 `result_deadline_at` 和稳定顺序有界领取超过结果截止时间的 `ACCEPTED` 任务，在一个事务内转为
-`RECONCILING`、递增 `outcome_version` 并形成待发布结果；它不查询 WMS/RCS、不释放资源，也不直接调用 Publisher。
+`RECONCILING`、递增 `outcome_version` 并形成待发布结果；它不查询 WMS/RCS、不改写物理事实，也不直接调用 Publisher。
 
 `UNKNOWN` 对应内部 `RECONCILING`，不是伪造终态。后续 WMS/RCS 提交匹配的权威结果完成消歧时，可以用更高
 `outcome_version` 再次发布同一任务的 `SUCCEEDED` 或 `FAILED`；插件必须按 `transport_task_id + outcome_version` 幂等处理，
 并允许版本号跳跃。
 
-仅当任务仍为 `UNKNOWN/RECONCILING` 时，WMS 作为全局位置事实 owner 才可以在有审计记录的人工核对后，通过同一个
+仅当任务仍为 `UNKNOWN/RECONCILING` 时，WMS/RCS 基于其权威物理恢复或对账事实，才可以通过同一个
 `transport.task.resulted@v1` 提交下一连续 `outcome_revision` 的完整权威结果 evidence；WES 接纳后为同一 TransportTask 形成
-更高的内部 `outcome_version`，不增加人工修正专用 operation。确认动作已经完成时，`SUCCEEDED` 必须携带完整最终位置；确认动作
-未完成时，`FAILED` 同样必须携带所有对象的已知位置。只确认“操作员已检查”而没有完整位置，不能把 `UNKNOWN` 提升为确定结果，
-也不能直接改写 WES 位置投影。任务已是确定 `SUCCEEDED/FAILED` 时，人工核对只形成独立审计和现场处置，不再发送用于改写终态的
-搬运最终结果。
+更高的内部 `outcome_version`，不增加 WES 人工修正 operation。确认动作已经完成时，`SUCCEEDED` 必须携带完整最终位置；确认动作
+未完成时，`FAILED` 同样必须携带所有对象的已知位置。没有完整位置的诊断或检查记录不能把 `UNKNOWN` 提升为确定结果，
+也不能直接改写 WES 位置投影。任务已是确定 `SUCCEEDED/FAILED` 时，后续诊断记录不再发送用于改写终态的搬运最终结果。
 
 形成 `UNKNOWN` 或确定结果的事务必须同时递增 `outcome_version`。Transport 后台只领取
 `published_outcome_version < outcome_version` 的任务，领取时冻结当前版本、结果快照、领取令牌和租约，在事务外调用
@@ -634,7 +655,7 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 尚未发布的低版本可以被更高版本合并，系统只保证最新权威结果最终送达，不保证逐个发布中间版本。若低版本已经发布，更高版本
 仍会继续发布。发布后、记账前崩溃允许重复通知；首版不建立结果历史表或独立 Outbox 表。
 
-## 7. 内部状态与资源互斥
+## 7. 内部状态、成员与事实围栏
 
 内部状态仅供 Phase 4 实现使用：
 
@@ -652,21 +673,18 @@ WES 本地运维观察接口可以按 `transport_task_id` 返回任务当前状�
 不得按 WMS 事件时间或最大 `outcome_revision` 推断顺序，也不得返回原始 callback payload。该投影只用于开发和现场诊断，
 不属于 WMS/RCS 状态查询、物理完成证明或业务验收。
 
-同一货架或料箱最多属于一个非终态任务。Bin 任务必须绑定每个成员来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，
-同时绑定被搬运的每个内部 `bin_code`；Adapter 接收的接口契约`container_id` 必须先解析为该冻结成员身份。这样可以防止 AGV 搬架与
-CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一个事务中取得；
-只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态事务释放绑定；`RECONCILING` 即使已向插件发布 `UNKNOWN` 也必须继续保持绑定，
-直到匹配的权威确定结果完成消歧。唯一例外是第 1 节定义的联调定向清理：事务锁定任务后，按 `transport_task_id` 删除完整本地链路，
-包括随任务聚合删除其绑定；晚到 callback 仍按既有 missing-task Evidence 合同保留为 `CONFLICT`，不得静默丢弃。资源冲突在创建
-阶段失败关闭，不等待 RCS 再拒绝。
+每个 TransportTask 通过 TransportMember 冻结本任务的对象、来源和目标；Adapter 接收的接口契约 `container_id` 必须先解析为该
+冻结成员身份。独立任务可以引用相同货架、料箱或位置，WES 不据此建立占用或拒绝创建；实际并发安全由 WMS/RCS 在原子接纳时裁决。
 
-`RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次还会在 WES 本地独占其冻结 `rack_id`。只有该轮次在同一事务中创建的
-当前步骤可以继续使用此货架；其它 Transport 创建入口必须在向 WMS 提交前返回资源冲突。自动后继步骤同时复核货架仍位于冻结工作位，
-且当前面与该步骤预期面精确一致，防止任务间隙中其它流程移动或旋转货架后继续操作错误工作面。
+`RECONCILING` 即使已向插件发布 `UNKNOWN`，也必须保留原任务、原提交身份、冻结成员、Evidence 与位置事实，直到匹配的权威结果完成
+消歧；这项事实围栏只约束原任务的重发、覆盖和依赖动作，不阻断独立新任务。第 1 节联调定向清理按 `transport_task_id` 删除完整本地
+链路；晚到 callback 仍按既有 missing-task Evidence 合同保留为 `CONFLICT`，不得静默丢弃。
 
-精确储位身份使用 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)`，只承担请求内位置唯一性、成员目标校验和结果匹配；活动任务通过
-其所在 `rack_id` 整体互斥，不重复建立精确储位资源绑定。`HANDOFF_POSITION` 可以由多个任务引用，其瞬时容量属于 WMS/RCS 或
-业务 owner，不因 `location_code` 相同就在 Transport 核心互斥。
+自动联调轮次只保持自己的步骤领取、幂等和顺序，不独占冻结 `rack_id`，也不阻止其它 TransportTask 使用相同资源。自动后继步骤仍须
+根据本轮精确任务结果和当前有效 WMS 决策校验位置与朝向，不能用历史投影或另一任务的结果补齐。
+
+精确储位身份 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)` 只承担请求内位置唯一性、成员目标校验和结果匹配；
+`HANDOFF_POSITION` 的瞬时容量与全部物理互斥属于 WMS/RCS 或业务 owner。
 
 位置或终态证据可以先于 submit ACK 到达；匹配证据本身可以证明远端已接纳。后到 ACK 只补充接纳事实，不得回退位置或终态。
 

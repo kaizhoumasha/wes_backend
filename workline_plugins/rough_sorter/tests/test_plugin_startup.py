@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -259,8 +260,16 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
 
 
 class _Readiness:
+    def __init__(self, *, started: asyncio.Event | None = None, release: asyncio.Event | None = None) -> None:
+        self.started = started
+        self.release = release
+
     async def is_ready(self, db: object, binding: object) -> bool:
         del db, binding
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            await self.release.wait()
         return True
 
 
@@ -370,8 +379,7 @@ class _Commands:
 
 
 class _RackBindings:
-    def __init__(self, *, fenced: bool = False, events: list[str] | None = None) -> None:
-        self.fenced = fenced
+    def __init__(self, *, events: list[str] | None = None) -> None:
         self.events = events
         self.locked: list[tuple[int, str]] = []
 
@@ -380,30 +388,6 @@ class _RackBindings:
         self.locked.append((workline_id, resource_fence_id))
         if self.events is not None:
             self.events.append("rack-fence-lock")
-
-    async def get_by_resource_step_for_update(  # noqa: PLR0913
-        self,
-        db: object,
-        *,
-        workline_id: int,
-        resource_fence_id: str,
-        step: str,
-        exclude_task_statuses: tuple[str, ...] = (),
-        retain_transport_task_id: str | None = None,
-    ) -> object | None:
-        del db
-        assert step == "OLD_OUT"
-        if not self.fenced or (
-            exclude_task_statuses
-            and getattr(self, "all_old_out_succeeded", False)
-            and retain_transport_task_id != "OLD-OUT-CURRENT"
-        ):
-            return None
-        return SimpleNamespace(
-            workline_id=workline_id,
-            resource_fence_id=resource_fence_id,
-            step=step,
-        )
 
 
 class _RackPositions:
@@ -416,12 +400,28 @@ class _RackPositions:
 
 
 class _Placements:
+    def __init__(self, rack_code: str = "RACK-1") -> None:
+        self.rack_code = rack_code
+        self.calls: list[tuple[str, str, bool]] = []
+
     async def list_active_by_workline_position(
-        self, db: object, *, workline_code: str, position_code: str
+        self,
+        db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+        for_update: bool = False,
     ) -> list[object]:
         del db
         assert (workline_code, position_code) == ("ROUGH-LINE-1", "RACK-WORK")
-        return [SimpleNamespace(rack_code="RACK-1", logic_location_code="PIPELINE_OUTLET", placement_status="ARRIVED")]
+        self.calls.append((workline_code, position_code, for_update))
+        return [
+            SimpleNamespace(
+                rack_code=self.rack_code,
+                logic_location_code="PIPELINE_OUTLET",
+                placement_status="ARRIVED",
+            )
+        ]
 
 
 def _factory(*, active: bool = True) -> tuple[RoughSorterPluginFactFactory, EvidenceReadyFact]:
@@ -625,18 +625,12 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("arrival", "all_old_succeeded"),
-    [
-        (False, False),
-        (True, True),
-        (True, False),
-        ("outside", True),
-        ("unknown", True),
-        ("foreign", True),
-        ("same_departure", True),
-    ],
+    "current_rack_id",
+    ["RACK-1", "RACK-2"],
 )
-async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(arrival, all_old_succeeded) -> None:
+async def test_factory_builds_assigned_target_fact_without_aggregate_position_admission(
+    current_rack_id,
+) -> None:
     factory, _ = _factory()
     operation = "inbound.material.target_decide@v1"
     evidence = InboundEvidence(
@@ -698,39 +692,17 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
-    factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
-    from unittest.mock import AsyncMock
-
-    rack_bindings = _RackBindings(fenced=True)
-    rack_bindings.all_old_out_succeeded = all_old_succeeded
+    readiness_started = asyncio.Event()
+    release_readiness = asyncio.Event()
+    factory._device_readiness = (  # type: ignore[attr-defined]
+        _Readiness(started=readiness_started, release=release_readiness)
+        if current_rack_id == "RACK-1"
+        else _Readiness()
+    )
+    rack_bindings = _RackBindings()
     factory._positions = _RackPositions()
-    factory._position_projections = AsyncMock()
-    factory._position_projections.get.return_value = (
-        SimpleNamespace(
-            workline_id=7,
-            position_unknown=False,
-            position_json={"kind": "RACK_POSITION", "location_code": "RACK-WORK"},
-            source_transport_task_id="ARRIVAL-2",
-        )
-        if arrival
-        else None
-    )
-    if arrival == "outside":
-        factory._position_projections.get.return_value.position_json = {"kind": "ZONE", "location_code": "BUFFER"}
-    if arrival == "unknown":
-        factory._position_projections.get.return_value.position_unknown = True
-    if arrival == "foreign":
-        factory._position_projections.get.return_value.workline_id = 8
-    if arrival == "same_departure":
-        factory._position_projections.get.return_value.source_transport_task_id = "OLD-OUT-CURRENT"
-    factory._transport_tasks = AsyncMock()
-    factory._transport_tasks.get_task.return_value = SimpleNamespace(
-        transport_task_id="ARRIVAL-2",
-        authority_workline_id=7,
-        status="SUCCEEDED",
-        kind="RACK_MOVE",
-        request_json={"rack_id": "RACK-1", "target": {"kind": "RACK_POSITION", "location_code": "RACK-WORK"}},
-    )
+    placements = _Placements(current_rack_id)
+    factory._rack_placements = placements  # type: ignore[attr-defined]
     factory._rack_replacement_bindings = rack_bindings  # type: ignore[attr-defined]
     base = WmsResultReadyFact(
         "evidence:33",
@@ -741,7 +713,19 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
         decode_outcome(evidence.operation, evidence.normalized_payload, material_trace_id="TRACE-21"),
     )
 
-    fact = await factory.build(object(), base)
+    if current_rack_id != "RACK-1":
+        with pytest.raises(ValueError, match="target request current rack"):
+            await factory.build(object(), base)
+        assert placements.calls == [("ROUGH-LINE-1", "RACK-WORK", True)]
+        assert rack_bindings.locked == []
+        return
+
+    build = asyncio.create_task(factory.build(object(), base))
+    await readiness_started.wait()
+    calls_while_readiness_blocked = list(placements.calls)
+    release_readiness.set()
+    fact = await build
+    assert calls_while_readiness_blocked == []
 
     assert fact.result.value == "ASSIGNED"
     assert fact.current_rack_id == "RACK-1"
@@ -749,17 +733,9 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     assert fact.target_assignment_id == "ASSIGN-1"
     assert fact.placement_sequence == 1
     assert fact.device_ready is True
-    assert fact.current_rack_fenced is (not (arrival is True and all_old_succeeded))
-    assert rack_bindings.locked == [(7, "RACK-1")]
-    if not (arrival is True and all_old_succeeded):
-        assert TargetDecidedHandler()(fact) == (
-            PauseForReconciliation(
-                material_execution_id="EXEC-21",
-                fact_id="evidence:33",
-                reason_code="CURRENT_RACK_ALREADY_REPLACED",
-                affected_resource_ids=("RACK-1",),
-            ),
-        )
+    assert placements.calls == [("ROUGH-LINE-1", "RACK-WORK", True)]
+    assert rack_bindings.locked == []
+    assert isinstance(TargetDecidedHandler()(fact)[0], CreateDeviceCommand)
 
 
 @pytest.mark.asyncio
@@ -1242,9 +1218,14 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             self.calls = 0
 
         async def list_active_by_workline_position(
-            self, db: object, *, workline_code: str, position_code: str
+            self,
+            db: object,
+            *,
+            workline_code: str,
+            position_code: str,
+            for_update: bool = False,
         ) -> list[object]:
-            del db, workline_code, position_code
+            del db, workline_code, position_code, for_update
             self.calls += 1
             return [
                 SimpleNamespace(rack_code="RACK-2", logic_location_code="PIPELINE_OUTLET", placement_status="ARRIVED")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -28,6 +29,7 @@ class _Worklines:
         self.workline = workline
         self.calls: list[str] = []
         self.order = order
+        self.unfinished = {"count": 0, "sample": None, "by_type": {}}
 
     async def get_for_update(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         self.calls.append("lock_workline")
@@ -35,17 +37,8 @@ class _Worklines:
         return self.workline
 
     async def get_unfinished_workload_summary(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
-        return {
-            "count": 0,
-            "sample": None,
-            "by_type": {
-                "material_executions": False,
-                "device_commands": False,
-                "transport_tasks": False,
-                "inbound_evidences": False,
-                "wms_confirmations": False,
-            },
-        }
+        self.calls.append("read_unfinished")
+        return self.unfinished
 
 
 class _Policy:
@@ -53,7 +46,7 @@ class _Policy:
         return PrepareTaskType.MANUAL if context.is_active else None
 
     def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        return not facts.has_active_incident
+        return facts.has_position_bindings
 
 
 class _Facts:
@@ -61,7 +54,7 @@ class _Facts:
         self.ready = ready
 
     async def read_facts(self, _db: object, *, workline_id: int) -> PrepareRuntimeFacts:
-        return PrepareRuntimeFacts(not self.ready, True, (), False)
+        return PrepareRuntimeFacts(self.ready, (), False)
 
 
 class _Tasks:
@@ -191,6 +184,37 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
         "workline_code": "LINE-1",
     }
     assert queue.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history", ["device_commands", "transport_tasks", "inbound_evidences", "wms_confirmations"])
+async def test_prepare_preserves_historical_workload_and_admits_independent_task(history) -> None:
+    service, worklines, tasks, confirmations, queue = _service()
+    worklines.unfinished = {"count": 1, "sample": {"status": "RECONCILING"}, "by_type": {history: True}}
+    historical = deepcopy(worklines.unfinished)
+
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+
+    assert result.prepared
+    assert tasks.task.status == PickingTaskStatus.PREPARING
+    assert confirmations.kwargs is not None
+    assert queue.calls == 1
+    assert worklines.unfinished == historical
+    assert worklines.calls == ["lock_workline"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_active_business_task_still_blocks_independent_request() -> None:
+    service, _worklines, tasks, confirmations, queue = _service()
+    tasks.active = True
+
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+
+    assert result.reason == PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
+    assert tasks.claimed_type is None
+    assert tasks.task.status == PickingTaskStatus.QUEUED
+    assert confirmations.kwargs is None
+    assert queue.calls == 0
 
 
 @pytest.mark.asyncio

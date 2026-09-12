@@ -78,7 +78,6 @@ async def test_save_checks_submitted_configuration_before_changing_device_owners
         definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([previous, incoming]),
-        safety_repository=_Safety(),
     )
     with pytest.raises(BusinessException):
         await service.save_base(
@@ -112,7 +111,6 @@ async def test_save_accepts_new_configuration_even_when_saved_configuration_is_i
         definitions=((plugin).definition,),
         workline_repository=worklines,
         device_repository=_Devices([incoming]),
-        safety_repository=_Safety(),
     )
     await service.save(
         db,
@@ -135,7 +133,6 @@ async def test_configuration_status_checks_saved_config_in_complete_mode() -> No
             _workline(plugin_key="example_plugin", config={"device_bindings": {"SCAN": "D-2"}})
         ),
         device_repository=_Devices([_device("D-2", 7)]),
-        safety_repository=_Safety(),
     )
     result = await service.configuration_status(_Db(), workline_id=7)
     check_result = next(check for check in result.checks if check.code == "PLUGIN_CONFIGURATION_COMPATIBLE")
@@ -236,14 +233,6 @@ class _Blocker:
         return {"count": self.count, "sample": {"identity": "P-1"} if self.count else None}
 
 
-class _Safety:
-    def __init__(self, active: object | None = None) -> None:
-        self.active = active
-
-    async def get_active_for_workline(self, _db: object, _workline_id: int) -> object | None:
-        return self.active
-
-
 def test_workline_generic_update_does_not_own_plugin_configuration() -> None:
     assert "plugin_key" not in WorkLineCreate.model_fields
     assert "config" not in WorkLineCreate.model_fields
@@ -301,7 +290,6 @@ async def test_save_configuration_replaces_the_complete_device_set_and_commits_o
         position_repository=positions,
         workline_repository=worklines,
         device_repository=_Devices([bound, selected]),
-        safety_repository=_Safety(),
     )
 
     result = await service.save_base(
@@ -355,7 +343,6 @@ async def test_save_configuration_invalidates_changed_device_detail_caches(monke
         definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([bound, selected]),
-        safety_repository=_Safety(),
         device_cache_invalidator=SimpleNamespace(invalidate_cache=device_invalidator),
     )
     cache = object()
@@ -401,7 +388,6 @@ async def test_save_configuration_fails_closed_without_partial_commit(
         definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(workline, unfinished=unfinished),
         device_repository=_Devices(devices),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException, match=message):
@@ -424,7 +410,6 @@ async def test_save_configuration_rejects_a_plugin_incompatible_with_selected_de
         definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException) as exc_info:
@@ -508,7 +493,6 @@ async def test_save_without_plugin_rejects_leftover_configuration_before_writes(
         definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([device]),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException, match="配置"):
@@ -534,7 +518,6 @@ async def test_save_configuration_fails_closed_when_current_plugin_was_removed_f
         definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException, match="removed_plugin"):
@@ -559,7 +542,6 @@ async def test_save_configuration_is_blocked_by_the_current_plugins_business_tas
         business_blockers={"example_plugin": _Blocker(1)},
         workline_repository=_WorkLines(_workline(plugin_key="example_plugin")),
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException, match="P-1"):
@@ -568,29 +550,6 @@ async def test_save_configuration_is_blocked_by_the_current_plugins_business_tas
             workline_id=7,
             version=3,
             plugin_key=None,
-            config={},
-        )
-
-    assert db.commits == 0
-
-
-@pytest.mark.asyncio
-async def test_save_configuration_is_blocked_by_active_safety_incident() -> None:
-    db = _Db()
-    service = WorkLineConfigurationService(
-        position_repository=_RackPositions(),
-        definitions=((_plugin()).definition,),
-        workline_repository=_WorkLines(_workline()),
-        device_repository=_Devices([]),
-        safety_repository=_Safety(SimpleNamespace(id=9)),
-    )
-
-    with pytest.raises(BusinessException, match="safety incident"):
-        await service.save(
-            db,
-            workline_id=7,
-            version=3,
-            plugin_key="example_plugin",
             config={},
         )
 
@@ -607,7 +566,6 @@ async def test_deactivate_updates_workline_in_one_commit() -> None:
         business_blockers={"example_plugin": _Blocker(0)},
         workline_repository=worklines,
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
 
     result = await service.deactivate(db, workline_id=7, version=3)
@@ -626,27 +584,9 @@ async def test_deactivate_is_blocked_by_the_current_plugins_business_tasks() -> 
         business_blockers={"example_plugin": _Blocker(1)},
         workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
 
     with pytest.raises(BusinessException, match="P-1"):
-        await service.deactivate(db, workline_id=7, version=3)
-
-    assert db.commits == 0
-
-
-@pytest.mark.asyncio
-async def test_deactivate_is_blocked_by_active_safety_incident() -> None:
-    db = _Db()
-    service = WorkLineConfigurationService(
-        position_repository=_RackPositions(),
-        definitions=((_plugin()).definition,),
-        workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
-        device_repository=_Devices([]),
-        safety_repository=_Safety(SimpleNamespace(id=9)),
-    )
-
-    with pytest.raises(BusinessException, match="safety incident"):
         await service.deactivate(db, workline_id=7, version=3)
 
     assert db.commits == 0
@@ -666,7 +606,6 @@ async def test_missing_selected_plugin_version_blocks_lifecycle_before_business_
         business_blockers={"example_plugin": blocker},
         workline_repository=worklines,
         device_repository=_Devices([]),
-        safety_repository=_Safety(),
     )
     with pytest.raises(BusinessException):
         if action == "deactivate":
@@ -725,7 +664,6 @@ async def test_position_validation_prevents_partial_assembly_writes(invalid_fiel
         position_repository=positions,
         workline_repository=worklines,
         device_repository=_Devices([incoming]),
-        safety_repository=_Safety(),
     )
     with pytest.raises(BusinessException):
         await service.save_base(
@@ -763,7 +701,6 @@ async def test_position_assembly_is_validated_before_save_and_protects_bound_res
         position_repository=positions,
         workline_repository=repository,
         device_repository=_Devices([_device("D-1", 7)]),
-        safety_repository=_Safety(),
     )
     config = {"device_bindings": {"SCAN": "D-1"}, "position_bindings": {"INPUT": "LOCAL"}}
     await service.save(db, workline_id=7, version=3, plugin_key=plugin.plugin_key, config=config)

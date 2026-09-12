@@ -13,7 +13,6 @@ from src.app.transport.models import (
     TransportDebugRunStep,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 
@@ -354,40 +353,6 @@ class TransportDebugRunRepository:
         ]
         return await self.has_evidence_conflicts(db, evidence_ids)
 
-    async def has_active_transport_binding(self, db: AsyncSession, run_id: str) -> bool:
-        step_columns = cast("Any", TransportDebugRunStep).__table__.c
-        binding_columns = cast("Any", TransportResourceBinding).__table__.c
-        count = await db.scalar(
-            select(func.count())
-            .select_from(TransportResourceBinding)
-            .join(
-                TransportDebugRunStep,
-                step_columns.transport_task_id == binding_columns.transport_task_id,
-            )
-            .where(
-                step_columns.run_id == run_id,
-                binding_columns.released_at.is_(None),
-            )
-        )
-        return bool(count)
-
-    async def list_active_transport_binding_task_ids(self, db: AsyncSession, run_id: str) -> set[str]:
-        step_columns = cast("Any", TransportDebugRunStep).__table__.c
-        binding_columns = cast("Any", TransportResourceBinding).__table__.c
-        task_ids = await db.scalars(
-            select(binding_columns.transport_task_id)
-            .select_from(TransportResourceBinding)
-            .join(
-                TransportDebugRunStep,
-                step_columns.transport_task_id == binding_columns.transport_task_id,
-            )
-            .where(
-                step_columns.run_id == run_id,
-                binding_columns.released_at.is_(None),
-            )
-        )
-        return set(task_ids)
-
     async def is_task_linked_to_active_run(self, db: AsyncSession, transport_task_id: str) -> bool:
         run_columns = cast("Any", TransportDebugRun).__table__.c
         step_columns = cast("Any", TransportDebugRunStep).__table__.c
@@ -401,18 +366,6 @@ class TransportDebugRunRepository:
             )
         )
         return bool(count)
-
-    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool:
-        columns = cast("Any", TransportDebugRun).__table__.c
-        run_id = await db.scalar(
-            select(columns.id)
-            .where(
-                columns.active_scope == "GLOBAL",
-                columns.rack_id == rack_id,
-            )
-            .with_for_update()
-        )
-        return run_id is not None
 
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool:
         run_columns = cast("Any", TransportDebugRun).__table__.c

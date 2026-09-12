@@ -42,27 +42,18 @@ B1 修改 frontend 的 `src/api/modules/transport.ts`、`src/api/modules/wmsDiag
 
 ### Task B2：明确现有操作语义，提供单一恢复手册
 
-**Files:**
-- Inspect/reuse backend: `src/app/device/v1/reconciliation.py`、`src/app/device/services/device_evidence_service.py`、`src/app/execution/services/wms_confirmation_service.py`、`src/app/workline_integration_debug/service.py`、`src/app/workline_integration_debug/v1/runs.py`。
-- Conditional modify backend（仅按下述缺口接管流程触发）：设备领域为 `src/app/device/v1/reconciliation.py`、`src/app/device/services/device_evidence_service.py`、`src/app/device/services/device_command_service.py`；可靠义务领域为 `src/app/execution/services/wms_confirmation_service.py`；prepare 联调领域为 `src/app/workline_integration_debug/service.py`、`src/app/workline_integration_debug/v1/runs.py`。仅修复已有操作缺失的合同要求，不预先修改全部文件。
-- Modify frontend where labels/details differ: `src/views/ops/device-diagnostics/DeviceDiagnosticsPage.vue`、`src/views/ops/manual-outbound-integration/useManualOutboundIntegration.ts`；相关模板以该 composable 的直接消费者为固定传播面。
-- Create docs: backend `docs/devops/execution-recovery.md`。
-- Reuse tests: backend `tests/api/test_device_reconciliation_api.py`、`tests/runtime/device_command/test_manual_reconciliation_service.py`、`tests/runtime/execution/test_wms_confirmation_service.py`；frontend `tests/unit/views/ops/manual-outbound-integration/useManualOutboundIntegration.test.ts`、`tests/unit/views/ops/device-diagnostics/DeviceDiagnosticsPage.test.ts`。
+**2026-09-12 修订：** 本任务原先依赖的设备 blocker 查询/重处理、device-idle 人工对账和计划人工纠正接口，已由
+[WES 无阻塞执行设计](../specs/2026-09-11-wes-nonblocking-execution-design.md) ENG-D4/ENG-D5 取代并从后端删除。ECS 独立处理急停、
+复位与恢复；WES 不接收急停 Event，不允许操作员用人工结果关闭原 DeviceCommand。计划修正只走普通 `plan_delta` record/replay。
 
-**Interfaces:** 原 `get_event_command_block`、`reprocess_blocked_event`、`reconcile_delivery_unknown_as_device_idle` 不改签名；原 `retry_wms_action` 的 `expected_version`、`client_request_id`、`wms_original_prepare_voided_confirmed` 不被泛化。`requeue_reconciling` 仅为已有基础方法，本任务不把它直接公开为万能重发 API。
+**当前范围：**
 
-**条件修复责任：** 主 Agent 在 B2 变更清单中为每个已复现缺口指定一名对应领域的实施 owner，该 owner 独占相关生产路径及审计/并发测试；B2 前端 owner 只消费结果。若同一路径已由 A4 owner 处理，缺口直接交由该 owner 在原切片闭合，B2 记录依赖，不再建立第二个修改者或重复实现。
+- 后端只保留 DeviceCommand、TransportTask、Evidence 与 WmsConfirmation 的只读诊断，以及各自既有的权威结果/可靠重试路径。
+- 恢复手册说明原身份、匹配 Evidence、等待状态和停止条件；不提供填成功状态、重处理 blocker、伪造设备空闲或人工应用计划修正的按钮。
+- 前端必须从 clean backend `develop` 冻结 canonical contract 后删除已退役操作；当前未满足该门禁，不手改 snapshot、generated types 或 DTO。
+- Transport 结果仍经原 WMS Event ingress 进入并只应用于匹配任务；WES 不换身份重发已接纳物理动作。prepare 重新求值继续遵守其独立合同。
 
-- [ ] 将现有按钮逐项对照总计划恢复表；固定准入、操作员权限、原身份、block_id/expected_version、外部确认要求和审计 owner。
-- [ ] 对文案/展示不足建立前端交互测试：prepare 操作明确标为“作废确认后重新准备”，显示将产生新 identity；禁止称为单纯原请求重试。设备界面展示原 blocker，操作成功后刷新，版本冲突时重新读取而非自动重试。
-- [ ] 已有操作符合合同则原样复用；操作失败展示具体拒绝原因，不能在客户端强制允许。若复现后端审计或并发保护缺口，先记录合同条款、触发场景及受影响操作，并暂停依赖该缺口的验收步骤；其余独立步骤继续。
-- [ ] **缺口接管：** 主 Agent 按上述领域分配唯一 owner，将实际生产符号、调用者、直接/间接测试、HEAVY mapping 与其他切片依赖补入冻结清单，执行 upstream impact；出现清单外 HIGH/CRITICAL 影响时取得范围授权后再修改。领域 owner 建立 RED 并做最小修复，按原门禁闭合后交回 B2 验收。不改变现有准入、物理退出事实或恢复语义；需要改变这些合同或触及所列范围以外文件时先报告并重新冻结范围，不由前端实现替代规则。
-- [ ] 手册按四个入口组织：Transport 等待匹配终态；设备 blocker 查询与精确重处理；WMS 可靠义务查询；prepare 作废后重新求值。每节写明前提、查看字段、允许动作、恢复后复核和停止条件。
-- [ ] 写清 Transport 纠正结果通过原 WMS Event ingress 提交权威事实，消息纠正遵循当前幂等合同；WES 页面不提供“填成功状态”按钮。数据清理脚本不属于恢复步骤。
-- [ ] 运行所改前端聚焦测试及真实浏览器操作。未改后端行为则只复用现有证据；后端若改动，刷新对应测试和 selector HEAVY，设备人工对账还需真实 PostgreSQL 并发/审计测试。
-- [ ] 请未参与实现的工程师按手册处理固定测试案例，记录定位时间、所需信息和人工操作次数，回填到项目外验收记录。
-
-**验收：** 原事实、原身份及实际操作结果可核对；不能将“清理本轮数据”“重复搬运”“恢复证据处理”混为一项操作。
+**验收：** 原事实、原身份及实际结果可核对；页面不暴露已退役人工续行路径，也不把清理测试数据、重复搬运和证据恢复混为一项操作。
 
 ### Task B3：独立验收当前联调消费者，不替代插件业务验收
 
@@ -81,6 +72,6 @@ B1 修改 frontend 的 `src/api/modules/transport.ts`、`src/api/modules/wmsDiag
 
 ## 完成门禁
 
-- [ ] B1 生成物与 A 合同一致；B2 操作通过既有服务器准入；B3 不越过物理队头或未闭合成员。
+- [ ] B1 生成物与 A 合同一致；B2 不暴露已退役人工续行操作；B3 不越过物理队头或未闭合成员。
 - [ ] 前端聚焦测试、合同/权限验证和浏览器 QA 通过；后端仅执行被实际改动影响的门禁。
 - [ ] 文档写入及本轮规划不编写 pytest；实现后纯文案变化不重复完整 QUALITY/HEAVY。

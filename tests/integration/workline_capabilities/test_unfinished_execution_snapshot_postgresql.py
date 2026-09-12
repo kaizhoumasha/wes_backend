@@ -24,7 +24,6 @@ from src.app.resource.repositories import bin_placement_repository, rack_placeme
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
-from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 
@@ -127,7 +126,6 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 request_payload={},
                 deadline_at=now + timedelta(minutes=1),
             )
-            incident = WorklineSafetyIncident(workline_id=line.id)
             bin_placement = BinPlacement(
                 bin_code=projection.object_id,
                 position_type="WORKLINE_POSITION",
@@ -147,7 +145,7 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 source_event_id=f"TARGET-RACK-EVIDENCE-{identity}",
                 started_at=now,
             )
-            db.add_all([command, transport, confirmation, incident, bin_placement, rack_placement])
+            db.add_all([command, transport, confirmation, bin_placement, rack_placement])
             await db.flush()
 
             repository = WorkLineRepository()
@@ -223,7 +221,6 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 ("DEVICE_COMMAND", command.command_code),
                 ("TRANSPORT_TASK", transport.transport_task_id),
                 ("WMS_CONFIRMATION", confirmation.operation_id),
-                ("SAFETY_INCIDENT", str(incident.id)),
                 ("BIN_RESOURCE", bin_placement.bin_code),
                 ("RACK_RESOURCE", rack_placement.rack_code),
             }
@@ -232,7 +229,6 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 "DEVICE_COMMAND",
                 "TRANSPORT_TASK",
                 "WMS_CONFIRMATION",
-                "SAFETY_INCIDENT",
                 "BIN_PLACEMENT",
                 "RACK_PLACEMENT",
             }

@@ -24,7 +24,6 @@ async def test_static_route_commits_plan_then_replays_with_no_plugin(integration
     runtime = build_outbound_picking_runtime(session_factory=integration_session_factory)
     app = FastAPI()
     app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
-    app.state.outbound_picking_runtime = runtime
     app.state.wms_picking_task_issued_handler = runtime.picking_task_issued_handler
     app.state.wms_picking_task_plan_delta_handler = runtime.picking_task_plan_delta_handler
     app.state.wms_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))

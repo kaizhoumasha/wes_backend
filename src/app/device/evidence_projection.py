@@ -27,7 +27,7 @@ def build_device_evidence_update(
     if evidence.id is None or evidence.device_code is None:
         raise RuntimeError("device evidence 缺少 update snapshot 字段")
     kind = DeviceEvidenceKind(getattr(evidence.kind, "value", evidence.kind))
-    payload = evidence.normalized_payload
+    payload = evidence.normalized_payload if isinstance(evidence.normalized_payload, dict) else {}
     event_type = payload.get("event_type") if kind is DeviceEvidenceKind.DEVICE_EVENT else None
     observation = payload.get("observation") if kind is DeviceEvidenceKind.DEVICE_OBSERVATION else None
     reason_code = payload.get("reason_code") if kind is DeviceEvidenceKind.DEVICE_OBSERVATION else None

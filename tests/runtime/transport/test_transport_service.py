@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, event, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
@@ -27,15 +28,14 @@ from src.app.transport.contracts import (
     TransportExecutionAuthority,
     TransportIdempotencyConflict,
     TransportOutcome,
-    TransportResourceConflict,
     TransportSubmitCode,
     TransportSubmitResult,
 )
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugRun,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -188,7 +188,6 @@ async def _clean_transport_tables(db_engine: object) -> None:
         for model in (
             TransportEvidence,
             TransportCallbackReceipt,
-            TransportResourceBinding,
             TransportMember,
             PositionProjection,
             TransportTask,
@@ -650,6 +649,18 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
 
 
 @pytest.mark.asyncio
+async def test_non_idempotency_integrity_error_is_preserved(
+    service: TransportService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = IntegrityError("INSERT", {}, RuntimeError("foreign key failure"))
+    monkeypatch.setattr(service._repository, "add_aggregate", AsyncMock(side_effect=error))
+    with pytest.raises(IntegrityError) as raised:
+        await service.move_rack(new_uuid7(), _caller(), "rack-integrity", RackPosition("A"), RackPosition("B"), "90")
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
 async def test_same_client_request_with_changed_execution_authority_conflicts(
     service: TransportService,
     db_engine: object,
@@ -783,19 +794,19 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
 
 
 @pytest.mark.asyncio
-async def test_active_resource_binding_rejects_overlapping_task(
+async def test_same_resource_independent_requests_are_submitted(
     service: TransportService,
     db_engine: object,
 ) -> None:
     await confirm_rack_faces(db_engine, {"rack-resource": "90"})
-    await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"), "90")
-
-    with pytest.raises(TransportResourceConflict):
-        await service.move_bins(
-            new_uuid7(),
-            _caller(),
-            (BinMove("bin-resource", RackBinSlot("rack-resource", "90", "1"), HandoffPosition("IN")),),
-        )
+    first = await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"), "90")
+    second = await service.move_bins(
+        new_uuid7(),
+        _caller(),
+        (BinMove("bin-resource", RackBinSlot("rack-resource", "90", "1"), HandoffPosition("IN")),),
+    )
+    assert await service.submit_pending_tasks(10) == 2
+    assert set(service.provider.calls) == {first.transport_task_id, second.transport_task_id}
 
 
 @pytest.mark.asyncio
@@ -857,25 +868,30 @@ async def test_submit_skips_task_fenced_by_debug_run_and_dispatches_the_next_tas
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workline_id", ["TRANSPORT_DEBUG", "SORTER"])
-async def test_transport_task_cannot_claim_a_rack_owned_by_an_active_auto_run(
+async def test_transport_task_can_submit_same_rack_as_active_auto_run(
     service: TransportService,
     db_engine: object,
     workline_id: str,
 ) -> None:
-    class _Guard:
-        async def has_active_run_for_rack(self, _db: object, rack_id: str) -> bool:
-            return rack_id == "rack-auto-owned"
-
-        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
-            return False
-
-        async def is_task_dispatch_allowed(self, _db: object, _task_id: str) -> bool:
-            return True
-
-    service._debug_run_guard = _Guard()  # type: ignore[assignment]
-
-    with pytest.raises(TransportResourceConflict, match="active transport debug run owns rack"):
-        await service.move_rack(
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    run_id = new_uuid7()
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        db.add(
+            TransportDebugRun(
+                run_id=run_id,
+                status="RUNNING",
+                active_scope="GLOBAL",
+                rack_id="rack-auto-owned",
+                configuration_json={},
+                current_phase="RACK_TO_STATION",
+                created_by_user_id=7,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    try:
+        handle = await service.move_rack(
             new_uuid7(),
             TransportCaller(workline_id, "STATION-DEBUG"),
             "rack-auto-owned",
@@ -883,29 +899,21 @@ async def test_transport_task_cannot_claim_a_rack_owned_by_an_active_auto_run(
             RackPosition("B"),
             "90",
         )
-
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as db:
-        tasks = list(await db.scalars(select(TransportTask)))
-    assert tasks == []
+        assert await service.submit_pending_tasks(1) == 1
+        assert service.provider.calls == [handle.transport_task_id]
+        async with sessions() as db:
+            run = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
+            assert run is not None and run.status == "RUNNING" and run.active_scope == "GLOBAL"
+    finally:
+        async with sessions.begin() as db:
+            await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
 
 
 @pytest.mark.asyncio
-async def test_auto_run_can_create_its_own_task_while_holding_the_rack_reservation(
+async def test_auto_run_creates_its_task_in_the_caller_transaction(
     service: TransportService,
     db_engine: object,
 ) -> None:
-    class _Guard:
-        async def has_active_run_for_rack(self, _db: object, _rack_id: str) -> bool:
-            return True
-
-        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
-            return False
-
-        async def is_task_dispatch_allowed(self, _db: object, _task_id: str) -> bool:
-            return True
-
-    service._debug_run_guard = _Guard()  # type: ignore[assignment]
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     request = MoveRackRequest(
         new_uuid7(),
@@ -923,7 +931,7 @@ async def test_auto_run_can_create_its_own_task_while_holding_the_rack_reservati
 
 
 @pytest.mark.asyncio
-async def test_finalize_unsent_debug_task_records_terminal_outcome_and_releases_resource(
+async def test_finalize_unsent_debug_task_records_terminal_outcome_without_resend(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -995,7 +1003,7 @@ async def test_finalize_unsent_debug_task_refreshes_cached_task_before_decision(
 
 
 @pytest.mark.asyncio
-async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
+async def test_delivery_unknown_preserves_old_task_and_allows_independent_request(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1006,12 +1014,15 @@ async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "RECONCILING"
     assert snapshot.outcome_version == 1
-    with pytest.raises(TransportResourceConflict):
-        await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
+    second = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
+    service.provider.code = TransportSubmitCode.RECEIVED
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [handle.transport_task_id, second.transport_task_id]
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "RECONCILING"
 
 
 @pytest.mark.asyncio
-async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resource(
+async def test_submit_result_with_foreign_task_id_preserves_original_unknown_result(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1030,15 +1041,14 @@ async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resourc
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "RECONCILING"
     assert snapshot.reason_code == "TRANSPORT_SUBMIT_CONFLICT"
-    with pytest.raises(TransportResourceConflict):
-        await service.move_rack(
-            new_uuid7(),
-            _caller(),
-            "rack-foreign-ack",
-            RackPosition("B"),
-            RackPosition("C"),
-            "90",
-        )
+    await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-foreign-ack",
+        RackPosition("B"),
+        RackPosition("C"),
+        "90",
+    )
 
 
 @pytest.mark.asyncio
@@ -1097,10 +1107,10 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("code", "expected_status", "expected_reason", "resource_released"),
+    ("code", "expected_status", "expected_reason"),
     (
-        (TransportSubmitCode.REJECTED, "REJECTED", "TRANSPORT_REJECTED", True),
-        (TransportSubmitCode.CONFLICT, "RECONCILING", "TRANSPORT_SUBMIT_CONFLICT", False),
+        (TransportSubmitCode.REJECTED, "REJECTED", "TRANSPORT_REJECTED"),
+        (TransportSubmitCode.CONFLICT, "RECONCILING", "TRANSPORT_SUBMIT_CONFLICT"),
     ),
 )
 async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
@@ -1108,7 +1118,6 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
     code: TransportSubmitCode,
     expected_status: str,
     expected_reason: str,
-    resource_released: bool,
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = DelayedNotSentProvider(code)
@@ -1137,11 +1146,7 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
 
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert (snapshot.status, snapshot.reason_code) == (expected_status, expected_reason)
-    if resource_released:
-        await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), "90")
-    else:
-        with pytest.raises(TransportResourceConflict):
-            await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), "90")
+    await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), "90")
 
 
 @pytest.mark.asyncio
@@ -1182,7 +1187,7 @@ async def test_expired_claim_without_send_start_is_reclaimed(service: TransportS
 
 
 @pytest.mark.asyncio
-async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resource(
+async def test_confirmed_not_sent_stops_after_three_attempts(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1439,7 +1444,7 @@ async def test_debug_reset_rejects_task_linked_to_active_debug_run_before_delete
             return _Task()
 
         async def get_debug_reset_counts(self, _db: object, _task_id: str) -> tuple[int, ...]:
-            return (0, 0, 0, 0, 1, 1)
+            return (0, 0, 0, 0)
 
         async def delete_debug_task_aggregate(self, _db: object, _task_id: str) -> tuple[int, ...]:
             self.delete_called = True

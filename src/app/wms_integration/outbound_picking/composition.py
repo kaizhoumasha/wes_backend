@@ -24,7 +24,6 @@ class OutboundPickingRuntime:
     picking_task_plan_delta_handler: PickingTaskPlanDeltaHandler
     picking_task_queue_changed_handler: PickingTaskQueueChangedHandler
     manual_bin_completed_handler: ManualBinCompletedHandler
-    plan_delta_service: PickingTaskPlanDeltaService
 
 
 def build_outbound_picking_runtime(
@@ -40,7 +39,6 @@ def build_outbound_picking_runtime(
         picking_task_plan_delta_handler=PickingTaskPlanDeltaHandler(plan_delta),
         picking_task_queue_changed_handler=PickingTaskQueueChangedHandler(queue_changed),
         manual_bin_completed_handler=ManualBinCompletedHandler(manual_bin_completed),
-        plan_delta_service=plan_delta,
     )
 
 

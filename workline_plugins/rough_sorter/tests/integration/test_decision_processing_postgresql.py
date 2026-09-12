@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 from deployment.plugin_composition import build_deployment_runtime
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.app.device.models import CommandStatus, Device, DeviceCommand
 from src.app.device.repositories.command_repository import device_command_repository
@@ -31,9 +31,14 @@ from src.app.execution.repositories import (
 )
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services import (
+    DecisionApplier,
     FactProcessor,
     InboundEvidenceService,
+    MaterialExecutionService,
 )
+from src.app.resource.models import RackKind, RackPlacement, RackPlacementStatus, ResourceSourceSystem
+from src.app.resource.repositories import rack_placement_repository
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.transport.contracts import (
     RackPosition,
     TransportCaller,
@@ -41,19 +46,24 @@ from src.app.transport.contracts import (
     TransportOutcome,
     TransportOutcomeStatus,
 )
+from src.app.wms_adapter.inbound_material.typed import decode_outcome
 
 # WmsConfirmation 的可空外键仍需在独立插件测试进程中注册目标表。
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
 from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.rack_position_role import WorklineRackPositionRole
 from wes_plugin_sdk import (
     TransportResultReadyFact,
     Wait,
+    WmsResultReadyFact,
     handler,
 )
 
+from rough_sorter.application.factory import RoughSorterPluginFactFactory
 from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
 from rough_sorter.application.wms_facts import rack_release_snapshot
+from rough_sorter.handlers import TargetDecidedHandler
 
 pytest_plugins = ("tests.integration.conftest",)
 
@@ -374,16 +384,13 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("first_owner", ["replacement", "target"])
-async def test_postgresql_rack_fence_serializes_replacement_and_late_target_across_executions(
+async def test_postgresql_target_revalidates_after_concurrent_rack_replacement(
     integration_session_factory,
-    first_owner: str,
 ) -> None:
     identity = uuid4().hex
     now = datetime(2026, 8, 18, 10)
-    first_has_lock = asyncio.Event()
-    contender_started = asyncio.Event()
-    release_first_owner = asyncio.Event()
+    operation = "inbound.material.target_decide@v1"
+    operation_id = f"019d{identity[:4]}-{identity[4:8]}-7{identity[8:11]}-8{identity[11:14]}-{identity[14:26]}"
     async with integration_session_factory.begin() as db:
         line = WorkLine(
             line_code=f"RACK-FENCE-{identity[:12]}",
@@ -392,222 +399,270 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         )
         db.add(line)
         await db.flush()
-        device = Device(
-            device_code=f"RACK-FENCE-DEVICE-{identity[:12]}",
-            device_name="Placement",
-            work_line_id=line.id,
-            device_role="PLACEMENT_DEVICE",
+        role_contracts = (
+            ("MEASUREMENT_DEVICE", "rough_sorter.measurement_device"),
+            ("TRANSFER_DEVICE", "rough_sorter.transfer_device"),
+            ("PLACEMENT_DEVICE", "rough_sorter.placement_device"),
         )
-        db.add(device)
+        devices = [
+            Device(
+                device_code=f"RACK-FENCE-{role}-{identity[:8]}",
+                device_name=role,
+                work_line_id=line.id,
+                device_role=role,
+            )
+            for role, _contract in role_contracts
+        ]
+        db.add_all(devices)
         await db.flush()
         line.plugin_key = "rough_sorter"
         line.plugin_version = "1.0.0"
         line.flow_mode = "ROUGH_SORT_INBOUND"
         line.is_active = True
         await db.flush()
-        device_binding = WorkLineDeviceBinding(
-            workline_id=line.id,
-            device_id=device.id,
-            device_code=device.device_code,
-            device_role="PLACEMENT_DEVICE",
-            endpoint_base_url="http://ecs-decision:8080",
-            contract_key="rough_sorter.placement_device",
-            contract_version="1.0",
-            status_max_age_ms=10_000,
-            command_timeout_ms=30_000,
-        )
-        _publish(line, (device_binding,))
-        seeds = [
-            InboundEvidence(
-                kind=InboundEvidenceKind.WMS_RESULT,
-                source_identity=f"RACK-FENCE-SEED-{ordinal}-{identity}",
-                payload_digest=str(ordinal) * 64,
-                normalized_payload={"data": {}},
-                received_at=now,
+        bindings = [
+            WorkLineDeviceBinding(
                 workline_id=line.id,
-                operation="inbound.material.target_decide@v1",
-                operation_id=f"RACK-FENCE-OP-{ordinal}-{identity}",
+                device_id=device.id,
+                device_code=device.device_code,
+                device_role=role,
+                endpoint_base_url="http://ecs-decision:8080",
+                contract_key=contract,
                 contract_version="1.0",
-                apply_status=InboundEvidenceApplyStatus.IGNORED,
+                status_max_age_ms=10_000,
+                command_timeout_ms=30_000,
             )
-            for ordinal in (1, 2)
+            for device, (role, contract) in zip(devices, role_contracts, strict=True)
         ]
-        db.add_all(seeds)
+        positions = tuple(
+            WorkLinePositionBinding(position_role=role, location_id=role, location_type=role)
+            for role in ("MEASUREMENT_POSITION", "PIPELINE_INLET", "PIPELINE_OUTLET", "NG_POSITION")
+        )
+        _publish(line, bindings, positions)
+        outlet_position = WorkLinePosition(
+            workline_id=line.id,
+            workline_code=line.line_code,
+            position_code=f"OUTLET-{identity[:12]}",
+            position_name="Pipeline outlet",
+            position_type="RACK_POSITION",
+            position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+            allowed_rack_kind=RackKind.SINGLE_LAYER,
+            capacity=1,
+            logic_location_code="PIPELINE_OUTLET",
+        )
+        db.add(outlet_position)
+        admission = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"RACK-FENCE-ADMISSION-{identity}",
+            payload_digest="a" * 64,
+            normalized_payload={"data": {}},
+            received_at=now,
+            workline_id=line.id,
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.IGNORED,
+        )
+        db.add(admission)
         await db.flush()
-        executions = [
-            MaterialExecution(
-                execution_code=f"RACK-FENCE-EXEC-{ordinal}-{identity}",
-                material_trace_id=f"RACK-FENCE-TRACE-{ordinal}-{identity}",
-                workline_id=line.id,
-                admission_received_at=now,
-                admission_evidence_id=seed.id,
-                last_transition_reason="INITIAL_EVIDENCE",
-                last_transition_evidence_id=seed.id,
-                status_changed_at=now,
-            )
-            for ordinal, seed in enumerate(seeds, start=1)
-        ]
-        db.add_all(executions)
+        execution = MaterialExecution(
+            execution_code=f"RACK-FENCE-EXEC-{identity}",
+            material_trace_id=f"RACK-FENCE-TRACE-{identity}",
+            workline_id=line.id,
+            admission_received_at=now,
+            admission_evidence_id=admission.id,
+            last_transition_reason="INITIAL_EVIDENCE",
+            last_transition_evidence_id=admission.id,
+            status_changed_at=now,
+        )
+        db.add(execution)
         await db.flush()
-        for seed, execution in zip(seeds, executions, strict=True):
-            seed.material_execution_id = execution.id
+        response = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=f"{operation}:{operation_id}",
+            payload_digest="b" * 64,
+            normalized_payload={
+                "operation_id": operation_id,
+                "code": "DECIDED",
+                "timestamp": 1_787_040_000_200,
+                "data": {
+                    "result": "ASSIGNED",
+                    "target_assignment_id": f"ASSIGN-{identity}",
+                    "target_position": {
+                        "type": "ONE_LAYER_BIN_CELL",
+                        "rack_id": "RACK-1",
+                        "rack_slot_code": "SLOT-1",
+                        "bin_code": "BIN-1",
+                        "bin_cell_id": "CELL-1",
+                    },
+                    "placement_sequence": 1,
+                    "expected_height_mm": "3.2",
+                },
+            },
+            received_at=now,
+            workline_id=line.id,
+            material_execution_id=execution.id,
+            contract_key=operation,
+            contract_version="1.0",
+            operation=operation,
+            operation_id=operation_id,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        db.add(response)
+        await db.flush()
+        confirmation = WmsConfirmation(
+            operation=operation,
+            operation_id=operation_id,
+            material_execution_id=execution.id,
+            request_digest="c" * 64,
+            request_payload={
+                "operation": operation,
+                "operation_id": operation_id,
+                "timestamp": 1_787_040_000_100,
+                "data": {
+                    "material_execution_id": execution.execution_code,
+                    "material_trace_id": execution.material_trace_id,
+                    "pkg_id": "PKG-1",
+                    "inbound_admission_id": "ADM-1",
+                    "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
+                    "current_rack_id": "RACK-1",
+                },
+            },
+            deadline_at=now + timedelta(minutes=1),
+            status="COMPLETED",
+            response_evidence_id=response.id,
+            response_result="ASSIGNED",
+            completed_at=now,
+        )
+        placement = RackPlacement(
+            rack_code="RACK-1",
+            rack_kind=RackKind.SINGLE_LAYER,
+            location_code="PIPELINE_OUTLET",
+            workline_id=line.id,
+            workline_code=line.line_code,
+            position_code=outlet_position.position_code,
+            position_role=WorklineRackPositionRole.SMT_SORTER_STATION.value,
+            logic_location_code="PIPELINE_OUTLET",
+            placement_status=RackPlacementStatus.ARRIVED,
+            source_system=ResourceSourceSystem.WES_RUNTIME,
+            source_event_id=f"RACK-1-ARRIVED-{identity}",
+            started_at=now,
+        )
+        db.add_all([confirmation, placement])
         await db.flush()
         line_id = line.id
-        device_id = device.id
-        device_code = device.device_code
-        seed_ids = tuple(seed.id for seed in seeds)
-        execution_ids = tuple(execution.id for execution in executions)
-        target_trace_id = executions[0].material_trace_id
+        device_ids = tuple(device.id for device in devices)
+        evidence_ids = (admission.id, response.id)
+        execution_id = execution.id
+        response_id = response.id
+        outlet_position_id = outlet_position.id
 
-    async def create_target_command(rack_id: str, suffix: str, *, hold_lock: bool = False) -> bool:
+    class AlwaysReady:
+        async def is_ready(self, db: object, binding: object) -> bool:
+            del db, binding
+            return True
+
+    factory = RoughSorterPluginFactFactory(device_readiness_reader=AlwaysReady())
+    applier = DecisionApplier(
+        device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
+        wms_confirmation_service=cast(Any, object()),
+        transport_service=cast(Any, object()),
+        material_execution_service=MaterialExecutionService(),
+        clock=lambda: now,
+    )
+    base = WmsResultReadyFact(
+        f"evidence:{response_id}",
+        str(response_id),
+        "1.0",
+        f"RACK-FENCE-EXEC-{identity}",
+        operation_id,
+        decode_outcome(operation, response.normalized_payload, material_trace_id=f"RACK-FENCE-TRACE-{identity}"),
+    )
+    writer_holds_placement = asyncio.Event()
+    release_writer = asyncio.Event()
+    target_started = asyncio.Event()
+    pids: dict[str, int] = {}
+
+    async def replace_rack() -> None:
         async with integration_session_factory.begin() as db:
-            if not hold_lock:
-                contender_started.set()
-            await transport_decision_binding_repository.lock_resource_fence(
+            pids["writer"] = cast("int", await db.scalar(text("SELECT pg_backend_pid()")))
+            active = await rack_placement_repository.list_active_by_workline_position(
                 db,
-                workline_id=line_id,
-                resource_fence_id=rack_id,
+                workline_code=f"RACK-FENCE-{identity[:12]}",
+                position_code=f"OUTLET-{identity[:12]}",
+                for_update=True,
             )
-            fence = await transport_decision_binding_repository.get_by_resource_step_for_update(
-                db,
-                workline_id=line_id,
-                resource_fence_id=rack_id,
-                step="OLD_OUT",
-            )
-            if fence is not None:
-                return False
-            command_code = f"019d{identity[:4]}-{identity[4:8]}-7{identity[8:11]}-8{identity[11:14]}-{suffix}"
+            assert len(active) == 1 and active[0].rack_code == "RACK-1"
+            active[0].placement_status = RackPlacementStatus.DEPARTED
+            active[0].ended_at = now + timedelta(seconds=1)
             db.add(
-                DeviceCommand(
-                    command_code=command_code,
-                    device_code=device_code,
-                    endpoint_base_url=device_binding.endpoint_base_url,
-                    status_max_age_ms=device_binding.status_max_age_ms,
-                    command_timeout_ms=device_binding.command_timeout_ms,
+                RackPlacement(
+                    rack_code="RACK-2",
+                    rack_kind=RackKind.SINGLE_LAYER,
+                    location_code="PIPELINE_OUTLET",
                     workline_id=line_id,
-                    execution_ref_type="PLUGIN_DECISION",
-                    execution_ref_id=f"evidence:{seed_ids[0]}:execution:{execution_ids[0]}:CREATE_DEVICE_COMMAND:{suffix}",
-                    material_execution_id=execution_ids[0],
-                    contract_key="rough_sorter.placement_device",
-                    contract_version="1.0",
-                    task_type="PICK_AND_PUT",
-                    params={
-                        "material_trace_id": target_trace_id,
-                        "source": {
-                            "location_id": "PIPELINE_OUTLET",
-                            "location_type": "PIPELINE_OUTLET",
-                            "material_trace_id": target_trace_id,
-                        },
-                        "target": {
-                            "location_id": f"CELL-{suffix}",
-                            "location_type": "RACK_CELL",
-                            "material_trace_id": target_trace_id,
-                            "rack_id": rack_id,
-                            "rack_slot_code": f"SLOT-{suffix}",
-                            "bin_code": f"BIN-{suffix}",
-                            "bin_cell_id": f"CELL-{suffix}",
-                        },
-                    },
-                    deadline_at=now + timedelta(minutes=1),
-                    payload_digest=suffix[0] * 64,
-                    status=CommandStatus.PENDING,
+                    workline_code=f"RACK-FENCE-{identity[:12]}",
+                    position_code=f"OUTLET-{identity[:12]}",
+                    position_role=WorklineRackPositionRole.SMT_SORTER_STATION.value,
+                    logic_location_code="PIPELINE_OUTLET",
+                    placement_status=RackPlacementStatus.ARRIVED,
+                    source_system=ResourceSourceSystem.WES_RUNTIME,
+                    source_event_id=f"RACK-2-ARRIVED-{identity}",
+                    started_at=now + timedelta(seconds=1),
                 )
             )
             await db.flush()
-            if hold_lock:
-                first_has_lock.set()
-                await release_first_owner.wait()
-            return True
+            writer_holds_placement.set()
+            await release_writer.wait()
 
-    async def create_old_out_fence(*, hold_lock: bool = False) -> bool:
+    async def apply_target() -> str | None:
         async with integration_session_factory.begin() as db:
-            if not hold_lock:
-                contender_started.set()
-            await transport_decision_binding_repository.lock_resource_fence(
-                db,
-                workline_id=line_id,
-                resource_fence_id="RACK-1",
-            )
-            commands = await device_command_repository.list_for_workline_for_update(
-                db,
-                workline_id=line_id,
-            )
-            active_statuses = {
-                CommandStatus.PENDING,
-                CommandStatus.DISPATCHING,
-                CommandStatus.ACKNOWLEDGED,
-                CommandStatus.RECONCILING,
-            }
-            if any(
-                command.task_type == "PICK_AND_PUT"
-                and CommandStatus(command.status) in active_statuses
-                and isinstance(target := command.params.get("target"), dict)
-                and target.get("location_type") == "RACK_CELL"
-                and target.get("rack_id") == "RACK-1"
-                for command in commands
+            pids["target"] = cast("int", await db.scalar(text("SELECT pg_backend_pid()")))
+            target_started.set()
+            fact = await factory.build(db, base)
+            decisions = TargetDecidedHandler()(cast(Any, fact))
+            execution = await db.get(MaterialExecution, execution_id)
+            evidence = await db.get(InboundEvidence, response_id)
+            assert execution is not None and evidence is not None
+            await applier.apply(db, evidence, execution, fact, decisions)
+            return None
+
+    writer = asyncio.create_task(replace_rack())
+    target: asyncio.Task[str | None] | None = None
+    try:
+        await asyncio.wait_for(writer_holds_placement.wait(), 5)
+        target = asyncio.create_task(apply_target())
+        await asyncio.wait_for(target_started.wait(), 5)
+        async with asyncio.timeout(5), integration_session_factory() as observer:
+            while pids["writer"] not in await observer.scalar(
+                text("SELECT pg_blocking_pids(:pid)"), {"pid": pids["target"]}
             ):
-                return False
-            db.add(
-                TransportDecisionBinding(
-                    correlation_id=f"REPLACE-{identity}",
-                    step="OLD_OUT",
-                    workline_id=line_id,
-                    resource_fence_id="RACK-1",
-                    client_request_id=f"019d0000-0000-7000-8001-{identity[:12]}",
-                    source_evidence_id=seed_ids[1],
-                )
-            )
-            await db.flush()
-            if hold_lock:
-                first_has_lock.set()
-                await release_first_owner.wait()
-            return True
-
-    if first_owner == "replacement":
-        first = asyncio.create_task(create_old_out_fence(hold_lock=True))
-        await first_has_lock.wait()
-        contender = asyncio.create_task(create_target_command("RACK-1", "000000000101"))
-    else:
-        first = asyncio.create_task(create_target_command("RACK-1", "000000000102", hold_lock=True))
-        await first_has_lock.wait()
-        contender = asyncio.create_task(create_old_out_fence())
-    await contender_started.wait()
-    release_first_owner.set()
-    first_result, contender_result = await asyncio.gather(first, contender)
-    if first_owner == "replacement":
-        assert first_result is True and contender_result is False
-        assert await create_target_command("RACK-1", "000000000103") is False
-    else:
-        assert first_result is True and contender_result is False
-        first_command_code = f"019d{identity[:4]}-{identity[4:8]}-7{identity[8:11]}-8{identity[11:14]}-000000000102"
-        async with integration_session_factory.begin() as db:
-            await db.execute(
-                update(DeviceCommand)
-                .where(DeviceCommand.command_code == first_command_code)
-                .values(status=CommandStatus.SUCCEEDED)
-            )
-
-    assert await create_target_command("RACK-2", "000000000104") is True
+                await asyncio.sleep(0.01)
+        release_writer.set()
+        await asyncio.wait_for(writer, 5)
+        with pytest.raises(ValueError, match="target request current rack"):
+            await asyncio.wait_for(target, 5)
+    finally:
+        release_writer.set()
+        await asyncio.gather(writer, *([target] if target is not None else []), return_exceptions=True)
 
     async with integration_session_factory.begin() as db:
-        commands = list(
-            (
-                await db.execute(
-                    select(DeviceCommand).where(DeviceCommand.workline_id == line_id).order_by(DeviceCommand.id)
-                )
-            ).scalars()
+        commands = list((await db.execute(select(DeviceCommand).where(DeviceCommand.workline_id == line_id))).scalars())
+        active = await rack_placement_repository.list_active_by_workline_position(
+            db,
+            workline_code=f"RACK-FENCE-{identity[:12]}",
+            position_code=f"OUTLET-{identity[:12]}",
         )
-        r1_commands = [command for command in commands if command.params["target"]["rack_id"] == "RACK-1"]
-        assert len(r1_commands) == (0 if first_owner == "replacement" else 1)
-        assert [command.params["target"]["rack_id"] for command in commands][-1] == "RACK-2"
+        assert commands == []
+        assert [item.rack_code for item in active] == ["RACK-2"]
         await db.execute(delete(DeviceCommand).where(DeviceCommand.workline_id == line_id))
-        await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
+        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution_id))
         await db.execute(
-            update(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)).values(material_execution_id=None)
+            update(InboundEvidence).where(InboundEvidence.id == response_id).values(material_execution_id=None)
         )
-        await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
-        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
-        await db.execute(delete(Device).where(Device.id == device_id))
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
+        await db.execute(delete(RackPlacement).where(RackPlacement.workline_id == line_id))
+        await db.execute(delete(WorkLinePosition).where(WorkLinePosition.id == outlet_position_id))
+        await db.execute(delete(Device).where(Device.id.in_(device_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 
@@ -940,7 +995,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
 
 
 @pytest.mark.asyncio
-async def test_postgresql_current_arrival_excludes_history_but_keeps_pending_old_out(integration_session_factory):
+async def test_postgresql_old_out_bindings_remain_historical_after_admission_api_removal(integration_session_factory):
     from src.app.transport.models import TransportTask
 
     identity = uuid4().hex
@@ -962,11 +1017,9 @@ async def test_postgresql_current_arrival_excludes_history_but_keeps_pending_old
         )
         db.add(source)
         await db.flush()
-        task_ids = []
         for ordinal, status in enumerate(("SUCCEEDED", "SUCCEEDED", "PENDING")):
             client_id = f"{identity}-{ordinal}"
             task_id = f"OLD-{client_id}"
-            task_ids.append(task_id)
             db.add(
                 TransportTask(
                     transport_task_id=task_id,
@@ -997,39 +1050,23 @@ async def test_postgresql_current_arrival_excludes_history_but_keeps_pending_old
             )
     try:
         async with integration_session_factory.begin() as db:
-
-            async def fence(source_task_id):
-                return await transport_decision_binding_repository.get_by_resource_step_for_update(
-                    db,
-                    workline_id=line_id,
-                    resource_fence_id=identity,
-                    step="OLD_OUT",
-                    exclude_task_statuses=("SUCCEEDED",),
-                    retain_transport_task_id=source_task_id,
-                )
-
-            # A proven new arrival cannot release a newer unresolved departure.
-            current = await fence("NEW-ARRIVAL")
-            assert current.client_request_id == f"{identity}-2"
-            await db.execute(
-                update(TransportTask).where(TransportTask.transport_task_id == task_ids[2]).values(status="SUCCEEDED")
-            )
-            assert await fence("NEW-ARRIVAL") is None
-            # The current projection's own departure is never treated as old history.
-            current = await fence(task_ids[2])
-            assert current.client_request_id == f"{identity}-2"
-            assert (
-                len(
-                    (
-                        await db.execute(
-                            select(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id)
-                        )
+            bindings = list(
+                (
+                    await db.execute(
+                        select(TransportDecisionBinding)
+                        .where(TransportDecisionBinding.workline_id == line_id)
+                        .order_by(TransportDecisionBinding.id)
                     )
-                    .scalars()
-                    .all()
                 )
-                == 3
+                .scalars()
+                .all()
             )
+            assert [binding.client_request_id for binding in bindings] == [
+                f"{identity}-0",
+                f"{identity}-1",
+                f"{identity}-2",
+            ]
+            assert [binding.step for binding in bindings] == ["OLD_OUT", "OLD_OUT", "OLD_OUT"]
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))

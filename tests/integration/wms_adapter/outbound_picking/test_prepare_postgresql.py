@@ -195,10 +195,23 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
             dispatch_sequence=9_000_000_004,
             not_before_ms=None,
         )
+        historical = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"historical:{new_uuid7()}",
+            device_code=device.device_code,
+            payload_digest="a" * 64,
+            normalized_payload={"diagnosis": "old execution unresolved"},
+            received_at=now - timedelta(days=1),
+            workline_id=workline.id,
+            apply_status=InboundEvidenceApplyStatus.RECONCILING,
+        )
+        db.add(historical)
+        await db.flush()
         ids = {
             "workline": workline.id,
             "device": device.id,
             "tasks": (future.id, auto.id, eligible.id, second_eligible.id),
+            "historical_evidence": historical.id,
         }
 
     services = [
@@ -223,6 +236,11 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         response_evidence = await db.scalar(
             select(InboundEvidence).where(InboundEvidence.id == confirmation.response_evidence_id)
         )
+        persisted_history = await db.get(InboundEvidence, ids["historical_evidence"])
+        assert persisted_history is not None
+        assert persisted_history.apply_status == InboundEvidenceApplyStatus.RECONCILING
+        assert persisted_history.normalized_payload == {"diagnosis": "old execution unresolved"}
+        assert persisted_history.processed_at is None
     by_id = {task.id: task for task in tasks}
     assert PickingTaskStatus(by_id[eligible.id].status) is PickingTaskStatus.PREPARING
     assert by_id[eligible.id].workline_id == ids["workline"]
@@ -235,6 +253,9 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
     assert response_evidence.kind == InboundEvidenceKind.WMS_RESULT
     assert response_evidence.workline_id is None
     assert response_evidence.material_execution_id is None
+    assert queue.calls == 1
+    # 原 PickingTask 仍有效，新的独立 prepare 不能越过当前业务任务。
+    assert not (await services[0].prepare_next_for_workline(ids["workline"], now=now)).prepared
     assert queue.calls == 1
 
     # WMS 已接纳 prepare，但任务仍在等待计划；完成的确认不能解除 WorkLine 停用围栏。
@@ -259,7 +280,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
 
     async with integration_session_factory.begin() as db:
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id.in_(ids["tasks"])))
-        evidence_ids = [task.issued_evidence_id for task in tasks] + [response_evidence.id]
+        evidence_ids = [task.issued_evidence_id for task in tasks] + [response_evidence.id, ids["historical_evidence"]]
         await db.execute(delete(PickingTask).where(PickingTask.id.in_(ids["tasks"])))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
         await db.execute(

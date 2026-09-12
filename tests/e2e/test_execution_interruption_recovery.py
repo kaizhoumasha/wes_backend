@@ -21,7 +21,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.celery_app.config import beat_schedule
@@ -73,7 +72,7 @@ async def _case(sessions, monkeypatch, *, disconnect=False):
                 delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == case.callback_id)
             )
             await db.execute(delete(InboundEvidence).where(InboundEvidence.transport_task_id == case.task_id))
-            for model in (TransportEvidence, TransportResourceBinding, TransportMember):
+            for model in (TransportEvidence, TransportMember):
                 await db.execute(delete(model).where(model.transport_task_id == case.task_id))
             await db.execute(delete(PositionProjection).where(PositionProjection.object_id == case.rack))
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == case.task_id))
@@ -175,7 +174,6 @@ async def test_original_work_survives_lost_wakeup_broker_data_and_consumer_resta
                     .values(result_deadline_at=timezone.now_for_db() - timedelta(seconds=1))
                 )
             unknown = await _drive(case, lambda item: item.status == "RECONCILING")
-            assert unknown.active_binding_count == 1
             assert unknown.reason_code == "TRANSPORT_RESULT_TIMEOUT"
         await asyncio.to_thread(case.worker.close, success=True)
         case.worker = None
@@ -193,7 +191,6 @@ async def test_original_work_survives_lost_wakeup_broker_data_and_consumer_resta
             case, lambda item: item.status == "SUCCEEDED" and item.outcome_version == item.published_outcome_version
         )
         assert completed.submit_operation_id == original.submit_operation_id
-        assert completed.active_binding_count == 0
         assert len(case.server.requests) == 1
         duplicate = case.worker.send("src.celery_app.tasks.transport.publish_transport_outcomes_batch")
         assert await asyncio.to_thread(case.worker.result, duplicate) == 0
@@ -233,17 +230,17 @@ async def test_worker_exit_after_claim_never_resends_a_possible_physical_action(
         assert unknown.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
         assert unknown.submit_operation_id == pending.submit_operation_id
         assert unknown.submit_attempt_count == 1
-        assert unknown.active_binding_count == 1
         assert not case.server.requests
 
 
-async def test_remote_receipt_then_connection_loss_keeps_identity_and_binding(integration_session_factory, monkeypatch):
+async def test_remote_receipt_then_connection_loss_preserves_identity_without_resend(
+    integration_session_factory, monkeypatch
+):
     async with _case(integration_session_factory, monkeypatch, disconnect=True) as case:
         await asyncio.to_thread(case.worker.start)
         unknown = await _drive(case, lambda item: item.status == "RECONCILING")
         assert len(case.server.requests) == 1
         assert unknown.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
-        assert unknown.active_binding_count == 1
         retry_scan = case.worker.send("src.celery_app.tasks.transport.submit_transport_tasks_batch")
         assert await asyncio.to_thread(case.worker.result, retry_scan) == 0
         assert len(case.server.requests) == 1

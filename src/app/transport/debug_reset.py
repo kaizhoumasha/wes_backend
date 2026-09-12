@@ -24,8 +24,6 @@ class TransportDebugResetPreview:
     position_projection_count: int
     outcome_version: int
     member_count: int
-    binding_count: int
-    active_binding_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +33,6 @@ class TransportDebugResetResult:
     deleted_evidence_count: int
     deleted_position_projection_count: int
     deleted_member_count: int
-    deleted_binding_count: int
 
 
 class TransportDebugStep(StrEnum):

@@ -87,7 +87,7 @@ def build_debug_transport_request(
             step.client_request_id,
             _CALLER,
             rack_id,
-            RackReference(rack_id),
+            RackPosition(_text(configuration, "workstation")),
             face,
             RcsTemplateId(_text(configuration, "rack_rotate_template")),
         )
@@ -193,7 +193,7 @@ def _members_match(  # noqa: PLR0911 - closed request kinds use separate exact-r
         return False
     if isinstance(request, RotateRackRequest):
         final_position = asdict(RackPosition(_text(configuration, "workstation")))
-        frozen_position = final_position if isinstance(request.position, RackReference) else asdict(request.position)
+        frozen_position = asdict(request.position)
         return (
             not member.position_unknown
             and member.source_json == frozen_position

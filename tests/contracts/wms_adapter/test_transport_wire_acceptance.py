@@ -186,15 +186,15 @@ def test_rack_reference_submit_data_preserves_exact_locations_and_faces() -> Non
     caller = TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO")
 
     assert build_submit_data(
-        RotateRackRequest(new_uuid7(), caller, "510056", RackReference("510056"), "270", RcsTemplateId.CTU02),
+        RotateRackRequest(new_uuid7(), caller, "510056", RackPosition("KT16"), "270", RcsTemplateId.CTU02),
         "transport-rotate",
     ) == {
         "transport_task_id": "transport-rotate",
         "kind": "RACK_ROTATE",
         "rcs_template_id": "CTU02",
         "rack_id": "510056",
-        "source": {"kind": "RACK", "location_code": "510056"},
-        "target": {"kind": "RACK", "location_code": "510056"},
+        "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
+        "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
         "target_face": "270",
     }
     assert build_submit_data(

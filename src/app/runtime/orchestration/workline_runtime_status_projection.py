@@ -22,7 +22,6 @@ class WorkLineRuntimeStatus(str, Enum):
     READY = "READY"
     STOPPED = "STOPPED"
     STARTING = "STARTING"
-    ESTOPPED = "ESTOPPED"
     RECONCILING = "RECONCILING"
 
 
@@ -41,12 +40,8 @@ class WorklineRuntimeStatusProjection(BaseMixin, table=True):
             "ix_wrt_status_proj_status",
             "runtime_status",
         ),
-        Index(
-            "ix_wrt_status_proj_safety_incident",
-            "active_safety_incident_id",
-        ),
         CheckConstraint(
-            "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'ESTOPPED', 'RECONCILING')",
+            "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'RECONCILING')",
             name="ck_wrt_status_proj_status",
         ),
         {"schema": RUNTIME_SCHEMA},
@@ -59,7 +54,6 @@ class WorklineRuntimeStatusProjection(BaseMixin, table=True):
     stopped_at: datetime | None = Field(default=None, description="naive UTC for DB")
     stopped_reason: str | None = Field(default=None, max_length=200)
     resumed_at: datetime | None = Field(default=None, description="naive UTC for DB")
-    active_safety_incident_id: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
     evidence_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),

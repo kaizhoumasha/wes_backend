@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
+
+from pydantic import ValidationError
 
 from src.app.device.contracts import (
     DEVICE_INTEGRATION_CONTRACT_KEY,
@@ -16,21 +18,13 @@ from src.app.device.contracts import (
     EcsDeviceEventReport,
     EcsErrorDetail,
 )
-from src.app.device.event_block_contracts import (
-    EventCommandBlockSnapshot,
-    EventDebugCommandBlocked,
-    EventDebugCommandReady,
-    ReprocessedEventSnapshot,
-)
 from src.app.device.evidence_projection import (
     DeviceEvidenceEventPublisherPort,
     build_device_evidence_update,
     publish_device_evidence_update,
 )
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.event_command_block import DeviceEventCommandBlock, DeviceEventCommandBlockStatus
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.device.repositories.event_command_block_repository import device_event_command_block_repository
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -45,27 +39,21 @@ from src.app.execution.services.inbound_evidence_service import (
 from src.app.execution.services.inbound_evidence_service import (
     inbound_evidence_service as default_inbound_evidence_service,
 )
-from src.app.sys.models.audit_log import OperaStatus
-from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.transaction_wakeup import defer_wakeup
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.device.event_debug_contracts import EventDebugCommandReady
     from src.app.workline.activation import WorkLineDeviceBinding
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
-
-
-class UnknownDeviceCommandError(LookupError):
-    """结果引用了不存在的命令。"""
 
 
 class _DeviceEvidenceRejectedError(ValueError):
@@ -90,20 +78,8 @@ class DeviceResultOutOfOrderError(_DeviceEvidenceRejectedError):
     """命令尚未下发就收到了 RESULT。"""
 
 
-class EventCommandBlockNotFoundError(LookupError):
-    """指定 EVENT 或 blocker 不存在。"""
-
-
-class EventCommandBlockConflictError(RuntimeError):
-    """指定 blocker 不再满足显式重处理条件。"""
-
-
 class EvidenceProcessingRepositoryPort(Protocol):
-    async def get_by_source_identity(
-        self,
-        db: AsyncSession,
-        source_identity: str,
-    ) -> InboundEvidence | None: ...
+    async def lock_source_identity(self, db: AsyncSession, source_identity: str) -> None: ...
 
     async def get_by_source_identity_for_update(
         self,
@@ -124,8 +100,6 @@ class EvidenceProcessingRepositoryPort(Protocol):
 
     async def mark_reconciling(self, db: AsyncSession, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
-    async def requeue_reconciling(self, db: AsyncSession, evidence: InboundEvidence) -> None: ...
-
 
 class EvidenceCommandRepositoryPort(Protocol):
     async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
@@ -138,39 +112,6 @@ class EvidenceCommandRepositoryPort(Protocol):
         for_update: bool = False,
     ) -> DeviceCommand | None: ...
 
-    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> DeviceCommand | None: ...
-
-
-class EventCommandBlockRepositoryPort(Protocol):
-    async def add_block(self, db: AsyncSession, block: DeviceEventCommandBlock) -> DeviceEventCommandBlock: ...
-
-    async def get_by_id_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        block_id: int,
-        evidence_id: int,
-    ) -> DeviceEventCommandBlock | None: ...
-
-    async def get_latest_for_evidence(
-        self,
-        db: AsyncSession,
-        *,
-        evidence_id: int,
-    ) -> DeviceEventCommandBlock | None: ...
-
-    async def mark_requeued(
-        self,
-        db: AsyncSession,
-        block: DeviceEventCommandBlock,
-        *,
-        requeued_at: datetime,
-    ) -> None: ...
-
-
-class EvidenceAuditServicePort(Protocol):
-    async def create_audit_log(self, db: AsyncSession, **values: object) -> object: ...
-
 
 class EvidenceWorkLineRepositoryPort(Protocol):
     async def get_active_binding_for_device(
@@ -180,26 +121,13 @@ class EvidenceWorkLineRepositoryPort(Protocol):
     async def get_by_id(self, db: AsyncSession, id: int) -> object | None: ...
 
 
-class SafetyServicePort(Protocol):
-    async def handle_estop(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        source_evidence_id: int | None = None,
-        source_device_id: int | None = None,
-        source_command_id: int | None = None,
-        trigger_payload: dict[str, Any] | None = None,
-    ) -> object: ...
-
-
 class EventDebugCommandServicePort(Protocol):
     async def create_event_debug_command_in_session(
         self,
         db: AsyncSession,
         *,
         evidence: InboundEvidence,
-    ) -> EventDebugCommandReady | EventDebugCommandBlocked: ...
+    ) -> EventDebugCommandReady: ...
 
 
 class EventDebugModePolicyPort(Protocol):
@@ -235,10 +163,6 @@ class DeviceEvidenceService:
         event_publisher: DeviceEvidenceEventPublisherPort | None = None,
         event_debug_command_service: EventDebugCommandServicePort | None = None,
         event_debug_mode_policy: EventDebugModePolicyPort | None = None,
-        event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
-        audit_service: EvidenceAuditServicePort | None = None,
-        safety_service: SafetyServicePort | None = None,
-        clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
         self._ingress = inbound_evidence_service or default_inbound_evidence_service
@@ -249,35 +173,32 @@ class DeviceEvidenceService:
         self._event_publisher = event_publisher
         self._event_debug_commands = event_debug_command_service
         self._event_debug_mode_policy = event_debug_mode_policy
-        self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
-        self._audit = audit_service or audit_log_service
-        if safety_service is None:
-            from src.app.workline.services.safety_service import workline_safety_service
-
-            safety_service = workline_safety_service
-        self._safety = safety_service
-        self._clock = clock
 
     async def accept_result(self, report: EcsCommandResultReport) -> DeviceEvidenceReceipt:
         rejection: Exception | None = None
         receipt: DeviceEvidenceReceipt | None = None
         async with self._sessions.begin() as db:
+            await self._processing.lock_source_identity(db, f"device-result:{report.command_code}")
+            # worker 先领取 Evidence 再锁 Command；重复回调必须遵循相同行锁顺序。
+            existing = await self._processing.get_by_source_identity_for_update(db, _result_source_identity(report))
             command = await self._commands.get_by_command_code(db, report.command_code, for_update=True)
-            if command is None:
-                raise UnknownDeviceCommandError(report.command_code)
             result = _normalize_result(command, report)
             payload = result.model_dump(mode="json", exclude_unset=True)
             try:
-                _validate_result_identity(command, result)
+                if command is not None:
+                    _validate_result_identity(command, result)
             except DeviceResultConflictError as error:
                 rejection = error
-            if command.status == CommandStatus.PENDING:
+            if rejection is None and existing is not None and existing.command_code == report.command_code:
+                return _receipt(existing, duplicate=True, trace_id=result.trace_id)
+            if command is not None and command.status == CommandStatus.PENDING:
                 command.transition_to(CommandStatus.RECONCILING)
                 command.reconciliation_reason = "RESULT_BEFORE_DISPATCH"
                 if rejection is None:
                     rejection = DeviceResultOutOfOrderError(result.command_code)
             elif (
                 rejection is None
+                and command is not None
                 and command.status == CommandStatus.RECONCILING
                 and command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
             ):
@@ -289,14 +210,16 @@ class DeviceEvidenceService:
                 source_identity=result.source_event_id,
                 normalized_payload=payload,
                 received_at=timezone.now_for_db(),
-                workline_id=command.workline_id,
-                material_execution_id=command.material_execution_id,
+                workline_id=command.workline_id if command is not None else None,
+                material_execution_id=command.material_execution_id if command is not None else None,
                 device_code=result.device_code,
                 command_code=result.command_code if rejection is None else None,
                 contract_key=result.contract_key,
                 contract_version=result.contract_version,
                 apply_status=(
-                    InboundEvidenceApplyStatus.PENDING if rejection is None else InboundEvidenceApplyStatus.IGNORED
+                    InboundEvidenceApplyStatus.PENDING
+                    if rejection is None and command is not None
+                    else InboundEvidenceApplyStatus.IGNORED
                 ),
                 digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE,
             )
@@ -308,7 +231,7 @@ class DeviceEvidenceService:
                 receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=result.trace_id)
                 if rejection is not None:
                     rejection.receipt = receipt
-            if rejection is None and self._task_queue is not None:
+            if rejection is None and command is not None and self._task_queue is not None:
                 defer_wakeup(db, self._task_queue.enqueue_device_evidence)
         if rejection is not None:
             raise rejection
@@ -391,108 +314,61 @@ class DeviceEvidenceService:
             raise rejection
         return receipt
 
-    async def get_event_command_block(self, source_event_id: str) -> EventCommandBlockSnapshot:
-        """返回指定 EVENT 的 latest blocker 持久历史。"""
-
-        async with self._sessions.begin() as db:
-            evidence = await self._processing.get_by_source_identity(db, source_event_id)
-            if evidence is None or evidence.id is None:
-                raise EventCommandBlockNotFoundError(source_event_id)
-            block = await self._event_command_blocks.get_latest_for_evidence(db, evidence_id=evidence.id)
-            if block is None or block.id is None:
-                raise EventCommandBlockNotFoundError(source_event_id)
-            command = await self._commands.get_by_command_code(db, block.blocking_command_code)
-            return _block_snapshot(block, command)
-
-    async def reprocess_blocked_event(
+    async def _process_event(
         self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
         *,
-        source_event_id: str,
-        block_id: int,
-        reason: str,
-        actor_id: int,
-    ) -> ReprocessedEventSnapshot:
-        """在原 EVENT 身份下显式重新开放处理，不创建或唤醒命令。"""
+        processed_at: datetime,
+    ) -> tuple[bool, bool, str | None]:
+        try:
+            event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
+        except ValidationError:
+            logger.exception("device.evidence.invalid_persisted_event")
+            await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+            return False, False, None
 
-        canonical_reason = reason.strip()
-        if not canonical_reason or len(canonical_reason) > 500:
-            raise ValueError("reason 必须是 1..500 个字符的非空文本")
-        now = self._clock()
-        async with self._sessions.begin() as db:
-            evidence = await self._processing.get_by_source_identity_for_update(db, source_event_id)
-            if evidence is None or evidence.id is None:
-                raise EventCommandBlockNotFoundError(source_event_id)
-            block = await self._event_command_blocks.get_by_id_for_update(
-                db,
-                block_id=block_id,
-                evidence_id=evidence.id,
+        wake_device_commands = False
+        debug_command_code: str | None = None
+        if event.is_debug:
+            await self._commands.lock_creation_for_device(db, event.device_code)
+            suppress_debug_command = (
+                self._event_debug_mode_policy is not None
+                and await self._event_debug_mode_policy.should_suppress_event_debug_command_in_session(
+                    db,
+                    workline_id=evidence.workline_id,
+                    device_code=event.device_code,
+                )
             )
-            if block is None:
-                raise EventCommandBlockNotFoundError(f"{source_event_id}:{block_id}")
-            latest = await self._event_command_blocks.get_latest_for_evidence(db, evidence_id=evidence.id)
-            if (
-                latest is None
-                or latest.id != block_id
-                or DeviceEventCommandBlockStatus(block.status) is not DeviceEventCommandBlockStatus.BLOCKED
-            ):
-                raise EventCommandBlockConflictError("目标 blocker 不是当前 BLOCKED 因果")
-            if (
-                InboundEvidenceKind(evidence.kind) is not InboundEvidenceKind.DEVICE_EVENT
-                or not EcsDeviceEvent.model_validate(evidence.normalized_payload).is_debug
-                or InboundEvidenceApplyStatus(evidence.apply_status) is not InboundEvidenceApplyStatus.RECONCILING
-            ):
-                raise EventCommandBlockConflictError("目标不是可重处理的 debug DEVICE_EVENT")
+            if suppress_debug_command:
+                await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+            elif self._event_debug_commands is None:
+                await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
+            else:
+                try:
+                    outcome = await self._event_debug_commands.create_event_debug_command_in_session(
+                        db,
+                        evidence=evidence,
+                    )
+                except ValueError:
+                    logger.exception("device.event_debug.command_rejected")
+                    await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
+                else:
+                    debug_command_code = outcome.command_code
+                    wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
+                    await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+        else:
+            await self._processing.mark_applied(db, evidence, processed_at=processed_at)
+        if self._task_queue is not None:
+            defer_wakeup(db, self._task_queue.enqueue_transport_debug)
+        return not event.is_debug, wake_device_commands, debug_command_code
 
-            await self._commands.lock_creation_for_device(db, block.device_code)
-            blocking_command = await self._commands.get_by_command_code(
-                db,
-                block.blocking_command_code,
-                for_update=True,
-            )
-            if (
-                blocking_command is None
-                or blocking_command.id != block.blocking_command_id
-                or blocking_command.occupies_device_slot
-            ):
-                raise EventCommandBlockConflictError("blocker 指向的命令尚未可靠终结")
-            if await self._commands.get_unclosed_for_device_for_update(db, block.device_code) is not None:
-                raise EventCommandBlockConflictError("设备存在其它未闭合命令")
-
-            await self._event_command_blocks.mark_requeued(db, block, requeued_at=now)
-            await self._processing.requeue_reconciling(db, evidence)
-            _ = await self._audit.create_audit_log(
-                db,
-                method="POST",
-                title="显式重处理被阻塞 Device EVENT",
-                path=f"/api/v1/device/evidences/{source_event_id}/blockers/{block_id}/reprocess",
-                args={
-                    "model": "InboundEvidence",
-                    "operation": "reprocess_blocked_device_event",
-                    "record_id": evidence.id,
-                    "source_event_id": source_event_id,
-                    "device_code": block.device_code,
-                    "block_id": block_id,
-                    "blocking_command_code": block.blocking_command_code,
-                    "actor_id": actor_id,
-                    "reason": canonical_reason,
-                },
-                status=OperaStatus.SUCCESS,
-                code="202",
-                msg="EVENT evidence 已重新进入 PENDING",
-            )
-            return ReprocessedEventSnapshot(
-                source_event_id=source_event_id,
-                block_id=block_id,
-                apply_status=InboundEvidenceApplyStatus.PENDING,
-            )
-
-    async def process_one(self) -> bool:  # noqa: PLR0912 - closed evidence kinds and post-commit wake
+    async def process_one(self) -> bool:
         """异步完成设备 evidence 的基础验证，业务消费由 FactProcessor 承接。"""
 
         now = timezone.now_for_db()
         wake_execution = False
         wake_device_commands = False
-        wake_safety_drain = False
         update = None
         debug_command_code: str | None = None
         async with self._sessions.begin() as db:
@@ -503,70 +379,31 @@ class DeviceEvidenceService:
             if evidence is None:
                 return False
             if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
-                event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
-                if event.is_debug:
-                    await self._commands.lock_creation_for_device(db, event.device_code)
-                    suppress_debug_command = (
-                        self._event_debug_mode_policy is not None
-                        and await self._event_debug_mode_policy.should_suppress_event_debug_command_in_session(
-                            db,
-                            workline_id=evidence.workline_id,
-                            device_code=event.device_code,
-                        )
-                    )
-                    if suppress_debug_command:
-                        await self._processing.mark_ignored(db, evidence, processed_at=now)
-                    elif self._event_debug_commands is None:
-                        await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                    else:
-                        try:
-                            outcome = await self._event_debug_commands.create_event_debug_command_in_session(
-                                db,
-                                evidence=evidence,
-                            )
-                        except ValueError:
-                            logger.exception("device.event_debug.command_rejected")
-                            await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                        else:
-                            if isinstance(outcome, EventDebugCommandBlocked):
-                                if evidence.id is None or evidence.device_code is None:
-                                    raise RuntimeError("EVENT blocker 缺少持久化 evidence 身份")
-                                _ = await self._event_command_blocks.add_block(
-                                    db,
-                                    DeviceEventCommandBlock(
-                                        evidence_id=evidence.id,
-                                        source_event_id=evidence.source_identity,
-                                        device_code=evidence.device_code,
-                                        blocking_command_id=outcome.blocking_command_id,
-                                        blocking_command_code=outcome.blocking_command_code,
-                                        blocking_command_status=outcome.blocking_command_status,
-                                        blocking_reconciliation_reason=outcome.blocking_reconciliation_reason,
-                                        blocked_at=now,
-                                    ),
-                                )
-                                await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                            else:
-                                debug_command_code = outcome.command_code
-                                wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
-                                await self._processing.mark_ignored(db, evidence, processed_at=now)
-                elif event.event_type == "ESTOP_PRESSED":
-                    wake_safety_drain = await self._apply_estop_event(db, evidence=evidence, processed_at=now)
-                else:
-                    await self._processing.mark_applied(db, evidence, processed_at=now)
-                    wake_execution = True
+                wake_execution, wake_device_commands, debug_command_code = await self._process_event(
+                    db,
+                    evidence,
+                    processed_at=now,
+                )
             elif evidence.command_code is None:
-                await self._processing.mark_reconciling(db, evidence, processed_at=now)
+                await self._processing.mark_ignored(db, evidence, processed_at=now)
             else:
                 command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
-                if (
-                    command is None
-                    or evidence.workline_id != command.workline_id
+                if command is None or command.status in {
+                    CommandStatus.SUCCEEDED,
+                    CommandStatus.FAILED,
+                    CommandStatus.TIMED_OUT,
+                }:
+                    # 协议没有跨消息恢复顺序；终态后的事实只留存，不覆盖或重复推进。
+                    await self._processing.mark_ignored(db, evidence, processed_at=now)
+                elif (
+                    evidence.workline_id != command.workline_id
                     or command.status
                     not in {
                         CommandStatus.DISPATCHING,
                         CommandStatus.ACKNOWLEDGED,
                         CommandStatus.RECONCILING,
                     }
+                    or command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
                 ):
                     await self._processing.mark_reconciling(db, evidence, processed_at=now)
                 else:
@@ -584,39 +421,12 @@ class DeviceEvidenceService:
                     command.claim_expires_at = None
                     await self._processing.mark_applied(db, evidence, processed_at=now)
                     wake_execution = evidence.material_execution_id is not None
-            if self._task_queue is not None and evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
-                defer_wakeup(db, self._task_queue.enqueue_transport_debug)
             update = build_device_evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         if wake_device_commands:
             self._enqueue_device_commands()
-        if wake_safety_drain:
-            self._enqueue_safety_drain()
         await publish_device_evidence_update(self._event_publisher, update)
         if wake_execution:
             self._enqueue_execution_facts()
-        return True
-
-    async def _apply_estop_event(
-        self,
-        db: AsyncSession,
-        *,
-        evidence: InboundEvidence,
-        processed_at: datetime,
-    ) -> bool:
-        workline = (
-            await self._worklines.get_by_id(db, evidence.workline_id) if evidence.workline_id is not None else None
-        )
-        workline_id = getattr(workline, "id", None)
-        if not isinstance(workline_id, int) or evidence.id is None:
-            await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
-            return False
-        _ = await self._safety.handle_estop(
-            db,
-            workline_id=workline_id,
-            source_evidence_id=evidence.id,
-            trigger_payload=evidence.normalized_payload,
-        )
-        await self._processing.mark_applied(db, evidence, processed_at=processed_at)
         return True
 
     def _enqueue_execution_facts(self) -> None:
@@ -635,24 +445,20 @@ class DeviceEvidenceService:
         except Exception:
             logger.exception("device.evidence.command_dispatch_wake_failed")
 
-    def _enqueue_safety_drain(self) -> None:
-        if self._task_queue is None:
-            return
-        try:
-            self._task_queue.enqueue_safety_drain()
-        except Exception:
-            logger.exception("device.evidence.safety_drain_wake_failed")
+
+def _result_source_identity(report: EcsCommandResultReport) -> str:
+    return f"RESULT:{canonical_json_digest(report.model_dump(mode='json'))}"
 
 
-def _normalize_result(command: DeviceCommand, report: EcsCommandResultReport) -> EcsCommandResult:
+def _normalize_result(command: DeviceCommand | None, report: EcsCommandResultReport) -> EcsCommandResult:
     payload: dict[str, object] = {
         "command_code": report.command_code,
         "device_code": report.device_code,
-        "contract_key": command.contract_key,
-        "contract_version": command.contract_version,
+        "contract_key": command.contract_key if command is not None else DEVICE_INTEGRATION_CONTRACT_KEY,
+        "contract_version": command.contract_version if command is not None else DEVICE_INTEGRATION_CONTRACT_VERSION,
         "result": report.result,
         "finish_time": report.finish_time,
-        "source_event_id": f"RESULT:{report.command_code}",
+        "source_event_id": _result_source_identity(report),
         "data": report.data,
         "error_detail": (
             EcsErrorDetail(code=report.error_detail.code, message=report.error_detail.msg)
@@ -660,7 +466,7 @@ def _normalize_result(command: DeviceCommand, report: EcsCommandResultReport) ->
             else None
         ),
     }
-    if command.trace_id is not None:
+    if command is not None and command.trace_id is not None:
         payload["trace_id"] = command.trace_id
     return EcsCommandResult.model_validate(payload)
 
@@ -718,38 +524,9 @@ def _receipt(
     )
 
 
-def _block_snapshot(
-    block: DeviceEventCommandBlock,
-    command: DeviceCommand | None,
-) -> EventCommandBlockSnapshot:
-    if block.id is None:
-        raise RuntimeError("持久化 EVENT blocker 缺少主键")
-    current_status = CommandStatus(command.status) if command is not None else None
-    base_path = f"/api/v1/device/evidences/{block.source_event_id}/blockers/{block.id}"
-    return EventCommandBlockSnapshot(
-        block_id=block.id,
-        status=DeviceEventCommandBlockStatus(block.status),
-        source_event_id=block.source_event_id,
-        device_code=block.device_code,
-        blocking_command_code=block.blocking_command_code,
-        blocking_command_detected_status=CommandStatus(block.blocking_command_status),
-        blocking_command_detected_reconciliation_reason=block.blocking_reconciliation_reason,
-        blocking_command_current_status=current_status,
-        blocking_command_terminal=command is not None and not command.occupies_device_slot,
-        reason_code=block.reason_code,
-        blocked_at=block.blocked_at,
-        requeued_at=block.requeued_at,
-        reconcile_device_idle_path=f"{base_path}/reconcile-device-idle",
-        reprocess_path=f"{base_path}/reprocess",
-    )
-
-
 __all__ = [
     "DeviceEvidenceConflictError",
     "DeviceEvidenceService",
     "DeviceResultConflictError",
     "DeviceResultOutOfOrderError",
-    "EventCommandBlockConflictError",
-    "EventCommandBlockNotFoundError",
-    "UnknownDeviceCommandError",
 ]

@@ -70,14 +70,6 @@ async def _seed_transport_task(session: AsyncSession, transport_task_id: str, re
     )
     await session.execute(
         text(
-            "INSERT INTO wes_runtime.transport_resource_bindings ("
-            "transport_task_id, resource_type, resource_id, created_at"
-            ") VALUES (:task_id, 'RACK', :resource_id, CURRENT_TIMESTAMP)"
-        ),
-        {"task_id": transport_task_id, "resource_id": resource_id},
-    )
-    await session.execute(
-        text(
             "INSERT INTO wes_runtime.transport_debug_position_projections ("
             "object_type, object_id, position_json, position_unknown, source_operation_id, "
             "source_transport_task_id, updated_at"
@@ -213,7 +205,6 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
 
                     for table, task_column in (
                         ("transport_debug_position_projections", "source_transport_task_id"),
-                        ("transport_resource_bindings", "transport_task_id"),
                         ("transport_members", "transport_task_id"),
                         ("transport_tasks", "transport_task_id"),
                     ):

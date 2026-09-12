@@ -33,8 +33,9 @@ WES wire；供应商私有路径、坐标、字段、错误和适配只留在 EC
 | `TRANSFER_DEVICE` | `rough_sorter.transfer_device` | `MOVE_FORWARD` |
 | `PLACEMENT_DEVICE` | `rough_sorter.placement_device` | `PICK_AND_PUT` |
 
-三个角色都是独立命令资源，每个 `device_code` 最多有一个已接纳未终态命令。不同 `device_code` 可以并行；插件不建立 WorkLine
-全局锁。`ESTOP_PRESSED` 由 Phase 7 基础能力处理，不进入本附录的 Phase 8 自动业务事件闭集。
+三个角色都是独立命令资源。WES 不以同 `device_code` 的其他未终态命令或本地状态投影阻止发送；ECS 在接纳时原子判断设备状态、容量和
+物理互斥。插件不建立 WorkLine 全局锁。`ESTOP_PRESSED` 是 ECS 自有安全事实，不属于 WES callback 或本附录的自动业务事件闭集；
+急停记录、复位和恢复执行由 ECS 负责。
 
 ## 3. Endpoint、设备与 WorkLine 当前配置
 
@@ -69,9 +70,8 @@ DeviceCommand 创建时冻结执行必需的目标、Endpoint、合同和时限�
 
 这些参数不是设备编码或厂商坐标。ECS 根据收到命令的设备及约定解释实际位置；WMS 交互使用相同逻辑位置合同。
 绑定和投影沿用WorkLine 范围，不新增点位主数据、映射表或全局位置别名。
-状态年龄阈值 10 秒是 WES 的执行准入策略，使用状态响应后的观察时间；未来或过期状态继续失败关闭。
-插件决定下一步命令前，通过基础 ECS 适配器按 WorkLine 当前配置的 Endpoint 和设备身份读取实时状态；暂不可用时沿用业务等待重试。
-历史状态记录不能作为持续等待的唯一依据。基础派发层在发送前再次校验实时状态，防止预检后状态变化；两次读取均有界，不新增轮询器。
+状态年龄阈值 10 秒只用于诊断陈旧性，不作为 WES 发送授权。插件决定下一步命令时使用 WorkLine 当前 Endpoint、设备身份、
+冻结合同和业务参数；基础派发层不在发送前读取实时状态或检查同设备活动命令。ECS 在接纳时判断设备状态、容量和物理互斥。
 固定参数的本地验证不表示供应商已实现对应解释。
 
 `plugin_key="rough_sorter"`、`plugin_version="1.0.0"`、`flow_mode="ROUGH_SORT_INBOUND"`、三组 `contract_key` 和

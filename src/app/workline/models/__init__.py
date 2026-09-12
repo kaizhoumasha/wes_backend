@@ -1,6 +1,6 @@
 """WorkLine 模型导出。
 
-WorkLine 运行态迁出后收缩为纯配置域 model 聚合：workline 配置域 model + safety 跨域 enum。
+WorkLine 运行态迁出后收缩为纯配置域 model 聚合。
 运行态 model 已物理迁入 runtime/orchestration/models/。
 """
 
@@ -11,11 +11,6 @@ from .plane import (
     PlaneObjectSnapshot,
     PlaneSceneView,
     PlaneSnapshot,
-)
-from .safety import (
-    ClearWorkLineEstopRequest,
-    WorklineSafetyIncident,
-    WorklineSafetyIncidentStatus,
 )
 from .workline import (
     LineType,
@@ -37,7 +32,6 @@ from .workline import (
 )
 
 __all__ = [
-    "ClearWorkLineEstopRequest",
     "LineType",
     "PlaneEdge",
     "PlaneExtremeState",
@@ -60,6 +54,4 @@ __all__ = [
     "WorkLineRunMode",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
-    "WorklineSafetyIncident",
-    "WorklineSafetyIncidentStatus",
 ]

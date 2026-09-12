@@ -17,7 +17,6 @@ from src.app.transport.models import (
     TransportDebugRunStep,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -131,9 +130,6 @@ async def _cleanup(
                 delete(PositionProjection).where(PositionProjection.source_operation_id.in_(operation_ids))
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id.in_(operation_ids)))
-        await db.execute(
-            delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
-        )
         await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
         await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
 
@@ -141,7 +137,7 @@ async def _cleanup(
 async def _aggregate_counts(
     sessions: async_sessionmaker[AsyncSession],
     transport_task_id: str,
-) -> tuple[int, int, int]:
+) -> tuple[int, int]:
     async with sessions() as db:
         task_count = await db.scalar(
             select(func.count()).select_from(TransportTask).where(TransportTask.transport_task_id == transport_task_id)
@@ -151,12 +147,7 @@ async def _aggregate_counts(
             .select_from(TransportMember)
             .where(TransportMember.transport_task_id == transport_task_id)
         )
-        binding_count = await db.scalar(
-            select(func.count())
-            .select_from(TransportResourceBinding)
-            .where(TransportResourceBinding.transport_task_id == transport_task_id)
-        )
-    return int(task_count or 0), int(member_count or 0), int(binding_count or 0)
+    return int(task_count or 0), int(member_count or 0)
 
 
 async def test_debug_reset_deletes_only_selected_postgresql_aggregate(
@@ -175,7 +166,7 @@ async def test_debug_reset_deletes_only_selected_postgresql_aggregate(
 
     try:
         preview = await service.preview_debug_task_reset(target_id)
-        assert (preview.member_count, preview.binding_count, preview.active_binding_count) == (1, 1, 1)
+        assert preview.member_count == 1
 
         result = await service.reset_debug_task(target_id)
 
@@ -184,10 +175,9 @@ async def test_debug_reset_deletes_only_selected_postgresql_aggregate(
             result.deleted_evidence_count,
             result.deleted_position_projection_count,
             result.deleted_member_count,
-            result.deleted_binding_count,
-        ) == (0, 0, 0, 1, 1)
-        assert await _aggregate_counts(integration_session_factory, target_id) == (0, 0, 0)
-        assert await _aggregate_counts(integration_session_factory, keep_id) == (1, 1, 1)
+        ) == (0, 0, 0, 1)
+        assert await _aggregate_counts(integration_session_factory, target_id) == (0, 0)
+        assert await _aggregate_counts(integration_session_factory, keep_id) == (1, 1)
     finally:
         await _cleanup(integration_session_factory, task_ids=(target_id, keep_id))
 
@@ -279,9 +269,8 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
             result.deleted_evidence_count,
             result.deleted_position_projection_count,
             result.deleted_member_count,
-            result.deleted_binding_count,
-        ) == (1, 1, 1, 1, 1)
-        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
+        ) == (1, 1, 1, 1)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0)
         async with integration_session_factory() as db:
             receipt_count = await db.scalar(
                 select(func.count())
@@ -439,13 +428,13 @@ async def test_callback_waiting_on_debug_reset_lock_is_retained_as_missing_task_
         reset_repository.release.set()
         await reset_call
         await callback_call
-        assert await callback_service.process_pending_evidence(1) == 1
+        assert await callback_service.process_pending_evidence(1) == 0
 
         async with integration_session_factory() as db:
             evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
         assert evidence is not None
         assert (evidence.status, evidence.conflict_code) == ("CONFLICT", "TRANSPORT_TASK_NOT_FOUND")
-        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0)
     finally:
         reset_repository.release.set()
         calls = [call for call in (reset_call, callback_call) if call is not None]
@@ -504,7 +493,7 @@ async def test_debug_reset_rejects_task_referenced_by_active_debug_run(
     try:
         with pytest.raises(TransportContractError, match="active transport debug run task cannot be reset"):
             await _service(integration_session_factory).reset_debug_task(task_id)
-        assert await _aggregate_counts(integration_session_factory, task_id) == (1, 1, 1)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (1, 1)
     finally:
         await _cleanup(integration_session_factory, task_ids=(task_id,), run_ids=(run_id,))
 
@@ -552,6 +541,6 @@ async def test_debug_reset_allows_task_referenced_only_by_completed_debug_run(
 
     try:
         await _service(integration_session_factory).reset_debug_task(task_id)
-        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0)
     finally:
         await _cleanup(integration_session_factory, task_ids=(task_id,), run_ids=(run_id,))

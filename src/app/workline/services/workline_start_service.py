@@ -16,7 +16,6 @@ from src.app.workline.installed_plugin import (
     resolve_position_bindings,
 )
 from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
-from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.conf import settings
 
@@ -46,14 +45,12 @@ class WorkLineStartService:
         *,
         plugins: tuple[InstalledWorkLinePlugin, ...],
         workline_repository=workline_repository,
-        safety_repository=workline_safety_incident_repository,
         position_repository=workline_position_repository,
         device_repository=device_repository,
         device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
-        self._safety = safety_repository
         self._positions = position_repository
         self._devices = device_repository
         self._adapter_provider = device_adapter_provider
@@ -72,11 +69,7 @@ class WorkLineStartService:
             raise WorkLineStartVersionConflictError(f"WorkLine {workline_id} 版本已变化，请重新读取状态")
         if workline.is_active:
             raise WorkLineStartInvalidStateError("WorkLine 已启用")
-        if await self._safety.get_active_for_workline(db, workline_id) is not None:
-            raise WorkLineStartInvalidStateError("WorkLine 存在 active safety incident")
-        unfinished = await self._worklines.get_unfinished_workload_summary(db, workline_id)
-        if any(unfinished["by_type"].values()):
-            raise WorkLineStartInvalidStateError(f"WorkLine 存在未闭合负载: {unfinished.get('sample')}")
+        # 明确启用不等待历史执行/反馈闭合；当前业务约束由已安装插件声明。
         plugin = self._resolve_plugin(workline)
         if plugin.business_blocker is not None:
             business = await plugin.business_blocker.get_unfinished_workload_summary(db, workline_id)

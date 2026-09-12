@@ -34,7 +34,6 @@ celery_app = Celery(
         "src.celery_app.tasks.core",  # 核心任务
         "src.celery_app.tasks.device_command",  # DeviceCommand 可靠生命周期
         "src.celery_app.tasks.transport",  # Transport 可靠对象后台驱动
-        "src.celery_app.tasks.safety",  # Safety incident 可靠 drain
         "src.celery_app.tasks.execution",  # Execution Fact 持久处理
         "src.celery_app.tasks.wms_confirmation",  # WMS confirmation 独立派发
     ],

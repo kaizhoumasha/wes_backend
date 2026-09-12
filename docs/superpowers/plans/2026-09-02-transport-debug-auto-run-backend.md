@@ -2,6 +2,10 @@
 
 > **2026-09-03 修订：** 创建与推进轮次不再读取或校验 `RackBinMount` 基础数据；货架、料箱和原槽位由操作员按现场实物直接录入并冻结。本计划中 active mount 查询、锁定和二次校验步骤已被该修订取代，其他状态机与 Evidence 安全边界保持不变。
 
+> **2026-09-12 修订：** [WES 无阻塞执行设计](../specs/2026-09-11-wes-nonblocking-execution-design.md) 已删除
+> `TransportResourceBinding` 和 debug run 跨任务货架占用。本文原 binding 查询、阻断与释放步骤不再是实施要求；单轮步骤幂等、
+> 自身任务关联和 Evidence 安全边界继续有效。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立后端持久化 Transport 自动联调轮次，按 WMS 回调和 `SCAN12` Device Evidence 自动处理选定货架的多面料箱，并在全部料箱回架后执行 `CTU03`。
@@ -238,7 +242,7 @@ git commit -m "feat(transport): 支持货架引用联调边"
 - Test: `tests/integration/transport/test_transport_debug_run_repository.py`
 
 **Interfaces:**
-- Consumes: `TransportTask`、`TransportResourceBinding`、`RackBinMount`、`InboundEvidence`。
+- Consumes: `TransportTask`、`RackBinMount`、`InboundEvidence`。
 - Produces: `TransportDebugRunStatus`、`TransportDebugRunPhase`、`TransportDebugRunStepStatus`、配置 dataclasses、`TransportDebugRun`、`TransportDebugRunStep`、`TransportDebugRunRepository`。
 
 - [ ] **Step 1: 写合同和数据库失败测试**
@@ -393,7 +397,6 @@ Expected: PostgreSQL fixture 可用时 PASS；不可用时按测试基础设施�
 - `list_active_mounts(db, rack_id) -> list[RackBinMount]`。
 - `max_device_evidence_id(db) -> int`。
 - `list_device_evidences_after(db, evidence_id, limit) -> list[InboundEvidence]`。
-- `has_active_transport_binding(db, run_id) -> bool`。
 
 `claim_active_runs` 使用 `FOR UPDATE SKIP LOCKED` 并写入 30 秒 claim lease；Evidence 查询按 `id ASC`，只读 `DEVICE_EVENT`。
 
@@ -598,7 +601,7 @@ result = await service.abort_run(
 assert result.status is TransportDebugRunStatus.ABORTED
 ```
 
-拒绝 RUNNING、错误断言、空原因、任一关联 task 非确定终态、任一 active `TransportResourceBinding`。成功时记录 audit，设置 `active_scope=None`，不修改任何 Transport task/binding/evidence。
+拒绝 RUNNING、错误断言、空原因或任一关联 task 非确定终态。成功时记录 audit，设置 `active_scope=None`，不修改任何 Transport task/evidence。
 
 - [ ] **Step 6: 运行 service 测试**
 

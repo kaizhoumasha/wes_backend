@@ -259,11 +259,11 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
     assert command_fence.locks == sorted(
         ["SIM-ECS-01", "STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12"]
     )
-    assert command_fence.checks == command_fence.locks
+    assert command_fence.checks == []
 
 
 @pytest.mark.asyncio
-async def test_create_run_rejects_an_unclosed_command_on_a_frozen_site_device() -> None:
+async def test_create_run_does_not_query_or_block_on_an_unclosed_device_command() -> None:
     repository = _Repository(None)  # type: ignore[arg-type]
     command_fence = _CommandFence(unclosed_device_code="STATION_SCAN10")
     service = IntegrationDebugService(
@@ -276,18 +276,19 @@ async def test_create_run_rejects_an_unclosed_command_on_a_frozen_site_device() 
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugConflict, match="STATION_SCAN10 存在未闭合指令"):
-        await service.create_run(
-            CreateIntegrationRun(
-                workline_code="KT16",
-                profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
-                environment_label="integration",
-                device_code="SIM-ECS-01",
-            ),
-            actor_id=42,
-        )
+    result = await service.create_run(
+        CreateIntegrationRun(
+            workline_code="KT16",
+            profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
+            environment_label="integration",
+            device_code="SIM-ECS-01",
+        ),
+        actor_id=42,
+    )
 
-    assert repository.run is None
+    assert result["workline_id"] == 3
+    assert repository.run is not None
+    assert command_fence.checks == []
 
 
 @pytest.mark.asyncio
@@ -601,6 +602,65 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
     )
 
     assert run.current_phase == "POINT3_ROUTE"
+
+
+@pytest.mark.asyncio
+async def test_refreshing_historical_reconciling_wms_step_does_not_replace_current_attention() -> None:
+    run = IntegrationRun(
+        run_id="run-history-reconciling",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="NEEDS_ATTENTION",
+        current_phase="POINT3_ROUTE",
+        attention_code="CURRENT_DEVICE_FAILED",
+        task_id="PICK-001",
+        bin_code="BIN-001",
+        device_code="SIM-ECS-01",
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="TASK_PREPARE",
+            status="WAITING",
+            client_request_id="prepare-request",
+            operation="outbound.picking_task.prepare@v1",
+            wms_confirmation_id=9,
+        )
+    )
+    repository.confirmation = SimpleNamespace(
+        status=WmsConfirmationStatus.RECONCILING,
+        response_evidence_id=None,
+        response_result=None,
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_wms_action(
+        run.run_id,
+        client_request_id="prepare-request",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][0]["status"] == "NEEDS_ATTENTION"
+    assert result["steps"][0]["reason_code"] == "WMS_CONFIRMATION_RECONCILING"
+    assert result["status"] == "NEEDS_ATTENTION"
+    assert result["current_phase"] == "POINT3_ROUTE"
+    assert result["attention_code"] == "CURRENT_DEVICE_FAILED"
 
 
 @pytest.mark.asyncio

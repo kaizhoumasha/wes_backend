@@ -125,6 +125,28 @@ def test_device_command_debug_routes_are_superuser_only_and_keep_onsite_example(
     }
 
 
+def test_device_event_blocker_recovery_routes_are_retired() -> None:
+    app = _app(_runtime())
+
+    assert _route(app, "/api/v1/device/evidences/{source_event_id}/blocker", "GET") is None
+    assert (
+        _route(
+            app,
+            "/api/v1/device/evidences/{source_event_id}/blockers/{block_id}/reprocess",
+            "POST",
+        )
+        is None
+    )
+    assert (
+        _route(
+            app,
+            "/api/v1/device/evidences/{source_event_id}/blockers/{block_id}/reconcile-device-idle",
+            "POST",
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_non_superuser_cannot_preflight_create_or_read_debug_command() -> None:
     app = _secured_app(_runtime(), is_superuser=False)

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import BigInteger
+from sqlalchemy.exc import IntegrityError
 
 from src.app.transport.contracts import TransportHandle
 from src.app.transport.debug_run_contracts import (
@@ -66,7 +67,6 @@ class _Repository:
         self.runs: dict[str, TransportDebugRun] = {}
         self.steps: dict[str, list[TransportDebugRunStep]] = {}
         self.tasks: dict[str, TransportTask] = {}
-        self.active_binding = False
         self.step_history_batch_sizes: list[int] = []
 
     async def get_active_run(self, db: object, *, for_update: bool = False) -> TransportDebugRun | None:
@@ -130,14 +130,6 @@ class _Repository:
     ) -> dict[str, TransportTask]:
         del db
         return {task_id: self.tasks[task_id] for task_id in transport_task_ids if task_id in self.tasks}
-
-    async def has_active_transport_binding(self, db: object, run_id: str) -> bool:
-        del db, run_id
-        return self.active_binding
-
-    async def list_active_transport_binding_task_ids(self, db: object, run_id: str) -> set[str]:
-        del db, run_id
-        return set(self.tasks) if self.active_binding else set()
 
 
 class _Publisher:
@@ -413,6 +405,37 @@ async def test_create_run_rejects_second_global_active_run() -> None:
         await service.create_run(_request(face="270"), actor_id=8)
 
 
+@pytest.mark.parametrize("reason", ["foreign key", "not null", "integrity failure"])
+@pytest.mark.parametrize("stage", ["transport", "run"])
+async def test_create_run_propagates_non_duplicate_integrity_error(reason: str, stage: str) -> None:
+    service, repository, _, publisher = _service()
+    error = IntegrityError("INSERT", {}, RuntimeError(reason))
+    if stage == "transport":
+        service._transport.create_debug_task_in_session = AsyncMock(side_effect=error)
+    else:
+        repository.add_run = AsyncMock(side_effect=error)
+
+    with pytest.raises(IntegrityError) as raised:
+        await service.create_run(_request(), actor_id=7)
+
+    assert raised.value is error
+    assert repository.runs == {}
+    assert publisher.events == []
+
+
+async def test_create_run_integrity_race_rejects_confirmed_global_duplicate() -> None:
+    service, repository, _, publisher = _service()
+    error = IntegrityError("INSERT", {}, RuntimeError("duplicate active scope"))
+    repository.add_run = AsyncMock(side_effect=error)
+    repository.get_active_run = AsyncMock(side_effect=[None, SimpleNamespace(active_scope="GLOBAL")])
+
+    with pytest.raises(TransportDebugRunConflict, match="active debug run") as raised:
+        await service.create_run(_request(), actor_id=7)
+
+    assert raised.value.__cause__ is error
+    assert publisher.events == []
+
+
 async def test_list_runs_uses_stable_cursor_and_rejects_invalid_cursor() -> None:
     service, repository, _, _ = _service()
     first = await service.create_run(_request(), actor_id=7)
@@ -448,7 +471,7 @@ async def test_list_runs_uses_stable_cursor_and_rejects_invalid_cursor() -> None
         await service.list_runs(limit=1, cursor="not-a-cursor")
 
 
-async def test_abort_requires_attention_terminal_tasks_and_no_active_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_abort_requires_attention_and_terminal_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
     service, repository, _, _ = _service()
     snapshot = await service.create_run(_request(), actor_id=7)
     run = repository.runs[snapshot.run_id]
@@ -475,16 +498,7 @@ async def test_abort_requires_attention_terminal_tasks_and_no_active_binding(mon
         )
 
     repository.tasks["transport-1"].status = "FAILED"
-    repository.active_binding = True
-    with pytest.raises(TransportDebugRunConflict, match="binding"):
-        await service.abort_run(
-            run.run_id,
-            assertion="PHYSICAL_STATE_VERIFIED",
-            reason="现场确认全部机构静止",
-            actor_id=7,
-        )
 
-    repository.active_binding = False
     audit = _Audit()
     monkeypatch.setattr("src.app.transport.debug_run_service.audit_log_service", audit)
     aborted = await service.abort_run(
@@ -510,7 +524,6 @@ async def test_abort_finalizes_only_a_provably_unsent_debug_task(monkeypatch: py
     repository.tasks["transport-1"] = _transport_task("PENDING")
     run.status = "NEEDS_ATTENTION"
     run.attention_code = "EVIDENCE_SOURCE_EVENT_CONFLICT"
-    repository.active_binding = True
 
     class _Transport:
         async def is_unsent_debug_task_finalizable_in_session(self, _db: object, task_id: str) -> bool:
@@ -520,7 +533,6 @@ async def test_abort_finalizes_only_a_provably_unsent_debug_task(monkeypatch: py
             assert task_id == "transport-1"
             repository.tasks[task_id].status = "FAILED"
             repository.tasks[task_id].reason_code = "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND"
-            repository.active_binding = False
             return True
 
     service._transport = _Transport()  # type: ignore[assignment]
@@ -626,7 +638,7 @@ async def test_return_batch_uses_the_frozen_outfeed_in_wms_request() -> None:
     snapshot = await service.create_run(replace(_request(), outfeed_position="CNV0102"), actor_id=7)
     run = repository.runs[snapshot.run_id]
     run.configuration_json = {**run.configuration_json, "return_queues": {"0": ["A000001922"]}}
-    service._transport.assert_debug_rack_position_in_session = AsyncMock()
+    service._assert_return_rack_fact = AsyncMock()
     service._wms = SimpleNamespace(create_or_get=AsyncMock())
 
     await service._prepare_return_batch(sessions.db, run, repository.steps[snapshot.run_id][0], NOW)

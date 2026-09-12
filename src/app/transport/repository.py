@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlmodel import col
 
+from src.app.execution.locks import position_projection_lock_identity
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS, TRANSPORT_POSITION_OPERATION
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 
@@ -25,6 +25,52 @@ if TYPE_CHECKING:
 
 class TransportRepository:
     """只执行 Transport 聚合 SQL 和 flush，不自行提交事务。"""
+
+    async def lock_task_identity(self, db: AsyncSession, transport_task_id: str) -> None:
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": f"transport-result:{transport_task_id}"},
+        )
+
+    async def requeue_unassociated_evidence(self, db: AsyncSession, transport_task_id: str) -> int:
+        result = await db.execute(
+            update(TransportEvidence)
+            .where(
+                col(TransportEvidence.transport_task_id) == transport_task_id,
+                col(TransportEvidence.status) == "CONFLICT",
+                col(TransportEvidence.conflict_code) == "TRANSPORT_TASK_NOT_FOUND",
+            )
+            .values(status="PENDING", conflict_code=None, processed_at=None, claim_token=None, claim_until=None)
+            .returning(col(TransportEvidence.id))
+        )
+        return len(result.scalars().all())
+
+    async def lock_position_result(self, db: AsyncSession, object_type: str, object_id: str) -> None:
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": position_projection_lock_identity(object_type, object_id)},
+        )
+
+    async def has_other_position_facts(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+        transport_task_id: str,
+    ) -> bool:
+        return bool(
+            await db.scalar(
+                select(
+                    exists().where(
+                        col(TransportMember.object_type) == object_type,
+                        col(TransportMember.object_id) == object_id,
+                        col(TransportMember.transport_task_id) != transport_task_id,
+                        col(TransportMember.last_operation_id).is_not(None),
+                    )
+                )
+            )
+        )
 
     async def get_task_by_client_request(
         self,
@@ -83,6 +129,10 @@ class TransportRepository:
         updated_at: datetime,
     ) -> TransportDebugPositionProjection:
         projection = await self.get_debug_position_projection(db, object_type, object_id, for_update=True)
+        if projection is not None and projection.source_transport_task_id != transport_task_id:
+            projection.position_unknown = True
+            await db.flush()
+            return projection
         if projection is None:
             projection = TransportDebugPositionProjection(
                 object_type=object_type,
@@ -105,8 +155,8 @@ class TransportRepository:
         self,
         db: AsyncSession,
         transport_task_id: str,
-    ) -> tuple[int, int, int, int, int, int]:
-        """返回回执、Evidence、位置投影、成员、绑定和活跃绑定数量。"""
+    ) -> tuple[int, int, int, int]:
+        """返回回执、Evidence、位置投影和成员数量。"""
 
         callback_receipt_count = await db.scalar(
             select(func.count())
@@ -130,33 +180,18 @@ class TransportRepository:
             .select_from(TransportMember)
             .where(col(TransportMember.transport_task_id) == transport_task_id)
         )
-        binding_count = await db.scalar(
-            select(func.count())
-            .select_from(TransportResourceBinding)
-            .where(col(TransportResourceBinding.transport_task_id) == transport_task_id)
-        )
-        active_binding_count = await db.scalar(
-            select(func.count())
-            .select_from(TransportResourceBinding)
-            .where(
-                col(TransportResourceBinding.transport_task_id) == transport_task_id,
-                col(TransportResourceBinding.released_at).is_(None),
-            )
-        )
         return (
             int(callback_receipt_count or 0),
             int(evidence_count or 0),
             int(position_projection_count or 0),
             int(member_count or 0),
-            int(binding_count or 0),
-            int(active_binding_count or 0),
         )
 
     async def delete_debug_task_aggregate(
         self,
         db: AsyncSession,
         transport_task_id: str,
-    ) -> tuple[int, int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int]:
         """按依赖顺序删除指定 TransportTask 的完整本地 Transport 链路。"""
 
         position_projections = await db.execute(
@@ -172,9 +207,6 @@ class TransportRepository:
         evidence = await db.execute(
             delete(TransportEvidence).where(col(TransportEvidence.transport_task_id) == transport_task_id)
         )
-        bindings = await db.execute(
-            delete(TransportResourceBinding).where(col(TransportResourceBinding.transport_task_id) == transport_task_id)
-        )
         members = await db.execute(
             delete(TransportMember).where(col(TransportMember.transport_task_id) == transport_task_id)
         )
@@ -184,7 +216,6 @@ class TransportRepository:
             int(evidence.rowcount or 0),
             int(position_projections.rowcount or 0),
             int(members.rowcount or 0),
-            int(bindings.rowcount or 0),
             int(tasks.rowcount or 0),
         )
 
@@ -193,14 +224,12 @@ class TransportRepository:
         db: AsyncSession,
         task: TransportTask,
         members: list[TransportMember],
-        bindings: list[TransportResourceBinding],
     ) -> None:
         db.add(task)
         # 未声明 ORM relationship 时 SQLAlchemy 不保证跨表插入顺序；
         # 先落主记录以满足 PostgreSQL 外键。
         await db.flush()
         db.add_all(members)
-        db.add_all(bindings)
         await db.flush()
 
     async def claim_next_pending_task(
@@ -323,16 +352,6 @@ class TransportRepository:
         await db.flush()
         return tasks
 
-    async def release_bindings(self, db: AsyncSession, transport_task_id: str, *, now: datetime) -> None:
-        _ = await db.execute(
-            update(TransportResourceBinding)
-            .where(
-                col(TransportResourceBinding.transport_task_id) == transport_task_id,
-                col(TransportResourceBinding.released_at).is_(None),
-            )
-            .values(released_at=now)
-        )
-
     async def add_evidence(self, db: AsyncSession, evidence: TransportEvidence) -> None:
         db.add(evidence)
         await db.flush()
@@ -407,7 +426,7 @@ class TransportRepository:
         self,
         db: AsyncSession,
         transport_task_id: str,
-    ) -> tuple[TransportTask, TransportEvidence | None, int, int] | None:
+    ) -> tuple[TransportTask, TransportEvidence | None, int] | None:
         latest_evidence_id = (
             select(col(TransportEvidence.id))
             .where(col(TransportEvidence.transport_task_id) == transport_task_id)
@@ -424,22 +443,13 @@ class TransportRepository:
             )
             .scalar_subquery()
         )
-        binding_count = (
-            select(func.count())
-            .select_from(TransportResourceBinding)
-            .where(
-                col(TransportResourceBinding.transport_task_id) == transport_task_id,
-                col(TransportResourceBinding.released_at).is_(None),
-            )
-            .scalar_subquery()
-        )
         result = await db.execute(
-            select(TransportTask, TransportEvidence, pending_count, binding_count)
+            select(TransportTask, TransportEvidence, pending_count)
             .outerjoin(TransportEvidence, col(TransportEvidence.id) == latest_evidence_id)
             .where(col(TransportTask.transport_task_id) == transport_task_id)
         )
         row = result.one_or_none()
-        return None if row is None else (row[0], row[1], int(row[2]), int(row[3]))
+        return None if row is None else (row[0], row[1], int(row[2]))
 
     async def list_tasks_with_latest_evidence(
         self,

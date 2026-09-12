@@ -64,8 +64,8 @@ revision 1 必须包含 target_rack；后续 revision 禁止 target_rack，且�
 | 422 / REJECTED | 严格 DTO、operation 或业务数据不合法；已支持 issued／plan_delta 的 INVALID_DATA 在身份可识别时可靠保存，未知 operation 直接拒绝。修正内容使用新 identity。 |
 | 503 / UNAVAILABLE | 保留原身份与正文重试；prepare 结果未定且符合暂存条件的计划会保存 PENDING Evidence，不能发布下一 revision。 |
 
-计划冲突需管理员调用 `POST /api/v1/outbound-picking/tasks/{task_id}/plan-blockers/{blocking_evidence_id}/apply-correction`，
-提交 `correction_evidence_id`、`expected_version`、`reason`。成功管理重放校验当前任务状态和版本；WMS 已成功 Event 的永久重放语义独立保留。
+计划冲突由 WMS 使用新的 `plan_delta` identity 和期望 revision 重新提交；WES 按普通 Event 路径可靠记录、校验并自动应用，
+不提供管理员人工纠正入口。WMS 已成功 Event 的永久重放语义独立保留。
 
 ## 制品与验证
 

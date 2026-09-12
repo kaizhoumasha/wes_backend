@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models import TransportDecisionBinding
-from src.app.transport.models import TransportTask
 from src.database.base_repository import BaseRepository
 
 
@@ -34,38 +33,6 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": f"transport-resource-fence:{workline_id}:{resource_fence_id}"},
         )
-
-    async def get_by_resource_step_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        resource_fence_id: str,
-        step: str,
-        exclude_task_statuses: tuple[str, ...] = (),
-        retain_transport_task_id: str | None = None,
-    ) -> TransportDecisionBinding | None:
-        columns = cast("Any", TransportDecisionBinding).__table__.c
-        tasks = cast("Any", TransportTask).__table__.c
-        statement = (
-            select(TransportDecisionBinding)
-            .outerjoin(TransportTask, tasks.client_request_id == columns.client_request_id)
-            .where(
-                columns.workline_id == workline_id, columns.resource_fence_id == resource_fence_id, columns.step == step
-            )
-        )
-        if exclude_task_statuses:
-            statement = statement.where(
-                or_(
-                    tasks.id.is_(None),
-                    tasks.status.not_in(exclude_task_statuses),
-                    tasks.transport_task_id == retain_transport_task_id,
-                )
-            )
-        result = await db.execute(
-            statement.order_by(columns.id.desc()).limit(1).with_for_update(of=TransportDecisionBinding)
-        )
-        return result.scalar_one_or_none()
 
     async def get_by_decision_identity_for_update(
         self,

@@ -30,7 +30,6 @@ from src.app.callback.models.callback_log import CallbackLog  # noqa: F401
 from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
-    DeviceEventCommandBlock,
     DeviceStatusObservation,
 )
 from src.app.execution.models import (  # noqa: F401
@@ -69,7 +68,6 @@ from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.transport.models import (  # noqa: F401
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401

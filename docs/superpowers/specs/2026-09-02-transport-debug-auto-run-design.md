@@ -4,6 +4,10 @@
 - 状态：已确认，联调中
 - 范围：Transport diagnostics、WMS Transport 正式合同、ECS/WES Device Evidence 消费、前端 `/ops/transport-diagnostics`
 
+> 2026-09-12 supersession：资源占用与恢复边界以[无阻塞设计](2026-09-11-wes-nonblocking-execution-design.md)和
+> [Transport 当前合同](../../contracts/transport-fulfillment-contract.md)为准。自动轮次只保持自身步骤顺序和 `GLOBAL` 单轮约束，
+> 不独占 `rack_id`、不阻止同资源的独立 TransportTask，也不依赖 WES 人工对账续行。
+
 ## 1. 背景与目标
 
 现有“510056 现场联调步进”固定货架、料箱和路线，并依赖操作员逐步确认。现场已经打通 RCS → WMS → WES 链路，下一步需要把它收敛为一轮可恢复的自动诊断流程：操作员按现场情况直接录入货架、各面的料箱与原槽位并输入面值，后端根据 WMS 回调和 `SCAN12` Device Evidence 自动推进，所有选中料箱回架后才执行 `CTU03` 返库。
@@ -60,8 +64,9 @@ TransportDebugRun（冻结配置和当前进度）
 
 权威状态始终是数据库中的诊断轮次、Transport task 和 Device Evidence。SSE 只用于降低页面刷新延迟，不承载状态，也不是流程继续运行的前提。
 
-为避免共用 `KT16`、`CNV0301`、`CNV0302`、`SCAN12` 时发生串线，任一时刻只允许一个未释放的自动诊断轮次。`RUNNING` 和 `NEEDS_ATTENTION` 都占用该全局执行权。
-活动轮次同时独占其 `rack_id`：自动轮次自身以外的 Transport 创建入口不得为同一货架创建新任务；每个自动后继步骤创建前必须在同一事务内复核货架仍位于工作位且朝向与当前步骤一致。
+为避免共用 `KT16`、`CNV0301`、`CNV0302`、`SCAN12` 时发生串线，任一时刻只允许一个活动自动诊断轮次。
+`RUNNING` 和 `NEEDS_ATTENTION` 都占用该轮次级 `GLOBAL` 执行权，但不占用货架或阻止其它独立 TransportTask。
+每个自动后继步骤只根据本轮冻结配置、精确任务结果和当前有效 WMS 决策校验位置与朝向。
 
 ## 4. 正式 Transport 合同变更
 
@@ -70,7 +75,7 @@ TransportDebugRun（冻结配置和当前进度）
 本次直接扩展正式合同，不在 diagnostics 或 WMS adapter 中增加兼容映射：
 
 - `CTU01 / RACK_MOVE`：允许 `RACK → RACK_POSITION`。
-- `CTU02 / RACK_ROTATE`：`position` 允许 `RACK`；其 `location_code` 必须与 `rack_id` 完全一致。
+- `CTU02 / RACK_ROTATE`：`position` 必须由本轮冻结工作位显式提供精确 `RACK_POSITION`，不得以旧投影或 `RACK` 引用补齐。
 - `CTU03 / RACK_MOVE`：允许 `RACK → ZONE`。
 - `target_face` 继续是非空不透明字符串；仅 `CTU03` 可省略，让 RCS 自主确定返库朝向。
 
@@ -249,11 +254,11 @@ Device ingress 继续只负责中性地持久化 Evidence、去重和发布处�
 
 ### 6.4 当前面料箱回架
 
-按当前已确认扫码 FIFO 申请 WMS 回架分配，每个获准前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回分配槽位；有效 `NO_BATCH` 按联调约定回到已成功出库记录的原槽位。上一批精确成功后才处理下一批。FIFO 耗尽但仍有未扫码成员时，保留本面原始证据边界继续等待；本面所有选中成员均精确回架后才允许转面或整架返库。
+按当前已确认扫码 FIFO 申请 WMS 回架分配，每个获准前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回分配槽位。有效 `NO_BATCH` 结束本次请求并保留原身份和响应，不产生 Transport 或执行失败；按 `retry_after_ms` 持久化下一决策时间，到期前重复唤醒和重启均保持等待。到期复核原确认、当前轮次/步骤、冻结候选及本组货架任务精确事实后，使用新 `operation_id` 请求，只有 `READY` 才创建对应 Transport；失效候选进入诊断状态，独立任务继续。网络失败按原身份、timestamp 和正文可靠重试，不重新打开已完成确认。上一批精确成功后才处理下一批。FIFO 耗尽但仍有未扫码成员时，保留本面原始证据边界继续等待；本面所有选中成员均精确回架后才允许转面或整架返库。
 
 ### 6.5 旋转或返库
 
-- 若还有下一组：创建 `CTU02`，position 使用当前货架的 `RACK` 引用，`target_face` 原样使用下一组面值。成功且精确位置、面值校验通过后处理下一组。
+- 若还有下一组：创建 `CTU02`，position 使用本轮冻结工作位的精确 `RACK_POSITION`，`target_face` 原样使用下一组面值。成功且精确位置、面值校验通过后处理下一组。
 - 若没有下一组：创建 `CTU03`，source 使用当前货架的 `RACK` 引用，target 使用 `WH05` 的 `ZONE` 引用并省略
   `target_face`。WMS/RCS 返回精确位置和非空实际 `arrival_face` 且结果校验通过后，轮次进入 `COMPLETED` 并释放全局执行权。
 
@@ -276,14 +281,16 @@ Device ingress 继续只负责中性地持久化 Evidence、去重和发布处�
 POST /api/v1/transport/debug-runs/{run_id}/abort
 ```
 
-请求必须包含非空原因及显式断言 `PHYSICAL_STATE_VERIFIED`，且轮次必须为 `NEEDS_ATTENTION`。所有关联 Transport task 还必须已经处于 `REJECTED`、`SUCCEEDED` 或 `FAILED` 确定终态，并且不存在活跃资源绑定；`RECONCILING`/`DELIVERY_UNKNOWN` 必须先经既有 Transport 对账收敛，不能靠 abort 绕过。满足条件后，该动作只把轮次标记为 `ABORTED` 并记录操作者、时间和原因：
+请求必须包含非空原因及显式断言 `PHYSICAL_STATE_VERIFIED`，且轮次必须为 `NEEDS_ATTENTION`。所有关联 Transport task 还必须已经处于
+`REJECTED`、`SUCCEEDED` 或 `FAILED` 确定终态；`RECONCILING`/`DELIVERY_UNKNOWN` 必须先由 WMS/RCS 的匹配权威结果收敛，不能靠 abort
+绕过。满足条件后，该动作只把轮次标记为 `ABORTED` 并记录操作者、时间和原因：
 
 - 不取消或重置远端 Transport task。
 - 不删除 task、回调或 Evidence。
 - 不推断货架或料箱位置。
 - 不自动创建返库动作。
 
-这是解除诊断单实例占用的审计出口，不是跳步或强制成功。
+这是结束诊断单实例轮次的审计出口，不是 Transport 解锁、结果修正、跳步或强制成功。
 
 ## 8. 幂等与恢复
 
@@ -294,7 +301,7 @@ POST /api/v1/transport/debug-runs/{run_id}/abort
 - WMS callback 已持久化并使 Transport task 状态变化。
 - Device Evidence 已持久化并完成通用处理。
 - 后端启动后的周期恢复扫描。
-- 人工完成既有 Transport reconciliation 后的状态变化。
+- WMS/RCS 权威回调使既有 Transport reconciliation 状态变化。
 
 所有唤醒最终都执行同一个幂等 `advance(run_id)`：事务内锁定轮次、重读 task/Evidence、验证当前阶段前置条件，只允许一次状态跃迁。重复回调、重复 SSE 通知、worker 并发和进程崩溃都不会产生第二个物理任务。
 

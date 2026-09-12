@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.repositories import WorklineSafetyIncidentRepository, workline_repository
+from src.app.workline.repositories import workline_repository
 from src.database.db import get_db_context
 
 if TYPE_CHECKING:
@@ -35,7 +35,6 @@ class WorklineUnitOfWork:
         self._db: AsyncSession | None = None
 
         self.worklines = workline_repository
-        self.safety_incidents = WorklineSafetyIncidentRepository()
 
     async def __aenter__(self) -> WorklineUnitOfWork:
         if self._external_db is not None:

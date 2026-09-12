@@ -29,6 +29,8 @@
 核心不定义全局 `event_type` 枚举，不解释具体设备业务字段，也不决定业务是否成立。纯局域网目标协议不增加供应商私有
 Token、签名、Nonce 或 HMAC 分支；网络隔离和访问控制由部署边界负责。
 
+`ESTOP_PRESSED` 是例外的 ECS 自有安全事实，不属于 WES callback 合同。核心入口在建立 Evidence、解析插件业务或注册任何 wake 之前以统一包络校验错误拒绝；急停记录、物理急停、复位和恢复执行由 ECS 独立负责。
+
 ### 2.2 设备合同附录（device contract annex）
 
 每个获批设备附录负责：
@@ -75,9 +77,11 @@ TransportResult 不使用设备统一接口的 `command_code`、设备合同身�
 5. 核心持久化 `InboundEvidence`；普通事件没有有效 WorkLine 关联时保存拒绝证据并返回准入错误，调试 EVENT 按独立调试合同处理；
 6. 合法接纳的证据事务提交后同步返回 ACK；
 7. `is_debug=true` 的 EVENT 不调用 WorkLine 插件，而是由异步 evidence worker 复用 DeviceCommand 基础能力尝试创建一条
-   `EVENT_DEBUG/MOVE_FORWARD` 联调命令。同设备没有未终态命令时，创建唯一 `PENDING` 命令、将 evidence 标记为不参与业务消费的 `IGNORED`，事务提交后唤醒现有派发扫描；唤醒失败由 Beat 补偿，不回滚 evidence 或命令。同设备已有未终态命令时，不创建失败占位命令、不访问 ECS，evidence 进入 `RECONCILING` 并与指向旧命令的 blocker 同事务持久化。普通 EVENT 仅在 WorkLine 当前准入、设备绑定及业务关联校验通过后调用显式装配的插件。
+   `EVENT_DEBUG/MOVE_FORWARD` 独立联调命令。新 EVENT 使用自己的身份创建唯一命令，不等待同设备旧命令闭合；同 EVENT 重放复用原命令，正文漂移冲突。创建后将 evidence 标记为不参与业务消费的 `IGNORED`，事务提交后唤醒现有派发扫描；唤醒失败由 Beat 补偿，不回滚 evidence 或命令。普通 EVENT 仅在 WorkLine 当前准入、设备绑定及业务关联校验通过后调用显式装配的插件。
 
-blocker 是持久化因果事实，不是新的 EVENT 身份。旧命令只能由匹配 Result Callback 或受限的超级用户对账闭合，两者都不自动重放 EVENT。显式重处理必须携带当前 `block_id`，复用原 EVENT 身份和载荷，并再次经过设备执行槽门禁。
+上述顺序只适用于 WES 合同内的合法事件。`ESTOP_PRESSED` 不进入步骤 2–7，即使带有 `is_debug=true` 也不持久化、不 ACK、不唤醒 execution 或 transport-debug。
+
+新 EVENT 不改写、标失败、释放或重发旧 DeviceCommand；旧命令及其 Evidence、对账原因和资源围栏只由匹配的权威 Result Callback 或既有对账事实闭合。WES 不提供 EVENT blocker 查询、人工 reprocess 或设备空闲探测续行入口。
 
 渐进业务接入按[插件顶层设计 §7.13](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#713-声明先行与渐进业务接入)：
 普通合法 EVENT 无对应 handler 时仅保存观察证据，不创建业务指令、不无限重试、不认定整线故障；已接入 handler
@@ -103,7 +107,7 @@ blocker 是持久化因果事实，不是新的 EVENT 身份。旧命令只能�
 即使请求被明确拒绝也不得改载荷复用；只有明确未接纳且修正导致摘要变化时，才能使用新的部署级唯一身份重新上报。
 设备事件不得因插件或配置变化改写首次证据关联；缺少业务关联时仅保留诊断证据，不满足当前准入时记录错误并拒绝推进。
 `is_debug` 是可选严格布尔值并参与规范化摘要；省略与 `false` 等价，`true` 与普通事件不是同一身份。重复调试 EVENT 复用同一
-命令身份，不能借重报绕过设备忙、准入失败或结果不明状态。
+命令身份，不能借重报绕过 ECS 明确未接纳、静态合同失败或结果不明状态。
 
 ## 5. 测试所有权
 

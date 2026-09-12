@@ -1,14 +1,14 @@
 """Callback 域事件归一化。
 
-生产事件使用工作线 ``event_type_mapping``；平台与安全事件保留 source 原值，
-避免 START/ESTOP 被工作线映射改写。
+生产事件使用工作线 ``event_type_mapping``；平台控制事件保留 source 原值，
+避免 START 被工作线映射改写。
 """
 
 from __future__ import annotations
 
 from typing import Any, cast
 
-from .runtime_events import assert_not_reserved_runtime_event, is_production_event
+from .runtime_events import assert_not_platform_control_event, is_production_event
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
@@ -27,7 +27,7 @@ def canonicalize_event_type(event_type: str, *, workline: Any | None = None) -> 
     if not isinstance(mapped, str) or not mapped:
         return event_type
 
-    assert_not_reserved_runtime_event(
+    assert_not_platform_control_event(
         mapped,
         owner="runtime_config_json.event_type_mapping",
         declaration_surface=f"{event_type} 的映射目标",

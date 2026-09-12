@@ -30,8 +30,8 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `docs/superpowers/specs/2026-09-10-station-driven-execution-recovery-top-level-design.md` | 点位事件驱动与执行恢复目标补充；ECS 自主运行、WES 可靠决策接入、WMS 最终对账，明确既有合同收敛范围与验收 |
-| `docs/superpowers/plans/2026-09-10-station-driven-execution-recovery-implementation-plan.md` | 本站执行恢复的 WES 基础与诊断交付计划；业务插件、WMS 纠正/反馈和粗分出口明确为后续独立需求 |
+| `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端未提交 worktree 已实现并通过 QUALITY 与 selected HEAVY（395 passed）；前端同步、部署及供应商/现场验收未完成 |
+| `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，当前不是 merge ready |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
@@ -45,7 +45,7 @@
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
-| `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁 |
+| `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化与 Evidence 追溯；原人工 R4 已由正常 record/replay 自动应用取代 |
 | `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution/LineRunEpoch 退役、WorkLine 当前插件与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-master.md` | 稳定性与中断恢复总计划；基础、消费、运维三个独立子计划及验收边界 |
@@ -159,7 +159,7 @@ tests/integration/wms_adapter/<domain_key>/
 | `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport 搬运提交合同；不替代真实 WMS 或现场验收 |
 | `docs/runbooks/transport-operations.md` | Transport 本地 API、结构化日志与 PostgreSQL 事实的诊断入口；联调环境支持按 `transport_task_id` 定向清理完整本地链路 |
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 WorkLine 准入 的只读诊断入口 |
-| `docs/devops/execution-recovery.md` | 中断后的收据、执行和发布诊断；Transport、设备 blocker、WMS 义务与 prepare 恢复边界 |
+| `docs/devops/execution-recovery.md` | 中断后的收据、执行和发布诊断；Transport、独立设备命令、WMS 义务与 prepare 恢复边界 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `docs/devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、TimescaleDB/PostgreSQL 与 Redis 基础支撑环境初始化手册；不代表业务系统已部署或验收 |
 | `docs/devops/prod-release-deploy.md` | 生产独立 release orchestrator 的 scope、FAST/FULL、兼容报告、维护态和恢复 Runbook |

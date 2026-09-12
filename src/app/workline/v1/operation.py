@@ -1,15 +1,12 @@
-"""WorkLine START 与 Safety target-only API。"""
+"""WorkLine START target-only API。"""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, cast
+from typing import cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-from src.app.workline.models.safety import ClearWorkLineEstopRequest  # noqa: TC001 - FastAPI runtime annotation
 from src.app.workline.models.start import WorkLineStartErrorResponse, WorkLineStartRequest, WorkLineStartResponse
-from src.app.workline.services import workline_safety_service
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartInvalidStateError,
@@ -20,47 +17,14 @@ from src.app.workline.services.workline_start_service import (
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseCode, ResponseSchemaModel, response_builder
-from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
-from src.core.security import require_auth
+from src.core.response.response_code import ResourceErrorCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep, CacheDep  # noqa: TC001
-from src.utils.value_normalization import enum_value
 
 router = APIRouter(tags=["工作线诊断操作"])
 
 type WorkLineStartApiResponse = (
     ResponseSchemaModel[WorkLineStartResponse] | ResponseSchemaModel[WorkLineStartErrorResponse]
 )
-
-
-def _safety_incident_response(incident: Any) -> dict[str, Any]:
-    return {
-        "id": incident.id,
-        "workline_id": incident.workline_id,
-        "status": enum_value(incident.status),
-        "event_type": incident.event_type,
-        "reason": incident.reason,
-        "drain_status": incident.drain_status,
-        "evidence_json": incident.evidence_json,
-        "recovery_check_json": incident.recovery_check_json,
-        "cleared_at": incident.cleared_at.isoformat() if incident.cleared_at else None,
-        "cleared_by": incident.cleared_by,
-    }
-
-
-def _clear_estop_response(incident: Any) -> dict[str, Any]:
-    data = _safety_incident_response(incident)
-    release_evidence = getattr(incident, "release_evidence_json", None)
-    if isinstance(release_evidence, dict):
-        data["workline_runtime_status"] = release_evidence.get("workline_runtime_status")
-    data["release_message"] = "已解除冻结，等待现场 START"
-    return data
-
-
-def _operation_error_response(exc: Exception) -> dict[str, Any]:
-    message = str(exc)
-    if "不存在" in message or "NOT_FOUND" in message:
-        return response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=message)
-    return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
 
 
 def _workline_start_error_response(
@@ -165,38 +129,6 @@ async def start_workline(
     )
     return cast(
         "ResponseSchemaModel[WorkLineStartResponse]", response_builder.success(data=data.model_dump(mode="json"))
-    )
-
-
-@router.post(
-    "/safety/worklines/{workline_id}/clear-estop",
-    summary="[biz:workline:clear-estop] 人工确认 checklist 后清除工作线急停",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:clear-estop"))],
-)
-async def clear_workline_estop(
-    workline_id: int,
-    payload: ClearWorkLineEstopRequest,
-    db: AsyncSessionDep,
-    current_user_id: Annotated[int, Depends(require_auth)],
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        incident = await workline_safety_service.clear_estop(
-            db,
-            workline_id=workline_id,
-            checks=payload.checks,
-            reason=payload.reason,
-            operator_id=current_user_id,
-        )
-        async with WorklineUnitOfWork(db=db) as uow:
-            await uow.commit()
-        await publish_deferred_sse_events(db)
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    return cast(
-        "ResponseSchemaModel[dict[str, Any]]",
-        response_builder.success(data=_clear_estop_response(incident)),
     )
 
 

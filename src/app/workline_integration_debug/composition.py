@@ -51,15 +51,15 @@ class CombinedWorkLineConfirmationOwner:
 
 
 class ManualIntegrationPreparePolicy:
-    """临时联调固定选择 MANUAL；现场准入仍由 WorkLine 空闲与事故事实约束。"""
+    """临时联调固定选择 MANUAL；宿主仍负责 WorkLine 与任务准入。"""
 
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType | None:
         del context
         return PrepareTaskType.MANUAL
 
     def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        del now
-        return not facts.has_active_incident
+        del facts, now
+        return True
 
 
 @dataclass(frozen=True, slots=True)

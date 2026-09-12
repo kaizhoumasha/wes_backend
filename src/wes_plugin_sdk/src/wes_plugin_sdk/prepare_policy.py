@@ -35,7 +35,6 @@ class PrepareDeviceFact:
 
 @dataclass(frozen=True, slots=True)
 class PrepareRuntimeFacts:
-    has_active_incident: bool
     has_position_bindings: bool
     devices: tuple[PrepareDeviceFact, ...]
     has_positioned_object: bool

@@ -1,5 +1,6 @@
 """START 使用 WorkLine version 并在行锁内发布当前插件配置。"""
 
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -73,8 +74,6 @@ def setup_start():
         return workline
 
     repository.set_active_for_start.side_effect = activate
-    safety = AsyncMock()
-    safety.get_active_for_workline.return_value = None
     positions = AsyncMock()
     positions.list_for_workline.return_value = [
         WorkLinePositionInput(
@@ -82,19 +81,16 @@ def setup_start():
         )
     ]
     return (
-        WorkLineStartService(
-            position_repository=positions, plugins=(plugin,), workline_repository=repository, safety_repository=safety
-        ),
+        WorkLineStartService(position_repository=positions, plugins=(plugin,), workline_repository=repository),
         line,
         repository,
-        safety,
         plugin,
     )
 
 
 @pytest.mark.asyncio
 async def test_start_atomically_publishes_contracts_and_advances_version():
-    service, line, repository, _, plugin = setup_start()
+    service, line, repository, plugin = setup_start()
     db = object()
     result = await service.start(db, workline_id=7, version=3)
     assert result is line and line.is_active and line.version == 4
@@ -111,7 +107,7 @@ async def test_start_atomically_publishes_contracts_and_advances_version():
 
 @pytest.mark.asyncio
 async def test_lost_response_replay_cannot_restart_with_old_version():
-    service, line, repository, _, plugin = setup_start()
+    service, line, repository, plugin = setup_start()
     await service.start(object(), workline_id=7, version=3)
     line.is_active = False
     line.increment_version()
@@ -123,18 +119,11 @@ async def test_lost_response_replay_cannot_restart_with_old_version():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("gate", ["active", "safety", "workload", "plugin"])
-async def test_start_rejects_unfinished_work_before_builder(gate):
-    service, line, repository, safety, plugin = setup_start()
+@pytest.mark.parametrize("gate", ["active", "plugin"])
+async def test_start_rejects_current_business_gates_before_builder(gate):
+    service, line, repository, plugin = setup_start()
     if gate == "active":
         line.is_active = True
-    elif gate == "safety":
-        safety.get_active_for_workline.return_value = object()
-    elif gate == "workload":
-        repository.get_unfinished_workload_summary.return_value = {
-            "by_type": {"position_projections": True},
-            "count": 1,
-        }
     else:
         plugin.business_blocker = AsyncMock()
         plugin.business_blocker.get_unfinished_workload_summary.return_value = {"count": 1, "sample": "FIFO"}
@@ -145,8 +134,24 @@ async def test_start_rejects_unfinished_work_before_builder(gate):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history", ["device_commands", "transport_tasks", "inbound_evidences", "wms_confirmations"])
+async def test_explicit_start_preserves_historical_workload(history):
+    service, line, repository, _ = setup_start()
+    summary = {"by_type": {history: True}, "count": 1, "sample": {"status": "RECONCILING"}}
+    repository.get_unfinished_workload_summary.return_value = summary
+    original = deepcopy(summary)
+    assert not line.is_active
+
+    result = await service.start(object(), workline_id=7, version=3)
+
+    assert result is line and line.is_active and line.version == 4
+    assert summary == original
+    repository.get_unfinished_workload_summary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_start_rejects_missing_workline():
-    service, _, repository, _, _ = setup_start()
+    service, _, repository, _ = setup_start()
     repository.get_for_update.return_value = None
     with pytest.raises(WorkLineStartNotFoundError):
         await service.start(object(), workline_id=7, version=3)
@@ -154,7 +159,7 @@ async def test_start_rejects_missing_workline():
 
 @pytest.mark.asyncio
 async def test_start_rejects_uninstalled_plugin():
-    service, line, _, _, _ = setup_start()
+    service, line, _, _ = setup_start()
     line.plugin_key = "absent"
     with pytest.raises(WorkLineStartConfigurationError):
         await service.start(object(), workline_id=7, version=3)
@@ -163,7 +168,7 @@ async def test_start_rejects_uninstalled_plugin():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", ["1.0", "2.0"])
 async def test_worker_requires_current_exact_plugin_version(version):
-    service, _, repository, _, _ = setup_start()
+    service, _, repository, _ = setup_start()
     repository.list_active_plugin_identities.return_value = [("example", version)]
     if version == "1.0":
         await service.assert_execution_worker_startable(object())
@@ -177,7 +182,7 @@ async def test_worker_requires_current_exact_plugin_version(version):
 async def test_start_rejects_inconsistent_device_binding_plan(change):
     from dataclasses import replace
 
-    service, line, repository, _, plugin = setup_start()
+    service, line, repository, plugin = setup_start()
     plan = plugin.start_plan_builder.build.return_value
     binding = plan.device_bindings[0]
     if change == "foreign_workline":
@@ -197,7 +202,7 @@ async def test_start_rejects_inconsistent_device_binding_plan(change):
 async def test_start_rejects_unbound_positions_and_builder_cannot_override_site_binding():
     from dataclasses import replace
 
-    service, line, repository, _, plugin = setup_start()
+    service, line, repository, plugin = setup_start()
     line.config = {"device_bindings": {"INPUT": "DEVICE-9"}, "position_bindings": {"INPUT": "OTHER-LINE"}}
     with pytest.raises(WorkLineStartConfigurationError, match="缺少本线"):
         await service.start(object(), workline_id=7, version=3)
@@ -239,7 +244,7 @@ async def test_declaration_without_business_start_activates_validated_devices(fa
     from src.app.device.contracts import EcsDeviceStatus
     from src.utils.timezone import timezone
 
-    service, line, repository, _, plugin = setup_start()
+    service, line, repository, plugin = setup_start()
     plugin.start_plan_builder = None
     service._devices = AsyncMock()
     service._devices.get_by_work_line_id_for_update.return_value = [

@@ -10,14 +10,6 @@ from src.app.execution.repositories.position_projection_repository import Positi
 from src.app.wms_integration.outbound_picking.repositories import PickingWorklineFactsRepository
 
 
-class _Db:
-    def __init__(self, *scalar_results: object) -> None:
-        self.results = iter(scalar_results)
-
-    async def scalar(self, _statement: object) -> object:
-        return next(self.results)
-
-
 class _Worklines:
     def __init__(self, *, bindings: list[object] | None = None, positions: list[object] | None = None) -> None:
         self.bindings = bindings if bindings is not None else [_binding()]
@@ -70,10 +62,9 @@ async def test_repository_returns_immutable_facts_without_applying_business_poli
         observation_repository=_Observations(_observation(mode="MANUAL")),  # type: ignore[arg-type]
     )
     facts = await repository.read_facts(
-        _Db(True),
+        object(),  # type: ignore[arg-type]
         workline_id=7,
     )
-    assert facts.has_active_incident is True
     assert facts.has_position_bindings is True
     assert facts.has_positioned_object is True
     assert isinstance(facts.devices, tuple)
@@ -95,7 +86,7 @@ async def test_repository_preserves_missing_device_observation(monkeypatch) -> N
         observation_repository=observations,  # type: ignore[arg-type]
     )
     facts = await repository.read_facts(
-        _Db(False),
+        object(),  # type: ignore[arg-type]
         workline_id=7,
     )
     assert facts.has_positioned_object is False

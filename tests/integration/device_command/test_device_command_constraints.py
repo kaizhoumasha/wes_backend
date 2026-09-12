@@ -13,24 +13,284 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from wes_plugin_sdk import PluginDefinition
 
-from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEventReport, EcsDeviceStatus
+from src.app.device.contracts import (
+    DeviceCommandRequest,
+    EcsCommandResultReport,
+    EcsCommandResultValue,
+    EcsDeviceEventReport,
+    EcsDeviceStatus,
+)
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.device.repositories.command_repository import device_command_repository
+from src.app.device.repositories.command_repository import DeviceCommandRepository, device_command_repository
 from src.app.device.services.device_command_service import (
-    DeviceCommandCapacityError,
     DeviceCommandIdentityConflictError,
     DeviceCommandService,
 )
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceService,
+    DeviceResultOutOfOrderError,
 )
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
+from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
 from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
+
+
+@pytest.mark.asyncio
+async def test_duplicate_callback_waits_for_worker_evidence_before_command(integration_session_factory):
+    held, release, attempted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    pids = {}
+
+    class WorkerRepository(InboundEvidenceRepository):
+        async def claim_next_pending(self, db, **kwargs):
+            evidence = await super().claim_next_pending(db, **kwargs)
+            if evidence is None:
+                return None
+            pids["worker"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            held.set()
+            await release.wait()
+            return evidence
+
+    class CallbackRepository(InboundEvidenceRepository):
+        async def get_by_source_identity_for_update(self, db, source_identity):
+            pids["callback"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            attempted.set()
+            return await super().get_by_source_identity_for_update(db, source_identity)
+
+    command = _manual_command(str(uuid4()), f"CMD-{uuid4().hex}", CommandStatus.ACKNOWLEDGED)
+    async with integration_session_factory.begin() as db:
+        db.add(command)
+    receiver = DeviceEvidenceService(session_factory=integration_session_factory)
+    report = EcsCommandResultReport.model_validate(
+        {
+            "command_code": command.command_code,
+            "device_code": command.device_code,
+            "result": "SUCCESS",
+            "finish_time": 1_786_579_204_000,
+            "data": {},
+        }
+    )
+    receipt = await receiver.accept_result(report)
+    worker = DeviceEvidenceService(
+        session_factory=integration_session_factory, processing_repository=WorkerRepository()
+    )
+    receiver._processing = CallbackRepository()
+    first = asyncio.create_task(worker.process_one())
+    second = None
+    try:
+        await asyncio.wait_for(held.wait(), 5)
+        second = asyncio.create_task(receiver.accept_result(report))
+        await asyncio.wait_for(attempted.wait(), 5)
+        async with asyncio.timeout(5), integration_session_factory() as observer:
+            while pids["worker"] not in await observer.scalar(  # noqa: ASYNC110 - PostgreSQL waiter has no asyncio event
+                text("SELECT pg_blocking_pids(:pid)"), {"pid": pids["callback"]}
+            ):
+                await asyncio.sleep(0.01)
+        release.set()
+        processed, replay = await asyncio.wait_for(asyncio.gather(first, second), 5)
+        assert processed and replay.duplicate and replay.source_event_id == receipt.source_event_id
+        assert await worker.process_one() is False
+    finally:
+        release.set()
+        await asyncio.gather(*[task for task in (first, second) if task is not None], return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_creation_locks_orphan_evidence_before_inserting_command(integration_session_factory):
+    # IGNORED orphan 不属于 worker 待领取集；此事务复现其 Evidence→Command 行锁序，
+    # 不把无匹配身份的历史伪装成可重复领取的 PENDING work。
+    held, release, attempted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    pids = {}
+    inserted = False
+    command = _manual_command(str(uuid4()), f"CMD-{uuid4().hex}")
+    report = EcsCommandResultReport.model_validate(
+        {
+            "command_code": command.command_code,
+            "device_code": command.device_code,
+            "result": "SUCCESS",
+            "finish_time": 1_786_579_204_000,
+            "data": {},
+        }
+    )
+    receiver = DeviceEvidenceService(session_factory=integration_session_factory)
+    receipt = await receiver.accept_result(report)
+
+    class EvidenceRepository(InboundEvidenceRepository):
+        async def requeue_unassociated_device_results(self, db, **kwargs):
+            pids["create"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            attempted.set()
+            return await super().requeue_unassociated_device_results(db, **kwargs)
+
+    class CommandRepository(DeviceCommandRepository):
+        async def add(self, db, value):
+            nonlocal inserted
+            inserted = True
+            return await super().add(db, value)
+
+    async def evidence_holder():
+        async with integration_session_factory.begin() as db:
+            evidence = await InboundEvidenceRepository().get_by_source_identity_for_update(db, receipt.source_event_id)
+            assert evidence.apply_status == "IGNORED"
+            pids["holder"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            held.set()
+            await release.wait()
+            assert (
+                await device_command_repository.get_by_command_code(db, command.command_code, for_update=True) is None
+            )
+
+    creator = DeviceCommandService(
+        session_factory=integration_session_factory,
+        evidence_repository=EvidenceRepository(),
+        command_repository=CommandRepository(),
+    )
+
+    async def create():
+        async with integration_session_factory.begin() as db:
+            return await creator._persist_command(db, command)
+
+    first = asyncio.create_task(evidence_holder())
+    second = None
+    try:
+        await asyncio.wait_for(held.wait(), 5)
+        second = asyncio.create_task(create())
+        await asyncio.wait_for(attempted.wait(), 5)
+        async with asyncio.timeout(5), integration_session_factory() as observer:
+            while pids["holder"] not in await observer.scalar(  # noqa: ASYNC110 - PostgreSQL waiter has no asyncio event
+                text("SELECT pg_blocking_pids(:pid)"), {"pid": pids["create"]}
+            ):
+                await asyncio.sleep(0.01)
+        assert inserted is False
+        release.set()
+        _, created = await asyncio.wait_for(asyncio.gather(first, second), 5)
+        assert created.status == CommandStatus.RECONCILING
+        assert created.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
+        assert await receiver.process_one() is True
+        assert await receiver.process_one() is False
+    finally:
+        release.set()
+        await asyncio.gather(*[task for task in (first, second) if task is not None], return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_first", [True, False])
+async def test_exact_callback_creation_commit_race_keeps_pre_dispatch_fact_without_execution(
+    integration_session_factory,
+    monkeypatch,
+    callback_first,
+):
+    from unittest.mock import Mock
+
+    from src.core import transaction_wakeup
+
+    written, release, second_attempt = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    command_code = str(uuid4())
+    device_code = f"ARM-DEVICE-COMMAND-LATE-{uuid4().hex[:10]}"
+
+    class EvidenceRepository(InboundEvidenceRepository):
+        attempts = 0
+
+        async def lock_source_identity(self, db, source_identity):
+            if source_identity == f"device-result:{command_code}":
+                self.attempts += 1
+                if self.attempts == 2:
+                    second_attempt.set()
+            await super().lock_source_identity(db, source_identity)
+
+        async def add(self, db, evidence):
+            persisted = await super().add(db, evidence)
+            if callback_first:
+                written.set()
+                await release.wait()
+            return persisted
+
+    class CommandRepository(DeviceCommandRepository):
+        async def add(self, db, command):
+            persisted = await super().add(db, command)
+            if not callback_first:
+                written.set()
+                await release.wait()
+            return persisted
+
+    repository = EvidenceRepository()
+    queue = Mock()
+    queue.enqueue_device_evidence.side_effect = RuntimeError("lost wake")
+    creator = DeviceCommandService(
+        session_factory=integration_session_factory,
+        evidence_repository=repository,
+        command_repository=CommandRepository(),
+        task_queue_gateway=queue,
+    )
+    receiver = DeviceEvidenceService(
+        session_factory=integration_session_factory,
+        processing_repository=repository,
+        inbound_evidence_service=InboundEvidenceService(repository=repository),
+        task_queue_gateway=queue,
+    )
+    monkeypatch.setattr("src.app.device.services.device_command_service.new_uuid7", lambda: command_code)
+
+    async def create():
+        return await creator.create_manual_debug_command(
+            client_request_id=str(uuid4()),
+            endpoint_base_url="http://ecs-constraints:8080",
+            device_code=device_code,
+            contract_key="arm.pick",
+            contract_version="2.0",
+            command_timeout_ms=30000,
+            task_type="PICK",
+            params={},
+            trace_id=None,
+            execution_reason="late callback transaction test",
+            created_by=1,
+        )
+
+    async def callback():
+        return await receiver.accept_result(
+            EcsCommandResultReport.model_validate(
+                {
+                    "command_code": command_code,
+                    "device_code": device_code,
+                    "result": "SUCCESS",
+                    "finish_time": 1_786_579_204_000,
+                    "data": {},
+                }
+            )
+        )
+
+    first = asyncio.create_task(callback() if callback_first else create())
+    second = None
+    try:
+        await asyncio.wait_for(written.wait(), timeout=5)
+        second = asyncio.create_task(create() if callback_first else callback())
+        await asyncio.wait_for(second_attempt.wait(), timeout=5)
+        done, _ = await asyncio.wait({second}, timeout=0.05)
+        assert not done
+        queue.enqueue_device_evidence.assert_not_called()
+        release.set()
+        outcomes = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), timeout=5)
+        if callback_first:
+            assert not any(isinstance(item, Exception) for item in outcomes)
+            queue.enqueue_device_commands.assert_not_called()
+        else:
+            assert isinstance(outcomes[1], DeviceResultOutOfOrderError)
+        await asyncio.gather(*tuple(transaction_wakeup._pending))
+        restarted = DeviceEvidenceService(session_factory=integration_session_factory)
+        assert await restarted.process_one() is callback_first
+        assert await restarted.process_one() is False
+        async with integration_session_factory() as db:
+            command = await device_command_repository.get_by_command_code(db, command_code)
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.device_code == device_code))
+            assert command.status == CommandStatus.RECONCILING
+            assert command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
+            assert command.result_evidence_id is None and command.attempt_count == 0
+            assert evidence is not None and evidence.apply_status in {"RECONCILING", "IGNORED"}
+    finally:
+        release.set()
+        await asyncio.gather(*[item for item in (first, second) if item is not None], return_exceptions=True)
 
 
 async def _seed_topology(db) -> tuple[WorkLine, Device, WorkLineDeviceBinding]:
@@ -503,7 +763,7 @@ async def test_postgresql_concurrent_manual_debug_same_identity_different_device
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_manual_debug_different_identities_report_device_capacity(
+async def test_postgresql_concurrent_manual_debug_different_identities_create_independent_commands(
     integration_session_factory,
 ) -> None:
     device_code = f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}"
@@ -534,8 +794,7 @@ async def test_postgresql_concurrent_manual_debug_different_identities_report_de
         return_exceptions=True,
     )
 
-    assert sum(not isinstance(result, Exception) for result in results) == 1
-    assert sum(isinstance(result, DeviceCommandCapacityError) for result in results) == 1
+    assert all(not isinstance(result, Exception) for result in results)
     async with integration_session_factory() as db:
         commands = list(
             (
@@ -549,7 +808,7 @@ async def test_postgresql_concurrent_manual_debug_different_identities_report_de
             .scalars()
             .all()
         )
-    assert len(commands) == 1
+    assert len(commands) == 2
 
 
 @pytest.mark.asyncio
@@ -858,24 +1117,23 @@ async def test_postgresql_business_command_status_does_not_create_a_global_devic
 
 
 @pytest.mark.asyncio
-async def test_postgresql_allows_only_one_dispatching_command_per_device(
+async def test_postgresql_allows_independent_dispatching_commands_per_device(
     integration_session_factory,
 ) -> None:
-    with pytest.raises(IntegrityError):
-        async with integration_session_factory.begin() as db:
-            _, _, binding = await _seed_topology(db)
-            identity = uuid4().hex
-            db.add_all(
-                [
-                    _command(binding, f"CMD-{identity}-1", CommandStatus.DISPATCHING),
-                    _command(binding, f"CMD-{identity}-2", CommandStatus.DISPATCHING),
-                ]
-            )
-            await db.flush()
+    async with integration_session_factory.begin() as db:
+        _, _, binding = await _seed_topology(db)
+        identity = uuid4().hex
+        db.add_all(
+            [
+                _command(binding, f"CMD-{identity}-1", CommandStatus.DISPATCHING),
+                _command(binding, f"CMD-{identity}-2", CommandStatus.DISPATCHING),
+            ]
+        )
+        await db.flush()
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_claims_dispatch_only_one_command_per_device(
+async def test_postgresql_concurrent_claims_dispatch_independent_commands_per_device(
     integration_session_factory,
 ) -> None:
     now = datetime(2026, 8, 13)
@@ -891,22 +1149,34 @@ async def test_postgresql_concurrent_claims_dispatch_only_one_command_per_device
 
     async def claim(token: str) -> DeviceCommand | None:
         async with integration_session_factory.begin() as db:
-            return await device_command_repository.claim_next_pending(
+            command = await device_command_repository.claim_next_pending(
                 db,
                 token=token,
                 now=now,
                 claim_expires_at=datetime(2026, 8, 13, 0, 0, 30),
             )
+            await claims_ready.wait()
+            return command
 
-    results = await asyncio.gather(claim(f"TOKEN-{identity}-1"), claim(f"TOKEN-{identity}-2"))
+    claims_ready = asyncio.Barrier(2)
+    results = await asyncio.wait_for(
+        asyncio.gather(claim(f"TOKEN-{identity}-1"), claim(f"TOKEN-{identity}-2")), timeout=5
+    )
 
-    assert sum(command is not None for command in results) == 1
-    assert sum(command is None for command in results) == 1
+    assert all(command is not None for command in results)
+    assert {command.command_code for command in results if command is not None} == {
+        f"CMD-{identity}-1",
+        f"CMD-{identity}-2",
+    }
+    assert {command.claim_token for command in results if command is not None} == {
+        f"TOKEN-{identity}-1",
+        f"TOKEN-{identity}-2",
+    }
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blocking_status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
-async def test_postgresql_claim_keeps_unknown_physical_command_as_device_fence(
+async def test_postgresql_claim_is_independent_of_old_unclosed_command(
     integration_session_factory,
     blocking_status: CommandStatus,
 ) -> None:
@@ -929,4 +1199,86 @@ async def test_postgresql_claim_keeps_unknown_physical_command_as_device_fence(
             claim_expires_at=datetime(2026, 8, 13, 0, 0, 30),
         )
 
-    assert claimed is None
+    assert claimed is not None
+    assert claimed.command_code == f"CMD-{identity}-2"
+
+
+@pytest.mark.asyncio
+async def test_postgresql_concurrent_claims_of_one_command_keep_one_token(integration_session_factory) -> None:
+    now = datetime(2026, 8, 13)
+    identity = uuid4().hex
+    async with integration_session_factory.begin() as db:
+        _, _, binding = await _seed_topology(db)
+        db.add(_command(binding, f"CMD-{identity}", CommandStatus.PENDING))
+
+    async def claim(token: str) -> DeviceCommand | None:
+        async with integration_session_factory.begin() as db:
+            return await device_command_repository.claim_next_pending(
+                db, token=token, now=now, claim_expires_at=datetime(2026, 8, 13, 0, 0, 30)
+            )
+
+    results = await asyncio.gather(claim(f"TOKEN-{identity}-1"), claim(f"TOKEN-{identity}-2"))
+    claimed = [command for command in results if command is not None]
+    assert len(claimed) == 1
+    claim_token = claimed[0].claim_token
+    assert claim_token is not None
+    async with integration_session_factory.begin() as db:
+        winner = await device_command_repository.get_claimed_for_update(
+            db, command_code=f"CMD-{identity}", claim_token=claim_token
+        )
+        loser = await device_command_repository.get_claimed_for_update(
+            db, command_code=f"CMD-{identity}", claim_token=f"STALE-{identity}"
+        )
+        assert winner is not None
+        assert winner.attempt_count == 1
+        assert loser is None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_distinct_results_for_one_command_are_retained_once(integration_session_factory) -> None:
+    identity = uuid4().hex
+    async with integration_session_factory.begin() as db:
+        _, _, binding = await _seed_topology(db)
+        command = _command(binding, f"CMD-{identity}", CommandStatus.ACKNOWLEDGED)
+        db.add(command)
+        device_code = command.device_code
+    service = DeviceEvidenceService(session_factory=integration_session_factory)
+    first = EcsCommandResultReport(
+        command_code=f"CMD-{identity}", device_code=device_code, result=EcsCommandResultValue.SUCCESS, finish_time=1
+    )
+    second = first.model_copy(update={"finish_time": 2})
+    receipts = await asyncio.gather(service.accept_result(first), service.accept_result(second))
+    duplicate = await service.accept_result(first)
+    assert receipts[0].evidence_id != receipts[1].evidence_id
+    assert duplicate.evidence_id == receipts[0].evidence_id
+    assert duplicate.duplicate is True
+    async with integration_session_factory() as db:
+        rows = list(
+            (
+                await db.execute(select(InboundEvidence).where(InboundEvidence.command_code == first.command_code))
+            ).scalars()
+        )
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_postgresql_unknown_device_result_is_durable_and_quiet(integration_session_factory) -> None:
+    identity = uuid4().hex
+    service = DeviceEvidenceService(session_factory=integration_session_factory)
+    report = EcsCommandResultReport(
+        command_code=f"CMD-{identity}".ljust(160, "X"),
+        device_code=f"ARM-DEVICE-COMMAND-UNKNOWN-{identity}",
+        result=EcsCommandResultValue.SUCCESS,
+        finish_time=1,
+    )
+    receipt = await service.accept_result(report)
+    async with integration_session_factory() as db:
+        evidence = (
+            await db.execute(select(InboundEvidence).where(InboundEvidence.id == receipt.evidence_id))
+        ).scalar_one()
+        command = await device_command_repository.get_by_command_code(db, report.command_code)
+    assert command is None
+    assert evidence.command_code == report.command_code
+    assert evidence.workline_id is None
+    assert evidence.material_execution_id is None
+    assert evidence.apply_status == "IGNORED"

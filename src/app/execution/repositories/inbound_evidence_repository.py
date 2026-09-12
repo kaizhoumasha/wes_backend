@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import and_, exists, not_, select, text
+from sqlalchemy import and_, exists, not_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models.inbound_evidence import (
@@ -102,6 +102,45 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         db.add(evidence)
         await db.flush()
         return evidence
+
+    async def requeue_unassociated_device_results(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        device_code: str,
+        workline_id: int | None,
+        material_execution_id: int | None,
+        contract_key: str,
+        contract_version: str,
+        source_contract_key: str,
+        source_contract_version: str,
+    ) -> int:
+        """精确身份出现时登记现有事实；不领取或反复扫描孤立历史。"""
+        columns = InboundEvidence.__table__.c
+        result = await db.execute(
+            update(InboundEvidence)
+            .where(
+                columns.kind == InboundEvidenceKind.DEVICE_RESULT,
+                columns.command_code == command_code,
+                columns.device_code == device_code,
+                columns.contract_key == source_contract_key,
+                columns.contract_version == source_contract_version,
+                columns.workline_id.is_(None),
+                columns.material_execution_id.is_(None),
+                columns.apply_status == InboundEvidenceApplyStatus.IGNORED,
+                columns.processed_at.is_(None),
+            )
+            .values(
+                workline_id=workline_id,
+                material_execution_id=material_execution_id,
+                contract_key=contract_key,
+                contract_version=contract_version,
+                apply_status=InboundEvidenceApplyStatus.PENDING,
+            )
+            .returning(columns.id)
+        )
+        return len(result.scalars().all())
 
     async def add_conflict(
         self,

@@ -14,19 +14,31 @@ def test_plan_members_have_exact_business_identity_and_revision_zero_default():
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.models import InboundEvidenceKind, WmsConfirmationStatus
-from src.app.execution.services import InboundEvidenceAcceptance
+from src.app.execution.services import InboundEvidenceAcceptance, InboundEvidenceConflictResult
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
+from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
 from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 
 NOW = datetime(2026, 9, 6)
 OP = "outbound.picking_task.plan_delta@v1"
+
+
+def test_outbound_picking_runtime_exposes_only_wms_event_handlers() -> None:
+    runtime = build_outbound_picking_runtime(session_factory=Mock())
+
+    assert set(runtime.__dataclass_fields__) == {
+        "picking_task_issued_handler",
+        "picking_task_plan_delta_handler",
+        "picking_task_queue_changed_handler",
+        "manual_bin_completed_handler",
+    }
 
 
 class Sessions:
@@ -164,10 +176,150 @@ async def test_success_replay_precedes_later_blocker_and_terminal_state():
     service._tasks.get_by_task_id_for_update.assert_not_awaited()
 
 
-async def test_first_rejection_is_stable_even_after_state_changes():
-    service, _, _, _ = setup_service(Status.RECONCILING)
+async def test_still_invalid_replay_preserves_first_rejection_without_reblocking():
+    service, task, evidence, _ = setup_service(Status.RECONCILING)
+    task.status = "EXECUTION_COMPLETED"
+    version = task.version
+    payload = evidence.normalized_payload.copy()
     assert (await service.record(event(), received_at=NOW)).reason_code == "REVISION_CONFLICT"
-    service._tasks.get_by_task_id_for_update.assert_not_awaited()
+    service._tasks.get_by_task_id_for_update.assert_awaited_once()
+    service._evidence.record_conflict.assert_not_awaited()
+    assert task.plan_blocked_evidence_id is None
+    assert task.version == version
+    assert evidence.apply_status == Status.RECONCILING
+    assert evidence.normalized_payload == payload
+
+
+@pytest.mark.parametrize("status", [Status.PENDING, Status.RECONCILING])
+@pytest.mark.parametrize("revision", [1, 2])
+async def test_normal_correction_applies_and_replays_once(status, revision):
+    service, task, evidence, _ = setup_service(status)
+    receipt = event(revision)
+    evidence.normalized_payload = receipt.model_dump(mode="json", exclude_none=True)
+    if revision == 2:
+        task.status = "EXECUTING"
+        task.last_applied_plan_revision = 1
+    blocker = SimpleNamespace(operation=OP, normalized_payload={"data": {"task_id": "T"}})
+    response = service._plans.get_evidence.return_value
+    service._plans.get_evidence.side_effect = lambda db, evidence_id: blocker if evidence_id == 99 else response
+    task.plan_blocked_evidence_id = 99
+    version = task.version
+    original_payload = evidence.normalized_payload.copy()
+
+    result = await service.record(receipt, received_at=NOW + timedelta(seconds=1))
+
+    assert result.code == "RECEIVED"
+    assert task.plan_blocked_evidence_id is None
+    assert task.last_applied_plan_revision == revision
+    assert task.last_plan_evidence_id == evidence.id
+    assert task.version == version + 1
+    assert evidence.apply_status == Status.APPLIED
+    assert evidence.normalized_payload == original_payload
+    assert blocker.normalized_payload == {"data": {"task_id": "T"}}
+    assert (await service.record(receipt, received_at=NOW + timedelta(seconds=2))).code == "DUPLICATE"
+    assert task.version == version + 1
+    service._plans.add_members.assert_awaited_once()
+    service._evidence.record_conflict.assert_not_awaited()
+
+
+async def test_reconciling_correction_can_apply_without_remaining_blocker():
+    service, task, evidence, _ = setup_service(Status.RECONCILING)
+    assert (await service.record(event(), received_at=NOW)).code == "RECEIVED"
+    assert task.last_applied_plan_revision == 1
+    assert evidence.apply_status == Status.APPLIED
+
+
+async def test_correction_identity_drift_does_not_validate_apply_or_clear_blocker():
+    service, task, evidence, _ = setup_service(Status.RECONCILING)
+    task.plan_blocked_evidence_id = 99
+    version = task.version
+    payload = evidence.normalized_payload.copy()
+    service._evidence.accept.return_value = InboundEvidenceConflictResult(
+        evidence=evidence, conflict=SimpleNamespace(), source_identity=evidence.source_identity
+    )
+    result = await service.record(event(task_id="OTHER"), received_at=NOW)
+    assert result.reason_code == "IDEMPOTENCY_CONFLICT"
+    service._tasks.get_by_task_id_for_update.assert_awaited_once_with(ANY, "T")
+    assert task.plan_blocked_evidence_id == 99
+    assert task.version == version
+    assert evidence.normalized_payload == payload
+    assert evidence.apply_status == Status.RECONCILING
+    service._plans.prepare_context.assert_not_awaited()
+    service._plans.add_members.assert_not_awaited()
+
+
+async def test_business_duplicate_correction_does_not_clear_later_blocker():
+    service, task, evidence, _ = setup_service(Status.RECONCILING)
+    task.status = "EXECUTING"
+    task.last_applied_plan_revision = 1
+    task.last_plan_evidence_id = 30
+    task.plan_blocked_evidence_id = 99
+    service._plans.get_evidence.return_value = SimpleNamespace(normalized_payload=evidence.normalized_payload)
+    version = task.version
+    assert (await service.record(event(), received_at=NOW)).code == "DUPLICATE"
+    assert task.plan_blocked_evidence_id == 99
+    assert task.version == version
+    assert task.last_plan_evidence_id == 30
+    assert evidence.apply_status == Status.APPLIED
+    service._plans.add_members.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "operation", "task"])
+async def test_correction_cannot_clear_unrelated_blocker(mismatch):
+    service, task, _, _ = setup_service()
+    task.plan_blocked_evidence_id = 99
+    blocker = SimpleNamespace(
+        operation="outbound.picking_task.issued@v1" if mismatch == "operation" else OP,
+        normalized_payload={"data": {"task_id": "OTHER" if mismatch == "task" else "T"}},
+    )
+    response = service._plans.get_evidence.return_value
+    service._plans.get_evidence.side_effect = lambda db, evidence_id: (
+        (None if mismatch == "missing" else blocker) if evidence_id == 99 else response
+    )
+    version = task.version
+    assert (await service.record(event(), received_at=NOW)).reason_code == "REFERENCE_CONFLICT"
+    assert task.plan_blocked_evidence_id == 99
+    assert task.last_applied_plan_revision == 0
+    assert task.version == version
+    service._plans.add_members.assert_not_awaited()
+
+
+@pytest.mark.parametrize("invalid", ["old_revision", "future_revision", "owner", "source", "inactive"])
+async def test_invalid_correction_preserves_blocker_and_independent_task_can_apply(invalid):
+    service, task, evidence, confirmation = setup_service()
+    task.status = "EXECUTING"
+    task.last_applied_plan_revision = 2
+    task.plan_blocked_evidence_id = 99
+    version = task.version
+    revision = 1 if invalid == "old_revision" else 4 if invalid == "future_revision" else 3
+    receipt = event(revision)
+    evidence.normalized_payload = receipt.model_dump(mode="json", exclude_none=True)
+    if invalid == "owner":
+        confirmation.request_payload["data"]["task_id"] = "OTHER"
+    elif invalid == "source":
+        service._plans.source_identities.return_value = (set(), {("B", "A")})
+    elif invalid == "inactive":
+        service._plans.prepare_context.return_value[1].is_active = False
+    result = await service.record(receipt, received_at=NOW)
+    assert result.reason_code == (
+        "REVISION_CONFLICT"
+        if invalid.endswith("revision")
+        else "STATE_CONFLICT"
+        if invalid == "inactive"
+        else "REFERENCE_CONFLICT"
+    )
+    assert task.plan_blocked_evidence_id == 99
+    assert task.last_applied_plan_revision == 2
+    assert task.version == version
+    assert evidence.apply_status == Status.RECONCILING
+    service._plans.add_members.assert_not_awaited()
+    independent, other_task, other_evidence, other_confirmation = setup_service()
+    other_task.task_id = "INDEPENDENT"
+    other_confirmation.request_payload["data"]["task_id"] = "INDEPENDENT"
+    other_receipt = event(task_id="INDEPENDENT")
+    other_evidence.normalized_payload = other_receipt.model_dump(mode="json", exclude_none=True)
+    assert (await independent.record(other_receipt, received_at=NOW)).code == "RECEIVED"
+    assert task.plan_blocked_evidence_id == 99
 
 
 @pytest.mark.parametrize(
@@ -177,7 +329,6 @@ async def test_first_rejection_is_stable_even_after_state_changes():
         ("binding", "REFERENCE_CONFLICT"),
         ("response", "STATE_CONFLICT"),
         ("expired", "STATE_CONFLICT"),
-        ("blocked", "STATE_CONFLICT"),
     ],
 )
 async def test_conflicts_do_not_write_members(mutation, reason):
@@ -192,12 +343,10 @@ async def test_conflicts_do_not_write_members(mutation, reason):
     elif mutation == "expired":
         confirmation.status = WmsConfirmationStatus.PENDING
         confirmation.deadline_at = NOW
-    else:
-        task.plan_blocked_evidence_id = 99
     result = await service.record(receipt, received_at=NOW)
     assert result.reason_code == reason
     service._plans.add_members.assert_not_awaited()
-    assert task.plan_blocked_evidence_id == (99 if mutation == "blocked" else 10)
+    assert task.plan_blocked_evidence_id == 10
 
 
 @pytest.mark.parametrize("task_type", ["MANUAL", "AUTO"])
@@ -231,7 +380,8 @@ async def test_business_duplicate_uses_full_data_and_preserves_array_order():
     changed = event(2, added_bin_source_racks=list(reversed(racks)))
     assert await service.validate_plan(object(), task, changed.data, received_at=NOW) == "REVISION_CONFLICT"
     task.plan_blocked_evidence_id = 99
-    assert await service.validate_plan(object(), task, previous.data, received_at=NOW) == "STATE_CONFLICT"
+    assert await service.validate_plan(object(), task, previous.data, received_at=NOW) == "DUPLICATE"
+    assert task.plan_blocked_evidence_id == 99
 
 
 async def test_unknown_task_does_not_create_or_block_another_task():

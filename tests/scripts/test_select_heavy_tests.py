@@ -98,12 +98,6 @@ TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastap
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
-EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST = (
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
-)
-EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST = (
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
-)
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
@@ -736,19 +730,74 @@ def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_pa
 
 
 @pytest.mark.parametrize(
-    "changed_path",
+    ("changed_path", "expected"),
     [
-        "src/app/device/models/event_command_block.py",
-        "src/app/device/repositories/event_command_block_repository.py",
-        "src/app/device/models/__init__.py",
-        "src/app/device/repositories/__init__.py",
-        "migrations/env.py",
+        (
+            "src/app/device/models/event_command_block.py",
+            [DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST, INITIAL_SCHEMA_BASELINE_HEAVY_TEST],
+        ),
+        (
+            "src/app/device/repositories/event_command_block_repository.py",
+            [DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/device/event_block_contracts.py",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/device/event_debug_contracts.py",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/device/v1/reconciliation.py",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, "tests/integration/test_authorization_bootstrap_postgresql.py"],
+        ),
+        (
+            "migrations/versions/20260912_2328_6cf85c1760e4_retire_device_event_command_blocks.py",
+            [DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST, INITIAL_SCHEMA_BASELINE_HEAVY_TEST],
+        ),
     ],
 )
-def test_event_command_block_schema_paths_select_postgresql_owner(changed_path: str) -> None:
+def test_retired_event_command_block_paths_keep_exact_heavy_owners(
+    changed_path: str,
+    expected: list[str],
+) -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST in select_heavy_tests([changed_path], config)
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == expected
+
+
+def test_retired_event_command_block_heavy_asset_has_tombstone_owner() -> None:
+    retired_path = "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    matching = [mapping for mapping in config[1] if mapping.source_glob == retired_path]
+
+    assert len(matching) == 1
+    assert matching[0].heavy_tests == (DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,)
+    assert not (REPO_ROOT / retired_path).exists()
+
+
+def test_retired_plan_correction_route_keeps_exact_heavy_owner() -> None:
+    retired_path = "src/app/wms_integration/outbound_picking/v1/plan_correction.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    matching = [mapping for mapping in config[1] if mapping.source_glob == retired_path]
+
+    assert len(matching) == 1
+    assert matching[0].heavy_tests == (
+        "tests/integration/test_authorization_bootstrap_postgresql.py",
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    )
+
+
+def test_retired_outbound_picking_management_package_keeps_exact_heavy_tombstone() -> None:
+    retired_path = "src/app/wms_integration/outbound_picking/v1/__init__.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    matching = [mapping for mapping in config[1] if mapping.source_glob == retired_path]
+
+    assert len(matching) == 1
+    assert matching[0].heavy_tests == ()
+    assert not (REPO_ROOT / retired_path).exists()
 
 
 @pytest.mark.parametrize(
@@ -837,6 +886,45 @@ def test_execution_celery_task_exports_select_postgresql_runtime_owner() -> None
     assert select_heavy_tests(["src/celery_app/tasks/__init__.py"], config) == [
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST
     ]
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "src/celery_app/tasks/safety.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
+        ),
+        (
+            "src/app/workline/models/safety.py",
+            [INITIAL_SCHEMA_BASELINE_HEAVY_TEST, UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST],
+        ),
+        (
+            "src/app/workline/repositories/safety_incident_repository.py",
+            [
+                "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+                UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST,
+                "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+                WORKLINE_START_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/workline/services/safety_service.py",
+            [
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                EXECUTION_CONSTRAINTS_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST,
+                "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+                WORKLINE_START_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+    ],
+)
+def test_retired_safety_paths_keep_exact_heavy_owners(changed_path: str, expected: list[str]) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == expected
 
 
 def test_execution_celery_task_selects_runtime_and_prefork_owners() -> None:
@@ -1279,6 +1367,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     revision_mappings = [mapping for mapping in config[1] if mapping.source_glob.startswith("migrations/versions/")]
 
     assert [mapping.source_glob for mapping in revision_mappings] == [
+        "migrations/versions/20260912_1230_379a204b41fa_allow_independent_device_dispatch_and_.py",
         INITIAL_SCHEMA_REVISION_PATH,
         TRANSPORT_FACE_REVISION_PATH,
         TRANSPORT_DEBUG_PROJECTION_REVISION_PATH,
@@ -1300,39 +1389,51 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260910_0327_910b24bb0e05_widen_inbound_evidence_workline_id.py",
         "migrations/versions/20260911_1125_f7cf0cd8c6d4_allow_independent_station_requests.py",
         "migrations/versions/20260912_0600_b7da7ecdc74b_remove_manual_bin_completion_apply_.py",
+        "migrations/versions/20260912_1256_fa4f7c135230_remove_transport_resource_ownership.py",
+        "migrations/versions/20260912_1338_b0edce3425ef_index_exact_transport_position_facts.py",
+        "migrations/versions/20260912_2047_db9bf1bdb493_退役工作线急停_incident.py",
+        "migrations/versions/20260912_2328_6cf85c1760e4_retire_device_event_command_blocks.py",
     ]
-    assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
-    assert revision_mappings[1].heavy_tests == (
+    mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
+    assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
+    assert mappings_by_path[TRANSPORT_FACE_REVISION_PATH].heavy_tests == (
         EXECUTION_CONSTRAINTS_HEAVY_TEST,
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
     )
-    assert revision_mappings[2].heavy_tests == (
+    assert mappings_by_path[TRANSPORT_DEBUG_PROJECTION_REVISION_PATH].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         TRANSPORT_DEBUG_RESET_HEAVY_TEST,
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
     )
-    assert revision_mappings[3].heavy_tests == TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
-    assert revision_mappings[4].heavy_tests == (PICKING_TASK_SCHEMA_HEAVY_TEST,)
-    assert revision_mappings[5].heavy_tests == (
+    assert mappings_by_path[TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH].heavy_tests == TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
+    assert mappings_by_path[PICKING_TASK_REVISION_PATH].heavy_tests == (PICKING_TASK_SCHEMA_HEAVY_TEST,)
+    assert mappings_by_path[PICKING_TASK_PREPARE_REVISION_PATH].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         PICKING_TASK_SCHEMA_HEAVY_TEST,
     )
-    assert revision_mappings[6].heavy_tests == (
+    assert mappings_by_path[WORKLINE_PLUGIN_REVISION_PATH].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     )
-    assert revision_mappings[7].heavy_tests == revision_mappings[6].heavy_tests
-    assert revision_mappings[8].heavy_tests == (
+    assert (
+        mappings_by_path[DEVICE_ROLE_REMOVAL_REVISION_PATH].heavy_tests
+        == mappings_by_path[WORKLINE_PLUGIN_REVISION_PATH].heavy_tests
+    )
+    assert mappings_by_path[
+        "migrations/versions/20260906_1526_864351b8d0c6_add_picking_task_plan_delta.py"
+    ].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
         "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
         PICKING_TASK_SCHEMA_HEAVY_TEST,
     )
-    assert revision_mappings[9].heavy_tests == (
+    assert mappings_by_path[
+        "migrations/versions/20260906_1630_3d040b37c049_constrain_face_length_to_ten.py"
+    ].heavy_tests == (
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
@@ -1340,7 +1441,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         PICKING_TASK_SCHEMA_HEAVY_TEST,
     )
     assert select_heavy_tests([DEVICE_ROLE_REMOVAL_REVISION_PATH], config, repo_root=REPO_ROOT) == sorted(
-        revision_mappings[7].heavy_tests
+        mappings_by_path[DEVICE_ROLE_REMOVAL_REVISION_PATH].heavy_tests
     )
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST

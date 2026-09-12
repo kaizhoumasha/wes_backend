@@ -8,6 +8,29 @@ authority: 仓库执行系统（WES）与固定式设备控制系统（ECS）的
 
 # 仓库执行系统（WES）第三方设备统一接口白皮书
 
+## 无阻塞执行接入核验（T0，2026-09-11）
+
+本节登记[已批准无阻塞设计](../superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md) §3–6 的目标及证据边界。
+正文的供应商接纳与现场恢复条款仍需按 T6 验收；本地代码/合同同步不能解释为现网已改变。
+本次核验代码基线为 backend `99ba9d8b16f5bb56f5bb3399a1cfc32826eb1b59`，没有真实供应商测试或部署证据。
+
+| 能力 | ECS 现有条款与核验 | 经 WMS 接入的 RCS / Transport | WMS 业务接入 | 结论 |
+| --- | --- | --- | --- | --- |
+| 同资源独立任务原子接纳与物理互斥 | §3.2 当前要求 WES 先查 IDLE；§3.1 定义 ACK/429/503，但未证明 ECS 接纳时的同资源原子排队 | Transport 合同 §4 的接纳及 BIN/RACK 占用条款不等于实际 RCS 排队验证 | prepare §7.2 的有效任务约束不能替代物理互斥 | 供应商能力 UNKNOWN；T1/T2 可本地实施，部署验收阻塞 |
+| 重传、ACK 丢失、进程重启与幂等保存期 | §3.1 保证相同 command_code/载荷不重复驱动；未规定覆盖重试有效期的保存期限 | Transport 合同 §4.1 冻结 operation/operation_id 与 transport_task_id；未找到保存期及对端重启实测 | prepare/return_batch 原身份重试合同存在，保存期与扣账实测缺失 | 持久期限及重启行为 UNKNOWN；不得因此开启交付未知重送 |
+| 原任务恢复结果与版本 | §4.1 只有 command_code、SUCCESS/FAILED、finish_time；无恢复优先级或权威顺序条款 | Transport 合同 §5.3、§6 使用 outcome_revision/outcome_version；更高版可收敛 UNKNOWN，已确定终态仍不能自动改写 | plan_delta 按 task_id 与连续 plan_revision；不等价于 prepare/return_batch 响应纠正 | Transport 本地合同已定义，ECS 恢复排序 UNKNOWN；实测均 UNKNOWN |
+| 事件重报与独立新事件 | §4.2 使用核心字段及 data（包含 timestamp）区分；诊断扩展不参与身份 | Transport 位置 Evidence 按自身 operation identity；不冒充 ECS Event | 业务以自己 operation 身份收报 | 同毫秒同内容新事件的可区分性及移走后独立事件实测 UNKNOWN |
+| 事实反馈、纠正与不重复扣账 | ECS Result 进入 WES Evidence；没有将任意孤立 Result 送给 WMS 的通用合同 | WMS 转发原任务位置/结果，不能把 WES ACK 当 WMS 库存记账 | plan_delta §8.2.1 的合法下一 revision 已由正常 record/replay 自动校验应用；prepare/return_batch 确定响应机器纠正缺口见出库合同 T0 登记 | plan_delta 本地聚焦 FAST 已通过；自动传输重试不等于其余业务纠正，WMS 收件/扣账/纠正实测 UNKNOWN |
+
+T1 的结果消息去重与命令事实应用必须分离：复用现有规范化摘要识别消息，仍按原 command_code、设备及冻结对象关联。
+摘要、finish_time 和 HTTP 到达顺序均不自动构成恢复排序权威；无法证明先后的不同结果分别留存，不覆盖原命令结论。
+不新增 result_revision，不以新 command_code 重做旧动作。已明确 ACK 后停止提交重送；只保存待结果状态。
+Status 转为诊断、ECS 接纳时裁决物理许可是目标，尚未经本次真实接入验证。
+
+供应商待交证据须包含对端版本/配置、原请求与实际接纳记录、原身份重报及重启记录、幂等保留期、
+恢复前后原始回调和设备/库存实际结果。WES Mock、合同测试或 HTTP 成功不填入供应商 PASS。
+
+
 ## 1. 范围
 
 本文供硬件设备控制系统（ECS）供应商开发人员和仓库执行系统（WES）开发人员使用，规定双方如何通信。设备控制系统供应商需要
@@ -32,7 +55,7 @@ authority: 仓库执行系统（WES）与固定式设备控制系统（ECS）的
 2. 设备控制系统返回接收确认（Acknowledgement，ACK），表示它是否已经接纳这条命令。接收确认不是完成证明。
 3. 设备控制系统完成动作或确认失败后，主动调用结果回调（Result Callback）。这个回调才报告物理动作的最终结果。
 
-事件回调（Event Callback）用于上报独立发生的设备事件，例如扫码完成或急停按下。仓库执行系统返回的事件接收确认只表示事件
+事件回调（Event Callback）用于上报独立发生且属于 WES 合同的设备事件，例如扫码完成。仓库执行系统返回的事件接收确认只表示事件
 数据已经持久接收，不会在同一个超文本传输协议（HTTP）响应中夹带下一条设备命令。仓库执行系统如需设备继续动作，必须另发
 作业指令。
 
@@ -73,7 +96,7 @@ authority: 仓库执行系统（WES）与固定式设备控制系统（ECS）的
 | 256 千二进制字节（`256 KiB`） | 单条消息允许的最大体积 | `KiB` 是 1024 字节；`256 KiB` 等于 262144 字节 |
 | 一致性验收 | 检查供应商实现是否完全遵守本文 | 至少核对路径、字段、类型、错误语义、幂等、回调和实际设备行为 |
 | 作业指令（Command） | 仓库执行系统发给设备控制系统的设备动作要求 | 使用 `command_code` 标识，动作类型放在 `task_type`，参数放在 `params` |
-| 设备状态（Status） | 设备控制系统当前报告的设备能力和运行状态 | 仓库执行系统用它判断设备是否在线、自动、空闲且没有活动命令 |
+| 设备状态（Status） | 设备控制系统当前报告的设备能力和运行状态 | 仓库执行系统用于诊断和能力核对，不作为 WES 发送前的物理执行授权 |
 | 接收确认（ACK） | 接收方对请求的确认回复 | 作业指令确认只表示设备控制系统接纳；回调确认只表示仓库执行系统持久接收；两者都不等于物理完成 |
 | 持久接收 | 仓库执行系统已经把回调保存下来 | 只证明回调数据已被接收和保存，不证明设备动作成功或下一步作业已经开始 |
 | 回调（Callback） | 接收方稍后反向调用原请求方 | 设备控制系统通过结果回调报告最终结果，通过事件回调报告设备事件 |
@@ -87,7 +110,7 @@ authority: 仓库执行系统（WES）与固定式设备控制系统（ECS）的
 | 纪元毫秒时间（Unix Epoch milliseconds） | 从 1970-01-01 00:00:00 协调世界时（UTC）起累计的毫秒数 | `timestamp`、`finish_time` 和 `updated_at` 都发送整数，不发送日期字符串 |
 | 查询参数（Query parameter） | 跟在接口地址 `?` 后面的查询条件 | 状态查询只允许可选的 `device_code`，用于查询单台设备 |
 | 枚举 | 只能从预先列出的值中选择 | 例如 `mode` 只能是 `AUTO`、`MANUAL`、`MAINTENANCE` 或 `UNKNOWN` |
-| 失败关闭（fail closed） | 信息不可信时选择不动作 | 状态缺失、过期或不合规时，仓库执行系统不发送作业指令 |
+| 失败关闭（fail closed） | 信息不可信时选择不动作 | Endpoint、设备身份、静态合同/能力或请求参数缺失、不合规时，仓库执行系统不发送作业指令；Status 只用于诊断 |
 | 设备合同附录 | 针对某类设备补充的字段约定 | 只定义 `params` 或 `data` 下的业务字段，不能改变本文顶层网络传输接口 |
 | 冻结接口 | 双方已经确认、不能由一方自行改动的接口约定 | 修改方法、路径、字段、类型或语义前，必须重新完成合同评审和一致性确认 |
 | 认证 | 接收方确认调用者身份和权限的过程 | 本文不增加供应商私有认证字段或私有认证路径 |
@@ -221,7 +244,8 @@ GET <ECS_BASE_URL>/api/v1/device/status[?device_code=<DEVICE_CODE>]
 `mode` 表示设备由谁控制：`AUTO` 是自动模式，`MANUAL` 是人工模式，`MAINTENANCE` 是维护模式，`UNKNOWN` 表示设备控制系统
 无法确认。
 `status` 表示设备正在做什么：`IDLE` 是空闲，`RUNNING` 是执行中，`ERROR` 是故障，`PAUSED` 是暂停，`STOPPED` 是停止，
-`OFFLINE` 是离线，`UNKNOWN` 表示状态不明。仓库执行系统只能在 `AUTO` 和 `IDLE` 组合下准入，其他值都不能发送作业指令。
+`OFFLINE` 是离线，`UNKNOWN` 表示状态不明。这些值用于诊断；仓库执行系统不以本地状态快照授权发送，
+设备控制系统在接纳作业指令时按实际状态、容量和物理互斥原子裁决。
 
 下面是查询一台设备时的成功响应：
 
@@ -258,10 +282,9 @@ GET <ECS_BASE_URL>/api/v1/device/status[?device_code=<DEVICE_CODE>]
 带 `device_code` 查询时，设备控制系统必须返回且只返回一个 `device_code` 相同的条目；不带参数时返回全部条目。返回零条或重复
 条目、`device.device_code` 与 `state.device_code` 不一致、字段缺失或多出、类型错误、枚举值不在表中，都会使整次状态查询不可信。
 
-仓库执行系统发送作业指令前，需要同时确认五个条件：`is_online=true`、`mode=AUTO`、`status=IDLE`、
-`current_command_code=null`，并且 `updated_at` 没有超过双方约定的状态有效期。任一条件不满足，仓库执行系统都不发送作业指令。
-`device_name`、`device_type`、`role` 和 `scenario` 只帮助联调人员查看状态，不参与发送判断。设备控制系统查不到设备时返回协议
-状态 `404`。
+仓库执行系统发送作业指令前只校验冻结 Endpoint、设备身份、静态合同/能力和请求参数。`is_online`、`mode`、`status`、
+`current_command_code` 和 `updated_at` 均用于诊断，不授权或阻止 WES 发送；设备控制系统在接纳时按实际运行态、容量和物理互斥原子裁决。
+`device_name`、`device_type`、`role` 和 `scenario` 同样只帮助联调人员查看状态。设备控制系统查不到设备时返回协议状态 `404`。
 状态查询返回非成功协议状态码时，响应体不属于公共网络传输接口，仓库执行系统只根据协议状态认定查询失败，不依赖供应商私有
 错误结构。
 
@@ -369,7 +392,7 @@ POST <WES_BASE_URL>/api/v1/callback/event
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `device_code` | `string` | 是 | 上报设备编码 |
-| `event_type` | `string` | 是 | 设备合同附录定义的事件类型，例如 `ESTOP_PRESSED`、`MATERIAL_ARRIVED`、`SCAN_COMPLETED` |
+| `event_type` | `string` | 是 | 设备合同附录定义的 WES 事件类型，例如 `MATERIAL_ARRIVED`、`SCAN_COMPLETED` |
 | `timestamp` | `integer` | 是 | 纪元毫秒格式的事件时间 |
 | `is_debug` | `boolean` | 否 | 现场联调开关；省略等同于 `false`，不接受 `null`、字符串或数字 |
 | `data` | `object` | 否 | 设备合同附录定义的业务事件数据 |
@@ -389,13 +412,16 @@ POST <WES_BASE_URL>/api/v1/callback/event
 业务数据塞进这个值。统一网络传输接口不规定 `data` 的二级字段，不同设备可以不同；供应商和仓库执行系统必须以对应设备合同
 附录为准，并把这些字段留在 `data` 内，不能提升到顶层。
 
+`ESTOP_PRESSED` 不得发送到 WES Event Callback。急停记录、物理急停、复位和恢复执行由 ECS 独立负责；WES 收到该值时返回 `400 INVALID_ENVELOPE`（`event_type/INVALID_VALUE`），不写入 Evidence，也不唤醒 execution 或 transport-debug。WES 保留原 DeviceCommand 身份和资源围栏，等待 ECS 在恢复后按既有 Result Callback/对账合同报告原命令终态。
+
 事件回调没有单独的事件身份字段。核心字段、`is_debug` 和 `data` 相同的事件重复上报时，仓库执行系统返回相同的接收确认并且
 只处理一次；省略 `is_debug` 与显式传入 `false` 视为相同事件。
 
 当 `is_debug=true` 时，该事件只用于现场联调，不进入 WorkLine 或业务处理。仓库执行系统持久化事件并独立返回 ACK，异步可靠
 命令链路随后尝试下发 `MOVE_FORWARD`：联调期间目标固定为 `http://10.24.209.26:8080/`，EVENT 的 `data` 原样作为
-`MOVE_FORWARD.params`。仅当 ECS Status 声明支持 `MOVE_FORWARD` 且设备通过现有在线、AUTO、IDLE、无活动命令等准入检查时才
-发送。WES 中同设备已有未终态命令时，新 EVENT 仍被持久化和 ACK，但不会创建或发送新 Command；现场应使用返回的旧 `command_code` 按原身份对账，不得换新命令重发。没有 WES 未终态命令但当前 ECS Status 不满足准入时，已创建的联调命令以失败终结，不等待后续自动补发。重复 EVENT 最多创建一条命令。
+`MOVE_FORWARD.params`。WES 对每个新 EVENT 独立创建并领取一条 Command，只校验事件身份、冻结 Endpoint 和 `MOVE_FORWARD` 静态能力；
+不以 ECS Status 或同设备未终态命令作为发送前门禁。ECS 在接纳时原子判断在线状态、模式、容量和物理互斥；明确未接纳时按原命令身份及
+合同处理，不换身份绕过。重复 EVENT 最多创建一条命令。
 
 仓库执行系统成功接收并保存结果回调或事件回调后，统一返回：
 
@@ -474,7 +500,7 @@ worker 启动前已经读取该响应。
 
 1. 为设备控制系统配置可访问的基础地址，并为设备控制系统配置可反向访问的仓库执行系统回调基础地址。
 2. 按设备合同附录组装作业指令 `params`，并解析结果回调和事件回调的 `data`；不得增加顶层私有字段。
-3. 发送作业指令前查询设备状态。状态不可信或不满足准入条件时失败关闭。
+3. 发送作业指令前校验冻结 Endpoint、设备身份、合同和参数；Status 仅用于诊断，设备控制系统在接纳时判断实际运行态与物理互斥。
 4. 联调记录分别标明作业指令已发送、设备控制系统已接纳、结果回调已收到和事件回调已收到，不得用一个状态代替其他状态。
 5. 遇到交付结果未知、幂等冲突或提前结果时停止自动重发并人工对账，不能更换身份绕过已有结果。
 

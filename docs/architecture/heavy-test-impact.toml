@@ -118,7 +118,7 @@ reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
 # 由生成器删除已退出 Epoch 符号并同步 START 版本错误；17 项矩阵 FAST 通过。
-reviewed_content_sha256 = "d597d0ad6576817448fb897b14bff3c1eb899aee3c40d14a9cfbeeee80fc4c60"
+reviewed_content_sha256 = "3aab04775d0eec6ff2e84b23a5ab7c1f01a5a591de230e5bb9f0314bd6628708"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -479,17 +479,17 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/callback/contracts/__init__.py"
 heavy_tests = []
-reviewed_content_sha256 = "9afa7af86a74ac8754040a35a31dbf8d851e68d728f6444a369b3837198e77b2"
+reviewed_content_sha256 = "8aa42fb488359833ce78699b3c836710a52a56bc2cb2d64c70e6a0df946ed90c"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/event_mapper.py"
 heavy_tests = []
-reviewed_content_sha256 = "9535c028d6245863c25a6f83661d4bc3b3ee3c85ffc38f0c9858af151f0e558a"
+reviewed_content_sha256 = "bae843b0e9de4e650bdcf0d73a81966ef6986240c58098222eb67a57b35d7b23"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/runtime_events.py"
 heavy_tests = []
-reviewed_content_sha256 = "cb87f2a3a2fbd07b1298da145e621b5796a2eebf3ba91c73e16497828a7138ba"
+reviewed_content_sha256 = "a55cf3efcdff622c0ef35d538759e164a0cf04bef3c7239409f15bbc5f544bed"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/{device_runtime_projection.py,repositories/device_runtime_projection_repository.py,services/device_command_gateway.py,services/device_command_lease.py,services/device_runtime_projection_writer_service.py}"
@@ -550,18 +550,27 @@ source_glob = "src/app/device/models/__init__.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/device/models/event_command_block.py"
-heavy_tests = ["tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"]
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/device/event_block_contracts.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/event_debug_contracts.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
 ]
 
 [[mapping]]
@@ -586,15 +595,12 @@ heavy_tests = [
     "tests/integration/device_command/test_ingress_history_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/device/repositories/event_command_block_repository.py"
-heavy_tests = [
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
-]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
 
 # 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
 
@@ -619,7 +625,6 @@ heavy_tests = [
     "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
 ]
 
@@ -629,7 +634,6 @@ heavy_tests = [
     "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
@@ -646,7 +650,6 @@ source_glob = "src/app/device/v1/reconciliation.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_authorization_bootstrap_postgresql.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
@@ -1079,7 +1082,6 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
@@ -1121,7 +1123,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "migrations/env.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 # WorkLine 当前激活合同承接旧 Epoch；旧路径保留用于选择本次删除差异的验证。
@@ -1221,7 +1223,6 @@ source_glob = "src/app/execution/repositories/inbound_evidence_repository.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
 ]
@@ -1260,7 +1261,19 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/wms_integration/outbound_picking/**"
+source_glob = "src/app/wms_integration/outbound_picking/v1/plan_correction.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/v1/__init__.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/**}"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
@@ -1380,6 +1393,34 @@ heavy_tests = []
 source_glob = "src/app/runtime/normalization/contracts/runtime_config.py"
 heavy_tests = []
 reviewed_content_sha256 = "541122761e87bcfc7fc8ffe3fa5e493dc02f1cc402c5d7ac1651fdceb545c29f"
+
+# 事件类型规范化只收敛平台控制事件分类；纯函数行为由 callback runtime FAST 合同承接。
+
+[[mapping]]
+source_glob = "src/app/runtime/normalization/normalizers/event_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "1d12d9ca08e7e463be7e48944c1a8d1e4e975f36ca351eae8feac89d440bebcd"
+
+# 平台事件分类只退役 WES 安全事件保留字；插件声明与规范化均由对应 FAST 合同承接。
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/events_bridge.py"
+heavy_tests = []
+reviewed_content_sha256 = "4fc74e90042b4f26e4a06deb0d2a5901fd1347aae050797a7d34cc5862df5ce6"
+
+# 仅删除已退役 safety service 的孤立批量失败写入口；存活 Session Repository 行为未变。
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/session_repository.py"
+heavy_tests = []
+reviewed_content_sha256 = "616dc53a48740443e495ed499e2f97d1111531166eb534e5ccfb8ab6b521ab6a"
+
+# 仅删除 clear-estop 退役后不可达的业务错误码；响应框架与存活错误码行为未变。
+
+[[mapping]]
+source_glob = "src/core/response/response_code.py"
+heavy_tests = []
+reviewed_content_sha256 = "25792aa957722335ee298742e8d64587e9c011a4dc8a0c6304bce947638378ff"
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/__init__.py"
@@ -1670,22 +1711,44 @@ source_glob = "tests/support/workline_contracts.py"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/workline/services/{safety_service.py,workline_service.py,write_back_service.py}"
+source_glob = "src/app/workline/services/{workline_service.py,write_back_service.py}"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
 ]
 
+# 已退役 safety incident 路径仍保留精确 owner，以便 selector 对删除 diff fail closed。
+
+[[mapping]]
+source_glob = "src/app/workline/models/safety.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/repositories/safety_incident_repository.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/services/safety_service.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
 [[mapping]]
 source_glob = "src/app/workline/trace_context.py"
 heavy_tests = []
-
-[[mapping]]
-source_glob = "src/app/workline/{models/safety.py,repositories/safety_incident_repository.py}"
-heavy_tests = [
-    "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
 
 [[mapping]]
 source_glob = "src/app/workline/services/diagnosis_verdict_builder_service.py"
@@ -2318,7 +2381,6 @@ heavy_tests = [
     "tests/e2e/test_execution_interruption_recovery.py",
     "tests/integration/execution/test_execution_observation_postgresql.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/test_authorization_bootstrap_postgresql.py",
@@ -2411,6 +2473,10 @@ heavy_tests = []
 source_glob = "deployment/dev/wms-provider.yaml"
 heavy_tests = []
 
+[[mapping]]
+source_glob = "migrations/versions/20260912_1230_379a204b41fa_allow_independent_device_dispatch_and_.py"
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/execution/test_execution_constraints.py"]
+
 # Phase 11 唯一初始基线。
 [[mapping]]
 source_glob = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
@@ -2450,7 +2516,6 @@ heavy_tests = [
     "tests/e2e/test_execution_interruption_recovery.py",
     "tests/integration/execution/test_execution_observation_postgresql.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/test_authorization_bootstrap_postgresql.py",
@@ -2592,7 +2657,6 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
     "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_transport_schema.py",
@@ -2759,3 +2823,43 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/versions/20260912_0600_b7da7ecdc74b_remove_manual_bin_completion_apply_.py"
 heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260912_1256_fa4f7c135230_remove_transport_resource_ownership.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/transport/test_transport_debug_run_real_loop.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260912_1338_b0edce3425ef_index_exact_transport_position_facts.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260912_2047_db9bf1bdb493_退役工作线急停_incident.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_reset_runtime_data_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260912_2328_6cf85c1760e4_retire_device_event_command_blocks.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+# 已退役 blocker 集成资产由 T1 独立命令并发/幂等 owner 承接删除差异。
+[[mapping]]
+source_glob = "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]

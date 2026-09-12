@@ -35,7 +35,6 @@ from src.app.transport.contracts import (
     RackBinSlot,
     RackMovePosition,
     RackPosition,
-    RackRotatePosition,
     RcsTemplateId,
     RotateRackRequest,
     TransportCaller,
@@ -48,7 +47,6 @@ from src.app.transport.contracts import (
     TransportOutcome,
     TransportOutcomeStatus,
     TransportRequest,
-    TransportResourceConflict,
     TransportSubmitCode,
     TransportTaskKind,
     TransportTaskStatus,
@@ -65,7 +63,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.submit_snapshot import (
@@ -127,7 +124,6 @@ class TransportTaskSnapshot:
     outcome_version: int
     published_outcome_version: int
     pending_evidence_count: int
-    active_binding_count: int
     transport_task_id: str
     client_request_id: str
     submit_operation_id: str
@@ -171,36 +167,32 @@ class TransportTaskPage:
     next_cursor: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class _RackPositionFact:
-    position_json: dict[str, Any] | None
-    position_unknown: bool
-    arrival_face: str | None
-
-
 class TransportEventPublisher(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool: ...
 
 
+class _PositionProjectionState(Protocol):
+    source_transport_task_id: str
+    position_unknown: bool
+
+
 class PositionProjectionPort(Protocol):
+    async def get_current(
+        self,
+        db: AsyncSession,
+        object_type: str,
+        object_id: str,
+        *,
+        for_update: bool = False,
+    ) -> _PositionProjectionState | None: ...
+
     async def admit_transport_member(
         self,
         db: AsyncSession,
         *,
         authority: TransportExecutionAuthority,
         object_type: str,
-        object_id: str,
-        source: dict[str, Any],
     ) -> None: ...
-
-    async def get_current(
-        self,
-        db: object,
-        object_type: str,
-        object_id: str,
-        *,
-        for_update: bool = False,
-    ) -> object | None: ...
 
     async def apply_transport_result(
         self,
@@ -219,8 +211,6 @@ class PositionProjectionPort(Protocol):
 
 
 class TransportDebugRunGuardPort(Protocol):
-    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool: ...
-
     async def is_task_linked_to_active_run(self, db: AsyncSession, transport_task_id: str) -> bool: ...
 
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool: ...
@@ -303,7 +293,7 @@ class TransportService:
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        position: RackRotatePosition,
+        position: RackPosition,
         target_face: str,
         rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
         *,
@@ -319,18 +309,17 @@ class TransportService:
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        position: RackRotatePosition,
+        position: RackPosition,
         target_face: str,
         rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
     ) -> TransportHandle:
-        """使用已应用的 Transport 联调终态校验货架当前位置与朝向。"""
+        """按显式点位与目标面创建联调换面任务。"""
 
         if caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
             raise TransportContractError("debug rack rotation requires TRANSPORT_DEBUG caller")
         return await self._create_task(
             RotateRackRequest(client_request_id, caller, rack_id, position, target_face, rcs_template_id),
             None,
-            use_debug_rack_projection=True,
         )
 
     async def create_debug_task_in_session(
@@ -346,8 +335,6 @@ class TransportService:
             db,
             request,
             None,
-            use_debug_rack_projection=isinstance(request, (MoveBinsRequest, RotateRackRequest)),
-            allow_active_debug_run=True,
         )
 
     async def assert_debug_rack_position_in_session(
@@ -359,7 +346,7 @@ class TransportService:
     ) -> None:
         """在自动联调事务内锁定并核对货架的可信精确工作位和朝向。"""
 
-        projection = await self._get_rack_position_fact(db, rack_id, use_debug_rack_projection=True)
+        projection = await self._repository.get_debug_position_projection(db, "RACK", rack_id, for_update=True)
         if (
             projection is None
             or projection.position_unknown
@@ -391,7 +378,6 @@ class TransportService:
         return await self._create_task(
             MoveBinsRequest(client_request_id, caller, moves),
             None,
-            allow_debug_rack_face=True,
         )
 
     async def exchange_bins(
@@ -412,14 +398,13 @@ class TransportService:
         caller: TransportCaller,
         exchange_pairs: tuple[BinExchangePair, ...],
     ) -> TransportHandle:
-        """使用已应用的 Transport 联调终态校验两侧货架朝向。"""
+        """按请求内冻结的两侧货架面创建联调交换任务。"""
 
         if caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
             raise TransportContractError("debug bin exchange requires TRANSPORT_DEBUG caller")
         return await self._create_task(
             ExchangeBinsRequest(client_request_id, caller, exchange_pairs),
             None,
-            use_debug_rack_projection=True,
         )
 
     async def get_task_snapshot(self, transport_task_id: str) -> TransportTaskSnapshot:
@@ -429,7 +414,7 @@ class TransportService:
             task_with_evidence = await self._repository.get_task_with_latest_evidence(db, transport_task_id)
             if task_with_evidence is None:
                 raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
-            task, evidence, pending_count, binding_count = task_with_evidence
+            task, evidence, pending_count = task_with_evidence
 
         latest_evidence = _evidence_snapshot(evidence)
         return TransportTaskSnapshot(
@@ -439,7 +424,6 @@ class TransportService:
             outcome_version=task.outcome_version,
             published_outcome_version=task.published_outcome_version,
             pending_evidence_count=pending_count,
-            active_binding_count=binding_count,
             transport_task_id=task.transport_task_id,
             client_request_id=task.client_request_id,
             submit_operation_id=task.submit_operation_id,
@@ -500,7 +484,6 @@ class TransportService:
                 evidence_count,
                 position_projection_count,
                 member_count,
-                binding_count,
                 task_count,
             ) = await self._repository.delete_debug_task_aggregate(db, task_id)
             if task_count != 1:
@@ -511,7 +494,6 @@ class TransportService:
             deleted_evidence_count=evidence_count,
             deleted_position_projection_count=position_projection_count,
             deleted_member_count=member_count,
-            deleted_binding_count=binding_count,
         )
 
     async def finalize_unsent_debug_task_in_session(self, db: AsyncSession, transport_task_id: str) -> bool:
@@ -529,7 +511,6 @@ class TransportService:
             "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND",
             now,
         )
-        await self._repository.release_bindings(db, transport_task_id, now=now)
         return True
 
     async def is_unsent_debug_task_finalizable_in_session(
@@ -607,8 +588,6 @@ class TransportService:
             evidence_count,
             position_projection_count,
             member_count,
-            binding_count,
-            active_binding_count,
         ) = await self._repository.get_debug_reset_counts(db, transport_task_id)
         return TransportDebugResetPreview(
             transport_task_id=task.transport_task_id,
@@ -618,8 +597,6 @@ class TransportService:
             callback_receipt_count=callback_receipt_count,
             position_projection_count=position_projection_count,
             member_count=member_count,
-            binding_count=binding_count,
-            active_binding_count=active_binding_count,
         )
 
     async def list_task_snapshots(
@@ -778,8 +755,6 @@ class TransportService:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     if current.outcome_version > current.published_outcome_version:
                         defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
-                if current.status in {"REJECTED", "SUCCEEDED", "FAILED"}:
-                    await self._repository.release_bindings(db, task_id, now=writeback_now)
             processed += 1
             if time.monotonic() - started >= _SUBMIT_CONTINUE_BUDGET_SECONDS:
                 break
@@ -824,6 +799,7 @@ class TransportService:
                     update_event = _evidence_update_event(evidence, task_status=None, reason_code=None)
                     processed += 1
                 else:
+                    previous_outcome_version = task.outcome_version
                     try:
                         if evidence.operation == TRANSPORT_POSITION_OPERATION:
                             await self._apply_position_evidence(db, task, evidence)
@@ -864,7 +840,8 @@ class TransportService:
                     processed += 1
                 if self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
-                    defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
+                    if task is not None and task.outcome_version != previous_outcome_version:
+                        defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
             try:
                 _ = await self._event_publisher.publish_to(
                     TRANSPORT_EVIDENCE_STREAM_CHANNEL,
@@ -936,8 +913,9 @@ class TransportService:
                     return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
                 if payload is None or transport_task_id is None:
                     raise RuntimeError("validated callback is missing transport_task_id")
-                # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
-                _ = await self._repository.get_task(db, transport_task_id, for_update=True)
+                # 无任务行时也按精确身份与创建串行；至少一侧在提交前登记匹配工作。
+                await self._repository.lock_task_identity(db, transport_task_id)
+                task = await self._repository.get_task(db, transport_task_id, for_update=True)
                 if outcome_revision is not None:
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -976,9 +954,12 @@ class TransportService:
                         ack_timestamp_ms=ack_timestamp_ms,
                         ack_data_json=ack_data,
                         received_at=now,
+                        status="PENDING" if task is not None else "CONFLICT",
+                        conflict_code=None if task is not None else "TRANSPORT_TASK_NOT_FOUND",
+                        processed_at=None if task is not None else now,
                     ),
                 )
-                if self._task_queue is not None:
+                if task is not None and self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_evidence)
         except IntegrityError:
             # 并发重放由数据库唯一约束裁决；回滚后读取首个已提交收据。
@@ -1096,9 +1077,6 @@ class TransportService:
         self,
         request: TransportRequest,
         execution_authority: TransportExecutionAuthority | None,
-        *,
-        allow_debug_rack_face: bool = False,
-        use_debug_rack_projection: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         try:
@@ -1107,25 +1085,19 @@ class TransportService:
                     db,
                     request,
                     execution_authority,
-                    allow_debug_rack_face=allow_debug_rack_face,
-                    use_debug_rack_projection=use_debug_rack_projection,
                 )
-        except IntegrityError as error:
+        except IntegrityError:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
                 if existing is not None:
                     return _idempotent_handle(existing, request_digest)
-            raise TransportResourceConflict("transport resource is already active") from error
+            raise
 
-    async def _create_task_in_session(  # noqa: PLR0912 - closed admission branches plus post-commit wake
+    async def _create_task_in_session(
         self,
         db: AsyncSession,
         request: TransportRequest,
         execution_authority: TransportExecutionAuthority | None,
-        *,
-        allow_debug_rack_face: bool = False,
-        use_debug_rack_projection: bool = False,
-        allow_active_debug_run: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
@@ -1154,15 +1126,6 @@ class TransportService:
             updated_at=now,
         )
         members = _members_for(request, task_id, now)
-        bindings = [
-            TransportResourceBinding(
-                transport_task_id=task_id,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                created_at=now,
-            )
-            for resource_type, resource_id in sorted(_resource_keys(request))
-        ]
         existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
@@ -1172,107 +1135,22 @@ class TransportService:
                     db,
                     authority=execution_authority,
                     object_type=member.object_type,
-                    object_id=member.object_id,
-                    source=member.source_json,
                 )
-        if not allow_active_debug_run:
-            for rack_id in sorted(
-                resource_id for resource_type, resource_id in _resource_keys(request) if resource_type == "RACK"
-            ):
-                if await self._debug_run_guard.has_active_run_for_rack(db, rack_id):
-                    raise TransportResourceConflict("active transport debug run owns rack")
-        if isinstance(request, RotateRackRequest):
-            projection = await self._get_rack_position_fact(
-                db,
-                request.rack_id,
-                use_debug_rack_projection=use_debug_rack_projection,
-            )
-            if (
-                projection is None
-                or projection.position_unknown
-                or type(projection.arrival_face) is not str
-                or projection.arrival_face == ""
-            ):
-                raise TransportContractError("rack current face is unknown")
-            if type(request.position) is RackPosition:
-                if projection.position_json != _json_value(request.position):
-                    raise TransportContractError("rack current position is not confirmed")
-            elif (
-                not isinstance(projection.position_json, dict)
-                or projection.position_json.get("kind") != "RACK_POSITION"
-            ):
-                raise TransportContractError("rack current exact position is unknown")
-            else:
-                frozen_position = _json_value(projection.position_json)
-                members[0].source_json = frozen_position
-                members[0].target_json = frozen_position
-            if projection.arrival_face == request.target_face:
-                raise TransportContractError("target face equals current face")
-            # 换面目标冻结为准入已确认的原点位，不能把货架编号当作 RCS 目标点位。
-            submit_payload["target"] = _json_value(members[0].target_json)
-            frozen_request_body = build_submit_request_body(submit_operation_id, submit_timestamp_ms, submit_payload)
-            task.submit_request_body = frozen_request_body.decode("utf-8")
-            task.submit_request_body_digest = request_body_digest(frozen_request_body)
-        elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
-            if allow_debug_rack_face and (
-                not isinstance(request, MoveBinsRequest)
-                or request.caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID
-            ):
-                raise TransportContractError("debug rack face override requires TRANSPORT_DEBUG BIN_MOVE")
-            if allow_debug_rack_face:
-                await self._repository.add_aggregate(db, task, members, bindings)
-                if self._task_queue is not None:
-                    defer_wakeup(db, self._task_queue.enqueue_transport_submit)
-                return TransportHandle(task_id, request.client_request_id)
-            for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
-                projection = await self._get_rack_position_fact(
-                    db,
-                    rack_id,
-                    use_debug_rack_projection=use_debug_rack_projection,
-                )
-                if (
-                    projection is None
-                    or projection.position_unknown
-                    or type(projection.arrival_face) is not str
-                    or projection.arrival_face == ""
-                ):
-                    raise TransportContractError("rack current face is unknown")
-                if projection.arrival_face != requested_face:
-                    raise TransportContractError("rack current face does not match request")
-        await self._repository.add_aggregate(db, task, members, bindings)
+        # 来源、目标及货架面属于请求决策；旧观察和其他任务不裁决接纳。
+        await self._repository.lock_task_identity(db, task_id)
+        await self._repository.add_aggregate(db, task, members)
+        registered = await self._repository.requeue_unassociated_evidence(db, task_id)
+        if registered:
+            task.status = TransportTaskStatus.RECONCILING.value
+            task.reason_code = "TRANSPORT_EVIDENCE_PENDING"
         if self._task_queue is not None:
-            defer_wakeup(db, self._task_queue.enqueue_transport_submit)
-        return TransportHandle(task_id, request.client_request_id)
-
-    async def _get_rack_position_fact(
-        self,
-        db: AsyncSession,
-        rack_id: str,
-        *,
-        use_debug_rack_projection: bool,
-    ) -> _RackPositionFact | None:
-        if use_debug_rack_projection:
-            projection = await self._repository.get_debug_position_projection(
+            defer_wakeup(
                 db,
-                "RACK",
-                rack_id,
-                for_update=True,
+                self._task_queue.enqueue_transport_evidence
+                if registered
+                else self._task_queue.enqueue_transport_submit,
             )
-            if projection is None:
-                return None
-            return _RackPositionFact(
-                position_json=projection.position_json,
-                position_unknown=projection.position_unknown,
-                arrival_face=projection.arrival_face,
-            )
-        projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
-        if projection is None:
-            return None
-        return _RackPositionFact(
-            position_json=projection.position_json,
-            position_unknown=projection.position_unknown,
-            arrival_face=projection.arrival_face,
-        )
+        return TransportHandle(task_id, request.client_request_id)
 
     async def _apply_member_position_projection(
         self,
@@ -1286,6 +1164,13 @@ class TransportService:
         arrival_face: str | None,
         updated_at: datetime,
     ) -> None:
+        position_unknown = position_unknown or await self._repository.has_other_position_facts(
+            db,
+            object_type=member.object_type,
+            object_id=member.object_id,
+            transport_task_id=task.transport_task_id,
+        )
+        await self._invalidate_other_task_positions(db, task, member)
         if task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
             _ = await self._repository.apply_debug_position_projection(
                 db,
@@ -1311,6 +1196,20 @@ class TransportService:
             transport_task_id=task.transport_task_id,
             updated_at=updated_at,
         )
+
+    async def _invalidate_other_task_positions(
+        self, db: AsyncSession, task: TransportTask, member: TransportMember
+    ) -> None:
+        # 调用方持有同一对象事务锁。两张诊断投影都不能将另一任务的事实继续视为确定位置。
+        projections = (
+            await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True),
+            await self._repository.get_debug_position_projection(
+                db, member.object_type, member.object_id, for_update=True
+            ),
+        )
+        for projection in projections:
+            if projection is not None and projection.source_transport_task_id != task.transport_task_id:
+                projection.position_unknown = True
 
     def _apply_submit_result(
         self,
@@ -1465,6 +1364,7 @@ class TransportService:
             if milestone == "TARGET_PLACED" and payload.get("final_position") == member.final_position_json:
                 return
             raise TransportContractError("position evidence contradicts definite terminal fact")
+        await self._repository.lock_position_result(db, member.object_type, member.object_id)
         now = timezone.now_for_db()
         if milestone == "POSITION_UNKNOWN":
             if member.final_position_json is not None:
@@ -1492,6 +1392,7 @@ class TransportService:
         member.last_operation_id = evidence.operation_id
         member.updated_at = now
         task.updated_at = now
+        await self._invalidate_other_task_positions(db, task, member)
 
     async def _apply_result_evidence(
         self,
@@ -1585,6 +1486,9 @@ class TransportService:
             any_failed |= status == "FAILED"
 
         outcomes: list[TransportMemberOutcome] = []
+        # 按对象稳定顺序锁定聚合写入；不跨 HTTP，也不参与独立任务准入。
+        for member in sorted(members, key=lambda item: (item.object_type, item.object_id)):
+            await self._repository.lock_position_result(db, member.object_type, member.object_id)
         for member, result, outcome in validated_results:
             status = result["status"]
             final_position = result.get("final_position")
@@ -1638,9 +1542,6 @@ class TransportService:
                 members=tuple(outcomes),
             )
         )
-        if task_status in {TransportTaskStatus.SUCCEEDED, TransportTaskStatus.FAILED}:
-            await self._repository.release_bindings(db, task.transport_task_id, now=now)
-
         return True
 
 
@@ -1672,41 +1573,6 @@ def _members_for(request: TransportRequest, task_id: str, now: Any) -> list[Tran
         )
         for ordinal, (object_type, object_id, source, target) in enumerate(specs)
     ]
-
-
-def _resource_keys(request: TransportRequest) -> set[tuple[str, str]]:
-    resources: set[tuple[str, str]] = set()
-    if isinstance(request, (MoveRackRequest, RotateRackRequest)):
-        resources.add(("RACK", request.rack_id))
-        return resources
-    moves: list[tuple[str, object, object]] = []
-    if isinstance(request, MoveBinsRequest):
-        moves.extend((move.bin_code, move.source, move.target) for move in request.moves)
-    else:
-        for pair in request.exchange_pairs:
-            moves.extend(
-                (
-                    (pair.left_bin_code, pair.left_location, pair.right_location),
-                    (pair.right_bin_code, pair.right_location, pair.left_location),
-                )
-            )
-    for bin_code, source, target in moves:
-        resources.add(("BIN", bin_code))
-        for position in (source, target):
-            if isinstance(position, RackBinSlot):
-                resources.add(("RACK", position.rack_id))
-    return resources
-
-
-def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) -> dict[str, str]:
-    positions: list[object] = []
-    if isinstance(request, MoveBinsRequest):
-        positions.extend(position for move in request.moves for position in (move.source, move.target))
-    else:
-        positions.extend(
-            position for pair in request.exchange_pairs for position in (pair.left_location, pair.right_location)
-        )
-    return {position.rack_id: position.rack_face for position in positions if isinstance(position, RackBinSlot)}
 
 
 def _debug_frozen_targets(task: TransportTask) -> list[dict[str, Any]]:
@@ -2053,9 +1919,10 @@ def _clear_submit_claim(task: TransportTask) -> None:
 
 
 def _accept_position_fact(task: TransportTask, now: datetime, result_timeout: timedelta) -> None:
-    can_converge_delivery_unknown = (
-        task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
-    )
+    can_converge_delivery_unknown = task.status == TransportTaskStatus.RECONCILING.value and task.reason_code in {
+        "TRANSPORT_DELIVERY_UNKNOWN",
+        "TRANSPORT_EVIDENCE_PENDING",
+    }
     if task.status != TransportTaskStatus.PENDING.value and not can_converge_delivery_unknown:
         return
     if can_converge_delivery_unknown:

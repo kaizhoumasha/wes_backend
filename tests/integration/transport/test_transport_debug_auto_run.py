@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -12,7 +15,9 @@ from src.app.execution.models import (
     InboundEvidenceApplyStatus,
     InboundEvidenceConflict,
     InboundEvidenceKind,
+    WmsConfirmation,
 )
+from src.app.execution.services import WmsConfirmationService
 from src.app.transport.contracts import (
     MoveBinsRequest,
     MoveRackRequest,
@@ -36,10 +41,11 @@ from src.app.transport.models import (
     TransportDebugRunStep,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
+from src.app.wms_adapter.dispatch import WmsDispatchCode, WmsDispatchResult
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_integration.outbound_picking.services import ReturnBatchOwnerService
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.integration.transport.debug_return_support import debug_workline, freeze_return_allocation
@@ -124,7 +130,7 @@ def _request_members(request: TransportRequest) -> list[tuple[str, str, object, 
     if isinstance(request, MoveRackRequest):
         return [("RACK", request.rack_id, request.source, request.target)]
     if isinstance(request, RotateRackRequest):
-        frozen_position = RackPosition("KT16") if isinstance(request.position, RackReference) else request.position
+        frozen_position = request.position
         return [("RACK", request.rack_id, frozen_position, frozen_position)]
     assert isinstance(request, MoveBinsRequest)
     return [("BIN", move.bin_code, move.source, move.target) for move in request.moves]
@@ -305,9 +311,6 @@ async def _cleanup(session_factory: Any, *, rack_id: str, source_prefix: str) ->
             )
         if task_ids:
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
-            await db.execute(
-                delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
-            )
             await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
         if run_ids:
@@ -352,7 +355,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
                 expected_kinds.append("RACK_ROTATE")
                 rotate = transport.created[-1][1]
                 assert isinstance(rotate, RotateRackRequest)
-                assert asdict(rotate.position) == {"kind": "RACK", "location_code": rack_id}
+                assert asdict(rotate.position) == {"kind": "RACK_POSITION", "location_code": "KT16"}
                 assert rotate.target_face == group.face
                 await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
                 assert await service.advance_run(run.run_id) is True
@@ -759,6 +762,135 @@ async def test_partial_wms_batches_survive_restart_and_delay_ctu03(integration_s
         )
         assert await service.advance_run(run.run_id)
         assert (await service.get_run(run.run_id)).status == "COMPLETED"
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+@pytest.mark.parametrize("invalidate_candidate", [False, True])
+async def test_no_batch_deadline_restart_and_concurrent_new_decision(
+    integration_session_factory: Any, invalidate_candidate
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"auto-no-batch-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+
+    class Adapter:
+        result = "NO_BATCH"
+
+        async def dispatch(self, *, operation, operation_id, request_payload, request_digest, observation=None):
+            data = request_payload["data"]
+            response_data = {"result": "NO_BATCH", "retry_after_ms": 1000}
+            if self.result == "READY":
+                response_data = {
+                    "result": "READY",
+                    "moves": [
+                        {
+                            "sequence_no": item["sequence_no"],
+                            "bin_code": item["bin_code"],
+                            "target": {
+                                "type": "RACK_BIN_SLOT",
+                                "rack_id": data["rack_id"],
+                                "rack_face": data["rack_face"],
+                                "slot_id": f"WMS-{item['sequence_no']}",
+                            },
+                        }
+                        for item in data["return_candidates"]
+                    ],
+                }
+            return WmsDispatchResult(
+                WmsDispatchCode.DETERMINATE,
+                response_result=self.result,
+                normalized_response={
+                    "operation_id": operation_id,
+                    "code": "DECIDED",
+                    "timestamp": request_payload["timestamp"],
+                    "data": response_data,
+                },
+            )
+
+    adapter = Adapter()
+    dispatcher = WmsConfirmationService(
+        session_factory=integration_session_factory,
+        adapter=adapter,
+        workline_owner=ReturnBatchOwnerService(),
+        task_queue_gateway=Mock(),
+    )
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        waiting = await service.get_run(run.run_id)
+        for index, selection in enumerate(request.face_groups[0].bins):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{index}",
+                bin_code=selection.bin_code,
+                timestamp_ms=waiting.current_step.evidence_not_before_ms,
+            )
+        assert await service.advance_run(run.run_id)
+        now = timezone.now_for_db()
+        service._clock = lambda: now
+        assert await service.advance_run(run.run_id)
+        assert await dispatcher.dispatch_batch(limit=1, now=now) == 1
+        assert await service.advance_run(run.run_id)
+        count_before = len(transport.created)
+        async with integration_session_factory() as db:
+            persisted = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            batch = persisted.configuration_json["return_batches"][str(persisted.current_step_ordinal)]
+            assert batch["retry_at"] == (now + timedelta(seconds=1)).isoformat()
+            original_id = batch["operation_id"]
+            original = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == original_id))
+            frozen = (
+                original.request_payload,
+                original.request_digest,
+                original.response_evidence_id,
+                original.completed_at,
+            )
+        restarted = _service(integration_session_factory, transport)
+        restarted._clock = lambda: now + timedelta(milliseconds=999)
+        assert not await restarted.advance_run(run.run_id)
+        assert not await dispatcher.dispatch_batch(limit=1, now=now + timedelta(seconds=1))
+        assert len(transport.created) == count_before
+        if invalidate_candidate:
+            async with integration_session_factory.begin() as db:
+                persisted = await db.scalar(
+                    select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id).with_for_update()
+                )
+                persisted.configuration_json = {
+                    **persisted.configuration_json,
+                    "returned_bins": [{"bin_code": request.face_groups[0].bins[0].bin_code}],
+                }
+        service._clock = restarted._clock = lambda: now + timedelta(seconds=1)
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(service.advance_run(run.run_id), restarted.advance_run(run.run_id)), 5
+        )
+        assert sum(outcomes) == 1
+        async with integration_session_factory() as db:
+            persisted = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            operation_ids = tuple(persisted.configuration_json["return_requests"])
+            assert len(operation_ids) == (1 if invalidate_candidate else 2)
+            original = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == original_id))
+            assert original.status == "COMPLETED"
+            assert (
+                original.request_payload,
+                original.request_digest,
+                original.response_evidence_id,
+                original.completed_at,
+            ) == frozen
+        if invalidate_candidate:
+            assert (await restarted.get_run(run.run_id)).status == "NEEDS_ATTENTION"
+        else:
+            adapter.result = "READY"
+            assert await dispatcher.dispatch_batch(limit=1, now=now + timedelta(seconds=1)) == 1
+            assert await restarted.advance_run(run.run_id)
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(service.advance_run(run.run_id), restarted.advance_run(run.run_id)), 5
+            )
+            assert sum(outcomes) == 1
+            assert len(transport.created) == count_before + 1
+            assert not await restarted.advance_run(run.run_id)
+        assert len(transport.created) == count_before + (0 if invalidate_candidate else 1)
     finally:
         await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
 

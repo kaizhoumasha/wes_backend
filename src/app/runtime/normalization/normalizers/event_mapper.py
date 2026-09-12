@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
+from src.app.runtime.orchestration.events_bridge import assert_not_platform_control_event
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
@@ -24,7 +24,7 @@ def canonicalize_event_type(event_type: str, *, workline: Any | None = None) -> 
     if not isinstance(mapped, str) or not mapped:
         return event_type
 
-    assert_not_reserved_runtime_event(
+    assert_not_platform_control_event(
         mapped,
         owner="runtime_config_json.event_type_mapping",
         declaration_surface=f"{event_type} 的映射目标",

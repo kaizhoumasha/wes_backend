@@ -101,7 +101,10 @@ async def current_rack_id(
     if rack_position is None or not rack_position.enabled:
         raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorkLinePosition")
     placements = await rack_placements.list_active_by_workline_position(
-        db, workline_code=runtime.workline.workline_code, position_code=rack_position.position_code
+        db,
+        workline_code=runtime.workline.workline_code,
+        position_code=rack_position.position_code,
+        for_update=True,
     )
     if len(placements) != 1:
         raise ValueError("PIPELINE_OUTLET current rack missing or ambiguous")

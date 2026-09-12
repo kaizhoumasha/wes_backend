@@ -58,11 +58,14 @@ def build_transport_request(action: IntegrationTransportAction, *, bin_moves: tu
             RcsTemplateId(action.rcs_template_id),
         )
     if action.kind is IntegrationTransportActionKind.ROTATE_RACK:
+        position = _rack_position(action.source)
+        if type(position) is not RackPosition:
+            raise TransportContractError("rack rotation requires an explicit rack position")
         return RotateRackRequest(
             action.client_request_id,
             caller,
             action.rack_id,
-            _rack_position(action.source),
+            position,
             action.target_face or "",
             RcsTemplateId(action.rcs_template_id),
         )
