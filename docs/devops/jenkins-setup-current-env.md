@@ -5,6 +5,7 @@
 - **GitLab 服务器**：192.168.0.220:9080（Docker）
 - **Jenkins 服务器**：192.168.0.220（Docker）
 - **Jenkins Node 节点**：192.168.0.221（已配置）
+- **构建代理**：http://192.168.0.225:7890（流水线探测成功后才注入构建和依赖安装）
 - **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
 - **LDAP 账号**：zhoukai / Ctt123456
@@ -142,15 +143,20 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 
 ##### Build Triggers
 
-发布流水线必须使用 GitLab Webhook：
+发布流水线必须使用 GitLab Webhook。backend 仓库分别通知应用 producer 与 checker producer；frontend 仓库只通知 frontend producer：
 
-**方式 1：GitLab Webhook（发布必需）**
+###### 方式 1：GitLab Webhook（发布必需）
+
 - ✅ **Build when a change is pushed to GitLab**
 - 展开 **Advanced**，点击 **Secret Token → Generate**，只把生成值配置到 GitLab Webhook
-- GitLab webhook URL: `http://192.168.0.220:9081/project/wes_backend-ci`
+- GitLab webhook URL：
+  - backend producer：`http://192.168.0.220:9081/project/wes_backend-ci`
+  - checker producer：`http://192.168.0.220:9081/project/wes_release_checker-ci`
+  - frontend producer：`http://192.168.0.220:9081/project/wes_frontend-ci`
 - 记录这个 URL，稍后在 GitLab 中配置
 
-**方式 2：Poll SCM（仅验证，不可发布）**
+###### 方式 2：Poll SCM（仅验证，不可发布）
+
 - ✅ **Poll SCM**
 - Schedule: `H/5 * * * *`（每 5 分钟检查一次）
 - Poll SCM 不提供 webhook 的 `gitlabBefore` / `gitlabAfter`，因此发布门禁会 fail closed，不能作为 `develop` 发布触发
@@ -177,8 +183,9 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 1. 登录 GitLab：`http://192.168.0.220:9080`
 2. 进入项目：**wes / wes_backend**
 3. 左侧菜单 → **Settings → Webhooks**
-4. 配置 Webhook：
-   ```
+4. 配置 Webhook；backend 项目按上表配置 backend/checker 两个独立 URL，frontend 项目配置 frontend URL：
+
+   ```text
    URL: http://192.168.0.220:9081/project/wes_backend-ci
    Secret token: 与 Jenkins Job Advanced 中生成的 per-project token 完全一致（必填）
    Trigger:
@@ -188,6 +195,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
      ⚠️ Enable SSL verification（如果使用 HTTPS）
      或取消勾选（如果使用 HTTP）
    ```
+
 5. 点击 **Add webhook**
 
 Secret token 不得写入仓库、文档或构建日志；Jenkins 与 GitLab 任一侧缺失或不一致时，发布触发必须视为未配置。

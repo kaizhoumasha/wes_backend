@@ -66,7 +66,7 @@
 
 首个运行时代码补丁前形成 operation/事件矩阵，逐项记录方向、Method/Path、DTO、响应联合、ACK 模式、幂等、下一步前置事实及测试 owner。以下已发现问题必须在相应切片前解决：
 
-- 人工合同 §5.4 描述应用报告支持 Bin 和 rack 两类完成；现有 Bin wire 与新 rack 条件联合需要逐字段核对，“bin_code 留空”必须明确是省略还是 null，不由实现者猜测。
+- 人工合同 §5.4 已取消完成应用结果上报；Bin 与 rack 完成事实的本地应用及其证据关联由 WES 保存，不新增二次 WMS 交互。
 - §1.1 示例、§5.4 的“应用成功不等于物理成功”与现有联调服务等待释放成功后才报告的行为需要统一。分别冻结完成事实应用、命令可靠创建、报告发送、物理完成的时序。
 - §5.2/§5.5 对冗余字段的规定与严格 DTO 的实际行为逐项对照；不得全局放宽 parser 来消除差异。
 - SCAN1 朝向/NG、SCAN3 当前处置关联、SCAN4 入队事实，以新插件需求与点位恢复方案的已批准合同对齐。声明中的注释不是完整 ECS wire。
@@ -118,8 +118,8 @@
 | 任务与计划 | 绑定真实 issued；发 prepare；接收 plan_delta | PickingTask 接收/应用状态、plan_revision 及实际计划成员 |
 | 资源到位 | 按计划创建 Transport，检查原任务结果；退料架按合同上报到位 | 当前货架、面、实际位置及到位确认；不能用发送 ACK |
 | A：入站 | 请求 inbound_batch；按返回定位搬运；接收 SCAN1/SCAN2 | 批次成员、当前扫码实际 Bin、所属点位与本次事件身份 |
-| A：工作位 | 发 work_admission；WORK_REQUIRED 等待 WMS work_completed；NO_WORK 按合同直通 | 匹配当前动作的封闭 WMS 决定；PDA 操作仍由 WMS 拥有 |
-| A：释放及报告 | 应用完成事实、创建对应唯一命令、报告应用结果并等待物理结果 | 时序按任务 1 冻结；APPLIED、ECS 接纳、物理完成分别记录 |
+| A：工作位 | 携当前任务 `task_id` 和点2实际 `bin_code/scanned_at` 发 work_admission；WORK_REQUIRED 等待 WMS work_completed；NO_WORK 按合同直通 | 匹配当前动作且 WORK_REQUIRED 返回任务与请求一致的封闭 WMS 决定；PDA 操作仍由 WMS 拥有 |
+| A：释放与本地应用 | 应用完成事实、创建对应唯一命令并等待物理结果 | 不发送 completion_apply_report；联调台确认释放后同事务保存 APPLIED 并进入点3；自动 handler 的应用、ECS 接纳和物理完成分别记录 |
 | A：分流及退箱 | SCAN3 按本次关联决定分流；SCAN4 证据入 FIFO；请求 return_batch 并搬回 | NG 不入正常退箱队列；正常候选保持真实 FIFO 与返回目标 |
 | B：直接取料 | PDA 黑盒操作；接收 direct_pick_completed；应用对应 task/rack/face 完成事实 | 不经过扫码位、不伪造 Bin、不发送 PICK_AND_PUT |
 | B：换面/离场 | 按未结明细与通用合同决定换面或请求 departure_decide，执行运输 | 面级业务结清与运输结果分别闭合；与 A 不设串行依赖 |
@@ -229,7 +229,7 @@ FIVE_RACK 只有一个工作位，配置容量 C 表示整个五层货架区可�
 | `workline_plugins/manual-picking/src/manual_picking/integration/scenarios.py`（新增） | 人工流程静态场景、前置条件与验收描述；不是运行插件声明或动态 DSL |
 | 同插件 `application/integration_service.py`（新增） | 手工触发所需的 typed 业务动作、面级应用、FIFO 等窄规则，复用公共能力；后续 handler 可调用相同规则 |
 | `deployment/plugin_composition.py` | 显式关联插件联调应用，宿主不导入具体插件；不把人工应用伪装为自动 handler |
-| `src/app/wms_adapter/outbound_picking/`、`src/app/wms_integration/outbound_picking/`、SDK 对应 typed 合同 | direct_pick_completed 及应用报告必要合同差异；复用唯一 event route 与可靠接收 |
+| `src/app/wms_adapter/outbound_picking/`、`src/app/wms_integration/outbound_picking/`、SDK 对应 typed 合同 | direct_pick_completed 必要合同差异与本地应用关联；复用唯一 event route 与可靠接收 |
 | `src/app/wms_diagnostics/`、`src/app/device/services/device_ingress_history_service.py` | 优先直接复用；仅补充缺失的关联查询，不复制存储或采集链 |
 | `migrations/versions/`、`docs/architecture/heavy-test-impact.toml` | Run/Step 及实际新增业务持久化的迁移、精确 HEAVY mapping |
 | 前端 `src/views/ops/manual-outbound-integration/` | 保留现有路由入口，名称改为“人工拣料联调台”；改造步骤列表、编辑器、上下文与证据呈现 |
@@ -283,7 +283,7 @@ FIVE_RACK 只有一个工作位，配置容量 C 表示整个五层货架区可�
 
 ### 任务 5：直接取料及共同收尾
 
-- [ ] TDD 补齐已批准 direct_pick_completed 的 wire/唯一入口/可靠 Evidence 接收，以及面级业务应用和应用报告条件联合。
+- [ ] TDD 补齐已批准 direct_pick_completed 的 wire/唯一入口/可靠 Evidence 接收，以及面级业务应用；取消 completion_apply_report 的 wire、SDK、Adapter 与联调台入口，验证本地应用事务及早到对账。
 - [ ] 插件按 task/rack/face 应用一次完成事实，匹配计划直接取料成员；不制造扫码、Bin 或机械臂取料动作。
 - [ ] 复用运输与离场合同验证换面、退场、转运货架及任务完成；A/B 分支各自等待，不用全 Run 当前步骤串行阻塞。
 - [ ] 承接第 5 步已有热修复，并扩展为按资源成员校验：纯五层计划不等退料架报告；有直接取料时对应报告必须闭合；计划未知不可视为空，混合计划不跨分支错误阻塞。

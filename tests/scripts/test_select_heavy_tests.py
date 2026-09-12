@@ -1299,6 +1299,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260909_0915_d11f8c6fdb0d_support_generic_workline_position_slots.py",
         "migrations/versions/20260910_0327_910b24bb0e05_widen_inbound_evidence_workline_id.py",
         "migrations/versions/20260911_1125_f7cf0cd8c6d4_allow_independent_station_requests.py",
+        "migrations/versions/20260912_0600_b7da7ecdc74b_remove_manual_bin_completion_apply_.py",
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (

@@ -41,13 +41,8 @@ from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import (
     MANUAL_BIN_ADMISSION_OPERATION,
     ManualBinAdmissionData,
 )
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
-    MANUAL_BIN_APPLY_REPORT_OPERATION,
-    ManualBinApplied,
-    ManualBinReconciling,
-)
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
-from src.app.wms_adapter.outbound_picking.manual_bin_typed import encode_admission, encode_apply_report
+from src.app.wms_adapter.outbound_picking.manual_bin_typed import encode_admission
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request as encode_return_batch
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION, BinReturnBatchData
 from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
@@ -128,7 +123,7 @@ class IntegrationRunWorkLineOwner:
     ) -> bool:
         operation = request_payload.get("operation")
         operation_id = request_payload.get("operation_id")
-        if operation not in {MANUAL_BIN_ADMISSION_OPERATION, MANUAL_BIN_APPLY_REPORT_OPERATION}:
+        if operation != MANUAL_BIN_ADMISSION_OPERATION:
             return False
         return isinstance(operation_id, str) and await self._runs.owns_operation(
             db,
@@ -406,7 +401,6 @@ class IntegrationDebugService:
                 IntegrationDebugPhase.WORK_ADMISSION,
                 IntegrationDebugPhase.WORK_COMPLETION,
                 IntegrationDebugPhase.POINT2_RELEASE,
-                IntegrationDebugPhase.COMPLETION_REPORT,
                 IntegrationDebugPhase.POINT3_ROUTE,
                 IntegrationDebugPhase.RETURN_BUFFER,
                 IntegrationDebugPhase.BIN_RETURN_BATCH,
@@ -820,6 +814,8 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.WORK_ADMISSION)
+            if run.task_id is None or request_data.task_id != run.task_id:
+                raise IntegrationDebugContractError("准入 task_id 必须等于本 run 已绑定的 PickingTask")
             if run.bin_code is None:
                 raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
             run.bin_code = request_data.bin_code
@@ -833,6 +829,7 @@ class IntegrationDebugService:
             operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_manual_bin_work_admission(
                 operation_id=operation_id,
+                task_id=run.task_id,
                 bin_code=request_data.bin_code,
                 scanned_at=request_data.scanned_at,
             )
@@ -1266,13 +1263,6 @@ class IntegrationDebugService:
                 if not isinstance(task_id, str) or not task_id:
                     raise IntegrationDebugConflict("WORK_REQUIRED 响应缺少 task_id")
                 run.configuration_json = {**run.configuration_json, "admission_task_id": task_id}
-        elif step.operation == MANUAL_BIN_APPLY_REPORT_OPERATION:
-            if step.request_summary_json.get("apply_result") == "RECONCILING":
-                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-                run.attention_code = step.request_summary_json.get("reason_code") or "MANUAL_BIN_RECONCILING"
-            else:
-                run.current_phase = IntegrationDebugPhase.POINT3_ROUTE
-                run.status = IntegrationDebugRunStatus.ACTIVE
         elif step.operation == BIN_INBOUND_BATCH_OPERATION:
             IntegrationDebugService._advance_inbound_batch(run, response_result, response_data)
         elif step.operation == BIN_RETURN_BATCH_OPERATION:
@@ -1432,145 +1422,6 @@ class IntegrationDebugService:
             else:
                 run.current_phase = IntegrationDebugPhase.POINT2_RELEASE
                 run.status = IntegrationDebugRunStatus.ACTIVE
-            run.updated_by = actor_id
-            run.increment_version()
-            snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
-        await self._publish(snapshot)
-        return snapshot
-
-    async def send_completion_apply_report(
-        self,
-        run_id: str,
-        *,
-        client_request_id: str,
-        request_data: ManualBinApplied | ManualBinReconciling,
-        expected_version: int,
-        actor_id: int,
-    ) -> dict[str, Any]:
-        now = timezone.now_for_db()
-        timestamp = int(timezone.to_utc(now).timestamp() * 1000)
-        apply_result = request_data.apply_result
-        async with self._sessions.begin() as db:
-            run = await self._require_run(db, run_id, for_update=True)
-            self._assert_operator_and_version(run, expected_version, actor_id)
-            allowed_phases = (
-                {IntegrationDebugPhase.COMPLETION_REPORT}
-                if apply_result == "APPLIED"
-                else {
-                    IntegrationDebugPhase.WORK_COMPLETION,
-                    IntegrationDebugPhase.POINT2_RELEASE,
-                    IntegrationDebugPhase.COMPLETION_REPORT,
-                }
-            )
-            if IntegrationDebugPhase(run.current_phase) not in allowed_phases:
-                raise IntegrationDebugConflict(f"当前步骤为 {run.current_phase}，不能上报 {apply_result} 应用状态")
-            admission_task_id = run.configuration_json.get("admission_task_id")
-            if not isinstance(admission_task_id, str) or run.bin_code is None:
-                raise IntegrationDebugContractError("完成应用报告缺少已绑定 task_id 或实际 bin_code")
-            if request_data.task_id != admission_task_id or request_data.bin_code != run.bin_code:
-                raise IntegrationDebugContractError("完成应用报告 data.task_id 和 data.bin_code 必须匹配本 run")
-            if request_data.apply_revision != 1:
-                raise IntegrationDebugContractError("当前固定联调流程只发送首次 apply_revision=1")
-            completion_steps = await self._runs.list_steps(db, run_id)
-            bound_completion = next(
-                (
-                    step
-                    for step in reversed(completion_steps)
-                    if step.operation == MANUAL_BIN_COMPLETED_OPERATION
-                    and step.status in {"SUCCEEDED", "NEEDS_ATTENTION"}
-                ),
-                None,
-            )
-            if bound_completion is None or bound_completion.operation_id != request_data.completion_operation_id:
-                raise IntegrationDebugContractError("completion_operation_id 必须等于本 run 已绑定的完成决定 identity")
-            completion_evidence = await self._runs.get_evidence_by_operation(
-                db,
-                MANUAL_BIN_COMPLETED_OPERATION,
-                request_data.completion_operation_id,
-                for_update=True,
-            )
-            release_step = next(
-                (
-                    step
-                    for step in reversed(completion_steps)
-                    if step.phase == IntegrationDebugPhase.POINT2_RELEASE and step.status == "SUCCEEDED"
-                ),
-                None,
-            )
-            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
-            if existing is not None:
-                if not isinstance(existing.operation_id, str):
-                    raise IntegrationDebugConflict("原 completion_apply_report 联调步骤缺少 operation_id")
-                operation_id = existing.operation_id
-            else:
-                operation_id = new_uuid7()
-            intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
-                operation_id=operation_id,
-                completion_operation_id=request_data.completion_operation_id,
-                task_id=request_data.task_id,
-                bin_code=request_data.bin_code,
-                apply_revision=request_data.apply_revision,
-                apply_result=cast("Any", apply_result),
-                reason_code=request_data.reason_code if isinstance(request_data, ManualBinReconciling) else None,
-                occurred_at=request_data.occurred_at,
-            )
-            payload = encode_apply_report(intent, timestamp=timestamp)
-            if existing is not None:
-                self._assert_matching_wms_replay(
-                    existing,
-                    run_id=run_id,
-                    operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
-                    request=payload["data"],
-                )
-                return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            allowed_evidence_statuses = (
-                {InboundEvidenceApplyStatus.PENDING}
-                if apply_result == "APPLIED"
-                else {InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING}
-            )
-            if completion_evidence is None or completion_evidence.apply_status not in allowed_evidence_statuses:
-                raise IntegrationDebugContractError("完成 Evidence 状态不能冻结本次应用报告")
-            if apply_result == "APPLIED" and release_step is None:
-                raise IntegrationDebugContractError(
-                    "APPLIED 前必须完成 point2 释放步骤，且完成 Evidence 必须等待本次报告原子应用"
-                )
-            self._assert_no_open_wms_action(
-                completion_steps,
-                IntegrationDebugPhase.COMPLETION_REPORT,
-                MANUAL_BIN_APPLY_REPORT_OPERATION,
-            )
-            step = await self._append_step(
-                db,
-                run,
-                phase=IntegrationDebugPhase.COMPLETION_REPORT,
-                status="WAITING",
-                actor_id=actor_id,
-                client_request_id=client_request_id,
-                operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
-                operation_id=operation_id,
-                request=payload["data"],
-            )
-            acceptance = await self._confirmations.create_or_get(
-                db,
-                operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
-                operation_id=operation_id,
-                workline_id=run.workline_id,
-                request_payload=payload,
-                deadline_at=now + timedelta(minutes=30),
-                created_at=now,
-            )
-            if not isinstance(acceptance, WmsConfirmationAcceptance):
-                raise IntegrationDebugConflict("WMS operation identity 内容冲突")
-            step.wms_confirmation_id = acceptance.confirmation.id
-            completion_evidence.apply_status = (
-                InboundEvidenceApplyStatus.APPLIED
-                if apply_result == "APPLIED"
-                else InboundEvidenceApplyStatus.RECONCILING
-            )
-            completion_evidence.processed_at = now
-            defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
-            run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
-            run.current_phase = IntegrationDebugPhase.COMPLETION_REPORT
             run.updated_by = actor_id
             run.increment_version()
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
@@ -1938,13 +1789,11 @@ class IntegrationDebugService:
                         "point2 释放前必须取得本 run 的释放 DeviceCommand 或模拟动作 SUCCEEDED"
                     )
                 admission_result = run.configuration_json.get("manual_bin_admission_result")
-                if admission_result == "NO_WORK":
+                if admission_result in {"NO_WORK", "WORK_REQUIRED"}:
                     target = IntegrationDebugPhase.POINT3_ROUTE
-                elif admission_result == "WORK_REQUIRED":
-                    target = IntegrationDebugPhase.COMPLETION_REPORT
                 else:
                     raise IntegrationDebugConflict("point2 释放缺少已冻结的 WORK_REQUIRED 或 NO_WORK 准入结果")
-            if current is IntegrationDebugPhase.POINT2_RELEASE and target is IntegrationDebugPhase.COMPLETION_REPORT:
+            if current is IntegrationDebugPhase.POINT2_RELEASE and admission_result == "WORK_REQUIRED":
                 completion_step = next(
                     (
                         step
@@ -1963,6 +1812,8 @@ class IntegrationDebugService:
                 )
                 if evidence is None or evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
                     raise IntegrationDebugConflict("完成 Evidence 已被其它流程处理或不存在")
+                evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
+                evidence.processed_at = timezone.now_for_db()
             if current is IntegrationDebugPhase.POINT3_ROUTE:
                 profile = IntegrationDebugProfile(run.profile)
                 steps = await self._runs.list_steps(db, run_id)

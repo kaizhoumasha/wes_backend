@@ -27,8 +27,9 @@ from src.core.exceptions import NotFoundException
 from src.register import register_exception, register_routers
 
 
-def _snapshot(*, run_id: str = "debug-run-1", face: str = " 90 ") -> TransportDebugRunSnapshot:
+def _snapshot(*, run_id: str = "debug-run-1", face: str = " 90 ", test_mode: bool = False) -> TransportDebugRunSnapshot:
     return TransportDebugRunSnapshot(
+        test_mode=test_mode,
         workline_code="DEBUG-LINE",
         returned_bins=(),
         run_id=run_id,
@@ -132,8 +133,9 @@ def test_debug_run_routes_use_five_unique_permissions_and_static_stream_precedes
 @pytest.mark.asyncio
 async def test_create_debug_run_preserves_face_and_passes_authenticated_actor() -> None:
     service = _service()
+    service.create_run.return_value = _snapshot(test_mode=True)
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
-        response = await client.post("/api/v1/transport/debug-runs", json=_payload())
+        response = await client.post("/api/v1/transport/debug-runs", json={**_payload(), "test_mode": True})
 
     assert response.status_code == 202
     assert response.json()["code"] == "1004"
@@ -141,8 +143,10 @@ async def test_create_debug_run_preserves_face_and_passes_authenticated_actor() 
     assert response.json()["data"]["workline_code"] == "DEBUG-LINE"
     assert response.json()["data"]["returned_bins"] == []
     assert response.json()["data"]["steps"] == []
+    assert response.json()["data"]["test_mode"] is True
     request = service.create_run.await_args.args[0]
     assert request.face_groups[0].face == " 90 "
+    assert request.test_mode is True
     assert service.create_run.await_args.kwargs == {"actor_id": 42}
 
 

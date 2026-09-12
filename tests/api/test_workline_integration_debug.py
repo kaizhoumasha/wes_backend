@@ -61,7 +61,6 @@ def _service() -> SimpleNamespace:
         send_bin_return_batch=AsyncMock(return_value=snapshot),
         send_rack_departure=AsyncMock(return_value=snapshot),
         send_task_completion_confirm=AsyncMock(return_value=snapshot),
-        send_completion_apply_report=AsyncMock(return_value=snapshot),
         create_transport_action=AsyncMock(return_value=snapshot),
         create_device_action=AsyncMock(return_value=snapshot),
         refresh_device_action=AsyncMock(return_value=snapshot),
@@ -109,7 +108,6 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
         "ops:workline-integration-debug:refresh-wms",
         "ops:workline-integration-debug:retry-wms",
         "ops:workline-integration-debug:bind-completion",
-        "ops:workline-integration-debug:completion-apply-report",
         "ops:workline-integration-debug:transport",
         "ops:workline-integration-debug:refresh-transport",
         "ops:workline-integration-debug:device-command",
@@ -343,7 +341,7 @@ async def test_work_admission_passes_the_admin_edited_operation_data() -> None:
     payload = {
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4475",
-        "data": {"bin_code": "BIN-EDITED", "scanned_at": 1788980000000},
+        "data": {"task_id": "PICK-001", "bin_code": "BIN-EDITED", "scanned_at": 1788980000000},
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -390,18 +388,6 @@ async def test_work_admission_passes_the_admin_edited_operation_data() -> None:
             "task-completion",
             "send_task_completion_confirm",
             {"task_id": "PICK-001", "last_applied_plan_revision": 7},
-        ),
-        (
-            "completion-apply-report",
-            "send_completion_apply_report",
-            {
-                "completion_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
-                "task_id": "WORK-EDITED",
-                "bin_code": "BIN-EDITED",
-                "apply_revision": 1,
-                "apply_result": "APPLIED",
-                "occurred_at": 1788980000000,
-            },
         ),
     ],
 )
@@ -460,10 +446,36 @@ async def test_export_gives_wms_csharp_team_exact_operations_and_retry_rules() -
         "outbound.bin.inbound_batch@v1",
         "outbound.manual_bin.work_admission_decide@v1",
         "outbound.manual_bin.work_completed@v1",
-        "outbound.manual_bin.completion_apply_report@v1",
         "outbound.bin.return_batch@v1",
         "outbound.rack.departure_decide@v1",
         "outbound.picking_task.completion_confirm@v1",
     ]
     assert "long" in payload["csharp6_rules"][0]
     assert "frozenJson" in payload["csharp6_httpclient_example"]
+
+
+@pytest.mark.asyncio
+async def test_work_admission_requires_task_before_calling_service() -> None:
+    service = _service()
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/work-admission",
+            json={
+                "expected_version": 0,
+                "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4475",
+                "data": {"bin_code": "BIN-001", "scanned_at": 1788980000000},
+            },
+        )
+    assert response.status_code == 422
+    service.send_work_admission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completion_apply_report_route_is_removed() -> None:
+    app = _app(_service())
+    assert "/api/v1/workline-integration-debug/runs/{run_id}/wms/completion-apply-report" not in app.openapi()["paths"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/completion-apply-report", json={}
+        )
+    assert response.status_code == 404

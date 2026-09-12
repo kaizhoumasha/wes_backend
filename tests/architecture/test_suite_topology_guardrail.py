@@ -57,7 +57,8 @@ def test_pytest_fast_defaults_use_xunit2_without_implicit_coverage_noise() -> No
 def test_quality_gate_generates_and_checks_fast_report() -> None:
     gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
 
-    assert "pytest --junitxml=reports/fast-tests.xml" in gate_text
+    assert "local pytest_args=(--junitxml=reports/fast-tests.xml)" in gate_text
+    assert 'run_tool pytest "${pytest_args[@]}"' in gate_text
     assert "check_fast_test_budget.py reports/fast-tests.xml" in gate_text
 
 

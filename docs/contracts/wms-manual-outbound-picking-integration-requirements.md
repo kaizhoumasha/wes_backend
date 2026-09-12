@@ -2,7 +2,7 @@
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 created_at: 2026-09-02
 related: ""
-scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与应用结果；其余环节复用自动出库合同
+scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: Approved
 title: WMS / WES 人工出库拣料交互要求
 updated_at: 2026-09-04
@@ -18,7 +18,7 @@ updated_at: 2026-09-04
 本文不是一份独立合同。人工出库线的任务下发、资源计算、货架搬运、料箱投料、扫码与位置事实、退料回库，
 与
 [`wms-outbound-picking-task-integration-requirements.md`](wms-outbound-picking-task-integration-requirements.md)（下称“出库合同”）
-定义的自动出库场景完全一致。本文只增加人工线的 point2 任务准入、最终释放决定、应用结果报告，以及退料货架直接取料完成通知
+定义的自动出库场景完全一致。本文只增加人工线的 point2 任务准入、最终释放决定、本地应用，以及退料货架直接取料完成通知
 四个 operation（详见第 5 节），不建立第二套通用字段表达。
 
 系统尚未发布。本文不提供旧接口、兼容字段或新旧路径并存。
@@ -43,7 +43,7 @@ flowchart TD
 
     subgraph A["子流程 A：五层货架 Bin，点1～点4"]
         A0["WES→WMS<br/>bin.inbound_batch@v1"] --> A1["点1 SCAN<br/>入 FIFO 缓存"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
-        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES→WMS<br/>completion_apply_report@v1"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["WES→WMS<br/>bin.return_batch@v1"]
+        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["WES→WMS<br/>bin.return_batch@v1"]
     end
 
     subgraph B["子流程 B：退料货架直接取料，§3.5"]
@@ -69,10 +69,10 @@ flowchart TD
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=A` | `READY`，`bin_code=BIN-001` |
 | 5A | 设备 → WES | 点1 SCAN | `BIN-001` 进入点1→点2 FIFO 缓存 | 保存 FIFO 顺序 |
 | 6A | 设备 → WES | 点2 SCAN | `BIN-001` 到达工作位 | 保存到位事实 |
-| 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `bin_code=BIN-001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
+| 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=BIN-001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
 | — | PDA（黑盒） | 人工按 WMS 指示拣料 | 具体拣了哪个 Cell，WES 不知道、不查询 | — |
 | 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `task_id + bin_code=BIN-001`，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
-| 9A | WES → WMS | `outbound.manual_bin.completion_apply_report@v1` | `apply_result=APPLIED` | `200/RECORDED`，point2 下发 `MOVE_FORWARD` |
+| 9A | WES 本地执行 | 应用完成事实并释放 point2 | 匹配原 completion evidence | 按稳定命令身份执行 `MOVE_FORWARD`，分别记录应用与物理结果 |
 | 10A | 设备 → WES | 点3 SCAN | `NORMAL` | `MOVE_FORWARD`，放行 |
 | 11A | 设备 → WES | 点4 SCAN | 计入 `RETURN_BUFFER` | 入队尾 |
 | 12A | WES → WMS | `outbound.bin.return_batch@v1` | `BIN-001` 从队首取出 | `READY`，搬回五层货架 |
@@ -95,7 +95,7 @@ flowchart TD
 
 **变体（NG）**：若人工在 point2 判定 `BIN-001` 不合格，第 8A 步的 `work_completed@v1` 改为 `result=NG`；WES 应用后仍创建唯一 point2 释放命令，但第 10A 步 point3 按 §3.3 的表格走 `MOVE_LEFT`，该 Bin 不进入 `RETURN_BUFFER`（不影响子流程 B）。
 
-四个新增 operation（`work_admission_decide`、`work_completed`、`completion_apply_report`、`direct_pick_completed`）的严格字段定义在第 5 节；本节只负责把顺序和因果关系讲清楚，不重复摘录字段表。
+三个新增 operation（`work_admission_decide`、`work_completed`、`direct_pick_completed`）的严格字段定义在第 5 节；本节只负责把顺序和因果关系讲清楚，不重复摘录字段表。
 
 ## 2\. 与出库合同的边界 {#2}
 
@@ -125,7 +125,7 @@ flowchart TD
   `outbound.manual_bin.work_admission_decide@v1`（详见第 5 节）；
 - WMS 在原子持久化 PDA 子任务和业务结果后，向 WES 上报 Bin 级最终释放决定的新 operation：
   `outbound.manual_bin.work_completed@v1`（详见第 5 节）；
-- WES 把完成决定的异步应用结果可靠上报 WMS：`outbound.manual_bin.completion_apply_report@v1`（详见第 5 节）；
+- WES 本地保存完成决定的应用状态和释放证据，不再二次上报 WMS（详见第 5.4 节）；
 - 退料货架直接取料同样由 PDA 完成；WMS 用新 operation `outbound.manual_rack.direct_pick_completed@v1`
   上报面级完成事实（详见 §3.5、第 5.5 节）；
 - 人工出库线不使用出库合同 `outbound.bin.work_plan@v1`：工作位任务的可执行范围（拣哪些 Cell）完全由 WMS/PDA
@@ -165,14 +165,14 @@ WES 对上游供箱只按已确认的缓存容量、FIFO 顺序和出库合同�
 ### 3\.2 点2：人工工作位（PDA，对 WES 黑盒） {#32-2pda-wes}
 
 FIFO 队首自动进入 point2 后，point2 SCAN 设备扫码并由 ECS 上报 WES。该扫码和到位证据是当前实际料箱身份及“已到人工工作位”的
-权威事实；point1 证据不能替代它。WES 不把扫码 Bin 与计划中的预期 Bin 做错箱比较，只使用实际 `bin_code` 请求 WMS 判断当前是否
+权威事实；point1 证据不能替代它。WES 不把扫码 Bin 与计划中的预期 Bin 做错箱比较，使用当前执行上下文已绑定的 `task_id` 与实际 `bin_code` 请求 WMS 判断该任务下是否
 存在人工任务。PDA 的呼叫、Cell 分配、拣料确认等内部流程完全由 WMS 负责，WES 不集成、不查询、不持有其中任何字段（对照 §2.2）。
 
 WES 在点2的唯一职责是：
 
 1. 接收并保存 point2 实际扫码和到位事实；
-2. 调用 `outbound.manual_bin.work_admission_decide@v1` 请求 WMS 判断当前 `bin_code` 是否有任务；
-3. `WORK_REQUIRED` 时保存 WMS 返回的 `task_id`，保持料箱停留并等待 Bin 级最终释放决定；`NO_WORK` 时把该 Bin 标记为正常直通并
+2. 调用 `outbound.manual_bin.work_admission_decide@v1` 请求 WMS 判断当前 `bin_code` 在指定 `task_id` 下是否有人工任务；
+3. `WORK_REQUIRED` 时校验 WMS 返回的 `task_id` 与请求一致并保存绑定，保持料箱停留并等待 Bin 级最终释放决定；`NO_WORK` 时把该 Bin 标记为正常直通并
    创建 point2 释放命令；`WAIT` 或响应未知时保持 point2 占用并按第 5 节重试；
 4. 收到 `WORK_REQUIRED` 对应的完成决定后，把业务结果和释放权限原子绑定到当前 WorkLine 内正在 point2 等待的唯一
    `task_id + bin_code`；绑定成功后才向 point2
@@ -223,7 +223,7 @@ PDA（人工拣料操作终端）是 WMS 侧功能，不属于 WES 集成范围�
 打印和未批准的人工业务接口」这条既有边界：本文不违反该边界，因为 WES 侧确实不提供、不消费任何 PDA 接口，
 PDA 全部内部逻辑归属 WMS。
 
-## 5\. 新增 operations：任务准入、完成释放、应用结果与退料货架完成通知 {#5-operations}
+## 5\. 新增 operations：任务准入、完成释放与退料货架完成通知 {#5-operations}
 
 ### 5\.1 `outbound.manual_bin.work_admission_decide@v1` {#51-outboundmanual_binwork_admission_decidev1}
 
@@ -242,6 +242,7 @@ PDA 全部内部逻辑归属 WMS。
   "operation": "outbound.manual_bin.work_admission_decide@v1",
   "timestamp": 1788389900000,
   "data": {
+    "task_id": "PICK-20260902-001",
     "bin_code": "BIN-001",
     "scanned_at": 1788389899900
   }
@@ -250,26 +251,34 @@ PDA 全部内部逻辑归属 WMS。
 
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
+| `data.task_id` | 是 | 出库合同 Identifier | 当前执行上下文已绑定的任务；联调台必须与 Run 的任务一致，不根据实际料箱猜测任务 |
 | `data.bin_code` | 是 | 出库合同 Identifier | point2 SCAN 读取的当前实际料箱；WES 不发送预期 Bin，也不在本地做错箱比较 |
 | `data.scanned_at` | 是 | positive integer / UTC Unix 毫秒 | point2 有效扫码和到位事实的设备发生时间；不得晚于信封 `timestamp` |
 
-`data` 读取上述两个必填字段，忽略冗余字段；Identifier、已定义字段的 `null`、空字符串、错误类型和时间约束复用出库合同的规则。条码不可读时
+`data` 读取上述三个必填字段，忽略冗余字段；Identifier、已定义字段的 `null`、空字符串、错误类型和时间约束复用出库合同的规则。条码不可读时
 禁止发送请求，按 §3.2 的 Bin NG 路径处理。
 
 `200 / DECIDED` 的 `data` 是严格联合：
 
 | `data.result` | 必填字段 | 接收时忽略字段 | WES 动作 |
 | --- | --- | --- | --- |
-| `WORK_REQUIRED` | `task_id` | `retry_after_ms` | 原子保存当前 `bin_code + task_id` 关联，保持 point2 占用并允许 WMS/PDA 开始人工操作 |
+| `WORK_REQUIRED` | `task_id` | `retry_after_ms` | 校验返回 `task_id` 等于请求任务后原子保存当前 `bin_code + task_id` 关联，保持 point2 占用并允许 WMS/PDA 开始人工操作 |
 | `NO_WORK` | 无 | `task_id`、`retry_after_ms` | 原子保存正常直通决定并创建唯一 point2 释放命令 |
 | `WAIT` | `retry_after_ms` | `task_id` | 当前料箱停留 point2；到期或新业务事件唤醒后使用新 `operation_id` 重求值 |
 
-`task_id` 复用出库合同 Identifier；`retry_after_ms` 复用出库合同正整数边界。WMS 根据其业务主账判断实际 Bin 当前是否有任务；
+`task_id` 复用出库合同 Identifier；`retry_after_ms` 复用出库合同正整数边界。WMS 根据其业务主账判断实际 Bin 在指定任务下是否有人工任务；
 WES 不查询 Cell、不验证预期 Bin，也不把 `NO_WORK` 解释为 NG。
 
 原 `operation_id` 和原请求重放必须返回首次完整响应。同 ID 内容漂移返回 `409 / CONFLICT`；响应未知或
 `503 / UNAVAILABLE` 时，WES 保持当前 Bin、point2 占用和原 operation identity 重试，不以新 ID 猜测结果。只有已收到并可靠保存
 `WORK_REQUIRED | NO_WORK | WAIT` 才能推进相应状态；HTTP 响应本身不表示任何设备动作已发生。
+
+响应 `WORK_REQUIRED.task_id` 与冻结请求不一致时进入对账，不绑定其他任务，也不放行料箱。缺失、空值或非法
+`task_id` 属于非法请求，不回退为按料箱查询。
+
+联调升级：已冻结的不含 `task_id` 的旧请求不得原地补字段或沿用原 `operation_id` 发送新正文。先停止原可靠义务的重试，
+核对 WMS 原请求未形成有效业务决定；按明确的人工恢复流程保留原请求及响应证据、关联替换关系，再以新 identity
+发出包含 `task_id` 的请求。响应未知或已有有效决定时不得据此换 ID 重发；当前联调台不宣称已支持该替换入口。
 
 ### 5\.2 `outbound.manual_bin.work_completed@v1` {#52-outboundmanual_binwork_completedv1}
 
@@ -348,36 +357,19 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 共享 HTTP 入口不读取人工线当前工位或任务等待来同步判定业务冲突。换新 `operation_id` 的合法消息仍先返回
 `202 / RECEIVED`；`task_id + bin_code` 单终态和当前执行状态由人工业务模块在异步应用 evidence 时判定。
 
-### 5\.4 `outbound.manual_bin.completion_apply_report@v1` {#54-outboundmanual_bincompletion_apply_reportv1}
+### 5.4 完成事实的本地应用 {#54-completion-local-application}
 
-| 项 | 值 |
-| --- | --- |
-| 方向 | WES 到 WMS |
-| 端点 | `POST {{WMS_BASE_URL}}/api/v1/wes/facts` |
-| 触发条件 | 一条 `work_completed@v1` 或 `direct_pick_completed@v1`（详见第 5.5 节）evidence 首次进入 `APPLIED` 或 |
-| `RECONCILING`，以及后续人工对账使状态发生确定变化 | {} |
-| 首次成功响应 | `200 / RECORDED` |
+取消 `outbound.manual_bin.completion_apply_report@v1`，WES 不再向 WMS 二次报告完成事实的应用结果。
+`work_completed` 与 `direct_pick_completed` 的可靠接收、幂等和 `202 / RECEIVED` ACK 语义保持不变；ACK 不表示物理释放完成。
 
-`data` 是严格条件联合：
+WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存本地应用状态。早到、绑定不匹配或结果冲突进入本地
+`RECONCILING`，保留原 identity 与证据，不下发方向命令，也不创建额外上报义务。
 
-| 字段 | `APPLIED` | `RECONCILING` | 说明 |
-| --- | --- | --- | --- |
-| `completion_operation_id` | 必填 | 必填 | 触发本次应用的原 operation\_id（`outbound.manual_bin.work_completed@v1` |
-| 或 `outbound.manual_rack.direct_pick_completed@v1`） | {} | {} | {} |
-| `task_id` / `bin_code` | 必填 | 必填 | 原完成决定的业务身份；`direct_pick_completed@v1` 触发时 `bin_code` 字段留空， |
-| 改用该决定的 `rack_id + rack_face` | {} | {} | {} |
-| `apply_revision` | 必填 | 必填 | 从 1 开始严格递增的应用状态修订 |
-| `apply_result` | `APPLIED` | `RECONCILING` | 本次确定应用状态 |
-| `reason_code` | 发送方不携带；接收方忽略 | 必填 | `RESULT_CONFLICT \| FIRST_COMPLETION_OUT_OF_WINDOW \| POINT2_BINDING_MISMATCH \| WORKLINE_NOT_ACTIVE \| COMPLETED_AT_INVALID \| DEVICE_COMMAND_IDENTITY_CONFLICT` |
-| `occurred_at` | 必填 | 必填 | WES 形成该应用状态的 UTC Unix 毫秒时间，不晚于信封 `timestamp` |
+联调台中，`WORK_REQUIRED` 的 point2 释放成功经原动作证据确认后，在同一事务把匹配的 completion evidence 标为
+`APPLIED`、保存处理时间并推进到 `POINT3_ROUTE`；`NO_WORK` 直接按释放结果推进，不要求完成通知。
+插件自动执行仍需分别记录完成事实应用、稳定命令创建和物理完成，不能用手工联调通过替代 handler 全流程验收。
 
-`APPLIED` 只证明最终结果已持久化（Bin 场景下还包括 point2 释放 DeviceCommand 已在同一事务创建），不证明命令已发送、
-ECS 已接纳或物理动作已完成。`RECONCILING` 不撤销 WMS 已形成的业务结果，也不授权 WMS 重发不同结果或 WES 换身份重创命令；
-双方按相同 `completion_operation_id` 对账。人工对账形成后续确定状态时使用新的 operation identity 和下一连续
-`apply_revision` 上报，不得覆盖历史修订或跳号。
-
-每个报告修订使用稳定 `operation_id` 可靠发送；响应未知或 `503 / UNAVAILABLE` 时使用原 ID 和原内容重试。WMS 对同一报告 ID
-同内容返回 `DUPLICATE`、内容漂移返回 `409 / CONFLICT`，并按 `completion_operation_id + apply_revision` 原子保存状态和告警。
+已有旧阶段 Run 和未闭合上报义务应在升级前逐项核对；接口退役不允许覆盖历史证据或重新触发物理动作。
 
 ### 5\.5 `outbound.manual_rack.direct_pick_completed@v1` {#55-outboundmanual_rackdirect_pick_completedv1}
 
@@ -429,7 +421,7 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 ## NOT in scope {#not-in-scope}
 
 - WES 不集成 PDA 的任何接口（第 4 节）；
-- WES 不使用自动线 `outbound.bin.work_plan@v1`：`outbound.manual_bin.work_admission_decide@v1` 只返回当前实际 Bin 是否有
+- WES 不使用自动线 `outbound.bin.work_plan@v1`：`outbound.manual_bin.work_admission_decide@v1` 只返回当前实际 Bin 在指定任务下是否有
   人工任务，不返回 Cell 或 PDA 工作内容；
 - point2 不建立“预期 Bin 与实际 Bin”错箱分支；合法实际 Bin 是否有任务完全由 WMS 返回 `WORK_REQUIRED | NO_WORK | WAIT`；
 - `outbound.manual_rack.direct_pick_completed@v1` 不携带逐 slot 取货结果；退料货架没有 NG 出口，缺料、损耗等业务异常
@@ -447,7 +439,7 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 
 ## 6\. 当前批准状态 {#6-approval-status}
 
-C1～C7（point2 任务准入、完成释放、应用结果三个 operation 及其相关现场确认项）已于 2026\-09\-03 通过联合初审，
+C1～C7（当时的 point2 任务准入、完成释放、应用结果三个 operation 及其相关现场确认项；应用结果上报现已取消）已于 2026\-09\-03 通过联合初审，
 本文构成当前基线的代码实施授权。
 
 退料货架直接取料完成通知 `outbound.manual_rack.direct_pick_completed@v1`（§3.5、第 5.5 节）尚未进入联合评审，不在
@@ -468,13 +460,10 @@ C1～C7（point2 任务准入、完成释放、应用结果三个 operation 及�
 | `tests/contracts/wms_adapter/` 的 Event handler 合同测试 | 激活验收目标：唯一静态接收路由不随业务 owner 安装状态变化；零消费者仍可靠接收且业务应用 fail closed；新 ID 持久化后 `202`；同 ID 同内容 `200`；同 ID 不同内容 `409`；持久化失败 `503` 且无虚假 ACK |
 | `tests/integration/wms_adapter/test_manual_bin_event_receipts.py` | 使用真实 PostgreSQL 验证并发重放只有一个收据 owner、digest 冲突、evidence/ACK 事务回滚与失败后原 identity 可重试 |
 | `tests/contracts/wms_adapter/test_outbound_openapi.py` | OpenAPI 的 `reason_code` 闭集包含 `MANUAL_PICK_NG`，并准确表达各 reason 的条件联合，不把插件业务判断写入 schema |
-| `workline_plugins/manual_bin_processing/tests/test_work_admission.py` | point2 合法实际 Bin 构造严格两字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
-| `workline_plugins/manual_bin_processing/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 冻结返回的 `task_id`；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
-| `workline_plugins/manual_bin_processing/tests/test_completion_apply_report.py` | `APPLIED/RECONCILING` 严格条件联合、封闭 reason code、连续 revision；`APPLIED` 不冒充设备发送或物理移动完成 |
-| `workline_plugins/manual_bin_processing/tests/integration/test_completion_apply_delivery_postgresql.py` | 应用状态与可靠报告义务原子声明；响应未知保留原 ID；WMS ACK 闭合当前 revision；对账后的下一 revision 不覆盖历史 |
+| `workline_plugins/manual_bin_processing/tests/test_work_admission.py` | point2 合法实际 Bin 构造包含 `task_id/bin_code/scanned_at` 的严格三字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
+| `workline_plugins/manual_bin_processing/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 验证返回任务与请求一致后冻结绑定；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
 
-前六项核心测试不导入 `manual_bin_processing` 插件，只证明共享 completion ingress、可靠接收、路由与 NG wire；任务准入与应用结果
-两类 outbound operation 的请求数据及其因果恢复由后四项插件测试承接，底层 HTTP/JSON 继续复用共享 `WmsClient`，不在插件内重造传输。
+前六项核心测试不导入 `manual_bin_processing` 插件，只证明共享 completion ingress、可靠接收、路由与 NG wire；任务准入 operation 的请求数据及其因果恢复由后两项插件测试承接，底层 HTTP/JSON 继续复用共享 `WmsClient`，不在插件内重造传输。
 
 `tests/runtime/execution/test_wms_confirmation_service.py` 负责共享 `WmsConfirmation` 回归：既有
 `material_execution_id` 消费者行为不变；数据库与 Service 要求 MaterialExecution、PickingTask 或 WorkLine 恰好一个 owner；相同
@@ -511,7 +500,7 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 - point2 扫描实际 Bin → `work_admission_decide`；`WORK_REQUIRED` 停留并开放人工操作，`NO_WORK` 正常直通，`WAIT` 停留重求值，响应未知时用原 identity 重试；
 - `NORMAL`：公共 WMS Event 入口 → evidence → worker → 插件应用 → 唯一 DeviceCommand → 正常返库路径；
 - `NG`：同一公共入口和 worker 链路 → `MANUAL_PICK_NG` 证据 → NG 物理路径，不提前关闭执行；
-- completion evidence 的 `APPLIED/RECONCILING` 均形成可靠 `completion_apply_report`，WMS ACK 丢失时用原 identity 重试；
+- completion evidence 的 `APPLIED/RECONCILING` 保存在 WES；联调台释放确认与 `APPLIED`、阶段推进同事务提交，不创建 WMS 上报义务；
 - 原 `operation_id` 重放与换新 ID 的同结果业务重复均不产生第二个 DeviceCommand；
 - worker 在 evidence 已提交后重启，仍使用原 evidence 和原执行身份继续收敛，不丢消息、不换身份重发。
 
@@ -540,7 +529,7 @@ CODE PATHS                                              USER / ONSITE FLOWS
   ├── [GAP→8.1] same ID + different body -> 409
   └── [GAP→8.1] persistence failure -> 503
 
-[+] Completion apply report                             [+] WMS 观察异步应用
+[+] WES 本地保存应用与释放证据                          [+] WMS 无二次上报接口
   ├── [GAP→8.1] APPLIED / RECONCILING union               ├── [GAP→8.1/8.4] APPLIED 不冒充物理完成
   ├── [GAP→8.1] closed reason_code                        ├── [GAP→8.1/8.4] RECONCILING 触发双方对账
   ├── [GAP→8.1] monotonic apply_revision                  └── [GAP→8.1/8.4] ACK 丢失后原 ID 重试
@@ -617,7 +606,7 @@ evidence 的业务应用事务只允许数据库操作：
 ### 9.4 `WmsConfirmation` 中立业务 owner 关联
 
 WmsConfirmation 使用 `material_execution_id`、`picking_task_id` 或 `workline_id` 恰好一个非空的显式 owner 约束，
-复用既有可靠生命周期；不新增 Bin owner 或另一套 outbox。无 task 的扫码准入由 WorkLine 承担；已取得 task 的完成应用报告关联原 PickingTask。
+复用既有可靠生命周期；不新增 Bin owner 或另一套 outbox。扫码准入必须携带冻结的 task_id，由既有 WorkLine/PickingTask owner 校验；完成事实应用不创建额外上报义务。
 插件决定触发时机与完整 data；宿主同事务保存 owner、operation identity、payload digest 和可靠义务，并负责派发、领取、重试及响应 Evidence。
 
 `outbound.picking_task.prepare@v1` 继续关联已在同一事务中从 `QUEUED` 领取为 `PREPARING` 的 PickingTask。
@@ -656,7 +645,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | `WORK_REQUIRED` 外部等待 | 人工处理超过 SLA | `test_external_wait_policy.py` | 只告警并停止新入线；当前 Bin 与上游 FIFO 不改向、不改身份 |
 | `NO_WORK` 直通 | 并发重放创建两条释放命令 | `test_work_admission_postgresql.py` | 稳定 `MANUAL_BIN_POINT2_RELEASE` 身份保证最多一条，冲突 fail closed |
 | completion ingress | DTO 非法或 evidence 无法落库 | 核心 wire、receipt integration | 返回确定 4xx 或 `503`；不产生虚假 `202`，WMS 可见 |
-| completion 应用 | 首次消息早到/晚到、结果冲突或绑定不唯一 | `test_work_completed_application.py` | 零方向命令，进入 `RECONCILING` 并可靠发送 apply report |
+| completion 应用 | 首次消息早到/晚到、结果冲突或绑定不唯一 | `test_work_completed_application.py` | 零方向命令，进入本地 `RECONCILING`，保留证据，不向 WMS 二次上报 |
 | completion 重放 | 已成功应用后料箱已离开 point2 | `test_work_completed_application.py` | 相同业务结果为 no-op；不同结果进入对账，不重复命令 |
 | DeviceCommand | ACK/结果未知或重复扫码 | scan/application integration | 保留原命令身份和资源围栏，等待权威终态；禁止换 ID 重发 |
 | point3 分流 | 当前处置关联无法证明 | `test_scan_decisions.py` | 保存拒绝证据并停止自动推进，零命令 |
@@ -707,9 +696,9 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: 用户现场澄清 — point2 不做错箱比较，只向 WMS 确认当前料箱是否有任务。
   - Files: `src/app/wms_adapter/`、`workline_plugins/manual_bin_processing/src/manual_bin_processing/`、对应 contracts/integration tests。
   - Verify: `uv run pytest workline_plugins/manual_bin_processing/tests/test_work_admission.py workline_plugins/manual_bin_processing/tests/integration/test_work_admission_postgresql.py -q`。
-- [ ] **T4 (P1, human: ~2d / CC: ~4h)** — completion — 实现最终结果应用、稳定释放命令与 apply report
+- [ ] **T4 (P1, human: ~2d / CC: ~4h)** — completion — 实现最终结果本地应用与稳定释放命令
   - Surfaced by: Code Quality / Claude — 业务幂等优先级、`completed_at`、异步失败反馈和 DeviceCommand identity 必须闭合。
-  - Files: `src/app/wms_adapter/` completion ingress、插件 Decision/application、point2 release、apply-report tests。
+  - Files: `src/app/wms_adapter/` completion ingress、插件 Decision/application、point2 release、本地应用事务测试。
   - Verify: `uv run pytest tests/contracts/wms_adapter workline_plugins/manual_bin_processing/tests/test_work_completed_decision.py workline_plugins/manual_bin_processing/tests/test_work_completed_application.py workline_plugins/manual_bin_processing/tests/integration/test_work_completed_postgresql.py -q`。
 - [ ] **T5 (P1, human: ~2d / CC: ~4h)** — 物理生命周期 — 实现自主 FIFO、point3 分流、NG 独立分支与正常退料
   - Surfaced by: Architecture / Test Review — 现场拓扑、point3 当前处置关联校验和 NGZone 管辖边界必须由证据驱动。

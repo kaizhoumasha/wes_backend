@@ -377,6 +377,9 @@ addopts = [
 ]
 
 [dependency-groups]
+build = [
+    "hatchling>=1.27",
+]
 dev = [
     "bandit>=1.9.3",
     "import-linter>=2.0",

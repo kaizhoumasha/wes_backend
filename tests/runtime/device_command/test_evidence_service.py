@@ -320,6 +320,22 @@ class FakeEventDebugCommandService:
         )
 
 
+class FakeEventDebugModePolicy:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.calls: list[tuple[str, str]] = []
+
+    async def is_event_debug_enabled_in_session(
+        self,
+        _db: object,
+        *,
+        event_type: str,
+        device_code: str,
+    ) -> bool:
+        self.calls.append((event_type, device_code))
+        return self.enabled
+
+
 class FakePublisher:
     def __init__(self, *, error: Exception | None = None, calls: list[str] | None = None) -> None:
         self.events: list[tuple[str, str, dict[str, object]]] = []
@@ -393,6 +409,7 @@ def _service(
     command_repository: FakeCommandRepository | None = None,
     session_factory: FakeSessionFactory | None = None,
     safety_service: FakeSafetyService | None = None,
+    event_debug_mode_policy: FakeEventDebugModePolicy | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -408,6 +425,7 @@ def _service(
             event_command_block_repository=block_repository,  # type: ignore[arg-type]
             audit_service=audit_service,  # type: ignore[arg-type]
             safety_service=safety_service,  # type: ignore[arg-type]
+            event_debug_mode_policy=event_debug_mode_policy,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -601,6 +619,31 @@ async def test_debug_event_creates_command_without_waking_business_processing() 
     assert queue.execution_wakes == 0
     assert queue.device_command_wakes == 1
     assert publisher.events[0][2]["command_code"] == "EVENT-DEBUG-CMD-001"
+
+
+@pytest.mark.asyncio
+async def test_transport_test_mode_promotes_unbound_station_scan_to_existing_debug_command_flow() -> None:
+    queue = FakeTaskQueue()
+    debug_commands = FakeEventDebugCommandService()
+    policy = FakeEventDebugModePolicy(enabled=True)
+    service, repository = _service(
+        None,
+        event_workline_id=None,
+        task_queue=queue,
+        event_debug_commands=debug_commands,
+        event_debug_mode_policy=policy,
+    )
+
+    receipt = await service.accept_event(_event(device_code="STATION_SCAN11"))
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.normalized_payload["is_debug"] is True
+    assert evidence.workline_id is None
+    assert evidence.apply_status == "IGNORED"
+    assert debug_commands.evidences == [evidence]
+    assert queue.device_command_wakes == 1
+    assert policy.calls == [("SCAN_COMPLETED", "STATION_SCAN11")]
 
 
 @pytest.mark.asyncio

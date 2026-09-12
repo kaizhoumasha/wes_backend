@@ -40,7 +40,7 @@ def _admission_request() -> dict[str, object]:
         "operation_id": OPERATION_ID,
         "operation": "outbound.manual_bin.work_admission_decide@v1",
         "timestamp": 1_788_389_900_000,
-        "data": {"bin_code": "BIN-001", "scanned_at": 1_788_389_899_900},
+        "data": {"task_id": "PICK-001", "bin_code": "BIN-001", "scanned_at": 1_788_389_899_900},
     }
 
 
@@ -73,34 +73,28 @@ async def test_wait_is_determinate_without_automatic_same_identity_follow_up() -
 
 
 @pytest.mark.asyncio
-async def test_apply_report_uses_fact_endpoint_and_closes_on_recorded() -> None:
-    request = {
-        "operation_id": OPERATION_ID,
-        "operation": "outbound.manual_bin.completion_apply_report@v1",
-        "timestamp": 1_788_390_000_001,
-        "data": {
-            "completion_operation_id": OPERATION_ID,
-            "task_id": "PICK-001",
-            "bin_code": "BIN-001",
-            "apply_revision": 1,
-            "apply_result": "APPLIED",
-            "occurred_at": 1_788_390_000_000,
-        },
-    }
+@pytest.mark.parametrize("response_task", ["PICK-001", "PICK-OTHER"])
+async def test_admission_sends_task_and_reconciles_a_different_response_task(response_task: str) -> None:
+    request = _admission_request()
     transport = _Transport(
         _response(
             200,
-            {"operation_id": OPERATION_ID, "code": "RECORDED", "timestamp": 1_788_390_000_002, "data": {}},
+            {
+                "operation_id": OPERATION_ID,
+                "code": "DECIDED",
+                "timestamp": 1_788_389_900_001,
+                "data": {"result": "WORK_REQUIRED", "task_id": response_task},
+            },
         )
     )
-
     result = await WmsConfirmationAdapter(WmsClient(transport)).dispatch(
-        operation="outbound.manual_bin.completion_apply_report@v1",
+        operation="outbound.manual_bin.work_admission_decide@v1",
         operation_id=OPERATION_ID,
         request_payload=request,
         request_digest=canonical_json_digest(request),
     )
-
-    assert result.code is WmsDispatchCode.DETERMINATE
-    assert result.response_result == "RECORDED"
-    assert transport.requests[0].path == "/api/v1/wes/facts"
+    expected = WmsDispatchCode.DETERMINATE if response_task == "PICK-001" else WmsDispatchCode.RECONCILING
+    assert result.code is expected
+    assert result.response_result == ("WORK_REQUIRED" if response_task == "PICK-001" else None)
+    assert len(transport.requests) == 1
+    assert json.loads(transport.requests[0].body)["data"]["task_id"] == "PICK-001"

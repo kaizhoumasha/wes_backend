@@ -36,6 +36,7 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_fixed_wms_policy() 
         repository=object(),
         client=object(),
         position_projection_service=object(),
+        debug_run_service=object(),
         aclose=AsyncMock(),
     )
     build_transport_runtime = AsyncMock(return_value=transport_runtime)

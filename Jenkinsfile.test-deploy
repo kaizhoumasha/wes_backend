@@ -23,7 +23,8 @@ pipeline {
         CURRENT_RELEASE_EVIDENCE_DIR = '/srv/wes/releases/current'
         RELEASE_EVIDENCE_ROOT = '/srv/wes/releases'
         HEALTH_CHECK_URL = 'http://127.0.0.1:8001/ready'
-        IMAGE_PULL_RETRIES = '24'
+        IMAGE_PULL_RETRIES = '3'
+        IMAGE_PULL_INITIAL_DELAY_SECONDS = '2'
     }
 
     options {
@@ -180,10 +181,16 @@ pipeline {
                             image_ref="$1"
                             retries="$2"
                             attempt=1
+                            delay_seconds="${IMAGE_PULL_INITIAL_DELAY_SECONDS}"
                             while [ "$attempt" -le "$retries" ]; do
                                 docker pull "$image_ref" >/dev/null 2>&1 && return 0
                                 attempt=$((attempt + 1))
-                                sleep 5
+                                [ "$attempt" -le "$retries" ] || break
+                                sleep "$delay_seconds"
+                                delay_seconds=$((delay_seconds * 2))
+                                if [ "$delay_seconds" -gt 10 ]; then
+                                    delay_seconds=10
+                                fi
                             done
                             return 1
                         }

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,6 +48,48 @@ def _inbound_owner_column_for_revision(current_revision: str) -> str:
             raise ValueError("database revision is outside the supported migration lineage") from exc
         return "workline_id"
     return "line_run_epoch_id"
+
+
+_ERROR_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_SQLSTATE_RE = re.compile(r"^[0-9A-Z]{5}$")
+
+
+def _safe_error_type(error: BaseException) -> str:
+    name = type(error).__name__
+    return name if _ERROR_TYPE_RE.fullmatch(name) else "UnknownError"
+
+
+def _safe_diagnostic_attr(candidate: object, name: str) -> object | None:
+    try:
+        return getattr(candidate, name, None)
+    except Exception:
+        return None
+
+
+def _error_diagnostic(error: BaseException) -> str:
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(chain) < 8:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+
+    sqlstate = "none"
+    for candidate in [*chain, *(_safe_diagnostic_attr(item, "orig") for item in chain)]:
+        if candidate is None:
+            continue
+        raw_sqlstate = _safe_diagnostic_attr(candidate, "sqlstate") or _safe_diagnostic_attr(candidate, "pgcode")
+        if isinstance(raw_sqlstate, str) and _SQLSTATE_RE.fullmatch(raw_sqlstate.upper()):
+            sqlstate = raw_sqlstate.upper()
+            break
+
+    return (
+        "RELEASE_OPERATIONAL_READINESS_QUERY_FAILED "
+        f"error_type={_safe_error_type(chain[0])} "
+        f"cause_type={_safe_error_type(chain[-1])} "
+        f"sqlstate={sqlstate}\n"
+    )
 
 
 def _canonical_payload(result: object) -> dict[str, object]:
@@ -119,8 +162,8 @@ async def run(
                 await db_module.close_db()
         stdout.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
         return EXIT_CODES[str(payload["state"])]
-    except Exception:
-        stderr.write("RELEASE_OPERATIONAL_READINESS_QUERY_FAILED\n")
+    except Exception as exc:
+        stderr.write(_error_diagnostic(exc))
         return 1
 
 

@@ -36,7 +36,7 @@ class IntegrationRun(EnterpriseMixin, DataTableMixin, table=True):
             "current_phase IN ('BIND_TASK','TASK_PREPARE','PLAN_RECEIPT','RACK_TRANSPORT','RACK_ARRIVAL',"
             "'BIN_INBOUND_BATCH','BIN_TRANSPORT','POINT1_ARRIVAL','POINT2_SCAN','WORK_ADMISSION',"
             "'WORK_COMPLETION','POINT2_RELEASE','POINT3_ROUTE','RETURN_BUFFER','BIN_RETURN_BATCH',"
-            "'BIN_RETURN_TRANSPORT','RACK_DEPARTURE','TASK_COMPLETION','COMPLETION_REPORT','CLEANUP')",
+            "'BIN_RETURN_TRANSPORT','RACK_DEPARTURE','TASK_COMPLETION','CLEANUP')",
             name="workline_integration_run_phase_valid",
         ),
         CheckConstraint(

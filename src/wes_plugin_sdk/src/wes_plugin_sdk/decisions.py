@@ -166,24 +166,6 @@ class CreateTransportTask:
         for position in (self.source, self.target):
             if type(position) is TransportRackReference and position.location_code != self.rack_id:
                 raise ValueError("RACK location_code must match rack_id")
-        allowed_edges = {
-            TransportRcsTemplateId.CTU01: {
-                (TransportZonePosition, TransportRackPosition),
-                (TransportRackReference, TransportRackPosition),
-                (TransportRackPosition, TransportRackPosition),
-            },
-            TransportRcsTemplateId.CTU03: {
-                (TransportRackPosition, TransportRackReference),
-                (TransportRackPosition, TransportZonePosition),
-                (TransportRackPosition, TransportRackPosition),
-            },
-            TransportRcsTemplateId.F01: {
-                (TransportRackPosition, TransportRackPosition),
-                (TransportRackReference, TransportRackPosition),
-            },
-        }
-        if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
-            raise ValueError("source, target, and rcs_template_id are not an approved edge")
 
     @property
     def correlation_identity(self) -> tuple[str, str]:

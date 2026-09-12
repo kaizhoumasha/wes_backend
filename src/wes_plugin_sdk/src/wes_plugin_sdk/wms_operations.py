@@ -12,7 +12,6 @@ from .wms_types import (
     BinWorkPlanIntent,
     CompletionConfirmIntent,
     ManualBinAdmissionIntent,
-    ManualBinApplyReportIntent,
     MaterialMovementReportIntent,
     Measurements,
     NgPlacementIntent,
@@ -310,30 +309,10 @@ def outbound_picking_task_completion_confirm(
 def outbound_manual_bin_work_admission(
     *,
     operation_id: str,
+    task_id: str,
     bin_code: str,
     scanned_at: int,
 ) -> ManualBinAdmissionIntent:
-    return ManualBinAdmissionIntent(operation_id=operation_id, bin_code=bin_code, scanned_at=scanned_at)
-
-
-def outbound_manual_bin_completion_apply_report(
-    *,
-    operation_id: str,
-    completion_operation_id: str,
-    task_id: str,
-    bin_code: str,
-    apply_revision: int,
-    apply_result: Literal["APPLIED", "RECONCILING"],
-    occurred_at: int,
-    reason_code: str | None = None,
-) -> ManualBinApplyReportIntent:
-    return ManualBinApplyReportIntent(
-        operation_id=operation_id,
-        completion_operation_id=completion_operation_id,
-        task_id=task_id,
-        bin_code=bin_code,
-        apply_revision=apply_revision,
-        apply_result=apply_result,
-        occurred_at=occurred_at,
-        reason_code=reason_code,
+    return ManualBinAdmissionIntent(
+        operation_id=operation_id, task_id=task_id, bin_code=bin_code, scanned_at=scanned_at
     )

@@ -43,7 +43,6 @@ def test_manual_outbound_debug_contract_is_a_closed_vocabulary() -> None:
         IntegrationDebugPhase.WORK_ADMISSION,
         IntegrationDebugPhase.WORK_COMPLETION,
         IntegrationDebugPhase.POINT2_RELEASE,
-        IntegrationDebugPhase.COMPLETION_REPORT,
         IntegrationDebugPhase.POINT3_ROUTE,
         IntegrationDebugPhase.RETURN_BUFFER,
         IntegrationDebugPhase.BIN_RETURN_BATCH,

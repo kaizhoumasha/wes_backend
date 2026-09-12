@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -291,7 +292,8 @@ def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
     assert "Fetched source ref must match the trusted event commit" in checkout_body
     assert "timeout --kill-after=5s 30s" in checkout_body
-    assert "ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
+    assert "ls-remote --heads http://192.168.0.220:9080/wes/wes_backend.git" in checkout_body
+    assert "git.zontecmes.com" not in checkout_body
     assert "withCredentials([usernamePassword(" in checkout_body
     assert "credentialsId: 'gitlab-http-creds'" in checkout_body
     assert "usernameVariable: 'GITLAB_USERNAME'" in checkout_body
@@ -299,7 +301,7 @@ def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     assert "set +x" in checkout_body
     assert "credential.helper=!f()" in checkout_body
     assert '"username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"' in checkout_body
-    assert "ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
+    assert "ls-remote --heads http://192.168.0.220:9080/wes/wes_backend.git" in checkout_body
     assert '"refs/heads/${CI_TARGET_BRANCH}"' in checkout_body
     assert "Merge request target lookup must return one exact trusted ref" in checkout_body
     assert 'git cat-file -e "${CI_DIFF_BASE}^{commit}"' in checkout_body
@@ -424,8 +426,25 @@ def test_heavy_required_publishes_the_runner_junit_report() -> None:
 
     assert '-v "$WORKSPACE/reports:/reports"' in heavy_body
     assert "/reports/heavy-required.xml" in heavy_body
-    assert "junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true" in heavy_body
+    assert "fileExists('reports/heavy-required.xml')" in heavy_body
+    assert "junit testResults: 'reports/heavy-required.xml', allowEmptyResults: false" in heavy_body
     assert "reports/heavy-tests.txt,reports/heavy-required.xml" in heavy_body
+
+
+def test_backend_build_installs_locked_hatchling_before_disabling_local_package_isolation() -> None:
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "hatchling>=1.27" in pyproject["dependency-groups"]["build"]
+    assert "uv sync --frozen --only-group build --no-install-project --active" in dockerfile_text
+    assert "--no-build-isolation-package wes-plugin-sdk" in dockerfile_text
+    assert '--no-build-isolation-package "$package"' in dockerfile_text
+    for package in (
+        "wes-rough-sorter-plugin",
+        "wes-manual-bin-processing-plugin",
+        "wes-manual-picking-plugin",
+    ):
+        assert f"package={package}" in dockerfile_text
 
 
 def test_non_publishing_builds_still_validate_the_production_target() -> None:

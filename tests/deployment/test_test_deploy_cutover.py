@@ -318,6 +318,20 @@ def test_scope_validation_requires_only_selected_candidates_and_rejects_peer_inp
     assert "sha256:[0-9a-f]{64}" in pipeline
 
 
+def test_image_pull_retry_is_bounded_and_exponential() -> None:
+    pipeline = _pipeline()
+
+    assert "IMAGE_PULL_RETRIES = '3'" in pipeline
+    assert "IMAGE_PULL_INITIAL_DELAY_SECONDS = '2'" in pipeline
+    wait_for_image = pipeline[
+        pipeline.index("wait_for_image() {") : pipeline.index("# TEST_CHECKER_CONTAINER_RUNNER_BEGIN")
+    ]
+    assert 'delay_seconds="${IMAGE_PULL_INITIAL_DELAY_SECONDS}"' in wait_for_image
+    assert 'sleep "$delay_seconds"' in wait_for_image
+    assert "delay_seconds=$((delay_seconds * 2))" in wait_for_image
+    assert 'if [ "$delay_seconds" -gt 10 ]; then' in wait_for_image
+
+
 def test_checker_digest_is_fixed_by_deploy_source_and_selected_images_keep_revision_identity() -> None:
     pipeline = _pipeline()
 

@@ -95,8 +95,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=workline_plugins,target=/app/workline_plugins \
     uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
+    # 先从锁文件安装本地包的 build backend，避免每个 PEP 517 隔离环境重复访问公网。 \
+    uv sync --frozen --only-group build --no-install-project --active && \
     # CI 镜像仅安装测试与质量检查必需依赖，避免把 basedpyright/nodejs-wheel-binaries 拉进来
-    set --; for extra in ${WES_PLUGIN_EXTRAS}; do set -- "$@" --extra "$extra"; done; \
+    set -- --no-build-isolation-package wes-plugin-sdk; \
+    for extra in ${WES_PLUGIN_EXTRAS}; do \
+        case "$extra" in \
+            rough-sorter) package=wes-rough-sorter-plugin ;; \
+            manual-bin-processing) package=wes-manual-bin-processing-plugin ;; \
+            manual-picking) package=wes-manual-picking-plugin ;; \
+            *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; \
+        esac; \
+        set -- "$@" --extra "$extra" --no-build-isolation-package "$package"; \
+    done; \
     uv sync --frozen --no-dev --extra dev --group ci --no-install-project --active "$@"
 
 # ============================================
