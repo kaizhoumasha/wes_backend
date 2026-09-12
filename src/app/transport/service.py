@@ -119,6 +119,7 @@ class TransportEvidenceSnapshot:
 @dataclass(frozen=True, slots=True)
 class TransportTaskSnapshot:
     send_started_at: str | None
+    next_submit_at: str | None
     result_deadline_at: str | None
     submit_attempt_count: int
     outcome_version: int
@@ -419,6 +420,7 @@ class TransportService:
         latest_evidence = _evidence_snapshot(evidence)
         return TransportTaskSnapshot(
             send_started_at=_utc_z(task.send_started_at) if task.send_started_at is not None else None,
+            next_submit_at=_utc_z(task.next_submit_at) if task.next_submit_at is not None else None,
             result_deadline_at=_utc_z(task.result_deadline_at) if task.result_deadline_at is not None else None,
             submit_attempt_count=task.submit_attempt_count,
             outcome_version=task.outcome_version,

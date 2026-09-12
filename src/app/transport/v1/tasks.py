@@ -235,6 +235,7 @@ class TransportResultResponse(_StrictApiModel):
 
 class TransportTaskResponse(TransportTaskSummaryResponse):
     send_started_at: str | None
+    next_submit_at: str | None
     result_deadline_at: str | None
     submit_attempt_count: int
     outcome_version: int

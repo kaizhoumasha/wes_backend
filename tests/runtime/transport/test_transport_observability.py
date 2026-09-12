@@ -263,6 +263,7 @@ async def test_snapshot_exposes_persisted_execution_and_publication_facts(db_eng
     task_id = await _create_task(service, new_uuid7(), "rack-observation")
     initial = await service.get_task_snapshot(task_id)
     assert initial.send_started_at is None
+    assert initial.next_submit_at is None
     assert initial.result_deadline_at is None
     assert initial.submit_attempt_count == 0
     assert initial.pending_evidence_count == 0
@@ -279,6 +280,19 @@ async def test_snapshot_exposes_persisted_execution_and_publication_facts(db_eng
         )
     snapshot = await service.get_task_snapshot(task_id)
     assert (snapshot.outcome_version, snapshot.published_outcome_version) == (2, 1)
+
+
+async def test_snapshot_exposes_persisted_submit_backoff(db_engine: object) -> None:
+    service = _service(db_engine, _Provider(TransportSubmitCode.NOT_SENT))
+    task_id = await _create_task(service, new_uuid7(), "rack-submit-backoff")
+
+    assert await service.submit_pending_tasks(1) == 1
+
+    snapshot = await service.get_task_snapshot(task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.send_started_at is None
+    assert snapshot.next_submit_at is not None
+    assert snapshot.next_submit_at.endswith("Z")
 
 
 async def test_rejected_callback_receipt_can_be_read_without_evidence(db_engine: object) -> None:
