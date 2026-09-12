@@ -28,7 +28,6 @@ from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
     DeviceResultOutOfOrderError,
-    UnknownDeviceCommandError,
 )
 from src.app.device.services.device_ingress_history_service import device_ingress_history_service
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL, event_stream_service
@@ -244,8 +243,6 @@ def _as_ingress_rejection(error: Exception) -> EcsCallbackRejection | None:
         return error
     if isinstance(error, DeviceEventNotAdmittedError):
         return EcsCallbackRejection(409, "WORKLINE_NOT_ACTIVE")
-    if isinstance(error, UnknownDeviceCommandError):
-        return EcsCallbackRejection(404, "COMMAND_NOT_FOUND")
     if isinstance(error, DeviceResultOutOfOrderError):
         return EcsCallbackRejection(409, "RESULT_BEFORE_DISPATCH")
     if isinstance(error, (DeviceEvidenceConflictError, DeviceResultConflictError)):

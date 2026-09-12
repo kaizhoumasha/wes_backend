@@ -15,7 +15,6 @@ from .device import (
     DeviceResponse,
     DeviceUpdate,
 )
-from .event_command_block import DeviceEventCommandBlock, DeviceEventCommandBlockStatus
 from .evidence import DeviceStatusObservation
 
 __all__ = [
@@ -27,8 +26,6 @@ __all__ = [
     "DeviceCommandRequestData",
     "DeviceCreate",
     "DeviceEditableBase",
-    "DeviceEventCommandBlock",
-    "DeviceEventCommandBlockStatus",
     "DeviceResponse",
     "DeviceStatusObservation",
     "DeviceUpdate",

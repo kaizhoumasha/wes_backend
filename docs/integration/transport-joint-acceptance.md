@@ -23,8 +23,8 @@ CTU01 货架搬出
 
 | 层级 | 本轮证据 | 当前边界 |
 | --- | --- | --- |
-| 代码/合同 | 单面、多面、重复 Evidence、未知结果、重启恢复、全局单活动轮次和活动货架独占均已有自动化验收资产 | 聚焦或集成测试通过只证明对应代码快照 |
-| WMS Mock | Mock 可接受 `CTU01 RACK→RACK_POSITION`、`CTU02 RACK`、`CTU03 RACK→ZONE`，终态仍显式返回精确 `RACK_POSITION` | Mock 不证明真实 WMS/RCS 接纳、执行或回调 |
+| 代码/合同 | 单面、多面、重复 Evidence、未知结果、重启恢复和全局单活动轮次均已有自动化验收资产；同资源独立 Transport 不由 WES 阻止 | 聚焦或集成测试通过只证明对应代码快照 |
+| WMS Mock | Mock 可接受 `CTU01 RACK→RACK_POSITION`、`CTU02` 显式 `RACK_POSITION`、`CTU03 RACK→ZONE`，终态仍显式返回精确 `RACK_POSITION` | Mock 不证明真实 WMS/RCS 接纳、执行或回调 |
 | 部署 | 待 release evidence、镜像 digest、OCI source revision 和迁移结果一致后记录 | `/health`、进程存活或 Swagger 可访问不证明业务链路 |
 | 出料口扫码现场 schema | `device_code` 必须精确匹配本轮 SCAN4 所填设备编码（默认 `STATION_SCAN12`），并按 `event_type=SCAN_COMPLETED`、`data.barcode=<料箱编码>` 验收 | 联调时必须确认真实 ECS payload、时间戳、`source_event_id` 和 apply status |
 | RCS/WMS/ECS 物理闭环 | 此前默认区域轮次经操作员确认直接录入进入真实 WMS/RCS，`SCAN12` 驱动料箱回架并触发最终 `CTU03` | 历史确认不代表新区域已验收；各区域仍须核对逐消息原始 payload、统一时间窗和现场记录 |
@@ -41,13 +41,13 @@ CTU01 货架搬出
 ### 升级至 WMS 分配回架前的检查
 
 升级前先停止页面接续，并通过 `GET /api/v1/transport/debug-runs` 核对没有 `RUNNING` 或 `NEEDS_ATTENTION` 的旧轮次。
-已有轮次应在原版本中完成至可信 `CTU03` 返库终态；若原轮次需要人工处置，必须先核对关联 Transport 的权威终态和物理位置，
-再按原有物理核验流程关闭。页面关闭、HTTP ACK 或 Mock 成功都不能替代这项检查。
+已有轮次应在原版本中完成至可信 `CTU03` 返库终态；若原轮次未闭合，必须等待 WMS/RCS 以原任务身份报告权威终态和物理位置，
+再结束该轮次。页面关闭、HTTP ACK 或 Mock 成功都不能替代这项检查。
 
 新轮次携带操作员填写并按轮次冻结的 `workline_code`，回架使用正式 `outbound.bin.return_batch@v1` 的 WMS 分配槽位。联调可靠义务按轮次冻结的完整请求校验归属，不以正式工作线的启用状态作为准入。
 旧活动轮次没有冻结的工作线或回架分配时，新版本将其置为 `NEEDS_ATTENTION / DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED`，
-保留原 task、请求身份、Evidence 和资源围栏，不推测 WMS 分配、不补写身份、不自动恢复后续步骤。已有 Transport 仍按原身份接收结果；
-人工处理必须先核对原执行结果。有未知 WMS 分配或未闭合 Transport 时不能用本地 abort 释放围栏。
+保留原 task、请求身份、Evidence、成员和事实围栏，不推测 WMS 分配、不补写身份、不自动恢复后续步骤。已有 Transport 仍按原身份接收结果；
+有未知 WMS 分配或未闭合 Transport 时不能用本地 abort 伪造终态，但这不阻止同资源的独立 TransportTask 提交。
 
 ## 4. 合同核对
 
@@ -117,7 +117,7 @@ WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS �
 2. 核对只创建一个 `CTU01`，面值与输入完全一致。
 3. `CTU01` 精确成功后，核对一个 `BIN_MOVE` 把本组全部料箱送到冻结投料口（默认 `CNV0301`）。
 4. 在首个选中料箱的有效出料口扫码 Evidence 到达前，确认不存在回架 task；形成有效扫码 FIFO 后允许分批回架。
-5. 已有选中料箱的有效扫码 Evidence 后，即可申请回架，不等待本面全部料箱扫描齐全。核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从冻结出料口（默认 `CNV0302`）返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批；当前 FIFO 已回完但仍有未扫描料箱时，回到扫码等待并保留本面最初的取箱证据边界，不重发已回架料箱。本面全部料箱确认回架后才允许转面或整架返库。自动联调收到有效 `NO_BATCH` 后，按请求中的实际扫码 FIFO，将剩余料箱退回同组已成功出库任务记录的原货架、原朝向和原 slot；冻结批次保留原 WMS operation identity，并标记 `DEBUG_NO_BATCH_ORIGINAL_SLOTS` 及出库任务 ID。原出库记录缺失或货架/朝向不匹配时停止并提示 `DEBUG_RETURN_SOURCE_MISSING`。此规则仅用于自动联调，正式工作线仍遵循 WMS 分配。
+5. 已有选中料箱的有效扫码 Evidence 后，即可申请回架，不等待本面全部料箱扫描齐全。核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从冻结出料口（默认 `CNV0302`）返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批；当前 FIFO 已回完但仍有未扫描料箱时，回到扫码等待并保留本面最初的取箱证据边界，不重发已回架料箱。本面全部料箱确认回架后才允许转面或整架返库。自动联调收到有效 `NO_BATCH` 后，本次 WMS 请求结束并保留原身份和响应；不创建 Transport、不判执行失败，也不假定料箱已回架。核对下一决策时间按 `retry_after_ms` 持久化，重复唤醒及重启在到期前均不新建请求；到期复核原确认、当前轮次/步骤、冻结 FIFO 候选和本组货架任务精确事实，仍有效时才用新 `operation_id` 请求，取得 `READY` 后只创建一次对应 Transport。候选或归属失效进入明确诊断状态，独立任务继续；网络失败仍由原确认按原身份、timestamp 和正文可靠重试，不覆盖已确定响应。
 6. 当前面所有批次的成员均精确成功前，确认不转面；本轮全部选中箱均精确成功前，确认不存在 `CTU03`。核对响应 `returned_bins` 为实际确认槽位，下一轮以这些槽位为来源。每轮分别创建独立 `run_id`，只在当前轮 `COMPLETED` 后接续，继承完成响应中的工作线、区域和扫码配置；不重新套用默认值或最初输入槽位。关闭页面停止接续，后端仍完成当前轮次。
 7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位且成功结果校验通过后轮次才进入
    `COMPLETED`。分别核对省略 `arrival_face`、传 `null` 和提供实际非空值的结果均按合同接受；前两者清空朝向投影，后者原样记录。
@@ -146,8 +146,8 @@ CTU01("90")
 - 对 `DELIVERY_UNKNOWN` 只能等待同一个 `transport_task_id` 的权威终态；不得生成新 `client_request_id` 重发。
 - worker 或 API 重启后使用持久化 step、`client_request_id` 和 `transport_task_id` 恢复，不得重复创建物理任务。
 - 第二个全局活动轮次必须被拒绝。
-- 活动轮次冻结的 `rack_id` 不得被其它 Transport 创建入口使用；其它货架不应被误拦截。
-- abort 只允许在现场已确认物理静止、关联 Transport 全部确定终态且无活动资源绑定时执行。
+- 活动轮次不独占冻结 `rack_id`；同资源独立 TransportTask 可提交，由 WMS/RCS 在接纳时裁决。
+- abort 只允许在关联 Transport 已由匹配权威结果收敛为确定终态时执行，不承担 Transport 解锁或结果修正。
 
 ## 6. 证据记录
 
@@ -166,7 +166,7 @@ CTU01("90")
 
 | 证据 | 测试/验收所有者 | 不覆盖的结论 |
 | --- | --- | --- |
-| 原身份、持久 Evidence、期限、资源绑定与单调发布 | Transport 基础测试；真实 worker 中断窗口位于 `tests/e2e/test_execution_interruption_recovery.py` | 不证明调试轮次或正式插件的业务推进 |
+| 原身份、冻结成员、持久 Evidence、事实围栏与单调发布 | Transport 基础测试；真实 worker 中断窗口位于 `tests/e2e/test_execution_interruption_recovery.py` | 不证明调试轮次或正式插件的业务推进 |
 | 重启读取原 step/task，仅创建合法下一步；迟到与重复结果 | `tests/runtime/transport/test_transport_debug_run_advancement.py`、`tests/integration/transport/test_transport_debug_run_recovery.py` | 不证明供应商动作已经完成，不覆盖正式插件规则 |
 | 供应商终态与实际位置/面向 | WMS/ECS 联合验收，记录原 operation identity 与外部物理证据 | 不可用本地 HTTP stub 或数据库状态代替 |
 | FIFO、NG、任务切换及最终业务放行 | 对应插件包测试和现场业务负责人 | 不纳入基础查询测试的通过结论 |

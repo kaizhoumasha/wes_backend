@@ -16,7 +16,7 @@ from manual_bin_processing.application.prepare_policy import ManualPickingPrepar
 NOW = datetime(2026, 9, 4)
 CONTEXT = PrepareContext(True, "MANUAL", "AUTO", "manual_bin_processing", "MANUAL_BIN_PROCESSING")
 DEVICE = PrepareDeviceFact("manual.conveyor", "1.0", 5000, "manual.conveyor", "1.0", NOW, "AUTO", "IDLE", None)
-FACTS = PrepareRuntimeFacts(False, True, (DEVICE,), False)
+FACTS = PrepareRuntimeFacts(True, (DEVICE,), False)
 
 
 def test_policy_selects_manual_queue_and_accepts_fresh_idle_clear_context():
@@ -59,7 +59,6 @@ def test_policy_rejects_missing_or_invalid_device_fact(changes):
 @pytest.mark.parametrize(
     "changes",
     [
-        {"has_active_incident": True},
         {"has_position_bindings": False},
         {"devices": ()},
         {"has_positioned_object": True},

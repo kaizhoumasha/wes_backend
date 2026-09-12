@@ -1150,13 +1150,22 @@ class IntegrationDebugService:
             confirmation = await self._runs.get_confirmation(db, step.wms_confirmation_id)
             if confirmation is None:
                 raise IntegrationDebugNotFound("WmsConfirmation 不存在")
+            previous_reason_code = step.reason_code
+            updates_current_run = step.phase == run.current_phase and (
+                run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
+                or (
+                    run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    and run.attention_code == previous_reason_code
+                )
+            )
             if confirmation.status == WmsConfirmationStatus.RECONCILING:
                 step.status = "NEEDS_ATTENTION"
                 step.reason_code = "WMS_CONFIRMATION_RECONCILING"
-                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-                run.attention_code = step.reason_code
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    run.attention_code = step.reason_code
             elif confirmation.status == WmsConfirmationStatus.COMPLETED:
-                should_advance = step.status != "SUCCEEDED" and step.phase == run.current_phase
+                should_advance = step.status != "SUCCEEDED" and updates_current_run
                 step.status = "SUCCEEDED"
                 response = (
                     await self._runs.get_evidence(db, confirmation.response_evidence_id)

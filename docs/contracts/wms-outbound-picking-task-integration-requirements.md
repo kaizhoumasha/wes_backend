@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-09-05
+updated_at: 2026-09-12
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -16,6 +16,28 @@ related:
 ---
 
 # WMS / WES 自动出库 PickingTask 交互要求
+
+## T0 恢复与纠正路径核验（2026-09-11）
+
+以下区分本文件现行 wire 和[已批准无阻塞目标](../superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md)。
+当前未提交本地实现已完成 plan_delta 正常 record/replay 自动纠正及人工计划 API 退役的聚焦 FAST；
+真实 PostgreSQL、WMS 收件与业务验收尚无通过证据，prepare/return_batch 的确定响应机器纠正仍未闭合。
+
+| operation | 原身份自动重试 | 新业务身份与 supersession | 现行接收/应用路径 | T4 边界 |
+| --- | --- | --- | --- | --- |
+| outbound.bin.return_batch@v1 | 响应未知或 UNAVAILABLE 保持原 operation_id、timestamp 和冻结正文 | §9.2.2 的 NO_BATCH 已结束本次决策；到期/有效新事件后用新 operation_id、当前 FIFO 候选重新决策；不作废旧响应 | WES BinReturnBatchAdapter → WMS decisions；READY 后才建 Transport | NO_BATCH 持久退避及取消原槽位兜底可实现；确定 409/422 或已保存错误决策的机器纠正/作废合同未找到，相关子切片 BLOCKED |
+| outbound.picking_task.prepare@v1 | §7.2 响应未知/UNAVAILABLE 保持原 identity 与正文；重复成功重放首次 202/PREPARE_ACCEPTED | 同 task_id 只能成功准备一次，不能自行换 identity 或 WorkLine；现有联调 retry 依赖人工确认原 prepare 已被 WMS 作废 | PickingTaskPrepareCoordinator → WmsConfirmation → PickingTaskPrepareAdapter → WMS decisions；WMS 后续 plan_delta 进入唯一 events | 历史负载与新准入分离可实现；确定错误后的机器作废证据及新 identity 授权未找到，相关子切片 BLOCKED |
+| outbound.picking_task.plan_delta@v1 | 同 identity 同正文按原 Evidence 状态重放，不允许改正文 | §8.2.1 使用“新 identity + 严格期望下一 revision”的修正形态；保持 task_id、来源及不可变业务字段 | 正常 record/replay 自动重新校验合法修正并原子应用；无管理员 apply-correction | 已实现并完成聚焦 FAST；不跳版本，不把 prepare/return_batch 缺口当已闭合，真实 PostgreSQL/WMS 验收仍待执行 |
+
+代码中的 WmsConfirmationLifecycleService.supersede_after_wms_void 只接受无确定响应的 RECONCILING；
+已有 response_evidence_id、response_result 或 completed_at 时拒绝替换。
+IntegrationDebugService.retry_wms_action 的 wms_original_prepare_voided_confirmed 是人工输入，
+不是 WMS machine callback，不可自动填 true，不可扩大为任意响应替换 API。
+
+以上 BLOCKED 只约束缺失合同的确定响应纠正子切片及整体业务完成声明，不阻止 T1–T3、本节其余 T4 和 T5 的本地工作。
+503 安全续送、NO_BATCH 新请求、plan_delta 自动修正分别验证，互不代替。
+WMS 接收事实、不重复扣账、原请求作废和纠正成功仍须取得真实 WMS 证据；未知统一标为 UNKNOWN。
+
 
 ## 1. 这份文档怎么读
 
@@ -213,12 +235,12 @@ WES 接收的合法消息先过滤冗余字段，再持久化业务模型并计�
 | 结果上报 | WES 告诉 WMS 某个物理动作已经真实发生 | WMS 返回 `RECORDED | DUPLICATE` 后，本次上报才算完成 |
 | 重复提交保护 | 网络超时后可以安全重发同一请求 | 必须复用 `operation_id`、完整请求内容和时间戳；同一 ID 不能换内容 |
 | revision | 一张任务的计划版本号 | 从 1 连续增加，不能跳号、倒退或覆盖已接收版本 |
-| 最终结果 | 已经确定、普通重试不会改变的结果 | `UNKNOWN` 不是失败结果，需要等待后续确定结果或人工核对 |
+| 最终结果 | 已经确定、普通重试不会改变的结果 | `UNKNOWN` 不是失败结果，需要等待 ECS/RCS 后续权威恢复或对账事实 |
 | 以谁为准 | 某类业务数据由哪个系统最终决定 | 库存和分配以 WMS 为准，设备动作结果以 ECS/PLC 为准 |
 | 固定字段或固定值 | 只允许文档列出的字段或枚举值 | 多余字段、别名和扩展值都要拒绝 |
 | 同一事务保存 | 多个字段或状态一起成功、一起失败 | 不能只保存一部分就返回成功 |
 | WES 已确认位置 | WES 根据运输和设备结果保存的当前位置 | 只用于现场执行，不能替代 WMS 库存和全局位置数据 |
-| 人工核对 | 系统无法确定是否可以继续时，由现场和开发人员检查 | 停止自动执行，并保留原请求和设备结果 |
+| 来源系统对账 | 系统无法确定原动作结果时，由 ECS/RCS/WMS 形成权威恢复或对账事实 | 受影响动作不推进，保留原请求、成员和设备结果；独立任务继续 |
 
 ## 5. WMS 需要实现或调用的接口
 
@@ -537,7 +559,7 @@ WES 收到回调后按以下顺序处理：
 3. 在同一事务中新增来源明细，并更新 `last_applied_plan_revision`。
 4. 提交后返回 `202 / RECEIVED`；之后才启动相关 TransportTask 或 DeviceCommand 流程。
 
-### 8.2.1 prepare 未定与受控修正（联调实现合同）
+### 8.2.1 prepare 未定与自动修正（联调实现合同）
 
 以下为 2026-09-06 按 WES 联调发布目标采用的可执行语义；WMS 一致性通过实际联调用例确认，尚不代表双方验收完成。
 
@@ -546,13 +568,15 @@ WES 收到回调后按以下顺序处理：
 - WMS 必须保留原 `operation_id`、原 timestamp 与完整正文重试，不发布下一 revision。匹配 `PREPARE_ACCEPTED` 可靠落库后，
   原请求重试才可在同一事务应用计划并提交后返回 `202 / RECEIVED`；仍未确定时继续 503。不会根据计划回调推定 prepare 成功，
   也不会在 WMS 未重试时自动应用 PENDING。超期或确定冲突返回 `409 / CONFLICT`，`reason_code=STATE_CONFLICT`。
-- 已有计划冲突 blocker 时，WMS 以新 identity 发送严格期望的下一 revision 修正计划，WES 只保存修正 Evidence 为
-  `RECONCILING`，返回 `409 / CONFLICT + STATE_CONFLICT`，不覆盖原 blocker。
-- 管理员通过受限对账接口引用 blocker、修正 Evidence、预期任务版本和审计原因；验证通过后在任务锁内原子应用修正、
-  标记修正 Evidence `APPLIED`、推进版本、清 blocker 并保存审计。失败或回滚后重放修正仍维持首次 409。
-- 受控应用成功后，WMS 原修正请求重放返回 `200 / DUPLICATE`、`data={}`，timestamp 沿用修正 Evidence 首次接收时间；
+- 已有计划冲突 blocker 时，WMS 以新 identity 发送严格期望的下一 revision 修正计划。正常 Event record 路径在任务锁内校验
+  task、prepare、WorkLine、来源唯一身份、连续 revision 及 blocker 对应的 operation/task；全部通过后原子应用成员、标记修正 Evidence
+  `APPLIED`、推进一次任务版本并清除精确匹配 blocker，提交后返回 `202 / RECEIVED`。历史 blocker Evidence 和首次拒绝记录保留。
+- 已保存为 `RECONCILING` 的同 identity 同正文修正重报仍进入同一校验/应用路径；当前合法时自动应用，仍不合法时返回首次冲突原因，
+  不重建已被其他合法修正解除的 blocker。提交失败会回滚本次 Evidence、成员、版本和 blocker 变化，由原身份正文重报续接。
+- 应用成功后，WMS 原修正请求重放返回 `200 / DUPLICATE`、`data={}`，timestamp 沿用修正 Evidence 首次接收时间；
   后续 revision 推进、再阻塞或任务结束不改变已成功重放。原 identity 改正文仍返回 `409 / IDEMPOTENCY_CONFLICT`。
-  原始拒绝历史与审计保留，实际冲突正文不会因另一份修正成功而成功。WMS 获得修正版本成功 ACK 后才可发布下一 revision。
+  原始拒绝历史保留，实际冲突正文不会因另一份修正成功而成功。WMS 获得修正版本成功 ACK 后才可发布下一 revision。
+- WES 不提供人工 `apply-correction` API、DTO、权限或审计续行；管理员操作和前端页面不是合法修正生效的前置条件。
 - 缺失/无效字段可靠拒绝为 `422 / REJECTED + INVALID_DATA`；可识别 identity 的完整规范化请求留证后再响应。
   JSON 对象键序与空白不参与身份比较，数组顺序和所有值参与；省略可选字段不会补 null，显式 null 属于非法 data。
 
@@ -572,7 +596,8 @@ WES 接收任一 revision 后，只要下面任意一类数据完整，就可以
 
 ### 9.1 并行货架运输
 
-转运货架、退料货架和五层货架的 TransportTask 相互独立，可以在没有位置或设备冲突时并行。每次创建 TransportTask 前，
+转运货架、退料货架和五层货架的 TransportTask 相互独立；WES 不以历史位置或同资源旧任务作跨任务准入裁决，实际并行安全由
+WMS/RCS 在接纳时决定。每次创建 TransportTask 前，
 WES 出库业务模块必须把计划增量 `operation_id`、执行阶段、完整 Transport 输入和 `client_request_id` 在同一事务中保存。崩溃恢复只能使用原
 `client_request_id` 和原请求内容重试。
 
@@ -921,8 +946,8 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 `REFERENCE_CONFLICT`。`READY` 后 WES 只处理所选候选，并调用一次 CTU Transport；未选候选继续留在 `RETURN_BUFFER`。
 
 退箱 `BIN_MOVE` 的 `transport.task.resulted@v1` 最终结果确认成员位置等于冻结目标且 WMS 主账已经记录后，WES 按该成员的权威物理结果
-解除 FIFO 等待，再重新判断 CTU 下一动作。最终结果 `FAILED` 且位置明确时保留原搬运成员身份和证据并按该位置进入人工
-恢复；结果超时或成员位置未知时由 TransportTask 保持 `RECONCILING` 和资源围栏。两种情况都不得伪造成功或另换身份重发。当前面仍能为FIFO队首形成可执行批次时继续退箱；
+解除 FIFO 等待，再重新判断 CTU 下一动作。最终结果 `FAILED` 且位置明确时保留原搬运成员身份和证据，等待来源系统的后续业务决定；
+结果超时或成员位置未知时由 TransportTask 保持 `RECONCILING`、原身份、成员和事实围栏。两种情况都不得伪造成功或另换身份重发。当前面仍能为 FIFO 队首形成可执行批次时继续退箱；
 否则允许入站需求推进或切换来源货架面。已可靠进入 `RETURN_BUFFER` 的 Bin可跨面等待，不再锁定原来源面。
 
 退箱请求收到 `NO_BATCH` 后，WES 在新货架面到位、新业务数据到达或 `retry_after_ms` 到期时，使用新的 `operation_id` 和当时的 FIFO 队首候选重新请求。
@@ -1011,7 +1036,7 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
 WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当前物理栈顶创建来源 DeviceCommand，ECS/PLC 负责确保吸盘不会越过
 上层料盘。当前栈顶取得可靠取出结果且 WMS 对该盘返回 `ACCEPT.next_source_action=CONTINUE` 或
 `REJECT.source_disposition=CONTINUE` 后，下一盘才成为可执行栈顶；`SOURCE_DONE` 或 `CLOSE` 关闭当前来源。抓取结果或位置为
-`UNKNOWN/RECONCILING`、身份冲突或正在人工核验时，整个 Cell 保持阻塞，禁止通过
+`UNKNOWN/RECONCILING`、身份冲突或等待 ECS 权威结果时，整个 Cell 保持阻塞，禁止通过
 新的 PickingTask、计划增量或命令身份跳过栈顶。不同 Cell 只有在 WorkLine 拓扑和设备安全合同允许时才能并行。
 
 CTU 投箱顺序也不构成业务顺序；`WORK_BUFFER` 是单向 FIFO，队首没有明确
@@ -1313,8 +1338,8 @@ WES 只有在没有未完成 PUT、未确认的位置结果上报、相关设备
 
 ### 10.3 两个机械臂并发
 
-- 来源机械臂和目标机械臂使用不同 `device_code`，各自最多一条已接收尚未得到最终结果 DeviceCommand。
-- WMS 对当前盘返回 `CONTINUE` 后，只要来源机械臂没有活动命令，WES 可以在目标机械臂 PUT 当前盘期间下发下一条来源命令。
+- 来源机械臂和目标机械臂使用不同 `device_code`；WES 对每条 DeviceCommand 独立持久化和领取，不建立设备级活动占槽。
+- WMS 对当前盘返回 `CONTINUE` 后，WES 可以在目标机械臂 PUT 当前盘期间下发下一条来源命令，不以本地活动命令投影为前置条件。
 - ECS 可以接收命令并执行不改变料盘位置的准备动作。没有现场批准的安全暂存位时，硬件锁必须在料盘离开来源前确认扫码台交接
   路径可用；不能先取出下一盘，再持盘等待扫码台释放。
 - 下一盘何时离开来源并进入扫码台、两个机械臂是否会同时进入干涉区以及如何防撞，由 ECS/PLC 硬件锁决定。
@@ -1350,7 +1375,7 @@ Transport/PUT 结果未知不属于 NG。
 
 PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设备合同附录必须为该设备锁定一个 PUT `task_type`，其 `params`
 至少能够唯一关联当前 `MaterialExecution`，并携带 WMS 已授权的 `rack_id`、`rack_face` 和 `slot_id`。附录必须定义成功、失败、超时、
-结果未知及人工核对边界；不得包含库存、容量计算、替代目标、PLC
+结果未知及 ECS 权威恢复/对账边界；不得包含库存、容量计算、替代目标、PLC
 坐标、速度、安全锁或防撞字段。WES 保存 WMS 决定与 DeviceCommand 的关联，ECS/PLC 只执行逻辑目标和硬件安全控制。
 
 ### 12.2 空取决定请求和响应
@@ -1440,7 +1465,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
 ### 12.3 Bin NG 独立分支
 
 料箱被判定 NG 后退出正常业务，插件记录实际料箱码（不可读时为空）、原因及扫码/决定证据，并通过既有 DeviceCommand 执行必要分流。
-不新增出口 WMS 报告，不等待 WMS 人工业务结束；原物理命令和结果未知资源仍按设备合同闭合。
+不新增出口 WMS 报告，不等待 WMS 人工业务结束；原物理命令、成员和未知结果事实仍按设备合同闭合。
 正常退箱仅由退箱入口实际扫码计入 FIFO；NG 日志不证明回库或解除未决搬运责任。
 合法但非预期的搬运成员继续保留冻结成员与现场差异证据，不能因记录 NG 就抹除原搬运责任。
 料箱物理授权由 WorkLine、冻结搬运成员及可靠位置证据承接，不建立全程料箱执行实体；本条为目标合同，不代表核心改造或插件业务已完成。
@@ -1542,7 +1567,7 @@ CELL NG 放置结果示例（与上面的 MATERIAL NG 示例是独立分支）�
   并使用其 `NG_ZONE`。
   WMS 根据前面的业务决定判断 NG 影响范围，不接受本次上报再传一套业务异常分类。
 - WES 仅在执行本次放置的 DeviceCommand 已取得确定 `SUCCEEDED` 并保存本地证据后发送；`command_code` 不进入 WMS 数据格式。
-- 位置未知、放置失败或 DeviceCommand 结果未知时禁止发送已完成位置结果；WES 暂停受影响的任务明细，等待确定的设备结果或人工核对。
+- 位置未知、放置失败或 DeviceCommand 结果未知时禁止发送已完成位置结果；WES 暂停受影响的任务明细，等待 ECS 的匹配权威结果或既有对账事实。
 
 WMS 正常接收后返回：
 
@@ -1726,7 +1751,7 @@ WMS 根据自己已经保存的逐盘结果和任务状态判断是否完成。W
 
 `PLAN_REVISION_STALE | BUSINESS_IN_PROGRESS` 后重新确认使用新的 `operation_id` 和当前 `last_applied_plan_revision`。
 
-## 14. 失败、重试和人工核对
+## 14. 失败、重试和权威结果
 
 ### 14.1 Transport 失败后怎么处理
 
@@ -1744,9 +1769,9 @@ Transport Handler 不负责识别货架业务类型；成功结果被 WES 出库
 | --- | --- | --- |
 | `SUCCEEDED` | 保存实际位置；属于退料货架进场时冻结并可靠发送到位事实，然后继续当前任务 | 保存通用搬运结果；收到退料货架到位事实后更新当前任务的到位状态 |
 | `REJECTED \| FAILED` | 根据每个货架或 Bin 的结果，结束确定失败的任务明细；已经成功和不受影响的明细继续执行 | 根据相同的搬运结果统计没有满足的需求，创建新的 PickingTask；不修改当前任务，也不通过当前任务的 `plan_delta` 补单 |
-| `UNKNOWN/RECONCILING` | 暂停受影响的任务明细和后续物理动作，保留相关资源 | 等待 RCS 后续确定结果或完成人工核对，再为同一 `transport_task_id` 发送更高版本的结果 |
+| `UNKNOWN/RECONCILING` | 暂停受影响的任务明细和后续物理动作，保留原任务身份、成员与事实围栏 | 等待 RCS 后续权威恢复或对账事实，再为同一 `transport_task_id` 发送更高版本的结果 |
 
-`UNKNOWN/RECONCILING` 不是成功，也不是失败。WES 不能结束任务明细、释放资源或创建替代 TransportTask。
+`UNKNOWN/RECONCILING` 不是成功，也不是失败。WES 不能结束任务明细、覆盖原事实或创建替代 TransportTask；这不阻止独立任务提交。
 
 WMS 必须保证同一个正在搬运的货架或 Bin 不会同时分配给两个未结束的 PickingTask 或批次。否则，WMS 无法只根据现有任务数据和
 Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的库存与分配处理，不需要增加接口字段或跨系统锁。
@@ -1758,7 +1783,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 
 - `UNAVAILABLE` 或响应未知：使用原 `operation_id` 和原请求内容重试。
 - `REJECTED`：停止重试原请求；修正内容后使用新 `operation_id`。
-- `CONFLICT`、版本跳号、已保存字段被修改或无法找到对应任务：停止自动处理，保留现场资源并进入人工核对。
+- `CONFLICT`、版本跳号、已保存字段被修改或无法找到对应任务：该消息不推进，保留原 Evidence 和业务事实；不阻断独立任务。
 - 计划增量没有得到明确响应：WMS 只重发原消息，不能跳过该 revision 发布后一版本。
 - 准备请求没有得到明确响应：WES 只重发原请求，不能换线或发起第二次准备。
 - 现有 `outbound.*` operation 在 `WAIT`、`NO_BATCH`、`PLAN_REVISION_STALE` 或 `BUSINESS_IN_PROGRESS` 后重新判断：新请求使用新的 `operation_id`，并携带原来的
@@ -1766,11 +1791,11 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 - Transport `UNKNOWN`：位置和后续步骤继续等待。按照 Transport 合同，等待同一 `transport_task_id` 后续更高版本的确定结果，不创建替代
   TransportTask。
 - Transport `REJECTED | FAILED`：只结束本地对应的业务任务明细。入线搬运未成功时不得推进该成员的线内业务；
-  退回搬运失败时保留原成员与位置证据，并按确定位置人工恢复。WMS 根据自己形成并发送的 Transport 结果创建后续
+  退回搬运失败时保留原成员与位置证据，等待 WMS/RCS 的后续权威业务或物理决定。WMS 根据自己形成并发送的 Transport 结果创建后续
   PickingTask，不增加失败上报或恢复接口。
 - DeviceCommand 结果未知：保留当前待完成的物理工作，不把未知解释为失败、NG 或完成。
 
-`WmsClient` 每次只执行一次 HTTP/JSON 访问。Outbox、自动重试、计划顺序、状态推进和人工核对由对应业务模块负责。
+`WmsClient` 每次只执行一次 HTTP/JSON 访问。Outbox、自动重试、计划顺序和状态推进由对应业务模块负责；WES 不提供人工 plan apply 旁路。
 
 ## 15. 联调验收清单
 
@@ -1790,7 +1815,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 后续计划增量 | `plan_revision>=2`，禁止 `target_rack`；新的精确目标只由逐盘最终 `ACCEPT` 返回 |
 | 首批增量只有初始接料货架面 | 可以提前运输目标架，但不能凭空创建来源取盘动作 |
 | 增量追加多个货架类型 | 五层、退料和转运货架按各自固定目标位并行运输 |
-| revision 跳号或同版本不同内容 | WES 停止自动推进并人工核对，不覆盖已接收计划 |
+| revision 跳号或同版本不同内容 | 该消息留存且不推进；WMS 以合法新 identity/连续 revision 纠正，不覆盖已接收计划 |
 | WMS 内部资源计算仍在继续 | 不向 WES 暴露计算完成字段；已接收明细继续执行，状态确认返回 `BUSINESS_IN_PROGRESS` |
 | 执行中补充正常计划 | 更高 `plan_revision` 可以增加当前任务尚未发布的直接取料来源或五层来源货架面；不能用来替换空取、NG 或 Transport 确定失败的明细 |
 | 扫码后才确认尺寸 | WMS 返回精确 SLOT 和可选换面/换架方案；当前盘允许在扫码台有界等待 |
@@ -1800,7 +1825,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 目标架不满足当前盘 | 同一 `ACCEPT` 返回完整 `target_preparation`；Transport 到位后直接 PUT，不重新验证物料 |
 | 正常 PUT 命令 | 目标机械臂命令只使用已授权逻辑目标；确定 `SUCCEEDED` CALLBACK 前不生成逐盘位置结果 |
 | 正常 PUT 位置确认 | `movement_report` 引用前序 WMS 决定并原样返回精确去向；设备证据留在 WES，WMS 在同一事务中更新位置、库存及目标占用 |
-| PUT 结果未知 | 不上报完成位置、不替换目标、不释放相关容量；保留现场状态，等待确定的设备结果或人工核对 |
+| PUT 结果未知 | 不上报完成位置、不替换目标；保留原命令与现场事实，等待 ECS 的匹配权威结果或既有对账事实 |
 | CTU 乱序投箱 | `inbound_batch` 已返回的 Bin 按实际到达顺序请求工作计划，FIFO 队首不能被绕过 |
 | 计划同时包含多个五层来源货架面 | 每个 `rack_id + rack_face` 单独记录；同一货架的 A、B 面都有来源时记录两项；WES 只选择一个当前来源面 |
 | 五层货架入站分批 | WES 发送 `max_bin_count`；WMS 返回不超过该数量的 `bins[]`；WES 再补充本地入料目标并生成 Transport `BIN_MOVE` |
@@ -1808,12 +1833,12 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 同一 WorkLine 的 CTU 批次 | 入站和退箱串行，同一时刻最多一个批次处于 WMS 请求或 Transport 执行中；不建立缓存位预留、租约或锁 |
 | 多个事件同时触发 CTU 判断 | 自动出库业务模块在事务中只声明一个下一动作；其他触发发现已有未结束动作后退出 |
 | 入站 `READY` 已返回但 Transport 未完成 | 继续等待原批次，不调用 `return_batch`、不再次调用 `inbound_batch`、不改选其他 Bin |
-| BIN_MOVE已接纳但尚无最终结果 | TransportTask保持资源围栏且位置未知；不得继续使用来源货架位置或创建替代搬运 |
+| BIN_MOVE已接纳但尚无最终结果 | TransportTask 保持原身份、成员与事实围栏且位置未知；不得继续使用来源货架位置或创建替代搬运，但不阻止独立任务提交 |
 | 入站 Transport 最终成功且实扫身份匹配 | 允许该冻结成员进入工作线业务，再重新判断 CTU 下一动作；当前面有可执行退箱批次时先退箱，否则继续入站 |
 | 当前五层来源货架面暂时无 Bin | WMS 返回 `NO_BATCH + retry_after_ms`；到期前不重复请求、不据此换面，期间出现退箱候选仍优先退箱 |
 | 当前五层来源货架面结束 | WMS 返回 `RACK_FACE_DONE`；CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定后，WES 才从已接收的来源面计划中选择下一面并执行必要的换面或换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不阻塞切换，`inbound_batch` 不返回新来源方案 |
-| Transport `UNKNOWN/RECONCILING` | 只暂停受影响的任务明细，等待同一 `transport_task_id` 的更高版本结果或人工核对；不结束明细、不释放资源、不创建替代 TransportTask |
-| Transport 确定失败 | WES结束本地对应的业务明细，其他明细继续；入线搬运失败不推进线内业务，退回失败保留原成员与证据并按确定位置人工恢复；WMS用新的PickingTask补足需求 |
+| Transport `UNKNOWN/RECONCILING` | 只暂停受影响的任务明细，等待同一 `transport_task_id` 的更高版本权威结果；不结束明细、不覆盖事实、不创建替代 TransportTask，独立任务继续 |
+| Transport 确定失败 | WES结束本地对应的业务明细，其他明细继续；入线搬运失败不推进线内业务，退回失败保留原成员与证据并等待来源系统后续决定；WMS用新的PickingTask补足需求 |
 | 退箱候选请求 | WES 按本次请求从 1 连续设置 `sequence_no`；WMS 原样返回连续前缀的 `sequence_no + bin_code`，不得重复、跳号或跳过队首 |
 | WMS 本次只处理部分退箱候选 | 只能返回 FIFO 候选列表的连续前缀；未返回的 Bin 留在 `RETURN_BUFFER` 等下一批，新请求重新从 1 编号 |
 | 退箱暂时无批次 | `NO_BATCH` 必须返回 `retry_after_ms`；候选留在 FIFO，无资源冲突的入站需求可驱动换面或换架 |
@@ -1837,7 +1862,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | --- | --- |
 | WMS Adapter 合同 | 固定 path、公共消息格式、operation、数据格式、重复提交、revision 和错误映射 |
 | 自动出库插件 | PickingTask、计划增量应用、CTU 串行批次和数量计算、Bin/Cell 接收后不可修改规则、Cell 循环、任务明细处理、双臂业务并发和状态确认触发 |
-| Transport 核心 | 货架与 Bin 搬运、接收确认、异步结果、`UNKNOWN/RECONCILING` 和资源绑定 |
+| Transport 核心 | 货架与 Bin 搬运、接收确认、异步结果、`UNKNOWN/RECONCILING`、冻结成员和事实围栏 |
 | DeviceCommand 核心 | 单设备命令接收、接收确认、最终状态、超时时间和重复提交记录 |
 | ECS/PLC 及供应商验收 | 扫码台硬件锁、机械臂防撞、长命令内部动作和设备实际行为 |
 
@@ -1853,7 +1878,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
   扩展对象或兼容分支。
 - 部署配置提供真实 `workline_code`、货架面、工作位、缓存位、NG 区和货架离场库位编码。编码值可以按现场变化，但字段结构、类型和
   WMS、WES 的职责划分不得变化；两边代码都不能硬编码本文示例值。
-- 联调配置确认 WMS 分批计算首批期限、各业务 `WAIT` 的实际重试值和人工核对时限。这些是运行参数，不改变
+- 联调配置确认 WMS 分批计算首批期限、各业务 `WAIT` 的实际重试值和来源系统对账时限。这些是运行参数，不改变
   `retry_after_ms` 的字段合同。
 - 目标机械臂实际设备合同附录锁定 PUT `task_type`、逻辑 `params`/结果 `data`、时限和错误；未获批前不得用占位附录、全局枚举
   或供应商私有字段开始设备实现。

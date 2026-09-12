@@ -164,12 +164,7 @@ class PickingTaskPrepareCoordinator:
         workline_id: int,
         now: datetime,
     ) -> bool:
-        summary = await self._worklines.get_unfinished_workload_summary(db, workline_id)
-        by_type = summary.get("by_type") if isinstance(summary, dict) else None
-        if not isinstance(by_type, dict):
-            return False
-        if any(by_type.values()):
-            return False
+        # 历史执行和待反馈义务独立续行；新 prepare 由当前任务与插件策略决定准入。
         facts = await self._facts.read_facts(
             db,
             workline_id=workline_id,

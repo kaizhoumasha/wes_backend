@@ -2,13 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.app.callback.contracts import runtime_events as legacy_runtime_events
 from src.app.callback.contracts.event_mapper import canonicalize_event_type
 from src.app.callback.contracts.runtime_events import (
     PLATFORM_CONTROL_EVENTS,
-    RESERVED_RUNTIME_EVENTS,
     is_platform_control_event,
-    is_platform_safety_event,
     is_production_event,
 )
 
@@ -20,45 +17,24 @@ def test_callback_event_mapper_uses_workline_runtime_config_mapping() -> None:
     assert canonicalize_event_type("BLOCKED", workline=workline) == "BLOCKED"
 
 
-@pytest.mark.parametrize(
-    ("reserved_target", "expected_message"),
-    [
-        ("WORKLINE_START_REQUESTED", "WORKLINE_START_REQUESTED 是平台保留控制事件"),
-        ("ESTOP_PRESSED", "ESTOP_PRESSED 是平台保留安全事件"),
-    ],
-)
-def test_callback_event_mapper_rejects_reserved_mapping_target(
-    reserved_target: str,
-    expected_message: str,
-) -> None:
-    workline = SimpleNamespace(runtime_config_json={"event_type_mapping": {"SCAN_FINISH": reserved_target}})
+def test_callback_event_mapper_rejects_platform_control_mapping_target() -> None:
+    workline = SimpleNamespace(runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}})
 
-    with pytest.raises(ValueError, match=expected_message):
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
         canonicalize_event_type("SCAN_FINISH", workline=workline)
 
 
-def test_callback_event_mapper_does_not_remap_reserved_event_sources() -> None:
+def test_callback_event_mapper_does_not_remap_platform_control_sources() -> None:
     workline = SimpleNamespace(
-        runtime_config_json={
-            "event_type_mapping": {
-                "ESTOP_PRESSED": "SCAN_COMPLETED",
-                "WORKLINE_START_REQUESTED": "SCAN_COMPLETED",
-            }
-        }
+        runtime_config_json={"event_type_mapping": {"WORKLINE_START_REQUESTED": "SCAN_COMPLETED"}}
     )
 
-    assert canonicalize_event_type("ESTOP_PRESSED", workline=workline) == "ESTOP_PRESSED"
     assert canonicalize_event_type("WORKLINE_START_REQUESTED", workline=workline) == "WORKLINE_START_REQUESTED"
 
 
-def test_callback_runtime_events_match_workline_runtime_taxonomy() -> None:
-    assert PLATFORM_CONTROL_EVENTS == legacy_runtime_events.PLATFORM_CONTROL_EVENTS
-    assert RESERVED_RUNTIME_EVENTS == legacy_runtime_events.RESERVED_RUNTIME_EVENTS
-
-    for event_type in ("WORKLINE_START_REQUESTED", "ESTOP_PRESSED", "SCAN_COMPLETED"):
-        assert is_platform_control_event(event_type) is legacy_runtime_events.is_platform_control_event(event_type)
-        assert is_platform_safety_event(event_type) is legacy_runtime_events.is_platform_safety_event(event_type)
-        assert is_production_event(event_type) is legacy_runtime_events.is_production_event(event_type)
-
+def test_callback_runtime_events_keep_only_platform_control_taxonomy() -> None:
     assert "WORKLINE_START_REQUESTED" in PLATFORM_CONTROL_EVENTS
-    assert "ESTOP_PRESSED" in RESERVED_RUNTIME_EVENTS
+    assert is_platform_control_event("WORKLINE_START_REQUESTED") is True
+    assert is_production_event("WORKLINE_START_REQUESTED") is False
+    assert is_platform_control_event("SCAN_COMPLETED") is False
+    assert is_production_event("SCAN_COMPLETED") is True

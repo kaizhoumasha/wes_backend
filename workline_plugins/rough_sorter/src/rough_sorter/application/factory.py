@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.execution.repositories import inbound_evidence_repository, material_execution_repository
-from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.execution.repositories.transport_decision_binding_repository import (
     transport_decision_binding_repository,
 )
@@ -90,7 +89,6 @@ class RoughSorterPluginFactFactory:
             transport_decision_binding_repository
         ),
         transport_repository: TransportRepository | None = None,
-        position_repository=position_projection_repository,
     ) -> None:
         self._evidences = evidence_repository
         self._executions = execution_repository
@@ -104,7 +102,6 @@ class RoughSorterPluginFactFactory:
         self._rack_placements = rack_placement_repository
         self._rack_replacement_bindings = rack_replacement_binding_repository
         self._transport_tasks = transport_repository or TransportRepository()
-        self._position_projections = position_repository
 
     async def build(self, db: object, fact: FactReference) -> FactReference:
         evidence = await self._load_evidence(db, fact.evidence_id)
@@ -129,9 +126,6 @@ class RoughSorterPluginFactFactory:
                 commands=self._commands,
                 readiness=self._device_readiness,
                 rack_bindings=self._rack_replacement_bindings,
-                transport_tasks=self._transport_tasks,
-                position_projections=self._position_projections,
-                rack_positions=self._positions,
                 current_rack_id=self._current_rack_id,
             )
         if type(fact) is DeviceResultReadyFact:

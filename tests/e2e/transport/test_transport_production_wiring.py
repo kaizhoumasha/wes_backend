@@ -19,7 +19,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter import WmsInboundAuthPolicy
@@ -103,9 +102,6 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
             if projection_ids:
                 await db.execute(delete(PositionProjection).where(PositionProjection.object_id.in_(projection_ids)))
             if task_id is not None:
-                await db.execute(
-                    delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == task_id)
-                )
                 await db.execute(delete(TransportMember).where(TransportMember.transport_task_id == task_id))
                 await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
 

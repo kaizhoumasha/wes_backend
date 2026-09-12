@@ -41,6 +41,7 @@ _WORKLINE_RUNTIME_REMOVED_SERVICES = (
     "trace_query_service",
     "trace_resource_view_builder",
     "trace_response_builder",
+    "safety_service",
 )
 
 _WORKLINE_RUNTIME_REMOVED_REPOSITORIES = (
@@ -54,6 +55,7 @@ _WORKLINE_RUNTIME_REMOVED_REPOSITORIES = (
     "material_unit_repository",
     "rack_position_repository",
     "diagnostic_repository",
+    "safety_incident_repository",
 )
 
 _WORKLINE_RUNTIME_REMOVED_MODELS = (
@@ -71,14 +73,8 @@ _WORKLINE_RUNTIME_REMOVED_MODELS = (
     "smt_inbound_handoff",
     "bin_cell_reservation",
     "material_unit",
+    "safety",
 )
-# `safety.py` 不在删除列表:WorklineSafetyIncident 表是 safety_service 配置域
-# 审计表,safety_service 仍保留在 workline 域。WorkLine runtime status enum
-# 已迁入 runtime/orchestration 的原生投影模型。
-
-_WORKLINE_CONFIG_KEPT_MODELS = ("safety",)
-
-_WORKLINE_CONFIG_KEPT_REPOSITORIES = ("safety_incident_repository",)
 
 _WORKLINE_RUNTIME_REMOVED_V1_ROUTERS = (
     "runtime",
@@ -110,25 +106,8 @@ def test_workline_repositories_shrunk_to_workline_only_after_runtime_split():
         )
 
 
-def test_workline_kept_models_preserved_after_runtime_split():
-    """WorkLine 配置域收口:safety.py 必须保留(承载 WorkLine 安全事件审计模型)。"""
-    assert _file_exists("src/app/workline/models/safety.py"), (
-        "WorkLine 配置域收口:safety.py 必须保留 — safety_service 配置域审计表仍依赖"
-    )
-
-
-def test_workline_kept_repositories_preserved_after_runtime_split():
-    """WorkLine 配置域收口:safety_incident_repository 必须保留(支撑 safety_service 配置域)。"""
-    assert _file_exists("src/app/workline/repositories/safety_incident_repository.py"), (
-        "WorkLine 配置域收口:safety_incident_repository 必须保留 — safety_service 配置域审计表仍依赖"
-    )
-
-
 def test_workline_models_shrunk_to_workline_only_after_runtime_split():
-    """WorkLine 配置域收口:workline/models/ 下运行态 model 文件必须物理删除。
-
-    safety.py 例外保留,见 `_WORKLINE_CONFIG_KEPT_MODELS`。
-    """
+    """WorkLine 配置域收口:workline/models/ 下运行态 model 文件必须物理删除。"""
     for name in _WORKLINE_RUNTIME_REMOVED_MODELS:
         assert not _file_exists(f"src/app/workline/models/{name}.py"), (
             f"WorkLine 配置域收口:workline 运行态 model 必须物理删除,遗留: {name}.py"
@@ -216,7 +195,7 @@ def test_workline_service_config_only_after_runtime_split():
         assert not hasattr(workline_service_singleton, removed_name)
 
     configuration_module = importlib.import_module("src.app.workline.services.workline_configuration_service")
-    configuration_service = configuration_module.WorkLineConfigurationService(plugins=())
+    configuration_service = configuration_module.WorkLineConfigurationService(definitions=())
     for name in ("save", "deactivate", "configuration_status"):
         method = getattr(configuration_service, name)
         assert asyncio.iscoroutinefunction(method)
@@ -240,10 +219,6 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         # plane_service
         "WorkLinePlaneService",
         "workline_plane_service",
-        # safety_service
-        "WorkLineSafetyBlocked",
-        "WorkLineSafetyService",
-        "workline_safety_service",
         # workline_service
         "WorkLineService",
         "workline_service",

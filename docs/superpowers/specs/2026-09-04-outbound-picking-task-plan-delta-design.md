@@ -9,11 +9,17 @@
 > PENDING/503 原身份重试及修正 Evidence 受控应用后的 DUPLICATE 作为本次可执行合同；不宣称 WMS 已确认。
 > 数据迁移、事务/幂等、权限、真实 worker 验证和物理围栏仍有效；基础 Operation 发布不自动开启具体插件业务或设备动作。
 
+> 2026-09-12 执行目标修订：原 R4 管理员 `apply-correction` 路径已被
+> [WES 无阻塞执行设计](2026-09-11-wes-nonblocking-execution-design.md) ENG-D5 取代并从代码删除。合法修正只允许 WMS 使用新 identity
+> 和严格下一 revision 经普通 `plan_delta` record/replay 自动校验、应用；本文其他 Operation 与 prepare 边界继续有效。
+> 本文后续所有要求 `plan_blocked_evidence_id` 阻断新动作、将修正先固定为 `RECONCILING`、由管理员对账应用、检查 blocker 后完成/释放，
+> 或把 R4/IT2/G27–G30 作为人工续行门禁的段落，均仅为被取代的历史评审记录，不再具有规范性，禁止据此恢复已删除路径。
+
 
 status: Approved（2026-09-06 基于当前 develop 的工程复审与独立外部复核通过；非 WMS 联合合同批准、代码实施或生产激活）
 created_at: 2026-09-04
 updated_at: 2026-09-06
-scope: Phase 12 WMS Operation 修复总计划；包含共享 typed Operation 基础能力、公共 ingress 收敛、plan_delta 持久化暗构建、prepare 插件 Policy、计划阻塞对账、Operation 生产能力与插件消费分离激活，以及既有 generic WMS 调用迁移
+scope: Phase 12 WMS Operation 修复总计划；包含共享 typed Operation 基础能力、公共 ingress 收敛、plan_delta 持久化与自动 record/replay、prepare 插件 Policy、Operation 生产能力与插件消费分离激活，以及既有 generic WMS 调用迁移
 
 ## 1. 目标
 
@@ -229,7 +235,7 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
 ## 5. 幂等、冲突与失败
 
 - 相同 `operation_id` 和相同完整正文重放：只有首次已成功应用的请求才返回 `DUPLICATE`，不重复创建成员；
-  `PENDING` 必须重新检查前置条件；已确定的冲突不得由普通请求重试改报成功。唯一例外是下述 R4 受控对账已原子应用的修正 Evidence，
+  `PENDING` 必须重新检查前置条件；已确定的冲突不得由相同 identity 修改正文后改报成功。合法修正使用新 identity 和严格下一 revision，
   其原身份、原正文重放返回 `200 / DUPLICATE`，不得再次应用。
 - 相同 `operation_id` 但正文变化：返回 `CONFLICT`，保留首次证据和业务结果。
 - 当前 revision 使用新的 `operation_id`、但完整业务内容与已应用 revision 相同：保存本次 Evidence，返回
@@ -325,7 +331,8 @@ plan_delta 暗构建不注册：
 2. **R2-B2 插件消费激活**：在 R2-A 与 R2-B1 之后，才让 `manual_bin_processing` WorkLine START/业务节点创建新的 prepare intent，
    并装配 PickingTask STOP/插件切换 blocker 和后继执行。未来其它插件通过同一 typed method 接入，不修改 operation route 或可靠内核。
 
-R2-B1/R2-B2 都必须让新动作准入、完成和资源释放路径检查任务的计划阻塞；已有动作结果接收路径不得被这一准入检查拦截。
+R2-B1/R2-B2 的新动作准入、完成和资源释放只检查当前有效业务计划及真实同任务依赖；历史计划冲突 Evidence 不形成统一 blocker。
+已有动作结果接收路径不得被历史拒绝拦截。
 插件缺失、版本不匹配或能力未装配时 fail closed：禁止新业务触发；已在途响应保留原 identity、Evidence 和资源围栏并进入对账。
 
 ## 7. 第一轮联调数据
@@ -618,18 +625,11 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
     `tests/contracts/wms_adapter/test_inbound_adapter.py` 中共享 WmsConfirmation 可靠性用例必须保留或精确迁至共享 owner，禁止整文件盲删。
   - 验证：G23–G26；精确残留扫描为零，插件不读取原始 WMS JSON；共享 WmsClient 单次发送、WmsConfirmation 生命周期和 PostgreSQL
     可靠性测试保持唯一 owner 且覆盖不下降。
-- [ ] **R4（P1，生产激活门禁）— 提供 PickingTask 计划冲突对账入口**：基于 T3 的 `plan_blocked_evidence_id`，交付最小、显式、受管理授权控制的
-  对账 Service/API；获批动作必须引用匹配 Evidence，在持有任务锁的事务内记录审计并维持物理事实与资源围栏。
-  - 合同：WMS 以新 `operation_id` 发送严格期望的下一 revision；WES 在 blocker 存在时只将其保存为 `RECONCILING` 修正 Evidence。固定管理入口
-    `POST /api/v1/outbound-picking/tasks/{task_id}/plan-blockers/{blocking_evidence_id}/apply-correction` 接收修正 Evidence ID、预期任务版本和有界审计原因，
-    不接收任意 operation 或裸计划正文。
-  - 事务：Service 在 PickingTask 行锁内验证 blocker、两份 Evidence、任务、operation、严格下一 revision、当前阶段/绑定与预期版本；一次性应用修正成员，
-    更新 revision/last Evidence、将修正 Evidence 标记 APPLIED、清空 blocker 并写审计。管理请求成功重放按第 5 节的最后应用证据条件判断；
-    WMS 原修正 Event 的成功重放按 APPLIED 判定，独立于后续 revision/阶段，并保留首次拒绝历史。任何引用/正文/版本漂移、终态、并发冲突或提交失败均
-    fail closed。插件缺失不阻止基础计划恢复，但继续禁止新插件动作；任务取消由独立生命周期合同处理。
-  - 范围：只处理 plan_delta 阻塞；不新增通用对账平台、动态动作 registry、关闭任务能力或直接数据库运维流程。
-  - 验证：G27–G30。R4 未通过不得开始 R2-B1。
-- [ ] **R2-B1（P1）— 独立激活基础 Operation 能力**：仅在 T1-A、T1-B–T5、R3-B、R4 和 WMS 联合 fixture 均完成后，装配 prepare typed Adapter、
+- [x] **R4（P1，已被 ENG-D5 取代）— 计划修正并入普通 record/replay**：不提供管理员 `apply-correction` Service/API。
+  WMS 使用新 `operation_id` 和严格下一 revision 提交修正；WES 在 PickingTask 行锁内按普通 Event 路径验证 identity、revision、owner、阶段与并发，
+  合法时原子应用并保留历史 Evidence。任何引用、正文、版本、终态或并发冲突均 fail closed；不新增通用对账平台或数据库运维流程。
+  - 验证：G27–G30 由普通 plan_delta record/replay owner 承接；人工 route、DTO、service method 与审计 helper 残留必须为零。
+- [ ] **R2-B1（P1）— 独立激活基础 Operation 能力**：仅在 T1-A、T1-B–T5、R3-B、普通 plan_delta record/replay 和 WMS 联合 fixture 均完成后，装配 prepare typed Adapter、
   PickingTask confirmation owner、plan_delta 静态 Event route/OpenAPI 和真实 Worker；不要求任何具体插件当前启用，也不动态注册/注销 route。
   - 验证：ASGI 合同、真实 worker 派发/恢复、prepare→plan_delta 联合 fixture、零消费者启动、进程重启及插件缺失时在途响应可靠保存；
     结果只证明接口与运行机制，不能替代现场物理或业务验收。

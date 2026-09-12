@@ -22,7 +22,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -84,7 +83,6 @@ async def _clean_transport_tables(db_engine: object) -> None:
         for model in (
             TransportEvidence,
             TransportCallbackReceipt,
-            TransportResourceBinding,
             TransportMember,
             PositionProjection,
             TransportTask,
@@ -268,7 +266,6 @@ async def test_snapshot_exposes_persisted_execution_and_publication_facts(db_eng
     assert initial.result_deadline_at is None
     assert initial.submit_attempt_count == 0
     assert initial.pending_evidence_count == 0
-    assert initial.active_binding_count == 1
     await service.submit_pending_tasks(1)
     accepted = await service.get_task_snapshot(task_id)
     assert accepted.result_deadline_at is not None
@@ -282,7 +279,6 @@ async def test_snapshot_exposes_persisted_execution_and_publication_facts(db_eng
         )
     snapshot = await service.get_task_snapshot(task_id)
     assert (snapshot.outcome_version, snapshot.published_outcome_version) == (2, 1)
-    assert snapshot.active_binding_count == 1
 
 
 async def test_rejected_callback_receipt_can_be_read_without_evidence(db_engine: object) -> None:

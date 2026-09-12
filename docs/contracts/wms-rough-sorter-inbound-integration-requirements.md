@@ -61,8 +61,8 @@ CREATED | RUNNING | HOLD | CLOSED | RECONCILING
 - `RECONCILING`：已接纳命令失败、交付未知、位置未知、身份冲突或事实冲突，需要人工核验恢复。
 
 扫码、准入、输送、目标请求、PUT 和上报是插件业务步骤，不复制 DeviceCommand、WMS 或 Transport 状态。多个
-`MaterialExecution` 可以并行；不建立通用调度器或 WorkLine 全局锁。每次动作只验证：拓扑步骤正确、目标设备没有活动命令、
-`source` 是预期 `material_trace_id`、`target` 当前可接收。
+`MaterialExecution` 可以并行；不建立通用调度器或 WorkLine 全局锁。每次动作只验证拓扑步骤、预期 `material_trace_id`、目标合同
+和必要参数；WES 不以目标设备活动命令或本地状态投影授权发送，ECS 在接纳时判断设备状态、容量和物理互斥。
 
 ## 4. 稳定身份
 

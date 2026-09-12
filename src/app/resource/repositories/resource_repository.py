@@ -192,11 +192,12 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
         *,
         workline_code: str,
         position_code: str,
+        for_update: bool = False,
     ) -> list[RackPlacement]:
         """查询工作线停靠位当前 active placements。"""
 
         columns = cast("Any", RackPlacement).__table__.c
-        result = await db.execute(
+        statement = (
             select(RackPlacement)
             .where(
                 columns.workline_code == workline_code,
@@ -205,6 +206,9 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
             )
             .order_by(columns.id.asc())
         )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
         return list(result.scalars().all())
 
     async def count_active_by_workline_position(

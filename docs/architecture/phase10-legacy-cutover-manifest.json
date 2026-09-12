@@ -18,8 +18,7 @@
     "CeleryTaskQueueGateway.enqueue_transport_evidence",
     "CeleryTaskQueueGateway.enqueue_execution_facts",
     "CeleryTaskQueueGateway.enqueue_wms_confirmations",
-    "CeleryTaskQueueGateway.enqueue_device_commands",
-    "CeleryTaskQueueGateway.enqueue_safety_drain"
+    "CeleryTaskQueueGateway.enqueue_device_commands"
   ],
   "paired_outbox_contract": {
     "operation_domain": "WMS",

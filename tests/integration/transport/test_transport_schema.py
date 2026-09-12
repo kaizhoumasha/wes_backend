@@ -14,7 +14,6 @@ from src.app.transport.models import (
     TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.core.uuid7 import new_uuid7
@@ -129,7 +128,7 @@ async def test_transport_schema_enforces_client_request_and_operation_identity(
     await integration_db_session.rollback()
 
 
-async def test_transport_schema_enforces_one_active_binding_per_resource(
+async def test_transport_schema_retains_same_resource_members_for_independent_tasks(
     integration_db_session: AsyncSession,
 ) -> None:
     suffix = uuid.uuid4().hex
@@ -139,25 +138,23 @@ async def test_transport_schema_enforces_one_active_binding_per_resource(
     ]
     integration_db_session.add_all(tasks)
     await integration_db_session.flush()
-    integration_db_session.add(
-        TransportResourceBinding(
-            transport_task_id=tasks[0].transport_task_id,
-            resource_type="RACK",
-            resource_id=f"rack-{suffix}",
-            created_at=now,
+    for task in tasks:
+        integration_db_session.add(
+            TransportMember(
+                transport_task_id=task.transport_task_id,
+                ordinal=0,
+                object_type="RACK",
+                object_id=f"rack-{suffix}",
+                source_json={"kind": "RACK_POSITION", "location_code": "A"},
+                target_json={"kind": "RACK_POSITION", "location_code": "B"},
+                updated_at=now,
+            )
         )
-    )
     await integration_db_session.flush()
-    integration_db_session.add(
-        TransportResourceBinding(
-            transport_task_id=tasks[1].transport_task_id,
-            resource_type="RACK",
-            resource_id=f"rack-{suffix}",
-            created_at=now,
-        )
+    assert (
+        await integration_db_session.scalar(text("SELECT to_regclass('wes_runtime.transport_resource_bindings')"))
+        is None
     )
-    with pytest.raises(IntegrityError):
-        await integration_db_session.flush()
     await integration_db_session.rollback()
 
 
@@ -174,12 +171,13 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
         "ix_transport_tasks_ambiguous_claim",
         "ix_transport_evidence_pending_claim",
         "ix_transport_tasks_outcome_claim",
-        "ux_transport_resource_bindings_active",
+        "ix_transport_members_object_fact",
     } <= definitions.keys()
     assert "(next_submit_at IS NOT NULL)" in definitions["ix_transport_tasks_submit_claim"]
     assert "next_submit_at, id)" in definitions["ix_transport_tasks_submit_claim"]
     assert "(submit_claim_until, id)" in definitions["ix_transport_tasks_ambiguous_claim"]
     assert "(updated_at, id)" in definitions["ix_transport_tasks_outcome_claim"]
+    assert "(object_type, object_id, transport_task_id)" in definitions["ix_transport_members_object_fact"]
 
 
 async def test_transport_schema_contains_final_wire_identity_and_execution_authority_columns(

@@ -485,7 +485,6 @@ class TargetDecidedFact(FactReference):
     result: TargetResult
     source_position: DevicePosition
     current_rack_id: str
-    current_rack_fenced: bool
     device_ready: bool
     target_position: DevicePosition | None = None
     target_assignment_id: str | None = None
@@ -506,8 +505,6 @@ class TargetDecidedFact(FactReference):
         _ = _required(self.current_rack_id, "current_rack_id")
         if type(self.result) is not TargetResult:
             raise ValueError("result must be a TargetResult")
-        if type(self.current_rack_fenced) is not bool:
-            raise TypeError("current_rack_fenced must be a boolean")
         if type(self.device_ready) is not bool:
             raise TypeError("device_ready must be a boolean")
         _position(

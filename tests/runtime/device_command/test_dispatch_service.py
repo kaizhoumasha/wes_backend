@@ -89,15 +89,6 @@ class FakeCommandRepository:
         command.claim_token = None
 
 
-class FakeObservationRepository:
-    def __init__(self) -> None:
-        self.created = []
-
-    async def add_status_observation(self, _db, observation):
-        self.created.append(observation)
-        return observation
-
-
 class FakeEvidenceService:
     def __init__(self) -> None:
         self.observations: list[dict[str, object]] = []
@@ -172,6 +163,7 @@ class FakeAdapter:
 
 class UnavailableStatusAdapter(FakeAdapter):
     async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        self.status_requests.append(device_code)
         raise ConnectionError(device_code)
 
 
@@ -235,12 +227,10 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
     adapter = FakeAdapter(EcsSubmitResult(disposition))
     events: list[str] = []
     provider = FakeAdapterProvider(adapter, events=events)
-    observations = FakeObservationRepository()
     evidences = FakeEvidenceService()
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=observations,  # type: ignore[arg-type]
         evidence_service=evidences,  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -251,7 +241,7 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
     assert processed is True
     assert command.status == expected
     assert [item["command_code"] for item in adapter.submitted] == ["CMD-001"]
-    assert len(observations.created) == 1
+    assert adapter.status_requests == []
     assert provider.requested == ["http://ecs-dispatch:8080"]
     assert events == ["provider"]
     expected_observation = {
@@ -271,7 +261,6 @@ async def test_dispatch_publishes_observation_after_state_and_evidence_commit() 
     service = DeviceDispatchService(
         session_factory=FakeSessions(events),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.RECONCILING))),
         event_publisher=publisher,  # type: ignore[arg-type]
@@ -299,7 +288,7 @@ async def test_dispatch_publishes_observation_after_state_and_evidence_commit() 
         ({}, datetime(2026, 8, 13, 0, 0, 2)),
     ],
 )
-async def test_dynamic_device_status_keeps_business_command_pending_without_submit(
+async def test_dynamic_device_status_does_not_gate_independent_business_command(
     state_updates: dict[str, object],
     observed_at: datetime,
 ) -> None:
@@ -314,16 +303,14 @@ async def test_dynamic_device_status_keeps_business_command_pending_without_subm
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: observed_at,
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
-    assert command.status == CommandStatus.PENDING
-    assert command.next_attempt_at == observed_at + timedelta(seconds=5)
-    assert adapter.submitted == []
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert len(adapter.submitted) == 1
 
 
 @pytest.mark.asyncio
@@ -335,11 +322,9 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     provider = FakeAdapterProvider(adapter)
-    observations = FakeObservationRepository()
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=observations,  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -348,8 +333,7 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
     assert await service.dispatch_one(now=datetime(2026, 8, 13, 0, 0, 0, 500_000)) is True
     assert command.status == CommandStatus.ACKNOWLEDGED
     assert provider.requested == ["http://ecs-mock:8080"]
-    assert adapter.status_requests == ["ARM-01"]
-    assert observations.created == []
+    assert adapter.status_requests == []
     assert adapter.submitted == [
         {
             "device_code": "ARM-01",
@@ -365,7 +349,7 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
 
 
 @pytest.mark.asyncio
-async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
+async def test_manual_debug_does_not_fetch_dynamic_command_capabilities() -> None:
     command = _command()
     command.execution_ref_type = "MANUAL_DEBUG"
     command.workline_id = None
@@ -381,20 +365,18 @@ async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
-    assert command.status == CommandStatus.FAILED
-    assert command.failure_code == "DEVICE_TASK_TYPE_UNSUPPORTED"
-    assert adapter.submitted == []
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert len(adapter.submitted) == 1
 
 
 @pytest.mark.asyncio
-async def test_manual_debug_status_failure_is_retryable_without_submit() -> None:
+async def test_manual_debug_dispatch_does_not_require_status_endpoint() -> None:
     command = _command()
     command.execution_ref_type = "MANUAL_DEBUG"
     command.workline_id = None
@@ -404,19 +386,19 @@ async def test_manual_debug_status_failure_is_retryable_without_submit() -> None
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
-    assert command.status == CommandStatus.PENDING
-    assert adapter.submitted == []
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert len(adapter.submitted) == 1
+    assert adapter.status_requests == []
 
 
 @pytest.mark.asyncio
-async def test_event_debug_status_failure_is_terminal_without_delayed_retry() -> None:
+async def test_event_debug_dispatch_does_not_require_status_endpoint() -> None:
     command = _command()
     command.execution_ref_type = "EVENT_DEBUG"
     command.workline_id = None
@@ -426,16 +408,15 @@ async def test_event_debug_status_failure_is_terminal_without_delayed_retry() ->
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
-    assert command.status == CommandStatus.FAILED
-    assert command.failure_code == "DEVICE_STATUS_UNAVAILABLE"
-    assert adapter.submitted == []
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert len(adapter.submitted) == 1
+    assert adapter.status_requests == []
 
 
 @pytest.mark.asyncio
@@ -449,7 +430,6 @@ async def test_event_debug_retryable_rejection_is_terminal_without_delayed_retry
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -473,7 +453,6 @@ async def test_missing_or_invalid_binding_endpoint_never_reaches_http() -> None:
         service = DeviceDispatchService(
             session_factory=FakeSessions(),  # type: ignore[arg-type]
             command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-            observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
             evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
             adapter_provider=provider,  # type: ignore[arg-type]
         )
@@ -485,31 +464,30 @@ async def test_missing_or_invalid_binding_endpoint_never_reaches_http() -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_probe_failure_returns_to_pending_because_command_was_not_sent() -> None:
+async def test_business_dispatch_does_not_require_status_endpoint() -> None:
     command = _command()
     adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
-    assert command.status == CommandStatus.PENDING
-    assert adapter.submitted == []
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert len(adapter.submitted) == 1
 
 
 @pytest.mark.asyncio
-async def test_command_crossing_deadline_during_status_probe_is_timed_out_before_submit() -> None:
+async def test_command_crossing_deadline_before_submit_is_timed_out() -> None:
     command = _command()
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     evidences = FakeEvidenceService()
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=evidences,  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: command.deadline_at,
@@ -524,14 +502,13 @@ async def test_command_crossing_deadline_during_status_probe_is_timed_out_before
 
 
 @pytest.mark.asyncio
-async def test_command_crossing_deadline_after_admission_is_timed_out_at_final_send_fence() -> None:
+async def test_command_crossing_deadline_at_final_send_fence_is_timed_out() -> None:
     command = _command()
     command.deadline_at = datetime(2026, 8, 13, 0, 0, 1)
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([command.deadline_at - timedelta(microseconds=1), command.deadline_at]).__next__,
@@ -549,7 +526,6 @@ async def test_retryable_response_uses_retry_after_delay() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter(
@@ -575,7 +551,6 @@ async def test_huge_retry_after_is_fenced_by_command_deadline() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([datetime(2026, 8, 13, 0, 0, 0, 500_000), response_at, response_at, response_at]).__next__,
@@ -596,7 +571,6 @@ async def test_ack_received_after_deadline_enters_reconciliation_with_response_t
     service = DeviceDispatchService(
         session_factory=FakeSessions(),
         command_repository=FakeCommandRepository(command),
-        observation_repository=FakeObservationRepository(),
         evidence_service=evidences,  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),
         clock=iter(
@@ -611,3 +585,47 @@ async def test_ack_received_after_deadline_enters_reconciliation_with_response_t
     assert [(item["observation"], item["reason_code"]) for item in evidences.observations] == [
         ("RESULT_UNKNOWN", "ACK_AFTER_DEADLINE")
     ]
+
+
+@pytest.mark.asyncio
+async def test_acknowledged_command_is_never_resubmitted_after_timeout_or_worker_restart() -> None:
+    command = _command()
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    repository = FakeCommandRepository(command)
+    for recovered_status in (CommandStatus.PENDING, CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING):
+        command.status = recovered_status
+        service = DeviceDispatchService(
+            session_factory=FakeSessions(),  # type: ignore[arg-type]
+            command_repository=repository,  # type: ignore[arg-type]
+            evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
+            adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+            clock=lambda: datetime(2026, 8, 13),
+        )
+        assert await service.dispatch_one(now=datetime(2026, 8, 13)) is (recovered_status is CommandStatus.PENDING)
+    assert len(adapter.submitted) == 1
+    assert command.ack_received_at is not None
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_token_cannot_write_ack_over_recovered_command() -> None:
+    command = _command()
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+
+    async def submit_then_expire(**values):
+        adapter.submitted.append(values)
+        command.claim_token = None
+        command.status = CommandStatus.RECONCILING
+        return adapter.result
+
+    adapter.submit_command = submit_then_expire  # type: ignore[method-assign]
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        evidence_service=FakeEvidenceService(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
+    )
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.RECONCILING
+    assert command.ack_received_at is None
+    assert len(adapter.submitted) == 1

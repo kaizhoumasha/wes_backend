@@ -17,7 +17,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
@@ -65,9 +64,6 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 )
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
-            await db.execute(
-                delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
-            )
             await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
 

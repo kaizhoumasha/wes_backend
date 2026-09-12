@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints,
 from src.app.device.contracts import EcsDeviceInfo, EcsDeviceRuntimeState  # noqa: TC001
 from src.app.device.ecs_adapter import EcsStatusUnavailableError
 from src.app.device.services.device_command_service import (
-    DeviceCommandCapacityError,
     DeviceCommandIdentityConflictError,
     DeviceCommandNotFoundError,
 )
@@ -193,7 +192,7 @@ async def preflight_manual_debug_command(
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "联调命令合同无效"},
-        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "幂等身份或设备占用冲突"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "幂等身份冲突"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "DeviceCommand runtime 不可用"},
     },
     dependencies=[Depends(require_superuser)],
@@ -216,7 +215,7 @@ async def create_manual_debug_command(
             execution_reason=payload.reason,
             created_by=request.state.user_id,
         )
-    except (DeviceCommandIdentityConflictError, DeviceCommandCapacityError) as error:
+    except DeviceCommandIdentityConflictError as error:
         raise ConflictException(str(error)) from error
     except EcsStatusUnavailableError as error:
         raise ServiceUnavailableException(str(error)) from error

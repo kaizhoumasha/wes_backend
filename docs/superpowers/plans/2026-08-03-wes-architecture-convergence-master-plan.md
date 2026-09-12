@@ -529,9 +529,9 @@ ACK/CALLBACK 关联、命令冻结合同与资源围栏和唯一生产装配，�
 RuntimeIntentLog、SystemOutbox 设备分支、gateway、callback、配置、任务和测试已在独立详细计划中映射到唯一 successor、
 `NONE` 或 `RETAIN`。实施前必须按详细计划重新核对冻结摘要，发生漂移时只复审受影响边界。
 
-**Scope:** 稳定命令 identity 和不可变 payload digest；每 `device_code` 最多一个已接纳未终态命令；发送前
-`AUTO + IDLE` 和有效 WorkLine 设备绑定与命令冻结合同身份校验；同步 ACK 与异步终态 CALLBACK 分离；delivery unknown、deadline、安全重提和人工
-对账；状态新鲜度；事件/结果 ACK-after-persist、部署级唯一 `source_event_id`、重复/冲突/迟到 fencing；显式 Composition Root
+**Scope:** 稳定命令 identity 和不可变 payload digest；WES 对每条命令独立持久化和领取，发送前校验有效 WorkLine 设备绑定与冻结合同身份，
+设备状态、容量和同设备物理互斥由 ECS 在接纳时原子判断；同步 ACK 与异步终态 CALLBACK 分离；delivery unknown、deadline、安全重提和人工
+对账；状态诊断新鲜度；事件/结果 ACK-after-persist、部署级唯一 `source_event_id`、重复/冲突/迟到 fencing；显式 Composition Root
 和有界 worker；删除全部直接旧 Device owner。
 
 **Explicit out-of-scope:** 供应商原始 DTO、私有路径/认证、PLC/机械安全、具体 `task_type`/`event_type` 业务全集、
@@ -544,14 +544,14 @@ WorkLine 绑定与可靠对象资源围栏；固定 worker/路由装配；Device
 RuntimeIntentLog 和 SystemOutbox 的设备命令职责、可配置路径、旧 `event_id`、`priority`/`timeout` wire 和私有认证分支；
 非设备共享职责按详细计划标记为 `RETAIN`，不得扩大删除范围；不保留兼容字段或双路径。
 
-**测试所有权与重量要求:** 核心只验证固定路径、公共包络、身份、幂等、状态新鲜度、ACK/CALLBACK、fencing 和可靠生命周期；
+**测试所有权与重量要求:** 核心只验证固定路径、公共包络、身份、幂等、状态诊断新鲜度、ACK/CALLBACK、fencing 和可靠生命周期；
 供应商一致性验收拥有真实设备附录和 ECS 行为；插件测试拥有业务推进。三者不得互相代测。
 
 **与前后阶段的 atomic handoff:** 接收 Phase 5 零插件核心和 Phase 2 HTTP primitive，技术上不消费 Phase 6 Transport；
 实施调度仍按本总控等待 Phase 6 退出门禁。Phase 7 向 Phase 8 交付唯一 Device/ECS 基础能力。发现供应商差异时留在
 设备附录或供应商网关，不扩张核心合同。
 
-**Exit gate:** 所有设备 HTTP 调用只经唯一 ECS Adapter；同一 `device_code` 无并发活动命令；ACK 不推进物理终态；只有匹配
+**Exit gate:** 所有设备 HTTP 调用只经唯一 ECS Adapter；WES 独立持久化和领取每条命令，ECS 原子裁决同设备容量与物理互斥；ACK 不推进物理终态；只有匹配
 CALLBACK 可推进投影；未知、冲突、迟到或合同不匹配证据失败关闭；旧 Device owner 和裸 Client 分支零引用。零设备绑定是
 合法退出态：未绑定设备返回 `DEVICE_NOT_FOUND`，不发送 outbound 请求，也不接纳设备事件。
 
@@ -603,7 +603,7 @@ Phase 8 最终扫描确认 `plugin_state`、`src.app.runtime.workline_plugins` �
 | `confirm_inbound` / `notify_pkg_binding` 通用 WMS operation | WMS operation definitions、generated capability index、sync obligation 与 observability | 不是 Phase 8 粗分 operation；分别由既有 Phase 9/10 cutover guardrail 管理，Phase 8 不删除或改写 |
 
 **设备合同附录责任:** 本阶段只冻结粗分机真实支持的 `task_type`、`event_type`、Payload、错误和时限，并完成 endpoint/device/
-ECS 合同版本由 WorkLine 有效设备绑定校验，并在命令创建时冻结。固定路径、公共包络、identity、ACK/CALLBACK、状态新鲜度和冲突处理全部复用 Phase 7，
+ECS 合同版本由 WorkLine 有效设备绑定校验，并在命令创建时冻结。固定路径、公共包络、identity、ACK/CALLBACK、状态诊断新鲜度和冲突处理全部复用 Phase 7，
 不得在插件中复制或覆盖。相关诊断文档若已被当前合同取代，按项目规则移出项目目录归档，不保留转发页或重复真源。
 
 **测试所有权与重量要求:** Phase 7 Device/ECS 基础能力测试拥有固定路径、公共包络、DTO 校验、错误映射、身份和
@@ -635,7 +635,7 @@ GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发
 **Entry conditions:** 开发流程优化和运输接入诊断已分别进入当前基线；Phase 8 后端 RC 已关闭；Phase 9 Foundation 详细计划获批。
 
 **Scope（已按料箱简化合同收敛）:** 唯一活动管辖期 `PositionProjection`、WorkLine unfinished-work target aggregate、
-`ESTOP_PRESSED` final router、业务中立的 `WmsConfirmation` 可靠投递机制、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
+ECS 急停/复位/恢复执行与 WES 对 `ESTOP_PRESSED` 的入站拒绝边界、业务中立的 `WmsConfirmation` 可靠投递机制、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
 
 位置投影和可靠对象是基础能力；料箱只使用实际 `bin_code` 及插件必要的工位/业务关联，不建立全程料箱执行实体。必须交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。

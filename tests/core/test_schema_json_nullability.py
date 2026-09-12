@@ -16,7 +16,6 @@ from src.app.resource.models import (
 )
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.workline.models import WorkLine
-from src.app.workline.models.safety import WorklineSafetyIncident
 
 
 def test_non_optional_json_columns_are_not_nullable() -> None:
@@ -39,13 +38,6 @@ def test_non_optional_json_columns_are_not_nullable() -> None:
         WorkLine.__table__.c.diagnostic_profile,
         WorkLine.__table__.c.runtime_config_json,
         WorkLinePosition.__table__.c.metadata_json,
-        WorklineSafetyIncident.__table__.c.drain_error_json,
-        WorklineSafetyIncident.__table__.c.evidence_json,
-        WorklineSafetyIncident.__table__.c.missing_identifiers,
-        WorklineSafetyIncident.__table__.c.recovery_check_json,
-        WorklineSafetyIncident.__table__.c.release_evidence_json,
-        WorklineSafetyIncident.__table__.c.resolution_inputs_tried,
-        WorklineSafetyIncident.__table__.c.trigger_payload_json,
     )
 
     assert {f"{column.table.name}.{column.name}" for column in columns if column.nullable} == set()

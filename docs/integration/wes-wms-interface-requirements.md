@@ -1545,7 +1545,7 @@ WMS 的对外处理结果必须满足：
 | --- | --- | --- |
 | `202 / RECEIVED` | `transport_task_id` | 首次可靠接纳 |
 | `200 / DUPLICATE` | `transport_task_id` | 相同身份和相同消息已经接纳；复用第一次 `timestamp + data` |
-| `409 / CONFLICT` | `transport_task_id` | 身份内容冲突、同一任务更换提交身份或活动资源冲突 |
+| `409 / CONFLICT` | `transport_task_id` | 身份内容冲突或同一任务更换提交身份 |
 | `422 / REJECTED` | `reason_code + transport_task_id?` | 请求确定非法；只有能从请求中取得合法 `transport_task_id` 时才回显；`reason_code` 来自第 3.1.4 节闭集 |
 | `503 / UNAVAILABLE` | `transport_task_id` | 无法可靠持久化，或无法取得必须的可信当前面；固定等待 2000 毫秒后使用原消息重试 |
 | `400`，空响应体 | 无 | 错误 `Content-Type`、非法 UTF-8/JSON，或无法取得合法 `operation_id` |
@@ -1557,16 +1557,14 @@ WMS 的对外处理结果必须满足：
 | --- | --- | --- |
 | 字段、枚举、长度、成员数量或固定能力不合法 | `422 / REJECTED` | 否；修正后创建新的 TransportTask 和消息身份 |
 | WMS 当前无法可靠保存，或无法取得必须的可信当前面，且尚未接纳任何义务 | `503 / UNAVAILABLE` | 是；2000 毫秒后重试原完整消息 |
-| 同一身份对应不同内容、同一 `transport_task_id` 更换提交身份，或对象已绑定另一个已接纳且未闭合的搬运任务 | `409 / CONFLICT` | 否；进入人工对账 |
+| 同一身份对应不同内容，或同一 `transport_task_id` 更换提交身份 | `409 / CONFLICT` | 否；进入人工对账 |
 
-活动资源冲突的最小公共范围固定为：任一未闭合 TransportTask 绑定的 `rack_id` 不能再属于另一个未闭合的货架或 Bin 任务；同一
-`container_id` 不能同时属于两个未闭合的 Bin 任务。完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 用于请求内位置唯一性、成员目标
-校验和结果匹配，不另建活动资源绑定；Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与
-在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有搬运提交 ACK 中的 `transport_task_id` 都
-回显本次请求中已解析的合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
+TransportTask 只冻结并校验自身请求、成员与结果身份，不建立跨任务的 `rack_id`、`container_id` 或位置 owner/gate。
+完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 只用于请求内位置唯一性、成员目标校验和结果匹配；并发调度与物理资源授权由 WMS/RCS/ECS
+负责。所有搬运提交 ACK 中的 `transport_task_id` 都回显本次请求中已解析的合法值，包括 `409`；不得替换成其他任务 ID。
 
-WES 中处于 `RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次还会独占其冻结 `rack_id`。除该轮次自身的当前步骤外，
-其它本地 Transport 创建入口必须在形成 WMS submit 前返回资源冲突；该 WES 内部围栏不新增 WMS wire 字段或供应商侧状态。
+WES 中处于 `RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次保留自身冻结的任务和步骤事实，但不独占 `rack_id`，
+也不阻止其他任务提交。乱序或跨任务结果只应用到匹配任务；无法确认聚合当前位置时，位置投影标记为未确认或未知。
 
 `RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
 `400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。搬运提交 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
@@ -2567,7 +2565,7 @@ WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本�
 `return_batch` 不返回换面或换架方案。WMS 暂时不能分配当前面合格空位，包括当前面已没有合格空位时，均返回 `NO_BATCH`。这是正常等待，不转 NG 或 `STATE_CONFLICT`；新入站需求可以驱动换面或换架。
 只要 Bin 仍位于入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或已经以当前面为冻结目标，相关货架面就必须保持在工作位；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不再锁定原来源面。
 
-正常运行时只有新入站需求驱动货架切换。停止或切换已请求时，目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、插件执行身份、请求事实、旧架离场去向、新架可靠来源/工作位/到达面和幂等规则尚未冻结，当前为 `ReviewRequired/BLOCKED`。获批前 WES 停止接纳新任务和新 Bin，保持当前插件与资源绑定，不创建货架切换或退箱 Transport；全部清场义务闭合后才允许停用或切换插件。
+正常运行时只有新入站需求驱动货架切换。停止或切换已请求时，目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、插件执行身份、请求事实、旧架离场去向、新架可靠来源/工作位/到达面和幂等规则尚未冻结，当前为 `ReviewRequired/BLOCKED`。获批前 WES 停止接纳新任务和新 Bin，保持当前插件与设备配置，不创建货架切换或退箱 Transport；全部清场义务闭合后才允许停用或切换插件。
 
 Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 调用
 `outbound.bin.work_plan@v1`。WMS 核对 Bin 后返回需要处理的 Cell。

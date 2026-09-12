@@ -19,7 +19,6 @@ from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
@@ -365,7 +364,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         command = cast("Any", DeviceCommand).__table__.c
         transport = cast("Any", TransportTask).__table__.c
         confirmation = cast("Any", WmsConfirmation).__table__.c
-        incident = cast("Any", WorklineSafetyIncident).__table__.c
         bin_placement = cast("Any", BinPlacement).__table__.c
         rack_placement = cast("Any", RackPlacement).__table__.c
 
@@ -433,15 +431,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 confirmation.workline_id == workline.id,
                 confirmation.status != WmsConfirmationStatus.COMPLETED,
                 from_models=(WmsConfirmation, WorkLine),
-            ),
-            self._active_object_query(
-                "SAFETY_INCIDENT",
-                sa_cast(incident.id, String),
-                "SAFETY_INCIDENT",
-                incident.event_type,
-                literal("safety_incident:") + sa_cast(incident.id, String),
-                incident.workline_id == workline_id,
-                incident.status == WorklineSafetyIncidentStatus.ACTIVE,
             ),
             self._active_object_query(
                 "BIN_RESOURCE",

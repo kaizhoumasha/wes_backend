@@ -105,13 +105,6 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             sqlite_where=text("kind = 'DEVICE_EVENT'"),
         ),
         Index(
-            "ux_inbound_evidences_device_result",
-            "command_code",
-            unique=True,
-            postgresql_where=text("kind = 'DEVICE_RESULT' AND command_code IS NOT NULL"),
-            sqlite_where=text("kind = 'DEVICE_RESULT' AND command_code IS NOT NULL"),
-        ),
-        Index(
             "ux_inbound_evidences_wms_identity",
             "operation",
             "operation_id",
@@ -136,7 +129,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     material_execution_id: int | None = Field(default=None, foreign_key="wes_biz.material_executions.id", index=True)
     transport_task_id: str | None = Field(default=None, max_length=120, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
-    command_code: str | None = Field(default=None, max_length=100, index=True)
+    command_code: str | None = Field(default=None, max_length=160, index=True)
     contract_key: str | None = Field(default=None, max_length=100)
     contract_version: str | None = Field(default=None, max_length=50)
     operation: str | None = Field(default=None, max_length=160, index=True)

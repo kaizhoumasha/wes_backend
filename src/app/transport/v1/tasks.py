@@ -23,7 +23,6 @@ from src.app.transport.contracts import (
     TransportContractError,
     TransportHandle,
     TransportIdempotencyConflict,
-    TransportResourceConflict,
     TransportTaskKind,
     TransportTaskStatus,
     ZonePosition,
@@ -83,7 +82,6 @@ class _ZonePosition(_StrictApiModel):
 
 
 type _RackMovePosition = Annotated[_RackReference | _ZonePosition | _RackPosition, Field(discriminator="kind")]
-type _RackRotatePosition = Annotated[_RackReference | _RackPosition, Field(discriminator="kind")]
 
 
 class _RackBinSlot(_StrictApiModel):
@@ -117,7 +115,7 @@ class _RackMoveData(_StrictApiModel):
 
 class _RackRotateData(_StrictApiModel):
     rack_id: _TEXT
-    position: _RackRotatePosition
+    position: _RackPosition
     target_face: _FACE
     rcs_template_id: RcsTemplateId | None = None
 
@@ -182,8 +180,6 @@ class DebugTransportTaskResetPreview(_StrictApiModel):
     position_projection_count: int
     outcome_version: int
     member_count: int
-    binding_count: int
-    active_binding_count: int
 
 
 class DebugTransportTaskResetResult(_StrictApiModel):
@@ -192,7 +188,6 @@ class DebugTransportTaskResetResult(_StrictApiModel):
     deleted_evidence_count: int
     deleted_position_projection_count: int
     deleted_member_count: int
-    deleted_binding_count: int
 
 
 class _DebugTransportStepConfirmation(_StrictApiModel):
@@ -245,7 +240,6 @@ class TransportTaskResponse(TransportTaskSummaryResponse):
     outcome_version: int
     published_outcome_version: int
     pending_evidence_count: int
-    active_binding_count: int
     request: dict[str, Any]
     result: TransportResultResponse | None
 
@@ -367,9 +361,7 @@ def _rack_move_position(position: _RackMovePosition) -> RackReference | ZonePosi
     return RackPosition(location_code=position.location_code)
 
 
-def _rack_rotate_position(position: _RackRotatePosition) -> RackReference | RackPosition:
-    if isinstance(position, _RackReference):
-        return RackReference(location_code=position.location_code)
+def _rack_rotate_position(position: _RackPosition) -> RackPosition:
     return RackPosition(location_code=position.location_code)
 
 
@@ -437,7 +429,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport 请求不满足领域约束"},
-        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "幂等身份或 Transport 资源冲突"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport 幂等身份冲突"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
     },
     dependencies=[Depends(RequirePermission("ops:transport:debug-create"))],
@@ -449,7 +441,7 @@ async def create_debug_transport_task(
     runtime = _transport_runtime(request)
     try:
         handle = await _dispatch_debug_task(payload, runtime)
-    except (TransportIdempotencyConflict, TransportResourceConflict) as exc:
+    except TransportIdempotencyConflict as exc:
         raise ConflictException(str(exc)) from exc
     except TransportContractError as exc:
         raise ValidationException(str(exc), code="2004", status_code=400) from exc

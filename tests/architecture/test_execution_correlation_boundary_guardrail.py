@@ -54,7 +54,7 @@ def test_execution_correlation_boundary_rule_exists_in_script():
 def test_runtime_inbox_response_mapping_has_no_legacy_alias_after_inbox_retirement():
     """RuntimeInbox 退役后，workline START API 不再持有 inbox session_id 映射。
 
-    operation.py 是 WorkLine START + Safety clear-estop API，不再回读 RuntimeInbox。
+    operation.py 是 WorkLine START API，不再回读 RuntimeInbox。
     guardrail 脚本保留的 canonical 例外（`session_id: inbox.workline_session_id`）当前
     不应再被 operation.py 引用；同样禁止 `getattr(inbox, "session_id"` 旧 fallback。
     """

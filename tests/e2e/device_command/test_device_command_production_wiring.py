@@ -136,7 +136,7 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         assert history.request_body["disposition"] == "ACCEPTED"
         assert history.response_status == 200
         assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
-        assert ecs_server.status_requests == [f"ARM-E2E-MANUAL-{suffix}", f"ARM-E2E-MANUAL-{suffix}"]
+        assert ecs_server.status_requests == []
         assert len(ecs_server.command_requests) == 1
         assert set(ecs_server.command_requests[0]) == {
             "device_code",
@@ -290,7 +290,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             CommandStatus.ACKNOWLEDGED,
             CommandStatus.SUCCEEDED,
         }, (dispatched.status, dispatched.failure_code, dispatched.reconciliation_reason)
-        assert ecs_server.status_requests == [f"ARM-E2E-{suffix}"]
+        assert ecs_server.status_requests == []
         assert len(ecs_server.command_requests) == 1
         assert ecs_server.callback_errors == [], ecs_server.callback_errors
         assert len(ecs_server.callback_responses) == 1, ecs_server.callback_responses
@@ -312,8 +312,8 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
         assert command is not None and command.status == CommandStatus.SUCCEEDED
         assert evidence is not None and evidence.apply_status == "APPLIED"
         assert command.result_evidence_id == evidence.id
-        assert len(observations) == 1
-        assert ecs_server.status_requests == [f"ARM-E2E-{suffix}"]
+        assert observations == []
+        assert ecs_server.status_requests == []
         assert len(ecs_server.command_requests) == 1
         assert ecs_server.callback_errors == []
         assert ecs_server.callback_responses == [{"status": 200, "body": {"code": 200, "message": "ACK"}}]

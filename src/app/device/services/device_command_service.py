@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from src.app.device.contracts import (
+    DEVICE_INTEGRATION_CONTRACT_KEY,
+    DEVICE_INTEGRATION_CONTRACT_VERSION,
     DeviceCommandCallbackSnapshot,
     DeviceCommandHandle,
     DeviceCommandOutcome,
@@ -19,7 +21,7 @@ from src.app.device.contracts import (
     ManualDebugDevicePreflightSnapshot,
 )
 from src.app.device.endpoint import validate_device_endpoint_base_url
-from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
+from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.evidence_projection import (
     DeviceEvidenceEventPublisherPort,
     build_device_evidence_update,
@@ -33,13 +35,10 @@ from src.app.device.models.command import (
     DeviceCommand,
     DeviceCommandRequestData,
 )
-from src.app.device.models.event_command_block import DeviceEventCommandBlockStatus
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.device.repositories.event_command_block_repository import device_event_command_block_repository
 from src.app.device.services.device_command_admission import (
     DeviceCommandAdmissionError,
     ensure_runtime_admissible,
-    ensure_status_fresh,
 )
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
@@ -49,8 +48,6 @@ from src.app.execution.repositories.inbound_evidence_repository import inbound_e
 from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceService,
 )
-from src.app.sys.models.audit_log import OperaStatus
-from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.conf import settings
 from src.core.transaction_wakeup import defer_wakeup
@@ -75,10 +72,6 @@ class DeviceContractMismatchError(ValueError):
     """请求合同与 WorkLine 冻结合同不一致。"""
 
 
-class DeviceCommandCapacityError(RuntimeError):
-    """目标设备仍有未闭合命令。"""
-
-
 class DeviceCommandIdentityConflictError(ValueError):
     """同一插件执行身份被用于不同的不可变命令请求。"""
 
@@ -89,14 +82,6 @@ class DeviceCommandDeadlineError(ValueError):
 
 class DeviceCommandNotFoundError(LookupError):
     """调试命令不存在或不是 MANUAL_DEBUG 命令。"""
-
-
-class DeviceCommandManualReconciliationNotFoundError(LookupError):
-    """人工闭合请求没有命中指定 EVENT 的因果 blocker。"""
-
-
-class DeviceCommandManualReconciliationConflictError(RuntimeError):
-    """人工闭合的冻结因果或实时安全证明不再成立。"""
 
 
 class CommandRepositoryPort(Protocol):
@@ -113,8 +98,6 @@ class CommandRepositoryPort(Protocol):
         execution_ref_type: str,
         execution_ref_id: str,
     ) -> DeviceCommand | None: ...
-
-    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> DeviceCommand | None: ...
 
     async def get_manual_debug_by_client_request_id_for_update(
         self,
@@ -156,6 +139,22 @@ class WorkLineRepositoryPort(Protocol):
 
 
 class EvidenceRepositoryPort(Protocol):
+    async def lock_source_identity(self, db: AsyncSession, source_identity: str) -> None: ...
+
+    async def requeue_unassociated_device_results(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        device_code: str,
+        workline_id: int | None,
+        material_execution_id: int | None,
+        contract_key: str,
+        contract_version: str,
+        source_contract_key: str,
+        source_contract_version: str,
+    ) -> int: ...
+
     async def get_by_source_identity_for_update(
         self,
         db: AsyncSession,
@@ -165,20 +164,8 @@ class EvidenceRepositoryPort(Protocol):
     async def get_device_result_for_command(self, db: AsyncSession, command_code: str) -> InboundEvidence | None: ...
 
 
-class EventCommandBlockRepositoryPort(Protocol):
-    async def get_by_id_for_update(self, db: AsyncSession, *, block_id: int, evidence_id: int): ...
-
-    async def get_latest_for_evidence(self, db: AsyncSession, *, evidence_id: int): ...
-
-
-class AuditServicePort(Protocol):
-    async def create_audit_log(self, db: AsyncSession, **values: object) -> object: ...
-
-
 class ManualDebugAdapterPort(Protocol):
     async def fetch_statuses(self) -> tuple[EcsDeviceStatus, ...]: ...
-
-    async def fetch_status(self, device_code: str) -> EcsDeviceStatus: ...
 
 
 class ManualDebugAdapterProviderPort(Protocol):
@@ -186,19 +173,6 @@ class ManualDebugAdapterProviderPort(Protocol):
 
 
 _EVENT_DEBUG_COMMAND_TIMEOUT_MS = 30_000
-_MANUAL_RECONCILIATION_FAILURE_CODE = "MANUAL_RECONCILIATION_DEVICE_IDLE"
-
-
-@dataclass(frozen=True, slots=True)
-class _ManualReconciliationTarget:
-    evidence_id: int
-    block_id: int
-    command_id: int
-    command_code: str
-    command_version: int
-    device_code: str
-    endpoint_base_url: str
-    status_max_age_ms: int
 
 
 class DeviceCommandService:
@@ -213,8 +187,6 @@ class DeviceCommandService:
         evidence_repository: EvidenceRepositoryPort | None = None,
         evidence_service: InboundEvidenceService | None = None,
         adapter_provider: ManualDebugAdapterProviderPort | None = None,
-        event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
-        audit_service: AuditServicePort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
         task_queue_gateway: TaskQueueGateway | None = None,
         event_publisher: DeviceEvidenceEventPublisherPort | None = None,
@@ -227,8 +199,6 @@ class DeviceCommandService:
         self._evidences = evidence_repository or inbound_evidence_repository
         self._evidence_service = evidence_service or InboundEvidenceService()
         self._adapter_provider = adapter_provider
-        self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
-        self._audit = audit_service or audit_log_service
         self._clock = clock
 
     async def preflight_manual_debug(self, endpoint_base_url: str) -> ManualDebugDevicePreflightSnapshot:
@@ -311,8 +281,8 @@ class DeviceCommandService:
             next_attempt_at=now,
             created_at=now,
         )
-        persisted = await self._commands.add(db, command)
-        if self._task_queue is not None:
+        persisted = await self._persist_command(db, command)
+        if self._task_queue is not None and persisted.status == CommandStatus.PENDING:
             defer_wakeup(db, self._task_queue.enqueue_device_commands)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
@@ -360,32 +330,6 @@ class DeviceCommandService:
         payload_digest = _command_payload_digest(validated)
         async with self._sessions.begin() as db:
             await self._commands.lock_manual_debug_identity(db, validated.execution_ref_id)
-            same_identity = await self._commands.get_manual_debug_by_client_request_id_for_update(
-                db, validated.execution_ref_id
-            )
-            if same_identity is not None:
-                if not _same_manual_debug_identity(
-                    same_identity,
-                    payload_digest=payload_digest,
-                    execution_reason=validated.execution_reason,
-                    created_by=created_by,
-                ):
-                    raise DeviceCommandIdentityConflictError(validated.execution_ref_id)
-                return DeviceCommandHandle(
-                    command_code=same_identity.command_code,
-                    status=CommandStatus(same_identity.status),
-                )
-
-        adapter = await self._manual_debug_adapter(endpoint)
-        status = await adapter.fetch_status(validated.device_code)
-        ensure_runtime_admissible(
-            status=status,
-            expected_device_code=validated.device_code,
-            task_type=validated.task_type,
-        )
-
-        async with self._sessions.begin() as db:
-            await self._commands.lock_manual_debug_identity(db, validated.execution_ref_id)
             await self._commands.lock_creation_for_device(db, validated.device_code)
             same_identity = await self._commands.get_manual_debug_by_client_request_id_for_update(
                 db, validated.execution_ref_id
@@ -402,9 +346,6 @@ class DeviceCommandService:
                     command_code=same_identity.command_code,
                     status=CommandStatus(same_identity.status),
                 )
-            existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
-            if existing is not None:
-                raise DeviceCommandCapacityError(validated.device_code)
             command = DeviceCommand(
                 command_code=new_uuid7(),
                 device_code=validated.device_code,
@@ -426,8 +367,8 @@ class DeviceCommandService:
                 created_at=now,
                 created_by=created_by,
             )
-            persisted = await self._commands.add(db, command)
-            if self._task_queue is not None:
+            persisted = await self._persist_command(db, command)
+            if self._task_queue is not None and persisted.status == CommandStatus.PENDING:
                 defer_wakeup(db, self._task_queue.enqueue_device_commands)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
@@ -436,7 +377,7 @@ class DeviceCommandService:
         db: AsyncSession,
         *,
         evidence: InboundEvidence,
-    ) -> EventDebugCommandReady | EventDebugCommandBlocked:
+    ) -> EventDebugCommandReady:
         """从已持久化的调试 EVENT 创建不进入业务 Decision 的可靠命令。"""
 
         event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
@@ -478,16 +419,6 @@ class DeviceCommandService:
                 status=CommandStatus(same_identity.status),
                 created=False,
             )
-        existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
-        if existing is not None:
-            if existing.id is None:
-                raise RuntimeError("未闭合 DeviceCommand 缺少持久化 ID")
-            return EventDebugCommandBlocked(
-                blocking_command_id=existing.id,
-                blocking_command_code=existing.command_code,
-                blocking_command_status=CommandStatus(existing.status),
-                blocking_reconciliation_reason=existing.reconciliation_reason,
-            )
         command = DeviceCommand(
             command_code=new_uuid7(),
             device_code=validated.device_code,
@@ -510,12 +441,36 @@ class DeviceCommandService:
             created_at=now,
             created_by=None,
         )
-        persisted = await self._commands.add(db, command)
+        persisted = await self._persist_command(db, command)
         return EventDebugCommandReady(
             command_code=persisted.command_code,
             status=CommandStatus(persisted.status),
             created=True,
         )
+
+    async def _persist_command(self, db: AsyncSession, command: DeviceCommand) -> DeviceCommand:
+        # 与回调共享精确身份事务锁：无行时也保证后提交的一侧看见另一侧。
+        await self._evidences.lock_source_identity(db, f"device-result:{command.command_code}")
+        # 与 Evidence worker 一致先锁/登记 Evidence，再插入 Command，避免 E→C / C→E 环。
+        registered = await self._evidences.requeue_unassociated_device_results(
+            db,
+            command_code=command.command_code,
+            device_code=command.device_code,
+            workline_id=command.workline_id,
+            material_execution_id=command.material_execution_id,
+            contract_key=command.contract_key,
+            contract_version=command.contract_version,
+            source_contract_key=DEVICE_INTEGRATION_CONTRACT_KEY,
+            source_contract_version=DEVICE_INTEGRATION_CONTRACT_VERSION,
+        )
+        persisted = await self._commands.add(db, command)
+        if registered:
+            # 未提交命令不能借晚关联伪造执行；worker 留存关联诊断，不再下发或推进业务。
+            command.transition_to(CommandStatus.RECONCILING)
+            command.reconciliation_reason = "RESULT_BEFORE_DISPATCH"
+            if self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_device_evidence)
+        return persisted
 
     async def get_command_snapshot(self, command_code: str) -> ManualDebugDeviceCommandSnapshot:
         async with self._sessions.begin() as db:
@@ -559,141 +514,6 @@ class DeviceCommandService:
             created_by=command.created_by,
             callback=callback,
         )
-
-    async def reconcile_delivery_unknown_as_device_idle(
-        self,
-        *,
-        source_event_id: str,
-        block_id: int,
-        reason: str,
-        actor_id: int,
-    ) -> DeviceCommandHandle:
-        """以实时空闲证明人工闭合指定 blocker 对应的 DELIVERY_UNKNOWN 命令。"""
-
-        canonical_reason = reason.strip()
-        if not canonical_reason or len(canonical_reason) > 500:
-            raise ValueError("reason 必须是 1..500 个字符的非空文本")
-        target = await self._freeze_manual_reconciliation_target(
-            source_event_id=source_event_id,
-            block_id=block_id,
-        )
-
-        adapter = await self._manual_debug_adapter(target.endpoint_base_url)
-        status = await adapter.fetch_status(target.device_code)
-        ensure_runtime_admissible(status=status, expected_device_code=target.device_code)
-        observed_at = self._clock()
-        ensure_status_fresh(
-            status=status,
-            observed_at=observed_at,
-            status_max_age_ms=target.status_max_age_ms,
-        )
-
-        async with self._sessions.begin() as db:
-            evidence = await self._evidences.get_by_source_identity_for_update(db, source_event_id)
-            if evidence is None or evidence.id != target.evidence_id:
-                raise DeviceCommandManualReconciliationConflictError("EVENT evidence 已漂移")
-            block = await self._event_command_blocks.get_by_id_for_update(
-                db,
-                block_id=target.block_id,
-                evidence_id=target.evidence_id,
-            )
-            latest = await self._event_command_blocks.get_latest_for_evidence(db, evidence_id=target.evidence_id)
-            if (
-                block is None
-                or latest is None
-                or latest.id != target.block_id
-                or DeviceEventCommandBlockStatus(block.status) is not DeviceEventCommandBlockStatus.BLOCKED
-            ):
-                raise DeviceCommandManualReconciliationConflictError("目标 blocker 已漂移")
-            await self._commands.lock_creation_for_device(db, target.device_code)
-            command = await self._commands.get_by_command_code(db, target.command_code, for_update=True)
-            if not _matches_manual_reconciliation_target(command, target):
-                raise DeviceCommandManualReconciliationConflictError("阻塞命令已漂移")
-            if await self._evidences.get_device_result_for_command(db, target.command_code) is not None:
-                raise DeviceCommandManualReconciliationConflictError("阻塞命令已有 DEVICE_RESULT")
-
-            command.failure_code = _MANUAL_RECONCILIATION_FAILURE_CODE
-            command.transition_to(CommandStatus.FAILED)
-            state = status.state
-            _ = await self._audit.create_audit_log(
-                db,
-                method="POST",
-                title="人工闭合 DELIVERY_UNKNOWN DeviceCommand",
-                path=(f"/api/v1/device/evidences/{source_event_id}/blockers/{target.block_id}/reconcile-device-idle"),
-                args={
-                    "model": "DeviceCommand",
-                    "operation": "manual_reconcile_device_idle",
-                    "record_id": target.command_id,
-                    "source_event_id": source_event_id,
-                    "block_id": target.block_id,
-                    "command_code": target.command_code,
-                    "device_code": target.device_code,
-                    "previous_status": CommandStatus.RECONCILING.value,
-                    "reconciliation_reason": "DELIVERY_UNKNOWN",
-                    "is_online": state.is_online,
-                    "mode": state.mode.value,
-                    "status": state.status.value,
-                    "current_command_code": state.current_command_code,
-                    "updated_at": state.updated_at,
-                    "status_max_age_ms": target.status_max_age_ms,
-                    "actor_id": actor_id,
-                    "reason": canonical_reason,
-                },
-                status=OperaStatus.SUCCESS,
-                code="200",
-                msg="人工确认设备空闲并闭合 DELIVERY_UNKNOWN 命令",
-            )
-        return DeviceCommandHandle(command_code=target.command_code, status=CommandStatus.FAILED)
-
-    async def _freeze_manual_reconciliation_target(
-        self,
-        *,
-        source_event_id: str,
-        block_id: int,
-    ) -> _ManualReconciliationTarget:
-        async with self._sessions.begin() as db:
-            evidence = await self._evidences.get_by_source_identity_for_update(db, source_event_id)
-            if evidence is None or evidence.id is None:
-                raise DeviceCommandManualReconciliationNotFoundError(source_event_id)
-            block = await self._event_command_blocks.get_by_id_for_update(
-                db,
-                block_id=block_id,
-                evidence_id=evidence.id,
-            )
-            if block is None:
-                raise DeviceCommandManualReconciliationNotFoundError(f"{source_event_id}:{block_id}")
-            latest = await self._event_command_blocks.get_latest_for_evidence(db, evidence_id=evidence.id)
-            if (
-                latest is None
-                or latest.id != block_id
-                or DeviceEventCommandBlockStatus(block.status) is not DeviceEventCommandBlockStatus.BLOCKED
-            ):
-                raise DeviceCommandManualReconciliationConflictError("目标 blocker 不是当前 BLOCKED 因果")
-            command = await self._commands.get_by_command_code(db, block.blocking_command_code)
-            if command is None or command.id != block.blocking_command_id or command.id is None:
-                raise DeviceCommandManualReconciliationConflictError("blocker 指向的命令不存在")
-            if not _is_delivery_unknown_reconciling(command):
-                raise DeviceCommandManualReconciliationConflictError("命令不是 DELIVERY_UNKNOWN 对账态")
-            if command.execution_ref_type in DIAGNOSTIC_REF_TYPES or command.workline_id is None:
-                raise DeviceCommandManualReconciliationConflictError("诊断命令没有冻结的新鲜度合同")
-            if await self._evidences.get_device_result_for_command(db, command.command_code) is not None:
-                raise DeviceCommandManualReconciliationConflictError("阻塞命令已有 DEVICE_RESULT")
-            if command.status_max_age_ms is None or command.status_max_age_ms <= 0 or command.endpoint_base_url is None:
-                raise DeviceCommandManualReconciliationConflictError("命令缺少冻结设备合同")
-            try:
-                endpoint = validate_device_endpoint_base_url(command.endpoint_base_url)
-            except ValueError as error:
-                raise DeviceCommandManualReconciliationConflictError("冻结设备 Endpoint 不可解析") from error
-            return _ManualReconciliationTarget(
-                evidence_id=evidence.id,
-                block_id=block_id,
-                command_id=command.id,
-                command_code=command.command_code,
-                command_version=command.version,
-                device_code=command.device_code,
-                endpoint_base_url=endpoint,
-                status_max_age_ms=command.status_max_age_ms,
-            )
 
     async def _manual_debug_adapter(self, endpoint_base_url: str) -> ManualDebugAdapterPort:
         if self._adapter_provider is None:
@@ -791,33 +611,9 @@ def _same_manual_debug_identity(
     )
 
 
-def _is_delivery_unknown_reconciling(command: DeviceCommand) -> bool:
-    return (
-        CommandStatus(command.status) is CommandStatus.RECONCILING
-        and command.reconciliation_reason == "DELIVERY_UNKNOWN"
-    )
-
-
-def _matches_manual_reconciliation_target(
-    command: DeviceCommand | None,
-    target: _ManualReconciliationTarget,
-) -> TypeGuard[DeviceCommand]:
-    return (
-        command is not None
-        and command.id == target.command_id
-        and command.command_code == target.command_code
-        and command.device_code == target.device_code
-        and command.version == target.command_version
-        and _is_delivery_unknown_reconciling(command)
-    )
-
-
 __all__ = [
-    "DeviceCommandCapacityError",
     "DeviceCommandDeadlineError",
     "DeviceCommandIdentityConflictError",
-    "DeviceCommandManualReconciliationConflictError",
-    "DeviceCommandManualReconciliationNotFoundError",
     "DeviceCommandNotFoundError",
     "DeviceCommandService",
     "DeviceContractMismatchError",

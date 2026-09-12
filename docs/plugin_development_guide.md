@@ -84,7 +84,7 @@ WorkLine 插件拥有业务结果到执行决定（Decision）的映射。供应
 | 项目 | 记录内容 |
 | --- | --- |
 | Event | `contract_key`/`contract_version`、`event_type`、触发条件、`data`、部署级唯一 `source_event_id`、WES ACK |
-| Command | `contract_key`/`contract_version`、`task_type`、`params`、同步 ACK、`AUTO + IDLE` 单设备单活动命令和原子拒绝 |
+| Command | `contract_key`/`contract_version`、`task_type`、`params`、同步 ACK；WES 独立提交，ECS 按实际状态、容量和物理互斥原子接纳或拒绝 |
 | Callback | `command_code`、原命令 `contract_key`/`contract_version`、部署级唯一 `source_event_id`、唯一终态、成功和失败 `data`、最终物理后置条件 |
 | Status | 必填 `device_code` 查询参数、共享 `mode`/`status`、实际 `contract_key`/`contract_version`、状态最大观察年龄、禁止缓存、当前命令和错误详情 |
 | Error | 标准语义、供应商原始证据、隔离范围、人工处理 |
@@ -190,7 +190,8 @@ WorkLine 基础配置管理实际工作位、设备归属和必要的物理关�
 默认每个插槽绑定一个资源；允许本线有未参与当前插件的资源，不预建多重绑定或插件专属表单。
 保存校验未知插槽、资源归属、类型/能力和重复绑定；草稿可缺项，启动必须满足全部必填绑定。
 宿主通用启动路径只检查 ECS 连通性：接口响应符合合同、包含全部绑定设备且设备在线；不要求设备处于 AUTO、IDLE、
-无活动命令或命令状态快照未过期。上述执行准入仍在实际下发设备命令时检查，启动本身不下发物理动作。
+无活动命令或命令状态快照未过期。实际下发时 WES 只校验静态合同和请求，设备状态、容量与物理互斥由 ECS 在接纳时判断；
+启动本身不下发物理动作。
 已有插件专用 Start Plan 的业务检查仍由该插件维护。
 切换或解除插件保留实际工作位与设备，重新校验业务绑定；移除被引用资源前须先解除相应绑定。
 基础与装配保存共用 WorkLine 版本及停用、未完成负载和安全检查，保存另一类配置前需读取最新版本。

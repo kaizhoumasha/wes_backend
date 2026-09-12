@@ -418,7 +418,6 @@ class RuntimeWorklineSummary(BaseModel):
     maintenance_device_count: int = 0
     run_mode: str = "AUTO"
     runtime_status: str = "STOPPED"
-    active_safety_incident_id: int | None = None
     stopped_at: datetime | None = None
     stopped_reason: str | None = None
     resumed_at: datetime | None = None

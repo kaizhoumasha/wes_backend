@@ -21,6 +21,18 @@ class PickingTaskConfirmationOwnerService:
     def __init__(self, repository: PickingTaskRepository | None = None) -> None:
         self._tasks = repository or picking_task_repository
 
+    async def validate_dispatch_owner(
+        self,
+        db: object,
+        *,
+        picking_task_id: int,
+        operation: str,
+    ) -> bool:
+        if operation in {RETURN_RACK_ARRIVAL_REPORT_OPERATION, MATERIAL_MOVEMENT_REPORT_OPERATION}:
+            # 仅续送已冻结的事实义务；响应后的业务应用仍独立校验原 owner。
+            return True
+        return await self.validate_response_owner(db, picking_task_id=picking_task_id, operation=operation)
+
     async def validate_response_owner(
         self,
         db: object,

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
+import pytest
+from pydantic import ValidationError
+
+from src.app.device.contracts import EcsCommandResultReport, EcsCommandResultValue
+from src.app.execution.models.inbound_evidence import InboundEvidence
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 
 
@@ -98,3 +103,14 @@ def test_omitted_field_and_explicit_null_have_different_digests() -> None:
     explicit_null = {**omitted, "error_detail": None}
 
     assert _device_digest(omitted) != _device_digest(explicit_null)
+
+
+def test_unknown_command_association_storage_covers_the_wire_identity_limit() -> None:
+    report = EcsCommandResultReport(
+        command_code="C" * 160, device_code="ARM-01", result=EcsCommandResultValue.SUCCESS, finish_time=1
+    )
+    assert cast("Any", InboundEvidence).__table__.c.command_code.type.length >= len(report.command_code)
+    with pytest.raises(ValidationError):
+        EcsCommandResultReport(
+            command_code="C" * 161, device_code="ARM-01", result=EcsCommandResultValue.SUCCESS, finish_time=1
+        )

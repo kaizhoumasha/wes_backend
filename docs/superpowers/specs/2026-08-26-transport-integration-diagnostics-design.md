@@ -3,7 +3,9 @@
 **日期：** 2026-08-26
 
 **状态：** 诊断功能及 Transport 0.3.0 请求字段已完成仓内对齐；`TRANSPORT_DEBUG` 联调当前位置投影已在当前分支实现。
-该状态不代表已合并或正式发布，也不替代供应商一致性、现场物理动作或业务验收
+2026-09-12 起资源占用与恢复语义由[无阻塞设计](2026-09-11-wes-nonblocking-execution-design.md)取代：WES 不再维护 Transport
+跨任务资源占用或以历史投影阻止独立任务，实际互斥由 WMS/RCS 在接纳时裁决。该状态不代表已合并或正式发布，也不替代供应商一致性、
+现场物理动作或业务验收。
 
 **范围：** WES 后端、WES 前端，以及 WMS 回调进入 WES 后的可观测链路
 
@@ -23,7 +25,8 @@
 
 1. 页面路由为 `/ops/transport-diagnostics`，与“设备接入诊断”并列，不合并成通用诊断中心。
 2. 四种能力必须全部可发起：`RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE`。
-3. 不新增 Preflight。参数、资源映射、设备能力和物理可执行性由 WMS、RCS 或硬件侧处理；WES 继续执行现有 DTO、幂等、资源占用和状态约束。
+3. 不新增 Preflight。参数、资源映射、设备能力和物理可执行性由 WMS、RCS 或硬件侧处理；WES 只执行请求 DTO、单任务幂等、
+成员/证据匹配和状态约束，不做跨任务资源占用裁决。
 4. 不新增周期轮询。页面使用“一次初始查询 + 共享 SSE 实时通知 + 用户点击后查询持久结果”。
 5. 默认加载最近 20 条全部 `TransportTask`，支持继续加载，单次上限 100 条。
 6. 不提供“全部/联调/业务”来源过滤，也不新增来源字段。允许按 `kind`、`status` 缩小列表，并可按精确 `transport_task_id` 查询。
@@ -278,7 +281,7 @@ data: {
 
 表单字段直接对应现有后端 discriminated union，不提供任意 JSON 编辑器。用户提交前展示不可编辑的规范化 JSON 预览，并进行二次确认，明确提示“可能触发真实 RCS/AGV/CTU 动作”。
 
-对话框不调用 Preflight，不读取或编辑 Provider URL，不提供 force、cancel、fake callback、retry/resend 或绕过资源约束的按钮。
+对话框不调用 Preflight，不读取或编辑 Provider URL，不提供 force、cancel、fake callback、retry/resend 或状态改写按钮。
 
 `TRANSPORT_DEBUG` 的已应用终态由 Transport 模块维护独立、可丢弃的联调当前位置投影；后续 `RACK_ROTATE` 和 `BIN_EXCHANGE`
 只使用该投影校验位置与朝向，不读取或污染业务 WorkLine 的 `PositionProjection`。定向清理当前来源任务时同步删除该

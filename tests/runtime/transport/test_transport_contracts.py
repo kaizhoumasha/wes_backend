@@ -630,7 +630,7 @@ def test_rack_reference_must_match_outer_rack_identity() -> None:
             "90",
             RcsTemplateId.CTU01,
         )
-    with pytest.raises(TransportContractError, match="RACK location_code must match rack_id"):
+    with pytest.raises(TransportContractError, match="rack rotation requires an explicit rack position"):
         RotateRackRequest(
             _REQUEST_ID,
             _caller(),
@@ -655,7 +655,7 @@ def test_510056_edges_accept_rack_reference_without_face_mapping() -> None:
         _REQUEST_ID,
         caller,
         "510056",
-        RackReference("510056"),
+        RackPosition("KT16"),
         "270",
         RcsTemplateId.CTU02,
     )
@@ -672,6 +672,11 @@ def test_510056_edges_accept_rack_reference_without_face_mapping() -> None:
     assert outbound.target_face == "90"
     assert rotate.target_face == "270"
     assert returned.target == ZonePosition("WH05")
+
+
+def test_rotate_rack_rejects_reference_without_explicit_position() -> None:
+    with pytest.raises(TransportContractError, match="explicit rack position"):
+        RotateRackRequest(_REQUEST_ID, _caller(), "rack-1", RackReference("rack-1"), "270")
 
 
 def test_rotate_rack_uses_ctu02_and_preserves_opaque_face() -> None:

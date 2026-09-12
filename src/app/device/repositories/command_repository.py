@@ -9,7 +9,6 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 _UNCLOSED_STATUSES = (
@@ -54,21 +53,6 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         if for_update:
             statement = statement.with_for_update()
         result = await db.execute(statement)
-        return result.scalar_one_or_none()
-
-    async def get_unclosed_for_device_for_update(
-        self,
-        db: AsyncSession,
-        device_code: str,
-    ) -> DeviceCommand | None:
-        columns = cast("Any", DeviceCommand).__table__.c
-        result = await db.execute(
-            select(DeviceCommand)
-            .where(columns.device_code == device_code, columns.status.in_(_UNCLOSED_STATUSES))
-            .order_by(columns.id)
-            .limit(1)
-            .with_for_update()
-        )
         return result.scalar_one_or_none()
 
     async def has_unclosed_for_workline_for_update(self, db: AsyncSession, workline_id: int) -> bool:
@@ -168,29 +152,13 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         now: datetime,
         claim_expires_at: datetime,
     ) -> DeviceCommand | None:
-        # 领取事务必须先串行化，否则两个 worker 可分别 skip-locked 同设备的两条 PENDING，
-        # 并在同一份 IDLE Status 快照后并发提交给 ECS。该锁不跨越外部 I/O。
-        _ = await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('device-command:dispatch-claim', 0))"))
         columns = cast("Any", DeviceCommand).__table__.c
-        blocking_commands = cast("Any", DeviceCommand).__table__.alias("blocking_device_commands")
         result = await db.execute(
             select(DeviceCommand)
             .where(
                 columns.status == CommandStatus.PENDING,
                 columns.deadline_at > now,
                 (columns.next_attempt_at.is_(None) | (columns.next_attempt_at <= now)),
-                ~select(blocking_commands.c.id)
-                .where(
-                    blocking_commands.c.device_code == columns.device_code,
-                    blocking_commands.c.status.in_(
-                        (
-                            CommandStatus.DISPATCHING,
-                            CommandStatus.ACKNOWLEDGED,
-                            CommandStatus.RECONCILING,
-                        )
-                    ),
-                )
-                .exists(),
             )
             .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.id)
             .limit(1)
@@ -315,36 +283,6 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         command.transition_to(CommandStatus.RECONCILING)
         _clear_claim(command)
         await db.flush()
-
-    async def fail_pending_by_workline(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        failure_code: str,
-        limit: int = 100,
-    ) -> int:
-        """急停只关闭尚未发送的命令；已可能触发物理动作的命令继续占槽。"""
-
-        command_columns = cast("Any", DeviceCommand).__table__.c
-        workline_columns = cast("Any", WorkLine).__table__.c
-        result = await db.execute(
-            select(DeviceCommand)
-            .join(WorkLine, workline_columns.id == command_columns.workline_id)
-            .where(
-                workline_columns.id == workline_id,
-                command_columns.status == CommandStatus.PENDING,
-            )
-            .order_by(command_columns.id)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        )
-        commands = list(result.scalars().all())
-        for command in commands:
-            command.failure_code = failure_code
-            command.transition_to(CommandStatus.FAILED)
-        await db.flush()
-        return len(commands)
 
 
 device_command_repository = DeviceCommandRepository()

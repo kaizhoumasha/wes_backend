@@ -84,13 +84,6 @@ class TargetDecidedHandler:
     def _assigned_conflict(fact: TargetDecidedFact, target: DevicePosition) -> PauseForReconciliation | None:
         if fact.result is not TargetResult.ASSIGNED:
             return None
-        if fact.current_rack_fenced:
-            return PauseForReconciliation(
-                material_execution_id=fact.material_execution_id,
-                fact_id=fact.fact_id,
-                reason_code="CURRENT_RACK_ALREADY_REPLACED",
-                affected_resource_ids=(fact.current_rack_id,),
-            )
         target_rack_id = target.rack_id
         if target_rack_id != fact.current_rack_id:
             return PauseForReconciliation(

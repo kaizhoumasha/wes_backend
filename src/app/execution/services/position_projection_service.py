@@ -24,35 +24,19 @@ class PositionProjectionService:
     async def get_current(self, db, object_type, object_id, *, for_update=False):
         return await self._repository.get(db, object_type, object_id, for_update=for_update)
 
-    async def _lock_authorized_object(self, db, authority, object_type, object_id):
+    async def _lock_authorized_object(self, db, object_type, object_id):
+        if object_type not in {"RACK", "BIN"}:
+            raise PositionProjectionAuthorityError("unsupported projection object_type")
+        await self._repository.lock_projection(db, object_type, object_id)
+        return await self._repository.get_for_update(db, object_type, object_id)
+
+    async def admit_transport_member(self, db, *, authority, object_type):
+        """仅验证显式工作线许可；诊断投影不裁决独立请求或改写位置事实。"""
         if object_type not in {"RACK", "BIN"}:
             raise PositionProjectionAuthorityError("unsupported projection object_type")
         line = await self._repository.get_workline_for_update(db, authority.workline_id)
         if line is None or not line.is_active:
             raise PositionProjectionAuthorityError("transport authority requires active WorkLine")
-        await self._repository.lock_projection(db, object_type, object_id)
-        projection = await self._repository.get_for_update(db, object_type, object_id)
-        if (
-            projection is not None
-            and projection.workline_id != authority.workline_id
-            and (
-                projection.position_unknown
-                or await self._repository.is_workline_position(db, projection.workline_id, projection.position_json)
-            )
-        ):
-            raise PositionProjectionAuthorityError("object occupies another WorkLine")
-        return projection
-
-    async def admit_transport_member(self, db, *, authority, object_type, object_id, source):
-        """在可发送义务持久化前验证当前准入，沿用对象锁阻止并行动作。"""
-        projection = await self._lock_authorized_object(db, authority, object_type, object_id)
-        if projection is None:
-            return
-        if projection.position_unknown:
-            raise PositionProjectionAuthorityError("object position is unknown")
-        rack_reference = source.get("kind") == "RACK" and source.get("location_code") == object_id
-        if not rack_reference and projection.position_json != source:
-            raise PositionProjectionAuthorityError("transport source does not match current position")
 
     async def apply_transport_result(
         self,
@@ -70,8 +54,16 @@ class PositionProjectionService:
     ):
         if authority is None:
             return None
-        projection = await self._lock_authorized_object(db, authority, object_type, object_id)
+        projection = await self._lock_authorized_object(db, object_type, object_id)
+        if projection is not None and projection.source_transport_task_id != transport_task_id:
+            # 不同任务的 revision 和到达时间不可比较；各自事实留在任务，聚合仅标记未确认。
+            projection.position_unknown = True
+            await self._repository.flush(db)
+            return projection
         if projection is None:
+            if await self._repository.get_workline_for_update(db, authority.workline_id) is None:
+                # 原任务事实仍由 Transport 保存；不存在的业务 owner 不能成为新投影外键。
+                return None
             projection = await self._repository.add(
                 db,
                 PositionProjection(

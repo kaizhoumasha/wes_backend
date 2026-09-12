@@ -19,7 +19,7 @@
 - [插件顶层设计](../specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md)：声明先行、渐进接入、基础与业务职责。
 - [最新插件声明](../../../workline_plugins/manual-picking/src/manual_picking/definition.py)及 [README](../../../workline_plugins/manual-picking/README.md)。
 - [人工出库货架搬运规则](../../integration/manual-outbound-rack-transport.md)与 [Transport 履约合同](../../contracts/transport-fulfillment-contract.md)：资源角色、模板、位置和实际结果的真源。
-- [点位事件及恢复设计](../specs/2026-09-10-station-driven-execution-recovery-top-level-design.md)：仅复用已实现的 WES 基础与诊断能力；WMS 纠正/反馈和正式插件业务是本方案自己的后续依赖，不属于基础恢复任务。
+- [点位事件及恢复设计](../specs/2026-09-11-wes-nonblocking-execution-design.md)：无阻塞恢复目标尚未实施；本方案的 WMS 纠正和正式业务消费者与该计划 T4 对齐，由同一消费者 owner 实施，避免重复改动或把基础验证当成业务闭环。
 - 决策上下文：任务 `01a0891b-4bac-73f2-a993-269232642e34`、`01a08988-b3d4-7d32-8e95-f9b939852163`；本方案以当前文件和后续冻结合同为实施依据。
 
 ## 1. 成功标准与范围
@@ -183,7 +183,8 @@ FIVE_RACK 只有一个工作位，配置容量 C 表示整个五层货架区可�
 
 以本次计划为例，假设 WES 已冻结 510002/"90" 先于 510012/"270" 的处理顺序（不是由 wire 数组自动授予优先级）；610007 使用独立 TRANSFER_RACK，不占 FIVE_RACK 容量。C=1 时先呼叫 510002，待其按合同离开区域并释放容量后再呼叫 510012；C=2 且区域空闲时可依次呼叫两架，510012 排队，取得实际进位事实后才开始作业。C 大于计划资源数时只呼叫实际存在的资源。
 
-页面显示“容量 C、作业架、排队架、在途预留、待呼叫资源和可用数量”；这些是已有事实的展示，不额外创建独立状态机。若共享位置准入当前只支持单占用，实施前将容量消费者列入影响清单，不绕过位置冲突检查来实现排队。
+页面显示“容量 C、作业架、排队架、在途预留、待呼叫资源和可用数量”；这些是插件所属缓存/队列事实的展示，不额外创建独立状态机。
+共享 PositionProjection 只提供位置诊断，不作为跨任务容量或冲突授权；容量消费者由插件业务规则独立验证。
 
 ### 3.4 模拟与真实下发的可见性
 

@@ -5,7 +5,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
+from src.app.runtime.orchestration.workline_runtime_status_projection import (
+    WorkLineRuntimeStatus,
+    WorklineRuntimeStatusProjection,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,6 +32,25 @@ def test_runtime_status_projection_has_no_exact_duplicate_indexes() -> None:
         indexes_by_columns.setdefault(key, []).append(str(index.name))
 
     assert {key: names for key, names in indexes_by_columns.items() if len(names) > 1} == {}
+
+
+def test_runtime_status_projection_retires_wes_estop_state() -> None:
+    assert "ESTOPPED" not in WorkLineRuntimeStatus.__members__
+    status_check = next(
+        constraint
+        for constraint in WorklineRuntimeStatusProjection.__table__.constraints
+        if str(constraint.name).endswith("ck_wrt_status_proj_status")
+    )
+    assert "ESTOPPED" not in str(status_check.sqltext)
+
+
+def test_safety_retirement_migration_only_converges_clean_schema() -> None:
+    source = _source(Path("migrations/versions/20260912_2047_db9bf1bdb493_退役工作线急停_incident.py"))
+
+    assert "ck_wrt_status_proj_status" in source
+    assert "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'RECONCILING')" in source
+    assert "DELETE FROM" not in source
+    assert "UPDATE wes_runtime.workline_runtime_status_projections" not in source
 
 
 def _source(path: Path) -> str:

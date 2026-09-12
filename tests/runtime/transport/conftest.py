@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -22,7 +23,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -31,6 +31,13 @@ from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 from tests.support.transport_projections import confirm_rack_faces
 
 register_required_sqlmodel_metadata()
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_identity_lock(monkeypatch):
+    # FAST 验证持久工作；真实 PostgreSQL 身份锁竞争归 integration owner。
+    monkeypatch.setattr(TransportRepository, "lock_task_identity", AsyncMock())
+    monkeypatch.setattr(TransportRepository, "lock_position_result", AsyncMock())
 
 
 class FakeProvider:
@@ -98,7 +105,6 @@ async def outcome_service(db_engine: object) -> TransportService:
         for model in (
             TransportEvidence,
             TransportCallbackReceipt,
-            TransportResourceBinding,
             TransportMember,
             PositionProjection,
             TransportTask,

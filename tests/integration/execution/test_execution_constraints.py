@@ -184,7 +184,16 @@ def _projection(workline_id: int, object_id: str) -> PositionProjection:
     )
 
 
-async def _apply_projection(service, db, line_id: int, object_id: str, *, unknown=False):
+async def _apply_projection(
+    service,
+    db,
+    line_id: int,
+    object_id: str,
+    *,
+    unknown=False,
+    transport_task_id: str | None = None,
+):
+    frozen_transport_task_id = transport_task_id or f"{PREFIX}TRANSPORT-{object_id}"
     return await service.apply_transport_result(
         db,
         authority=TransportExecutionAuthority(workline_id=line_id),
@@ -194,7 +203,7 @@ async def _apply_projection(service, db, line_id: int, object_id: str, *, unknow
         position_unknown=unknown,
         arrival_face=None,
         operation_id="019d0000-0000-7000-8000-000000000001",
-        transport_task_id=f"{PREFIX}TRANSPORT-{object_id}",
+        transport_task_id=frozen_transport_task_id,
         updated_at=datetime(2026, 8, 28),
     )
 
@@ -222,7 +231,7 @@ async def test_postgresql_bin_projection_uses_workline_and_transport_identity(in
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_bin_projection_admission_keeps_one_workline_owner(
+async def test_postgresql_concurrent_cross_task_results_keep_one_unconfirmed_projection(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
@@ -233,13 +242,24 @@ async def test_postgresql_concurrent_bin_projection_admission_keeps_one_workline
     async def apply(line_id):
         try:
             async with integration_session_factory.begin() as db:
-                return await _apply_projection(PositionProjectionService(), db, line_id, identity)
+                return await _apply_projection(
+                    PositionProjectionService(),
+                    db,
+                    line_id,
+                    identity,
+                    transport_task_id=f"{PREFIX}TRANSPORT-{identity}-{line_id}",
+                )
         except PositionProjectionAuthorityError as error:
             return error
 
     results = await asyncio.gather(*(apply(line_id) for line_id in line_ids))
-    assert sum(isinstance(result, PositionProjection) for result in results) == 1
-    assert sum(isinstance(result, PositionProjectionAuthorityError) for result in results) == 1
+    assert all(isinstance(result, PositionProjection) for result in results)
+    async with integration_session_factory() as db:
+        projection = await PositionProjectionRepository().get(db, "BIN", identity)
+    assert projection is not None
+    assert projection.workline_id in line_ids
+    assert projection.position_unknown is True
+    assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}-{projection.workline_id}"
 
 
 @pytest.mark.asyncio
@@ -290,7 +310,7 @@ async def test_postgresql_unknown_projection_blocks_waiting_workline_deactivatio
 
 
 @pytest.mark.asyncio
-async def test_postgresql_workline_deactivation_rejects_waiting_projection_writer(integration_session_factory) -> None:
+async def test_postgresql_workline_deactivation_retains_waiting_original_result(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
         workline, identity = await _seed_workline(db)
         line_id, version = workline.id, workline.version
@@ -320,10 +340,12 @@ async def test_postgresql_workline_deactivation_rejects_waiting_projection_write
     assert done == set()
     release.set()
     await deactivating
-    with pytest.raises(PositionProjectionAuthorityError):
-        await applying
+    await applying
     async with integration_session_factory() as db:
-        assert await PositionProjectionRepository().get(db, "BIN", identity) is None
+        assert not (await db.get(WorkLine, line_id)).is_active
+        projection = await PositionProjectionRepository().get(db, "BIN", identity)
+        assert projection is not None
+        assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}"
 
 
 @pytest.mark.asyncio

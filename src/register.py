@@ -35,7 +35,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     transport_runtime = None
     device_command_runtime = None
     deployment_runtime = None
-    outbound_picking_runtime = None
     workline_integration_debug_runtime = None
     primary_error: BaseException | None = None
     try:
@@ -48,7 +47,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
-        _app.state.outbound_picking_runtime = None
         _app.state.workline_integration_debug_runtime = None
         _app.state.workline_start_service = None
         _app.state.workline_configuration_service = None
@@ -104,7 +102,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         outbound_picking_runtime = build_outbound_picking_runtime(
             session_factory=db_module.AsyncSessionLocal,
         )
-        _app.state.outbound_picking_runtime = outbound_picking_runtime
         _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
         _app.state.wms_picking_task_plan_delta_handler = outbound_picking_runtime.picking_task_plan_delta_handler
         _app.state.wms_picking_task_queue_changed_handler = outbound_picking_runtime.picking_task_queue_changed_handler
@@ -146,7 +143,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_configuration_service = None
         _app.state.task_queue_gateway = None
         _app.state.wms_recovery_event_handler = None
-        _app.state.outbound_picking_runtime = None
         _app.state.workline_integration_debug_runtime = None
         _app.state.wms_picking_task_issued_handler = None
         _app.state.wms_picking_task_plan_delta_handler = None
@@ -233,7 +229,6 @@ def register_routers(app: FastAPI) -> None:
     from src.app.transport.v1 import router as transport_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.wms_diagnostics.v1 import router as wms_diagnostics_router
-    from src.app.wms_integration.outbound_picking.v1.plan_correction import router as picking_plan_router
     from src.app.workline import router_v1 as workline_router
     from src.app.workline_integration_debug.v1 import router as workline_integration_debug_router
 
@@ -248,7 +243,6 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
     app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
-    app.include_router(picking_plan_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
     app.include_router(workline_integration_debug_router, prefix=settings.API_PATH)
 

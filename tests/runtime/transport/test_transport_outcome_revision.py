@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import select
@@ -10,7 +12,6 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, T
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
@@ -79,17 +80,8 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
     assert task is not None
     assert task.last_applied_wms_outcome_revision == 2
-    assert bindings
-    assert all(binding.released_at is not None for binding in bindings)
 
 
 @pytest.mark.asyncio
@@ -273,6 +265,10 @@ async def test_late_lower_revision_never_rolls_back_projection(
     outcome_service: TransportService,
     db_engine: object,
 ) -> None:
+    from src.core import transaction_wakeup
+
+    queue = Mock()
+    outcome_service._task_queue = queue
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
@@ -301,6 +297,9 @@ async def test_late_lower_revision_never_rolls_back_projection(
     assert first["code"] == "RECEIVED"
     await outcome_service.process_pending_evidence(1)
 
+    await asyncio.gather(*tuple(transaction_wakeup._pending))
+    queue.enqueue_transport_outcomes.reset_mock()
+
     older = {
         **latest,
         "outcome_revision": 1,
@@ -323,6 +322,8 @@ async def test_late_lower_revision_never_rolls_back_projection(
     )
     assert old_ack["code"] == "RECEIVED"
     await outcome_service.process_pending_evidence(1)
+    await asyncio.gather(*tuple(transaction_wakeup._pending))
+    queue.enqueue_transport_outcomes.assert_not_called()
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:

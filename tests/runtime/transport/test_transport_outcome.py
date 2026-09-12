@@ -20,7 +20,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_event_handler import TransportEventHandler
@@ -183,19 +182,11 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
             select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id)
         )
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
         assert receipt is not None and receipt.response_http_status == 202
         assert pending is not None and pending.status == "PENDING" and pending.processed_at is None
         assert pending.claim_until is not None
         retry_at = pending.claim_until
         assert task is not None and task.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
-        assert bindings and all(binding.released_at is None for binding in bindings)
 
     for operation_id, container_id, target in (
         ("target-placed-return-1", "bin-return-1", target_one),
@@ -232,16 +223,8 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
             select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id)
         )
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
-        bindings = list(
-            await db.scalars(
-                select(TransportResourceBinding).where(
-                    TransportResourceBinding.transport_task_id == handle.transport_task_id
-                )
-            )
-        )
         assert pending is not None and pending.status == "APPLIED"
         assert task is not None and task.status == "SUCCEEDED" and task.outcome_version == 1
-        assert all(binding.released_at is not None for binding in bindings)
 
 
 @pytest.mark.asyncio

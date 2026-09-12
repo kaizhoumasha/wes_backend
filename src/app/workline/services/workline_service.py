@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
+from src.app.runtime.orchestration.events_bridge import assert_not_platform_control_event
 from src.app.workline.domain.run_mode import (
     is_sandbox_allowed_environment,
     is_simulation_run_mode,
@@ -184,7 +184,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if isinstance(event_mapping, dict):
             for source_event_type, mapped_event_type in event_mapping.items():
                 if isinstance(mapped_event_type, str) and mapped_event_type:
-                    assert_not_reserved_runtime_event(
+                    assert_not_platform_control_event(
                         mapped_event_type,
                         owner="runtime_config_json.event_type_mapping",
                         declaration_surface=f"{source_event_type} 的映射目标",

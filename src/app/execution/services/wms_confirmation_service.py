@@ -87,6 +87,14 @@ class MaterialExecutionWorkLineRepositoryPort(Protocol):
 
 
 class PickingTaskConfirmationOwnerPort(Protocol):
+    async def validate_dispatch_owner(
+        self,
+        db: AsyncSession,
+        *,
+        picking_task_id: int,
+        operation: str,
+    ) -> bool: ...
+
     async def validate_response_owner(
         self,
         db: AsyncSession,
@@ -511,7 +519,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 return
             if confirmation.picking_task_id is not None:
                 owner = self._picking_task_owner
-                if owner is None or not await owner.validate_response_owner(
+                if owner is None or not await owner.validate_dispatch_owner(
                     db,
                     picking_task_id=confirmation.picking_task_id,
                     operation=confirmation.operation,
@@ -583,12 +591,13 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 if confirmation.material_execution_id is not None:
                     material_execution_id = confirmation.material_execution_id
                     execution = await self._executions.get_by_id(db, material_execution_id)
-                    if execution is None:
-                        raise LookupError("MaterialExecution 不存在")
-                    workline_id = execution.workline_id
-                    if not isinstance(workline_id, int) or isinstance(workline_id, bool) or workline_id <= 0:
-                        raise ValueError("MaterialExecution 缺少有效 workline_id")
-                    wake_material_execution = True
+                    workline_id = execution.workline_id if execution is not None else None
+                    owner_valid = isinstance(workline_id, int) and not isinstance(workline_id, bool) and workline_id > 0
+                    if not owner_valid:
+                        # 原义务和响应身份仍保留；失效上下文不生成新的业务关联。
+                        workline_id = None
+                        material_execution_id = None
+                    wake_material_execution = owner_valid
                 elif confirmation.workline_id is None:
                     picking_task_id = confirmation.picking_task_id
                     owner = self._picking_task_owner

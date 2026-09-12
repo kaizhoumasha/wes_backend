@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
-from sqlalchemy import exists, select
 from wes_plugin_sdk.prepare_policy import PrepareDeviceFact, PrepareRuntimeFacts
 
 from src.app.device.repositories import DeviceStatusObservationRepository, device_status_observation_repository
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
-from src.app.workline.models import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories import WorkLineRepository
 
 if TYPE_CHECKING:
@@ -34,15 +32,6 @@ class PickingWorklineFactsRepository:
         *,
         workline_id: int,
     ) -> PrepareRuntimeFacts:
-        incident = cast("Any", WorklineSafetyIncident).__table__.c
-        has_incident = await db.scalar(
-            select(
-                exists().where(
-                    incident.workline_id == workline_id,
-                    incident.status == WorklineSafetyIncidentStatus.ACTIVE,
-                )
-            )
-        )
         bindings = await self._worklines.list_bindings(db, workline_id)
         position_bindings = await self._worklines.list_position_bindings(db, workline_id)
         devices = []
@@ -64,9 +53,7 @@ class PickingWorklineFactsRepository:
 
         projection_summary = await PositionProjectionRepository().get_active_workline_summary(db, workline_id)
         has_positioned_object = projection_summary["count"] > 0
-        return PrepareRuntimeFacts(
-            bool(has_incident), bool(position_bindings), tuple(devices), bool(has_positioned_object)
-        )
+        return PrepareRuntimeFacts(bool(position_bindings), tuple(devices), bool(has_positioned_object))
 
 
 picking_workline_facts_repository = PickingWorklineFactsRepository()

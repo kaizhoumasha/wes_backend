@@ -73,23 +73,17 @@ class PositionRepositoryPort(Protocol):
 
 class RackPlacementRepositoryPort(Protocol):
     async def list_active_by_workline_position(
-        self, db: Any, *, workline_code: str, position_code: str
+        self,
+        db: Any,
+        *,
+        workline_code: str,
+        position_code: str,
+        for_update: bool = False,
     ) -> list[RackPlacement]: ...
 
 
 class RackReplacementBindingRepositoryPort(Protocol):
     async def lock_resource_fence(self, db: Any, *, workline_id: int, resource_fence_id: str) -> None: ...
-
-    async def get_by_resource_step_for_update(
-        self,
-        db: Any,
-        *,
-        workline_id: int,
-        resource_fence_id: str,
-        step: str,
-        exclude_task_statuses: tuple[str, ...] = (),
-        retain_transport_task_id: str | None = None,
-    ) -> TransportDecisionBinding | None: ...
 
     async def get_by_client_request_id_for_update(
         self, db: Any, client_request_id: str

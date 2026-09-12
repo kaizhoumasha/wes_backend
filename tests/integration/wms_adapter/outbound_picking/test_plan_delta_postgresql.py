@@ -1,4 +1,4 @@
-"""plan_delta 原子提交、任务级串行化与受控修正的 PostgreSQL owner。"""
+"""plan_delta 原子提交、任务级串行化与自动修正的 PostgreSQL owner。"""
 
 from __future__ import annotations
 
@@ -23,10 +23,7 @@ from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlan
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
-from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import (
-    PickingTaskPlanDeltaService,
-    PlanCorrectionConflictError,
-)
+from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
 
@@ -191,7 +188,7 @@ async def test_pending_retry_only_applies_after_persisted_prepare(integration_se
     assert (await service.record(first, received_at=NOW)).code == "RECEIVED"
 
 
-async def test_blocked_correction_audit_and_original_identity_replay(integration_session_factory, prepared):
+async def test_normal_correction_clears_blocker_and_preserves_original_rejection(integration_session_factory, prepared):
     task_name, ids = prepared
     service = PickingTaskPlanDeltaService(integration_session_factory)
     first = _event(task_name)
@@ -199,32 +196,38 @@ async def test_blocked_correction_audit_and_original_identity_replay(integration
     conflict = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "B", "rack_face": "F"}])
     assert (await service.record(conflict, received_at=NOW)).reason_code == "REVISION_CONFLICT"
     correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "B", "rack_face": "F"}])
-    assert (await service.record(correction, received_at=NOW)).reason_code == "STATE_CONFLICT"
     async with integration_session_factory() as db:
         task = await db.get(PickingTask, ids[0])
-        correction_id = await db.scalar(
-            select(InboundEvidence.id).where(InboundEvidence.source_identity == f"{OP}:{correction.operation_id}")
-        )
-        args = {
-            "task_id": task_name,
-            "blocked_evidence_id": task.plan_blocked_evidence_id,
-            "correction_evidence_id": correction_id,
-            "expected_version": task.version,
-            "actor_id": None,
-            "reason": "WMS confirmed corrected source",
-            "received_at": NOW,
-        }
-    result = await service.apply_correction(**args)
-    assert result.plan_revision == 2
-    assert (await service.apply_correction(**args)) == result
-    with pytest.raises(PlanCorrectionConflictError):
-        await service.apply_correction(**{**args, "reason": "changed audit"})
+        blocked_id, version = task.plan_blocked_evidence_id, task.version
+        blocker = await db.get(InboundEvidence, blocked_id)
+        old_payload, processed_at = blocker.normalized_payload, blocker.processed_at
+    assert (await service.record(correction, received_at=NOW)).code == "RECEIVED"
     assert (await service.record(correction, received_at=NOW)).code == "DUPLICATE"
     assert (await service.record(conflict, received_at=NOW)).reason_code == "REVISION_CONFLICT"
     async with integration_session_factory() as db:
         task = await db.get(PickingTask, ids[0])
         assert task.plan_blocked_evidence_id is None
-        assert await db.scalar(select(AuditLog.id).where(AuditLog.args["task_id"].as_string() == task_name)) is not None
+        assert task.last_applied_plan_revision == 2
+        assert task.version == version + 1
+        blocker = await db.get(InboundEvidence, blocked_id)
+        assert blocker.normalized_payload == old_payload
+        assert blocker.processed_at == processed_at
+        assert blocker.apply_status == Status.RECONCILING
+        assert (
+            len(
+                list(
+                    (
+                        await db.scalars(
+                            select(InboundEvidenceConflict).where(
+                                InboundEvidenceConflict.first_evidence_id == blocked_id
+                            )
+                        )
+                    ).all()
+                )
+            )
+            == 1
+        )
+        assert await db.scalar(select(AuditLog.id).where(AuditLog.args["task_id"].as_string() == task_name)) is None
 
 
 async def test_member_flush_failure_rolls_back_evidence_and_task(integration_session_factory, prepared):
@@ -293,36 +296,79 @@ async def test_identity_drift_blocks_original_task_without_rewriting_applied_evi
         assert (await db.get(InboundEvidence, task.last_plan_evidence_id)).apply_status == Status.APPLIED
 
 
-async def _blocked_correction(factory, task_name, task_id):
+async def _blocked_correction(factory, task_name, task_id, *, persisted=True):
     service = PickingTaskPlanDeltaService(factory)
     assert (await service.record(_event(task_name), received_at=NOW)).code == "RECEIVED"
     bad = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "BAD", "rack_face": "A"}])
     await service.record(bad, received_at=NOW)
     correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "GOOD", "rack_face": "A"}])
-    await service.record(correction, received_at=NOW)
+    if persisted:
+        # 已可靠保存为 RECONCILING 的修正；保留其首次拒绝事实供正常入口重报测试。
+        async with factory.begin() as db:
+            evidences = InboundEvidenceService()
+            accepted = await evidences.accept(
+                db,
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"{OP}:{correction.operation_id}",
+                normalized_payload=correction.model_dump(mode="json", exclude_none=True),
+                operation=OP,
+                operation_id=correction.operation_id,
+                contract_key=OP,
+                contract_version="1.0",
+                apply_status=Status.RECONCILING,
+                received_at=NOW,
+            )
+            await evidences.record_conflict(
+                db,
+                first=accepted.evidence,
+                source_identity=accepted.evidence.source_identity,
+                normalized_payload=accepted.evidence.normalized_payload,
+                reason_code="STATE_CONFLICT",
+                received_at=NOW,
+            )
+            accepted.evidence.processed_at = NOW
     async with factory() as db:
         task = await db.get(PickingTask, task_id)
         correction_id = await db.scalar(
             select(InboundEvidence.id).where(InboundEvidence.source_identity == f"{OP}:{correction.operation_id}")
         )
         return correction, {
-            "task_id": task_name,
             "blocked_evidence_id": task.plan_blocked_evidence_id,
             "correction_evidence_id": correction_id,
             "expected_version": task.version,
-            "actor_id": None,
-            "reason": "Verified correction",
-            "received_at": NOW,
         }
 
 
-async def test_concurrent_same_correction_applies_once(integration_session_factory, prepared):
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_concurrent_same_correction_applies_once(integration_session_factory, prepared, persisted):
     task_name, ids = prepared
-    correction, args = await _blocked_correction(integration_session_factory, task_name, ids[0])
+    correction, args = await _blocked_correction(integration_session_factory, task_name, ids[0], persisted=persisted)
     service = PickingTaskPlanDeltaService(integration_session_factory)
-    results = await asyncio.gather(service.apply_correction(**args), service.apply_correction(**args))
-    assert results[0] == results[1]
+    results = await asyncio.wait_for(
+        asyncio.gather(*(service.record(correction, received_at=NOW) for _ in range(2))), timeout=5
+    )
+    assert sorted(result.code for result in results) == ["DUPLICATE", "RECEIVED"]
     assert (await service.record(correction, received_at=NOW)).code == "DUPLICATE"
+    async with integration_session_factory() as db:
+        task = await db.get(PickingTask, ids[0])
+        assert task.plan_blocked_evidence_id is None
+        assert task.version == args["expected_version"] + 1
+        assert task.last_applied_plan_revision == 2
+        members = list(
+            (
+                await db.scalars(
+                    select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == ids[0])
+                )
+            ).all()
+        )
+        assert len(members) == 1
+        assert members[0].source_evidence_id == task.last_plan_evidence_id
+        applied = await db.get(InboundEvidence, task.last_plan_evidence_id)
+        assert applied.apply_status == Status.APPLIED
+        assert applied.normalized_payload == correction.model_dump(mode="json", exclude_none=True)
+        if persisted:
+            assert applied.id == args["correction_evidence_id"]
+            assert await service._plans.first_rejection(db, applied.id) == "STATE_CONFLICT"
     next_event = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "NEXT", "rack_face": "A"}])
     assert (await service.record(next_event, received_at=NOW)).code == "RECEIVED"
     async with integration_session_factory.begin() as db:
@@ -333,43 +379,29 @@ async def test_concurrent_same_correction_applies_once(integration_session_facto
     ).reason_code == "IDEMPOTENCY_CONFLICT"
 
 
-@pytest.mark.parametrize("changed", ["version", "blocker", "revision", "terminal"])
-async def test_correction_rejects_changed_preconditions(integration_session_factory, prepared, changed):
-    task_name, ids = prepared
-    _, args = await _blocked_correction(integration_session_factory, task_name, ids[0])
-    if changed == "version":
-        args["expected_version"] += 1
-    elif changed == "blocker":
-        args["blocked_evidence_id"] = ids[3]
-    elif changed == "revision":
-        args["correction_evidence_id"] = args["blocked_evidence_id"]
-    else:
-        async with integration_session_factory.begin() as db:
-            await db.execute(update(PickingTask).where(PickingTask.id == ids[0]).values(status="EXECUTION_COMPLETED"))
-    with pytest.raises(PlanCorrectionConflictError):
-        await PickingTaskPlanDeltaService(integration_session_factory).apply_correction(**args)
-    async with integration_session_factory() as db:
-        task = await db.get(PickingTask, ids[0])
-        assert task.last_applied_plan_revision == 1 and task.plan_blocked_evidence_id is not None
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_normal_correction_member_failure_rolls_back_blocker_and_evidence(
+    integration_session_factory, prepared, persisted
+):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
 
-
-async def test_correction_audit_failure_rolls_back_plan_and_blocker(integration_session_factory, prepared):
-    class FailingAudit:
-        async def create_audit_log(self, *args, **kwargs):
-            raise RuntimeError("audit failure")
+    class FailingMembers(PickingTaskPlanDeltaRepository):
+        async def add_members(self, db, task_id, data, evidence_id):
+            await super().add_members(db, task_id, data, evidence_id)
+            raise RuntimeError("correction member failure")
 
     task_name, ids = prepared
-    correction, args = await _blocked_correction(integration_session_factory, task_name, ids[0])
-    with pytest.raises(RuntimeError, match="audit failure"):
-        await PickingTaskPlanDeltaService(integration_session_factory, audit_service=FailingAudit()).apply_correction(
-            **args
-        )
-    service = PickingTaskPlanDeltaService(integration_session_factory)
-    assert (await service.record(correction, received_at=NOW)).reason_code == "STATE_CONFLICT"
+    correction, args = await _blocked_correction(integration_session_factory, task_name, ids[0], persisted=persisted)
+    service = PickingTaskPlanDeltaService(integration_session_factory, plan_repository=FailingMembers())
+    with pytest.raises(RuntimeError, match="correction member failure"):
+        await service.record(correction, received_at=NOW + timedelta(seconds=1))
     async with integration_session_factory() as db:
         task = await db.get(PickingTask, ids[0])
-        assert task.last_applied_plan_revision == 1
         assert task.plan_blocked_evidence_id == args["blocked_evidence_id"]
+        assert task.version == args["expected_version"]
+        assert task.last_applied_plan_revision == 1
         assert not list(
             (
                 await db.scalars(
@@ -377,6 +409,19 @@ async def test_correction_audit_failure_rolls_back_plan_and_blocker(integration_
                 )
             ).all()
         )
+        evidence = await db.scalar(
+            select(InboundEvidence).where(InboundEvidence.source_identity == f"{OP}:{correction.operation_id}")
+        )
+        if persisted:
+            assert evidence.id == args["correction_evidence_id"]
+            assert evidence.apply_status == Status.RECONCILING
+            assert evidence.processed_at == NOW
+            assert evidence.normalized_payload == correction.model_dump(mode="json", exclude_none=True)
+        else:
+            assert evidence is None
+    assert (
+        await PickingTaskPlanDeltaService(integration_session_factory).record(correction, received_at=NOW)
+    ).code == "RECEIVED"
 
 
 async def test_invalid_data_is_durable_and_never_blocks_task(integration_session_factory, prepared):
@@ -457,33 +502,6 @@ async def test_plan_member_constraints_are_enforced_by_postgresql(integration_se
                 )
             )
             await db.flush()
-
-
-@pytest.mark.parametrize("change", ["terminal", "new_blocker", "unrelated_version"])
-async def test_management_replay_rejects_drift_but_wms_replay_stays_successful(
-    integration_session_factory, prepared, change
-):
-    task_name, ids = prepared
-    correction, args = await _blocked_correction(integration_session_factory, task_name, ids[0])
-    service = PickingTaskPlanDeltaService(integration_session_factory)
-    result = await service.apply_correction(**args)
-    assert result.version == args["expected_version"] + 1
-    assert await service.apply_correction(**args) == result
-    if change == "new_blocker":
-        await service.record(
-            _event(task_name, 4, added_bin_source_racks=[{"rack_id": "NEW", "rack_face": "A"}]), received_at=NOW
-        )
-    else:
-        async with integration_session_factory.begin() as db:
-            task = await db.get(PickingTask, ids[0])
-            if change == "terminal":
-                task.status = "EXECUTION_COMPLETED"
-            else:
-                task.issued_at_ms += 1
-                task.increment_version()
-    with pytest.raises(PlanCorrectionConflictError):
-        await service.apply_correction(**args)
-    assert (await service.record(correction, received_at=NOW)).code == "DUPLICATE"
 
 
 async def test_source_queries_return_only_candidates_with_large_history(

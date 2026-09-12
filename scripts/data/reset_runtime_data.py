@@ -93,7 +93,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "resource_rack_bin_mounts",
             "resource_rack_placements",
             "resource_state_events",
-            "workline_safety_incidents",
             "workline_sessions",
             "workline_timelines",
         )
@@ -323,9 +322,6 @@ async def reset_transport_task_data(
             task_id,
             id_column="source_transport_task_id",
         ),
-        "wes_runtime.transport_resource_bindings": await _transport_task_row_count(
-            db, "transport_resource_bindings", task_id
-        ),
         "wes_runtime.transport_members": await _transport_task_row_count(db, "transport_members", task_id),
         "wes_runtime.transport_tasks": 1,
     }
@@ -353,10 +349,6 @@ async def reset_transport_task_data(
                 "transport_debug_position_projections",
                 "DELETE FROM wes_runtime.transport_debug_position_projections "
                 "WHERE source_transport_task_id = :transport_task_id",
-            ),
-            (
-                "transport_resource_bindings",
-                "DELETE FROM wes_runtime.transport_resource_bindings WHERE transport_task_id = :transport_task_id",
             ),
             (
                 "transport_members",
@@ -426,10 +418,10 @@ async def reset_runtime_data(
                 text(
                     "INSERT INTO wes_runtime.workline_runtime_status_projections ("
                     "workline_id, runtime_status, source, stopped_at, stopped_reason, "
-                    "resumed_at, active_safety_incident_id, evidence_json"
+                    "resumed_at, evidence_json"
                     ") "
                     "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
-                    "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
+                    "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, '{}'::json "
                     "  FROM wes_biz.work_lines "
                     " WHERE is_deleted = false "
                     "ON CONFLICT (workline_id) DO UPDATE SET "
@@ -438,7 +430,6 @@ async def reset_runtime_data(
                     "    stopped_at = EXCLUDED.stopped_at, "
                     "    stopped_reason = EXCLUDED.stopped_reason, "
                     "    resumed_at = NULL, "
-                    "    active_safety_incident_id = NULL, "
                     "    evidence_json = EXCLUDED.evidence_json",
                 ),
             )

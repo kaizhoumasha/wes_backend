@@ -16,7 +16,6 @@ from src.app.transport.contracts import (
     TransportContractError,
     TransportHandle,
     TransportIdempotencyConflict,
-    TransportResourceConflict,
 )
 from src.app.transport.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
 from src.core.exceptions import NotFoundException
@@ -120,7 +119,7 @@ def _valid_payload(kind: str) -> dict[str, object]:
             **common,
             "data": {
                 "rack_id": "RACK-01",
-                "position": _rack_reference("RACK-01"),
+                "position": _rack_position("LINE-01"),
                 "target_face": "270",
             },
         }
@@ -249,13 +248,7 @@ def test_debug_task_openapi_exposes_exactly_four_named_examples_and_union_branch
     assert len(union_schema["oneOf"]) == 4
     assert union_schema["discriminator"]["propertyName"] == "kind"
     rotate_position_ref = schema["components"]["schemas"]["_RackRotateData"]["properties"]["position"]
-    assert rotate_position_ref == {"$ref": "#/components/schemas/_RackRotatePosition"}
-    rotate_position = schema["components"]["schemas"]["_RackRotatePosition"]
-    assert rotate_position["discriminator"]["propertyName"] == "kind"
-    assert rotate_position["oneOf"] == [
-        {"$ref": "#/components/schemas/_RackReference"},
-        {"$ref": "#/components/schemas/_RackPosition"},
-    ]
+    assert rotate_position_ref == {"$ref": "#/components/schemas/_RackPosition"}
 
 
 def test_debug_reset_openapi_exposes_task_id_and_optional_confirmation_contract() -> None:
@@ -276,6 +269,17 @@ def test_debug_reset_openapi_exposes_task_id_and_optional_confirmation_contract(
         "400"
         not in schema["paths"]["/api/v1/transport/debug-tasks/{transport_task_id}/reset-preview"]["get"]["responses"]
     )
+
+
+def test_transport_openapi_excludes_retired_resource_binding_contract() -> None:
+    schema = _app(_runtime()).openapi()
+    schemas = schema["components"]["schemas"]
+    create = schema["paths"]["/api/v1/transport/debug-tasks"]["post"]
+
+    assert "active_binding_count" not in schemas["TransportTaskResponse"]["properties"]
+    assert {"binding_count", "active_binding_count"}.isdisjoint(schemas["DebugTransportTaskResetPreview"]["properties"])
+    assert "deleted_binding_count" not in schemas["DebugTransportTaskResetResult"]["properties"]
+    assert create["responses"]["409"]["description"] == "Transport 幂等身份冲突"
 
 
 @pytest.mark.asyncio
@@ -323,8 +327,8 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"
     if kind == "RACK_ROTATE":
-        assert called_args[3].kind == "RACK"
-        assert called_args[3].location_code == "RACK-01"
+        assert called_args[3].kind == "RACK_POSITION"
+        assert called_args[3].location_code == "LINE-01"
         assert called_args[4] == "270"
 
 
@@ -406,8 +410,6 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         position_projection_count=0,
         outcome_version=0,
         member_count=1,
-        binding_count=1,
-        active_binding_count=1,
     )
     runtime.service.reset_debug_task.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
@@ -415,7 +417,6 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         deleted_evidence_count=0,
         deleted_position_projection_count=0,
         deleted_member_count=1,
-        deleted_binding_count=1,
     )
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
@@ -431,8 +432,6 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         "position_projection_count": 0,
         "outcome_version": 0,
         "member_count": 1,
-        "binding_count": 1,
-        "active_binding_count": 1,
     }
     assert applied.status_code == 200
     assert applied.json()["data"] == {
@@ -441,7 +440,6 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         "deleted_evidence_count": 0,
         "deleted_position_projection_count": 0,
         "deleted_member_count": 1,
-        "deleted_binding_count": 1,
     }
     runtime.service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
     runtime.service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
@@ -456,7 +454,6 @@ async def test_debug_task_reset_accepts_operator_step_confirmation() -> None:
         deleted_evidence_count=0,
         deleted_position_projection_count=0,
         deleted_member_count=1,
-        deleted_binding_count=1,
     )
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
@@ -577,7 +574,6 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
         outcome_version=2,
         published_outcome_version=1,
         pending_evidence_count=3,
-        active_binding_count=1,
         request={
             "client_request_id": new_uuid7(),
             "caller": {"workline_id": "TRANSPORT_DEBUG", "station_id": "STATION-DEBUG"},
@@ -623,7 +619,7 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
     assert response.json()["code"] == "1000"
     data = response.json()["data"]
     assert data["pending_evidence_count"] == 3
-    assert data["active_binding_count"] == 1
+    assert "active_binding_count" not in data
     assert data["outcome_version"] == 2
     assert data["published_outcome_version"] == 1
     assert data["send_started_at"] is None
@@ -662,7 +658,6 @@ async def test_get_transport_task_maps_missing_task_and_unavailable_runtime() ->
     ("error", "expected_status", "expected_code"),
     [
         (TransportIdempotencyConflict("changed payload"), 409, "3012"),
-        (TransportResourceConflict("active resource"), 409, "3012"),
         (TransportContractError("invalid domain request"), 400, "2004"),
     ],
 )

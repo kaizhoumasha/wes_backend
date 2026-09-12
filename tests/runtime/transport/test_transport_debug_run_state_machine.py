@@ -171,7 +171,7 @@ def _step(phase: str, *, group_index: int = 0, client_id: str = CLIENT_IDS[0]) -
                 CLIENT_IDS[0],
                 TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO"),
                 "510056",
-                RackReference("510056"),
+                RackPosition("KT16"),
                 "270",
                 RcsTemplateId.CTU02,
             ),

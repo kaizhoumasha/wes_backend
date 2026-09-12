@@ -283,19 +283,23 @@ results[] {
 除预关联失败的空响应体 `400 | 413` 外，ACK 固定使用 `operation_id + code + timestamp + data` 信封，`operation_id` 原样回显。
 `data` 是严格联合：
 
+> 2026-09-12 无阻塞执行修订：本文以下跨任务活动资源围栏已被
+> [WES 无阻塞执行设计](2026-09-11-wes-nonblocking-execution-design.md) D6 及
+> [Transport 当前合同](../../contracts/transport-fulfillment-contract.md) 取代。WES 不再建立或释放 TransportResourceBinding；
+> RCS/WMS/ECS 负责实际资源排队和物理互斥。本文其余 DTO、幂等和单任务成员校验继续有效。
+
 - `RECEIVED | DUPLICATE | CONFLICT | UNAVAILABLE`：完整且仅包含 `transport_task_id`。
 - `REJECTED`：完整且仅包含 `reason_code`，或 `transport_task_id + reason_code`；只有请求中的任务 ID 缺失或非法时才能省略
   `transport_task_id`。
 - `reason_code` 只允许 `INVALID_ENVELOPE | UNSUPPORTED_OPERATION | INVALID_DATA |
   COORDINATED_BIN_EXCHANGE_UNSUPPORTED`。
 
-同一请求的幂等重放复用首次可靠保存的 `timestamp + data`。即使活动资源被另一任务占用，`409` 也回显当前请求中已解析的
-`transport_task_id`，不能返回占用资源的旧任务 ID。
+同一请求的幂等重放复用首次可靠保存的 `timestamp + data`。`409` 回显当前请求中已解析的 `transport_task_id`，
+不能返回其他任务 ID。
 
-活动资源围栏固定为：每个未闭合任务绑定其全部 `container_id`、货架任务的 `rack_id`，以及 Bin 任务所有
-`RACK_BIN_SLOT` 中出现的 `rack_id`。精确槽位 `(rack_id, rack_face, slot_id)` 用于请求内位置唯一性、成员目标校验和结果匹配，
-不另建活动资源绑定；其所在 `rack_id` 已被任务整体互斥。`HANDOFF_POSITION` 不得仅因 `location_code` 相同而全局互斥。
-资源只有在任务取得确定终态或经人工对账关闭后才释放。
+每个任务只冻结自身 `container_id`、`rack_id` 和成员位置，用于请求内唯一性、目标校验及结果匹配；这些字段不形成跨任务 owner/gate。
+精确槽位 `(rack_id, rack_face, slot_id)` 与 `HANDOFF_POSITION` 同样不由 WES 建立跨任务互斥。乱序或跨任务结果只应用于匹配任务；
+无法确认聚合当前位置时，位置投影标记为未确认或未知。
 
 删除 `429 / BUSY`、`BUSY`、`retry_after_ms` 及所有相关分支。RCS 或内部调度容量不足不是拒绝 WES 义务的理由：WMS 应先
 可靠接纳，再在内部排队。`503` 固定等待 2000 毫秒，单任务发送预算仍为最多 3 次；请求可能已经送达但响应未知时继续进入
@@ -391,7 +395,8 @@ WES 目标接口契约的 `transport_task_id` 长度为 `1..80`，`rack_id`、`c
 4. `BIN_MOVE` 与 `BIN_EXCHANGE` 都使用 `moves[].container_id + source + target`，且严格执行单面、端点组和闭环规则。
 5. 容器中间位置事件/搬运最终结果接口契约不再出现 `bin_id` 或 `object_id`；货架和料箱结果身份分别明确为 `rack_id`、`container_id`。
 6. 搬运提交 ACK、实现和测试中不存在 `429 / BUSY`、`BUSY` 或 `retry_after_ms`。
-7. 搬运提交 ACK `data`、活动资源围栏以及容器中间位置事件/搬运最终结果幂等、修订和确定终态规则均有唯一、可执行的闭集定义。
+7. 搬运提交 ACK `data`、单任务成员/事实围栏以及容器中间位置事件/搬运最终结果幂等、修订和确定终态规则均有唯一、可执行的闭集定义；
+   跨任务物理资源互斥由 WMS/RCS/ECS 负责。
 8. 已提供的 `target_face` 由业务调用方冻结并由 WMS 原样传给 RCS；CTU03 未提供时由 RCS 决定回库朝向；最终 `arrival_face`
    始终表达确认后的实际工作面，并在存在冻结目标面时精确比较。
 9. WMS 为厂商子任务生成合规 `taskCode`，所有跨协议身份经过主数据解析和长度校验，不依赖字符串直接复用。

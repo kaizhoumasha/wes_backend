@@ -13,7 +13,6 @@ from src.app.resource.models import (
     ResourceStateEvent,
 )
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
-from src.app.workline.models.safety import WorklineSafetyIncident
 
 
 def test_reference_and_evidence_ids_compile_to_postgresql_bigint() -> None:
@@ -25,12 +24,6 @@ def test_reference_and_evidence_ids_compile_to_postgresql_bigint() -> None:
         RackPlacement.__table__.c.workline_id,
         ResourceStateEvent.__table__.c.workline_id,
         WorkLinePosition.__table__.c.workline_id,
-        WorklineSafetyIncident.__table__.c.cleared_by,
-        WorklineSafetyIncident.__table__.c.source_command_id,
-        WorklineSafetyIncident.__table__.c.source_device_id,
-        WorklineSafetyIncident.__table__.c.source_evidence_id,
-        WorklineSafetyIncident.__table__.c.source_inbox_id,
-        WorklineSafetyIncident.__table__.c.workline_id,
     )
 
     assert {

@@ -17,7 +17,6 @@ from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
     DeviceResultOutOfOrderError,
-    UnknownDeviceCommandError,
 )
 from src.app.device.v1 import ecs_callback as ecs_callback_module
 from src.app.device.v1.ecs_callback import router
@@ -27,13 +26,14 @@ from src.app.device.v1.ecs_callback import router
 class FakeEvidenceService:
     failure: Exception | None = None
     duplicate: bool = False
+    apply_status: str = "PENDING"
     accepted: list[BaseModel] = field(default_factory=list)
 
     async def accept_result(self, result):
         if self.failure is not None:
             raise self.failure
         self.accepted.append(result)
-        return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", self.duplicate, None, "PENDING")
+        return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", self.duplicate, None, self.apply_status)
 
     async def accept_event(self, event):
         if self.failure is not None:
@@ -131,6 +131,24 @@ def test_debug_event_passes_strict_flag_to_service() -> None:
     assert service.accepted[0].model_dump(mode="json") == payload
 
 
+@pytest.mark.parametrize("is_debug", [False, True])
+def test_estop_event_is_rejected_before_evidence_ingress_or_wakeup(is_debug: bool) -> None:
+    service = FakeEvidenceService()
+    publisher = FakePublisher()
+
+    with _client(service, publisher=publisher) as client:
+        response = client.post(
+            "/api/v1/callback/event",
+            json={**_event_payload(), "event_type": "ESTOP_PRESSED", "is_debug": is_debug},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "event_type", "code": "INVALID_VALUE"})
+    assert service.accepted == []
+    assert publisher.events[0][2]["evidence_id"] is None
+    assert publisher.events[0][2]["apply_status"] is None
+
+
 @pytest.mark.parametrize("invalid_flag", [None, "true", 1])
 def test_debug_event_rejects_non_boolean_flag(invalid_flag: object) -> None:
     with _client() as client:
@@ -171,11 +189,11 @@ def test_body_limit_is_checked_before_json_decode() -> None:
     assert attempt["observed_body_bytes"] == 256 * 1024 + 1
 
 
-def test_unknown_command_and_identity_conflict_are_explicit() -> None:
+def test_unassociated_result_is_acknowledged_and_identity_conflict_is_rejected() -> None:
     missing_publisher = FakePublisher()
     conflict_publisher = FakePublisher()
     with _client(
-        FakeEvidenceService(UnknownDeviceCommandError("CMD-001")),
+        FakeEvidenceService(apply_status="IGNORED"),
         publisher=missing_publisher,
     ) as client:
         missing = client.post("/api/v1/callback/result", json=_result_payload())
@@ -187,11 +205,12 @@ def test_unknown_command_and_identity_conflict_are_explicit() -> None:
     ) as client:
         conflict = client.post("/api/v1/callback/result", json=_result_payload())
 
-    assert missing.status_code == 404
-    assert missing.json()["message"] == "COMMAND_NOT_FOUND"
+    assert missing.status_code == 200
+    assert missing.json()["code"] == 200
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
-    assert missing_publisher.events[0][2]["disposition"] == "REJECTED"
+    assert missing_publisher.events[0][2]["disposition"] == "ACCEPTED"
+    assert missing_publisher.events[0][2]["apply_status"] == "IGNORED"
     assert conflict_publisher.events[0][2]["disposition"] == "CONFLICT"
     assert conflict_publisher.events[0][2]["raw_payload"] == _result_payload()
     assert conflict_publisher.events[0][2]["evidence_id"] == 9
@@ -322,6 +341,15 @@ def test_callback_accepts_and_ignores_top_level_supplier_extensions(
     assert response.json() == {"code": 200, "message": "ACK"}
     accepted_payload = service.accepted[0].model_dump(mode="json")
     assert accepted_payload == expected_payload
+
+
+@pytest.mark.parametrize(("length", "status"), [(160, 200), (161, 400)])
+def test_result_command_identity_length_is_checked_before_evidence_ingress(length: int, status: int) -> None:
+    service = FakeEvidenceService(apply_status="IGNORED")
+    with _client(service) as client:
+        response = client.post("/api/v1/callback/result", json={**_result_payload(), "command_code": "C" * length})
+    assert response.status_code == status
+    assert len(service.accepted) == (1 if status == 200 else 0)
 
 
 def test_callback_error_detail_ignores_redundant_fields() -> None:

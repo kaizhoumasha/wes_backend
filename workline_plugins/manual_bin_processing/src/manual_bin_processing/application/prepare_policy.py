@@ -18,12 +18,7 @@ class ManualPickingPreparePolicy:
         return None
 
     def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        if (
-            facts.has_active_incident
-            or not facts.has_position_bindings
-            or not facts.devices
-            or facts.has_positioned_object
-        ):
+        if not facts.has_position_bindings or not facts.devices or facts.has_positioned_object:
             return False
         return all(
             device.observed_contract_key == device.contract_key

@@ -21,7 +21,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportResourceBinding,
     TransportTask,
 )
 from src.app.transport.repository import TransportRepository
@@ -81,7 +80,6 @@ async def _clean_transport_tables(db_engine: object) -> None:
         for model in (
             TransportEvidence,
             TransportCallbackReceipt,
-            TransportResourceBinding,
             TransportMember,
             PositionProjection,
             TransportTask,

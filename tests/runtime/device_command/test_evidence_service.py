@@ -7,27 +7,21 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from src.app.device.contracts import (
     DeviceEvidenceReceipt,
     EcsCommandResultReport,
+    EcsDeviceEvent,
     EcsDeviceEventReport,
 )
-from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
+from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.event_command_block import (
-    DeviceEventCommandBlock,
-    DeviceEventCommandBlockStatus,
-)
 from src.app.device.services.device_evidence_service import (
     DeviceEventNotAdmittedError,
-    DeviceEvidenceConflictError,
     DeviceEvidenceService,
     DeviceResultConflictError,
     DeviceResultOutOfOrderError,
-    EventCommandBlockConflictError,
-    EventCommandBlockNotFoundError,
-    UnknownDeviceCommandError,
 )
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
@@ -95,9 +89,6 @@ class FakeEvidenceRepository:
     async def get_by_source_identity_for_update(self, _db: object, source_identity: str) -> InboundEvidence | None:
         return self.evidences.get(source_identity)
 
-    async def get_by_source_identity(self, _db: object, source_identity: str) -> InboundEvidence | None:
-        return self.evidences.get(source_identity)
-
     async def get_device_result_for_command_for_update(self, _db: object, command_code: str) -> InboundEvidence | None:
         return next(
             (
@@ -141,15 +132,10 @@ class FakeEvidenceRepository:
         evidence.apply_status = "RECONCILING"
         evidence.processed_at = processed_at
 
-    async def requeue_reconciling(self, _db: object, evidence: InboundEvidence) -> None:
-        evidence.apply_status = InboundEvidenceApplyStatus.PENDING
-        evidence.processed_at = None
-
 
 class FakeCommandRepository:
-    def __init__(self, command: DeviceCommand | None, *, unclosed: DeviceCommand | None = None) -> None:
+    def __init__(self, command: DeviceCommand | None) -> None:
         self.command = command
-        self.unclosed = unclosed
         self.creation_locks: list[str] = []
 
     async def lock_creation_for_device(self, _db: object, device_code: str) -> None:
@@ -165,65 +151,6 @@ class FakeCommandRepository:
         if self.command is None or self.command.command_code != command_code:
             return None
         return self.command
-
-    async def get_unclosed_for_device_for_update(
-        self,
-        _db: object,
-        device_code: str,
-    ) -> DeviceCommand | None:
-        if self.unclosed is None or self.unclosed.device_code != device_code:
-            return None
-        return self.unclosed
-
-
-class FakeEventCommandBlockRepository:
-    def __init__(self) -> None:
-        self.blocks: list[DeviceEventCommandBlock] = []
-
-    async def add_block(self, _db: object, block: DeviceEventCommandBlock) -> DeviceEventCommandBlock:
-        block.id = len(self.blocks) + 1
-        self.blocks.append(block)
-        return block
-
-    async def get_by_id_for_update(
-        self,
-        _db: object,
-        *,
-        block_id: int,
-        evidence_id: int,
-    ) -> DeviceEventCommandBlock | None:
-        return next((block for block in self.blocks if block.id == block_id and block.evidence_id == evidence_id), None)
-
-    async def get_latest_for_evidence(
-        self,
-        _db: object,
-        *,
-        evidence_id: int,
-    ) -> DeviceEventCommandBlock | None:
-        matches = [block for block in self.blocks if block.evidence_id == evidence_id]
-        return max(matches, key=lambda block: (block.blocked_at, block.id or 0), default=None)
-
-    async def mark_requeued(
-        self,
-        _db: object,
-        block: DeviceEventCommandBlock,
-        *,
-        requeued_at: datetime,
-    ) -> None:
-        block.status = DeviceEventCommandBlockStatus.REQUEUED
-        block.requeued_at = requeued_at
-
-
-class FakeAuditService:
-    def __init__(self, *, error: Exception | None = None) -> None:
-        self.entries: list[dict[str, object]] = []
-        self.error = error
-
-    async def create_audit_log(self, _db: object, **values: object) -> object:
-        if self.error is not None:
-            raise self.error
-        self.entries.append(values)
-        return object()
 
 
 class FakeWorkLineRepository:
@@ -263,7 +190,6 @@ class FakeTaskQueue:
         self.transport_debug_wakes = 0
         self.execution_wakes = 0
         self.device_command_wakes = 0
-        self.safety_drain_wakes = 0
         self.error = error
         self.dispatch_error = dispatch_error
         self.calls = calls
@@ -286,21 +212,9 @@ class FakeTaskQueue:
         if self.dispatch_error is not None:
             raise self.dispatch_error
 
-    def enqueue_safety_drain(self) -> None:
-        self.safety_drain_wakes += 1
-
-
-class FakeSafetyService:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def handle_estop(self, _db: object, **values: object) -> object:
-        self.calls.append(values)
-        return object()
-
 
 class FakeEventDebugCommandService:
-    def __init__(self, *, outcome: EventDebugCommandReady | EventDebugCommandBlocked | None = None) -> None:
+    def __init__(self, *, outcome: EventDebugCommandReady | None = None) -> None:
         self.evidences: list[InboundEvidence] = []
         self.outcome = outcome
 
@@ -309,7 +223,7 @@ class FakeEventDebugCommandService:
         _db: object,
         *,
         evidence: InboundEvidence,
-    ) -> EventDebugCommandReady | EventDebugCommandBlocked:
+    ) -> EventDebugCommandReady:
         self.evidences.append(evidence)
         if self.outcome is not None:
             return self.outcome
@@ -398,6 +312,55 @@ def _result(**overrides: object) -> EcsCommandResultReport:
     return EcsCommandResultReport.model_validate(payload)
 
 
+def _result_identity(report: EcsCommandResultReport) -> str:
+    from src.utils.canonical_json import canonical_json_digest
+
+    return f"RESULT:{canonical_json_digest(report.model_dump(mode='json'))}"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_result_locks_exact_evidence_before_command(monkeypatch):
+    command = _command()
+    service, repository = _service(command)
+    receipt = await service.accept_result(_result())
+    calls = []
+    evidence_lookup = repository.get_by_source_identity_for_update
+    command_lookup = service._commands.get_by_command_code
+
+    async def lock_evidence(db, identity):
+        calls.append(("evidence", identity))
+        return await evidence_lookup(db, identity)
+
+    async def lock_command(db, code, **kwargs):
+        assert calls == [("evidence", receipt.source_event_id)]
+        calls.append(("command", code))
+        return await command_lookup(db, code, **kwargs)
+
+    monkeypatch.setattr(repository, "get_by_source_identity_for_update", lock_evidence)
+    monkeypatch.setattr(service._commands, "get_by_command_code", lock_command)
+    duplicate = await service.accept_result(_result())
+    assert duplicate.duplicate is True
+    assert len(repository.evidences) == 1
+
+
+@pytest.mark.asyncio
+async def test_registered_pre_dispatch_result_is_processed_once_without_business_advancement():
+    command = _command()
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
+    receipt = await service.accept_result(_result())
+    evidence = repository.evidences[receipt.source_event_id]
+    command.status = CommandStatus.RECONCILING
+    command.reconciliation_reason = "RESULT_BEFORE_DISPATCH"
+    assert await service.process_one() is True
+    assert evidence.apply_status == "RECONCILING"
+    assert evidence.normalized_payload["result"] == "SUCCESS"
+    assert command.result_evidence_id is None
+    assert command.status == CommandStatus.RECONCILING
+    assert queue.execution_wakes == 0
+    assert await service.process_one() is False
+
+
 def _event(**overrides: object) -> EcsDeviceEventReport:
     payload: dict[str, object] = {
         "device_code": "ARM-01",
@@ -409,6 +372,26 @@ def _event(**overrides: object) -> EcsDeviceEventReport:
     return EcsDeviceEventReport.model_validate(payload)
 
 
+def _persisted_event_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "device_code": "ARM-01",
+        "contract_key": "arm.pick",
+        "contract_version": "2.0",
+        "event_type": "ESTOP_PRESSED",
+        "timestamp": 1_786_579_204_000,
+        "source_event_id": "EVENT:legacy-estop",
+        "is_debug": False,
+        "data": {},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_persisted_device_event_contract_rejects_retired_estop() -> None:
+    with pytest.raises(ValidationError, match="ECS-owned ESTOP"):
+        EcsDeviceEvent.model_validate(_persisted_event_payload())
+
+
 def _service(
     command: DeviceCommand | None,
     *,
@@ -416,11 +399,8 @@ def _service(
     task_queue: FakeTaskQueue | None = None,
     publisher: FakePublisher | None = None,
     event_debug_commands: FakeEventDebugCommandService | None = None,
-    block_repository: FakeEventCommandBlockRepository | None = None,
-    audit_service: FakeAuditService | None = None,
     command_repository: FakeCommandRepository | None = None,
     session_factory: FakeSessionFactory | None = None,
-    safety_service: FakeSafetyService | None = None,
     event_debug_mode_policy: FakeEventDebugModePolicy | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
@@ -434,9 +414,6 @@ def _service(
             task_queue_gateway=task_queue,  # type: ignore[arg-type]
             event_publisher=publisher,  # type: ignore[arg-type]
             event_debug_command_service=event_debug_commands,  # type: ignore[arg-type]
-            event_command_block_repository=block_repository,  # type: ignore[arg-type]
-            audit_service=audit_service,  # type: ignore[arg-type]
-            safety_service=safety_service,  # type: ignore[arg-type]
             event_debug_mode_policy=event_debug_mode_policy,  # type: ignore[arg-type]
         ),
         evidences,
@@ -453,11 +430,11 @@ async def test_result_is_persisted_before_receipt_and_duplicate_is_idempotent() 
     assert first.evidence_id == duplicate.evidence_id
     assert first.duplicate is False
     assert duplicate.duplicate is True
-    assert list(repository.evidences) == ["RESULT:CMD-001"]
-    assert repository.identity_locks == ["RESULT:CMD-001", "RESULT:CMD-001"]
-    assert repository.evidences["RESULT:CMD-001"].contract_key == "arm.pick"
-    assert repository.evidences["RESULT:CMD-001"].contract_version == "2.0"
-    assert repository.evidences["RESULT:CMD-001"].normalized_payload["finish_time"] == 1_786_579_204_000
+    assert list(repository.evidences) == [_result_identity(_result())]
+    assert repository.identity_locks == ["device-result:CMD-001", _result_identity(_result()), "device-result:CMD-001"]
+    assert repository.evidences[_result_identity(_result())].contract_key == "arm.pick"
+    assert repository.evidences[_result_identity(_result())].contract_version == "2.0"
+    assert repository.evidences[_result_identity(_result())].normalized_payload["finish_time"] == 1_786_579_204_000
 
 
 @pytest.mark.asyncio
@@ -474,55 +451,70 @@ async def test_ingress_writes_only_through_inbound_evidence_application() -> Non
 
     receipt = await service.accept_result(_result())
 
-    assert receipt.evidence_id == application_repository.evidences["RESULT:CMD-001"].id
+    assert receipt.evidence_id == application_repository.evidences[_result_identity(_result())].id
     assert processing_repository.evidences == {}
 
 
 @pytest.mark.asyncio
-async def test_same_source_event_id_with_different_payload_is_conflict() -> None:
+async def test_different_result_messages_for_one_command_are_retained() -> None:
     service, repository = _service(_command())
     await service.accept_result(_result())
 
-    with pytest.raises(DeviceEvidenceConflictError):
-        await service.accept_result(_result(data={"position": "OTHER"}))
-
-    assert repository.conflicts[0].reason_code == "SOURCE_IDENTITY_PAYLOAD_CONFLICT"
+    await service.accept_result(_result(data={"position": "OTHER"}))
+    assert len(repository.evidences) == 2
+    assert repository.conflicts == []
 
 
 @pytest.mark.asyncio
-async def test_one_command_accepts_only_one_result_payload() -> None:
-    service, repository = _service(_command())
+@pytest.mark.parametrize("terminal", [CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT])
+async def test_later_unordered_result_does_not_replace_terminal_or_wake_business(terminal) -> None:
+    command = _command()
+    command.status = terminal
+    command.result_evidence_id = 99
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
     await service.accept_result(_result())
-
-    with pytest.raises(DeviceEvidenceConflictError):
-        await service.accept_result(_result(finish_time=1_786_579_205_000))
-
-    assert repository.conflicts[0].reason_code == "SOURCE_IDENTITY_PAYLOAD_CONFLICT"
-
-
-@pytest.mark.asyncio
-async def test_unknown_command_does_not_create_accepted_evidence() -> None:
-    service, repository = _service(None)
-
-    with pytest.raises(UnknownDeviceCommandError):
-        await service.accept_result(_result())
-
-    assert repository.evidences == {}
+    await service.accept_result(_result(result="FAILED", error_detail={"code": "FAIL", "msg": "failure"}))
+    assert await service.process_one() is True
+    assert await service.process_one() is True
+    assert await service.process_one() is False
+    assert command.status == terminal
+    assert command.result_evidence_id == 99
+    assert all(item.apply_status == "IGNORED" for item in repository.evidences.values())
+    assert queue.execution_wakes == 0
 
 
 @pytest.mark.asyncio
-async def test_unknown_command_can_be_retried_after_command_appears() -> None:
+@pytest.mark.parametrize("command_code", ["CMD-001", "C" * 160])
+async def test_unknown_command_is_durably_retained_without_active_retry(command_code: str) -> None:
+    queue = FakeTaskQueue()
+    service, repository = _service(None, task_queue=queue)
+
+    receipt = await service.accept_result(_result(command_code=command_code))
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.command_code == command_code
+    assert evidence.workline_id is None
+    assert evidence.material_execution_id is None
+    assert evidence.apply_status == "IGNORED"
+    assert await service.process_one() is False
+    assert queue.device_evidence_wakes == 0
+    assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_duplicate_preserves_original_evidence_after_command_appears() -> None:
     service, repository = _service(None)
-    with pytest.raises(UnknownDeviceCommandError):
-        await service.accept_result(_result())
+    first = await service.accept_result(_result())
 
     service._commands.command = _command()
     receipt = await service.accept_result(_result())
 
     accepted = repository.evidences[receipt.source_event_id]
-    assert accepted.apply_status == "PENDING"
+    assert receipt.duplicate is True
+    assert receipt.evidence_id == first.evidence_id
+    assert accepted.apply_status == "IGNORED"
     assert accepted.command_code == "CMD-001"
-    assert accepted.workline_id == 11
+    assert accepted.workline_id is None
 
 
 @pytest.mark.asyncio
@@ -532,20 +524,20 @@ async def test_result_identity_mismatch_is_frozen_before_rejection() -> None:
     with pytest.raises(DeviceResultConflictError) as mismatch:
         await service.accept_result(_result(device_code="ARM-OTHER"))
 
-    rejected = repository.evidences["RESULT:CMD-001"]
+    rejected = repository.evidences[_result_identity(_result(device_code="ARM-OTHER"))]
     assert rejected.apply_status == "IGNORED"
     assert rejected.workline_id == 11
     assert mismatch.value.receipt == DeviceEvidenceReceipt(
         evidence_id=rejected.id,
-        source_event_id="RESULT:CMD-001",
+        source_event_id=rejected.source_identity,
         duplicate=False,
         trace_id=None,
         apply_status="IGNORED",
     )
-    with pytest.raises(DeviceEvidenceConflictError) as conflict:
+    with pytest.raises(DeviceResultConflictError) as conflict:
         await service.accept_result(_result(device_code="ARM-THIRD"))
-    assert conflict.value.receipt.evidence_id == rejected.id
-    assert conflict.value.receipt.source_event_id == "RESULT:CMD-001"
+    assert conflict.value.receipt.evidence_id != rejected.id
+    assert conflict.value.receipt.source_event_id == _result_identity(_result(device_code="ARM-THIRD"))
     assert conflict.value.receipt.apply_status == "IGNORED"
 
 
@@ -558,14 +550,14 @@ async def test_result_before_dispatch_fences_command_and_is_rejected() -> None:
     with pytest.raises(DeviceResultOutOfOrderError) as out_of_order:
         await service.accept_result(_result())
 
-    rejected = repository.evidences["RESULT:CMD-001"]
+    rejected = repository.evidences[_result_identity(_result())]
     assert command.status == CommandStatus.RECONCILING
     assert command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
     assert rejected.apply_status == "IGNORED"
     assert rejected.command_code is None
     assert out_of_order.value.receipt == DeviceEvidenceReceipt(
         evidence_id=rejected.id,
-        source_event_id="RESULT:CMD-001",
+        source_event_id=_result_identity(_result()),
         duplicate=False,
         trace_id=None,
         apply_status="IGNORED",
@@ -576,7 +568,7 @@ async def test_result_before_dispatch_fences_command_and_is_rejected() -> None:
 
     assert duplicate.value.receipt == DeviceEvidenceReceipt(
         evidence_id=rejected.id,
-        source_event_id="RESULT:CMD-001",
+        source_event_id=_result_identity(_result()),
         duplicate=True,
         trace_id=None,
         apply_status="IGNORED",
@@ -805,45 +797,6 @@ async def test_debug_command_transaction_rollback_does_not_wake_or_publish() -> 
 
 
 @pytest.mark.asyncio
-async def test_debug_event_blocker_is_persisted_without_creating_or_waking_command() -> None:
-    queue = FakeTaskQueue()
-    publisher = FakePublisher()
-    blocks = FakeEventCommandBlockRepository()
-    debug_commands = FakeEventDebugCommandService(
-        outcome=EventDebugCommandBlocked(
-            blocking_command_id=91,
-            blocking_command_code="CMD-OLD-001",
-            blocking_command_status=CommandStatus.RECONCILING,
-            blocking_reconciliation_reason="DELIVERY_UNKNOWN",
-        )
-    )
-    service, repository = _service(
-        None,
-        task_queue=queue,
-        publisher=publisher,
-        event_debug_commands=debug_commands,
-        block_repository=blocks,
-    )
-    receipt = await service.accept_event(_event(is_debug=True))
-
-    assert await service.process_one() is True
-
-    evidence = repository.evidences[receipt.source_event_id]
-    assert evidence.apply_status == "RECONCILING"
-    assert queue.device_command_wakes == 0
-    assert len(blocks.blocks) == 1
-    block = blocks.blocks[0]
-    assert block.evidence_id == evidence.id
-    assert block.source_event_id == evidence.source_identity
-    assert block.device_code == evidence.device_code
-    assert block.blocking_command_id == 91
-    assert block.blocking_command_code == "CMD-OLD-001"
-    assert block.blocking_command_status == CommandStatus.RECONCILING
-    assert block.blocking_reconciliation_reason == "DELIVERY_UNKNOWN"
-    assert publisher.events[0][2]["apply_status"] == "RECONCILING"
-
-
-@pytest.mark.asyncio
 async def test_normal_event_still_wakes_business_processing() -> None:
     queue = FakeTaskQueue()
     debug_commands = FakeEventDebugCommandService()
@@ -855,33 +808,6 @@ async def test_normal_event_still_wakes_business_processing() -> None:
     assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
     assert debug_commands.evidences == []
     assert queue.execution_wakes == 1
-
-
-@pytest.mark.asyncio
-async def test_estop_event_routes_once_to_safety_after_durable_evidence() -> None:
-    queue = FakeTaskQueue()
-    safety = FakeSafetyService()
-    service, repository = _service(
-        None,
-        event_workline_id=11,
-        task_queue=queue,
-        safety_service=safety,
-    )
-    receipt = await service.accept_event(_event(event_type="ESTOP_PRESSED"))
-
-    assert await service.process_one() is True
-
-    evidence = repository.evidences[receipt.source_event_id]
-    assert evidence.apply_status == "APPLIED"
-    assert safety.calls == [
-        {
-            "workline_id": 11,
-            "source_evidence_id": evidence.id,
-            "trigger_payload": evidence.normalized_payload,
-        }
-    ]
-    assert queue.safety_drain_wakes == 1
-    assert queue.execution_wakes == 0
 
 
 @pytest.mark.asyncio
@@ -932,229 +858,6 @@ async def test_processed_debug_event_retry_after_epoch_switch_reuses_frozen_evid
     assert evidences.evidences[first.source_event_id].workline_id == 11
     assert evidences.conflicts == []
     assert len(debug_commands.evidences) == 1
-
-
-async def _blocked_debug_event_fixture(
-    *,
-    blocking_status: CommandStatus = CommandStatus.FAILED,
-    unclosed: DeviceCommand | None = None,
-) -> tuple[
-    DeviceEvidenceService,
-    DeviceEventNotAdmittedError,
-    FakeEvidenceRepository,
-    FakeEventCommandBlockRepository,
-    FakeCommandRepository,
-    FakeAuditService,
-    FakeTaskQueue,
-    str,
-]:
-    blocking_command = _command()
-    blocking_command.status = blocking_status
-    blocking_command.command_code = "CMD-OLD-001"
-    command_repository = FakeCommandRepository(blocking_command, unclosed=unclosed)
-    block_repository = FakeEventCommandBlockRepository()
-    audit_service = FakeAuditService()
-    task_queue = FakeTaskQueue()
-    service, evidences = _service(
-        None,
-        task_queue=task_queue,
-        block_repository=block_repository,
-        audit_service=audit_service,
-        command_repository=command_repository,
-    )
-    receipt = await service.accept_event(_event(is_debug=True))
-    evidence = evidences.evidences[receipt.source_event_id]
-    evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
-    evidence.processed_at = datetime(2026, 8, 27, 10, 0)
-    await block_repository.add_block(
-        object(),
-        DeviceEventCommandBlock(
-            evidence_id=evidence.id,
-            source_event_id=evidence.source_identity,
-            device_code=evidence.device_code,
-            blocking_command_id=blocking_command.id,
-            blocking_command_code=blocking_command.command_code,
-            blocking_command_status=CommandStatus.RECONCILING,
-            blocking_reconciliation_reason="DELIVERY_UNKNOWN",
-            blocked_at=datetime(2026, 8, 27, 10, 0),
-        ),
-    )
-    return (
-        service,
-        evidences,
-        block_repository,
-        command_repository,
-        audit_service,
-        task_queue,
-        receipt.source_event_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_latest_event_blocker_query_preserves_requeued_history_and_current_command_state() -> None:
-    service, _evidences, blocks, _commands, _audit, _queue, source_event_id = await _blocked_debug_event_fixture()
-    await blocks.mark_requeued(object(), blocks.blocks[0], requeued_at=datetime(2026, 8, 27, 10, 1))
-
-    snapshot = await service.get_event_command_block(source_event_id)
-
-    assert snapshot.block_id == 1
-    assert snapshot.status is DeviceEventCommandBlockStatus.REQUEUED
-    assert snapshot.source_event_id == source_event_id
-    assert snapshot.device_code == "ARM-01"
-    assert snapshot.blocking_command_code == "CMD-OLD-001"
-    assert snapshot.blocking_command_detected_status is CommandStatus.RECONCILING
-    assert snapshot.blocking_command_detected_reconciliation_reason == "DELIVERY_UNKNOWN"
-    assert snapshot.blocking_command_current_status is CommandStatus.FAILED
-    assert snapshot.blocking_command_terminal is True
-    assert snapshot.reason_code == "DEVICE_HAS_ACTIVE_COMMAND"
-    assert snapshot.reconcile_device_idle_path.endswith("/blockers/1/reconcile-device-idle")
-    assert snapshot.reprocess_path.endswith("/blockers/1/reprocess")
-
-
-@pytest.mark.asyncio
-async def test_event_blocker_query_reports_unknown_event_as_not_found() -> None:
-    service, _repository = _service(None)
-
-    with pytest.raises(EventCommandBlockNotFoundError):
-        await service.get_event_command_block("EVENT:missing")
-
-
-@pytest.mark.asyncio
-async def test_event_blocker_query_reports_event_without_block_as_not_found() -> None:
-    service, evidences = _service(None, block_repository=FakeEventCommandBlockRepository())
-    receipt = await service.accept_event(_event(is_debug=True))
-
-    with pytest.raises(EventCommandBlockNotFoundError):
-        await service.get_event_command_block(receipt.source_event_id)
-
-    assert receipt.source_event_id in evidences.evidences
-
-
-@pytest.mark.asyncio
-async def test_event_blocker_query_preserves_history_when_blocking_command_is_missing() -> None:
-    service, _evidences, _blocks, commands, _audit, _queue, source_event_id = await _blocked_debug_event_fixture()
-    commands.command = None
-
-    snapshot = await service.get_event_command_block(source_event_id)
-
-    assert snapshot.blocking_command_current_status is None
-    assert snapshot.blocking_command_terminal is False
-
-
-@pytest.mark.asyncio
-async def test_reprocess_terminal_blocker_requeues_original_evidence_without_immediate_wake() -> None:
-    service, evidences, blocks, commands, audit, queue, source_event_id = await _blocked_debug_event_fixture()
-    evidence = evidences.evidences[source_event_id]
-    frozen = (
-        evidence.source_identity,
-        evidence.payload_digest,
-        evidence.normalized_payload.copy(),
-        evidence.workline_id,
-        evidence.contract_key,
-        evidence.contract_version,
-    )
-
-    snapshot = await service.reprocess_blocked_event(
-        source_event_id=source_event_id,
-        block_id=1,
-        reason="  Result 已确认，重新处理  ",
-        actor_id=42,
-    )
-
-    assert snapshot.block_id == 1
-    assert snapshot.apply_status is InboundEvidenceApplyStatus.PENDING
-    assert InboundEvidenceApplyStatus(evidence.apply_status) is InboundEvidenceApplyStatus.PENDING
-    assert evidence.processed_at is None
-    assert DeviceEventCommandBlockStatus(blocks.blocks[0].status) is DeviceEventCommandBlockStatus.REQUEUED
-    assert blocks.blocks[0].requeued_at is not None
-    assert commands.creation_locks == ["ARM-01"]
-    assert queue.execution_wakes == 0
-    assert queue.device_command_wakes == 0
-    assert (
-        evidence.source_identity,
-        evidence.payload_digest,
-        evidence.normalized_payload,
-        evidence.workline_id,
-        evidence.contract_key,
-        evidence.contract_version,
-    ) == frozen
-    assert audit.entries[0]["args"] == {
-        "model": "InboundEvidence",
-        "operation": "reprocess_blocked_device_event",
-        "record_id": evidence.id,
-        "source_event_id": source_event_id,
-        "device_code": "ARM-01",
-        "block_id": 1,
-        "blocking_command_code": "CMD-OLD-001",
-        "actor_id": 42,
-        "reason": "Result 已确认，重新处理",
-    }
-
-
-@pytest.mark.asyncio
-async def test_reprocess_rejects_requeued_or_stale_causal_token() -> None:
-    service, _evidences, blocks, _commands, audit, _queue, source_event_id = await _blocked_debug_event_fixture()
-    await blocks.mark_requeued(object(), blocks.blocks[0], requeued_at=datetime(2026, 8, 27, 10, 1))
-
-    with pytest.raises(EventCommandBlockConflictError):
-        await service.reprocess_blocked_event(
-            source_event_id=source_event_id,
-            block_id=1,
-            reason="重复请求",
-            actor_id=42,
-        )
-
-    assert audit.entries == []
-
-
-@pytest.mark.asyncio
-async def test_reprocess_rejects_non_debug_event_and_live_device_slot() -> None:
-    unclosed = _command()
-    unclosed.command_code = "CMD-NEW-001"
-    service, evidences, _blocks, _commands, audit, _queue, source_event_id = await _blocked_debug_event_fixture(
-        unclosed=unclosed
-    )
-
-    with pytest.raises(EventCommandBlockConflictError):
-        await service.reprocess_blocked_event(
-            source_event_id=source_event_id,
-            block_id=1,
-            reason="设备仍有命令",
-            actor_id=42,
-        )
-
-    evidences.evidences[source_event_id].normalized_payload["is_debug"] = False
-    with pytest.raises(EventCommandBlockConflictError):
-        await service.reprocess_blocked_event(
-            source_event_id=source_event_id,
-            block_id=1,
-            reason="非调试事件",
-            actor_id=42,
-        )
-    assert audit.entries == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing", "id_mismatch", "occupies_slot"])
-async def test_reprocess_rejects_unreliable_blocking_command(failure: str) -> None:
-    service, _evidences, _blocks, commands, audit, _queue, source_event_id = await _blocked_debug_event_fixture()
-    assert commands.command is not None
-    if failure == "missing":
-        commands.command = None
-    elif failure == "id_mismatch":
-        commands.command.id = 999
-    else:
-        commands.command.status = CommandStatus.RECONCILING
-
-    with pytest.raises(EventCommandBlockConflictError, match="尚未可靠终结"):
-        await service.reprocess_blocked_event(
-            source_event_id=source_event_id,
-            block_id=1,
-            reason="命令因果不可靠",
-            actor_id=42,
-        )
-
-    assert audit.entries == []
 
 
 @pytest.mark.asyncio
@@ -1335,7 +1038,7 @@ async def test_result_evidence_can_close_dispatching_command_before_ack_writebac
 
 
 @pytest.mark.asyncio
-async def test_result_for_untrusted_command_state_enters_reconciliation_without_flipping_terminal() -> None:
+async def test_result_for_terminal_command_is_retained_without_flipping_terminal() -> None:
     command = _command()
     command.status = CommandStatus.SUCCEEDED
     service, repository = _service(command)
@@ -1343,11 +1046,11 @@ async def test_result_for_untrusted_command_state_enters_reconciliation_without_
 
     assert await service.process_one() is True
     assert command.status == CommandStatus.SUCCEEDED
-    assert repository.evidences[receipt.source_event_id].apply_status == "RECONCILING"
+    assert repository.evidences[receipt.source_event_id].apply_status == "IGNORED"
 
 
 @pytest.mark.asyncio
-async def test_reconciling_evidence_update_is_published_after_processing() -> None:
+async def test_ignored_late_evidence_update_is_published_after_processing() -> None:
     command = _command()
     command.status = CommandStatus.SUCCEEDED
     publisher = FakePublisher()
@@ -1356,9 +1059,9 @@ async def test_reconciling_evidence_update_is_published_after_processing() -> No
 
     assert await service.process_one() is True
 
-    assert repository.evidences[receipt.source_event_id].apply_status == "RECONCILING"
+    assert repository.evidences[receipt.source_event_id].apply_status == "IGNORED"
     assert publisher.events[0][1] == "device_evidence.updated"
-    assert publisher.events[0][2]["apply_status"] == "RECONCILING"
+    assert publisher.events[0][2]["apply_status"] == "IGNORED"
 
 
 @pytest.mark.asyncio
@@ -1378,6 +1081,46 @@ async def test_device_evidence_worker_does_not_claim_wms_evidence() -> None:
 
     assert await service.process_one() is False
     assert repository.evidences["WMS-1"].apply_status == "PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persisted_payload",
+    [
+        _persisted_event_payload(),
+        _persisted_event_payload(is_debug=True),
+        [],
+        "invalid-event-payload",
+        None,
+    ],
+    ids=("dict", "debug-dict", "list", "scalar", "null"),
+)
+async def test_worker_fail_closes_invalid_persisted_event_without_any_wake(persisted_payload: object) -> None:
+    queue = FakeTaskQueue()
+    publisher = FakePublisher()
+    service, repository = _service(None, task_queue=queue, publisher=publisher)
+    evidence = InboundEvidence(
+        id=99,
+        kind=InboundEvidenceKind.DEVICE_EVENT,
+        source_identity="EVENT:legacy-estop",
+        payload_digest="a" * 64,
+        normalized_payload={},
+        received_at=datetime(2026, 9, 12),
+        device_code="ARM-01",
+        workline_id=11,
+    )
+    object.__setattr__(evidence, "normalized_payload", persisted_payload)
+    repository.evidences[evidence.source_identity] = evidence
+
+    assert await service.process_one() is True
+
+    assert evidence.apply_status == "IGNORED"
+    assert queue.device_evidence_wakes == 0
+    assert queue.device_command_wakes == 0
+    assert queue.execution_wakes == 0
+    assert queue.transport_debug_wakes == 0
+    assert publisher.events[0][2]["event_type"] is None or isinstance(persisted_payload, dict)
+    assert await service.process_one() is False
 
 
 @pytest.mark.asyncio

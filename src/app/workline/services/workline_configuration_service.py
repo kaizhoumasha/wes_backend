@@ -18,7 +18,6 @@ from src.app.workline.models.workline import (
     WorkLinePluginSummary,
     WorkLinePositionInput,
 )
-from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException
@@ -52,10 +51,6 @@ class DeviceConfigurationRepositoryPort(Protocol):
     ) -> list[Any]: ...
 
     async def get_by_work_line_id(self, db: Any, workline_id: int) -> list[Any]: ...
-
-
-class SafetyConfigurationRepositoryPort(Protocol):
-    async def get_active_for_workline(self, db: Any, workline_id: int) -> Any | None: ...
 
 
 class CacheInvalidatorPort(Protocol):
@@ -96,9 +91,6 @@ class WorkLineConfigurationService:
         device_repository: DeviceConfigurationRepositoryPort = cast(
             "DeviceConfigurationRepositoryPort", device_repository
         ),
-        safety_repository: SafetyConfigurationRepositoryPort = cast(
-            "SafetyConfigurationRepositoryPort", workline_safety_incident_repository
-        ),
         device_cache_invalidator: CacheInvalidatorPort | None = None,
         position_repository: PositionConfigurationRepositoryPort = cast(
             "PositionConfigurationRepositoryPort", workline_position_repository
@@ -108,7 +100,6 @@ class WorkLineConfigurationService:
         self._business_blockers = dict(business_blockers or {})
         self._worklines = workline_repository
         self._devices = device_repository
-        self._safety = safety_repository
         self._device_cache_invalidator = device_cache_invalidator
         self._positions = position_repository
 
@@ -119,8 +110,6 @@ class WorkLineConfigurationService:
         WorkLineService._assert_version(workline, workline_id, version)
         if bool(workline.is_active):
             raise BusinessException(message="已启用工作线不能修改配置")
-        if await self._safety.get_active_for_workline(db, workline_id) is not None:
-            raise BusinessException(message="存在 active safety incident，不能修改工作线配置")
         positions = await self._positions.list_for_workline(db, workline_id, for_update=True)
         workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
         if workload["count"] > 0:
@@ -437,9 +426,6 @@ class WorkLineConfigurationService:
         WorkLineService._assert_version(workline, workline_id, version)
         if not bool(workline.is_active):
             return workline
-
-        if await self._safety.get_active_for_workline(db, workline_id) is not None:
-            raise BusinessException(message="存在 active safety incident，不能停用作业线")
 
         workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
         common_blockers = [owner_type for owner_type, blocked in workload["by_type"].items() if bool(blocked)]
