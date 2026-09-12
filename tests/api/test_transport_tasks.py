@@ -279,6 +279,10 @@ def test_transport_openapi_excludes_retired_resource_binding_contract() -> None:
     assert "active_binding_count" not in schemas["TransportTaskResponse"]["properties"]
     assert {"binding_count", "active_binding_count"}.isdisjoint(schemas["DebugTransportTaskResetPreview"]["properties"])
     assert "deleted_binding_count" not in schemas["DebugTransportTaskResetResult"]["properties"]
+    assert schemas["TransportTaskResponse"]["properties"]["next_submit_at"]["anyOf"] == [
+        {"type": "string"},
+        {"type": "null"},
+    ]
     assert create["responses"]["409"]["description"] == "Transport 幂等身份冲突"
 
 
@@ -569,6 +573,7 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
         created_at="2026-08-20T10:00:00Z",
         updated_at="2026-08-20T10:01:00Z",
         send_started_at=None,
+        next_submit_at=None,
         result_deadline_at="2026-08-20T10:07:00Z",
         submit_attempt_count=1,
         outcome_version=2,
@@ -623,6 +628,7 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
     assert data["outcome_version"] == 2
     assert data["published_outcome_version"] == 1
     assert data["send_started_at"] is None
+    assert data["next_submit_at"] is None
     assert data["result_deadline_at"].endswith("Z")
     assert data["status"] == "SUCCEEDED"
     assert data["latest_evidence"]["status"] == "APPLIED"
