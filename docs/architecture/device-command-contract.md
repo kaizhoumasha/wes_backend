@@ -98,6 +98,10 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 - 本次新建 `PENDING` 命令在事务提交后唤醒既有 DeviceCommand 派发扫描；唤醒失败不改写命令或 evidence，Beat 仍负责补偿扫描；
 - 以 `ECS_EVENT_DEBUG:<event-identity>` 记录系统触发原因，`created_by=null`，不伪装为人工联调。
 
+当 EVENT 关联的 WorkLine 存在未关闭的手工出库联调 Run 时，WES 仍持久接收 `is_debug=true` EVENT，但直接将 Evidence
+标记为 `IGNORED`，不创建或唤醒 `EVENT_DEBUG` 指令。该手工编排隔离优先于显式 `is_debug=true` 和自动运输联调提升，避免
+供应商直发 `MOVE_FORWARD` 与联调台按节点创建的 `MANUAL_DEBUG` 指令并行作用于同一工作线。
+
 自动运输联调还可在启动时开启 `test_mode`，复用上述 EVENT_DEBUG 能力。开关默认关闭，启动时冻结到轮次配置，
 连续多轮沿用启动配置；活动轮次结束后不再提升新事件。在活动 `test_mode` 轮次内，所有设备编码精确匹配
 `STATION_SCAN` 加数字的 `SCAN_COMPLETED` 事件，即使 ECS 省略 `is_debug` 或传入 `false`，也按 debug 事件处理，

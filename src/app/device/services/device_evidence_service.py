@@ -211,6 +211,14 @@ class EventDebugModePolicyPort(Protocol):
         device_code: str,
     ) -> bool: ...
 
+    async def should_suppress_event_debug_command_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None,
+        device_code: str,
+    ) -> bool: ...
+
 
 class DeviceEvidenceService:
     """把外部 callback 先固化为证据；不在 ingress 中推进业务对象。"""
@@ -497,7 +505,18 @@ class DeviceEvidenceService:
             if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
                 event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
                 if event.is_debug:
-                    if self._event_debug_commands is None:
+                    await self._commands.lock_creation_for_device(db, event.device_code)
+                    suppress_debug_command = (
+                        self._event_debug_mode_policy is not None
+                        and await self._event_debug_mode_policy.should_suppress_event_debug_command_in_session(
+                            db,
+                            workline_id=evidence.workline_id,
+                            device_code=event.device_code,
+                        )
+                    )
+                    if suppress_debug_command:
+                        await self._processing.mark_ignored(db, evidence, processed_at=now)
+                    elif self._event_debug_commands is None:
                         await self._processing.mark_reconciling(db, evidence, processed_at=now)
                     else:
                         try:

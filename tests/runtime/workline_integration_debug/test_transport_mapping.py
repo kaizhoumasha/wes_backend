@@ -132,6 +132,20 @@ class _Repository:
         return self.plan_resources
 
 
+class _CommandFence:
+    def __init__(self, *, unclosed_device_code: str | None = None) -> None:
+        self.unclosed_device_code = unclosed_device_code
+        self.locks: list[str] = []
+        self.checks: list[str] = []
+
+    async def lock_creation_for_device(self, _db, device_code):  # type: ignore[no-untyped-def]
+        self.locks.append(device_code)
+
+    async def get_unclosed_for_device_for_update(self, _db, device_code):  # type: ignore[no-untyped-def]
+        self.checks.append(device_code)
+        return object() if device_code == self.unclosed_device_code else None
+
+
 @pytest.mark.parametrize(
     ("action", "request_type"),
     [
@@ -202,12 +216,14 @@ def test_selected_site_resources_map_to_one_existing_transport_request(
 @pytest.mark.asyncio
 async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
     repository = _Repository(None)  # type: ignore[arg-type]
+    command_fence = _CommandFence()
     service = IntegrationDebugService(
         _Sessions(),  # type: ignore[arg-type]
         repository=repository,  # type: ignore[arg-type]
         confirmations=AsyncMock(),  # type: ignore[arg-type]
         transport=AsyncMock(),  # type: ignore[arg-type]
         device_commands=AsyncMock(),  # type: ignore[arg-type]
+        command_fence=command_fence,  # type: ignore[arg-type]
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
@@ -227,7 +243,7 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
     assert result["site_configuration"] == {
         "outbound_rcs_template": "CTU01",
         "return_rcs_template": "CTU03",
-        "bin_rack_positions": ["KT16", "KT17"],
+        "bin_rack_positions": ["KT16"],
         "outbound_transfer_position": "OUT65",
         "return_zone_code": "WH05",
         "infeed_position": "CNV0301",
@@ -240,6 +256,38 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
             "STATION_SCAN12",
         ],
     }
+    assert command_fence.locks == sorted(
+        ["SIM-ECS-01", "STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12"]
+    )
+    assert command_fence.checks == command_fence.locks
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_an_unclosed_command_on_a_frozen_site_device() -> None:
+    repository = _Repository(None)  # type: ignore[arg-type]
+    command_fence = _CommandFence(unclosed_device_code="STATION_SCAN10")
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        command_fence=command_fence,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="STATION_SCAN10 存在未闭合指令"):
+        await service.create_run(
+            CreateIntegrationRun(
+                workline_code="KT16",
+                profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
+                environment_label="integration",
+                device_code="SIM-ECS-01",
+            ),
+            actor_id=42,
+        )
+
+    assert repository.run is None
 
 
 @pytest.mark.asyncio
@@ -251,6 +299,7 @@ async def test_create_run_rejects_worklines_outside_the_temporary_manual_outboun
         confirmations=AsyncMock(),  # type: ignore[arg-type]
         transport=AsyncMock(),  # type: ignore[arg-type]
         device_commands=AsyncMock(),  # type: ignore[arg-type]
+        command_fence=_CommandFence(),  # type: ignore[arg-type]
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
@@ -277,6 +326,7 @@ async def test_unstarted_run_can_be_closed_without_leaving_workline_scope_occupi
         confirmations=AsyncMock(),  # type: ignore[arg-type]
         transport=AsyncMock(),  # type: ignore[arg-type]
         device_commands=AsyncMock(),  # type: ignore[arg-type]
+        command_fence=_CommandFence(),  # type: ignore[arg-type]
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
     created = await service.create_run(
@@ -1104,10 +1154,16 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
         device_code="SIM-ECS-01",
         configuration_json={
             "plan_resources": {
-                "target_rack": {"rack_id": "RACK-01"},
+                "target_rack": {"rack_id": "RACK-01", "rack_face": "0"},
                 "direct_picks": [],
                 "bin_source_racks": [],
-            }
+            },
+            "departure_candidate": {
+                "rack_id": "RACK-01",
+                "rack_face": "0",
+                "current_location": "OUT65",
+                "role": "TARGET_RACK",
+            },
         },
     )
     repository = _Repository(run)
@@ -1125,7 +1181,8 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
         rack_id="RACK-01",
         source={"kind": "RACK", "location_code": "RACK-01"},
         target={"kind": "ZONE", "location_code": "WH05"},
-        rcs_template_id="CTU03",
+        target_face="0",
+        rcs_template_id="F01",
     )
 
     with pytest.raises(IntegrationDebugContractError, match="departure_decide READY"):
@@ -1920,6 +1977,77 @@ async def test_full_site_retry_reuses_the_single_transport_task_identity() -> No
 
 
 @pytest.mark.asyncio
+async def test_full_site_retry_accepts_legacy_transport_step_without_source_cycle_tag() -> None:
+    run = IntegrationRun(
+        run_id="run-legacy-retry",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
+        device_code="ECS-01",
+        configuration_json={
+            "plan_resources": {
+                "target_rack": {"rack_id": "RACK-01", "rack_face": "90"},
+                "direct_picks": [],
+                "bin_source_racks": [],
+            }
+        },
+    )
+    repository = _Repository(run)
+    action_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4575"
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=0,
+            phase="RACK_TRANSPORT",
+            status="WAITING",
+            client_request_id=action_id,
+            transport_task_id="transport-legacy",
+            request_summary_json={
+                "kind": "MOVE_RACK",
+                "rack_id": "RACK-01",
+                "bin_code": None,
+                "source": {"kind": "RACK", "location_code": "RACK-01"},
+                "target": {"kind": "RACK_POSITION", "location_code": "OUT65"},
+                "rcs_template_id": "F01",
+                "target_face": "90",
+            },
+        )
+    )
+    transport = AsyncMock()
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=transport,
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+    action = IntegrationTransportAction(
+        kind=IntegrationTransportActionKind.MOVE_RACK,
+        client_request_id=action_id,
+        rack_id="RACK-01",
+        source={"kind": "RACK", "location_code": "RACK-01"},
+        target={"kind": "RACK_POSITION", "location_code": "OUT65"},
+        target_face="90",
+        rcs_template_id="F01",
+    )
+
+    result = await service.create_transport_action(run.run_id, action=action, expected_version=0, actor_id=42)
+
+    assert result["steps"][0]["transport_task_id"] == "transport-legacy"
+    transport.create_debug_task_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_manual_outbound_rejects_rack_transport_outside_the_fixed_site_contract() -> None:
     run = IntegrationRun(
         run_id="run-site-contract",
@@ -1973,14 +2101,27 @@ def test_manual_outbound_rack_return_uses_ctu03_and_wh05() -> None:
         rack_id="RACK-01",
         source={"kind": "RACK", "location_code": "RACK-01"},
         target={"kind": "ZONE", "location_code": "WH05"},
+        target_face="90",
         rcs_template_id="CTU03",
     )
+    configuration = {
+        "departure_candidate": {
+            "rack_id": "RACK-01",
+            "rack_face": "90",
+            "current_location": "KT16",
+            "role": "SOURCE_RACK",
+        }
+    }
 
-    IntegrationDebugService._validate_manual_outbound_transport(IntegrationDebugPhase.RACK_DEPARTURE, action, None)
+    IntegrationDebugService._validate_manual_outbound_transport(
+        IntegrationDebugPhase.RACK_DEPARTURE, action, None, configuration
+    )
 
     action.target["location_code"] = "RETURN53"
     with pytest.raises(IntegrationDebugContractError, match="WH05"):
-        IntegrationDebugService._validate_manual_outbound_transport(IntegrationDebugPhase.RACK_DEPARTURE, action, None)
+        IntegrationDebugService._validate_manual_outbound_transport(
+            IntegrationDebugPhase.RACK_DEPARTURE, action, None, configuration
+        )
 
 
 @pytest.mark.asyncio
@@ -2010,6 +2151,10 @@ async def test_bin_inbound_batch_accepts_contract_batch_sizes(max_bin_count: int
                 ],
             }
         },
+    )
+    IntegrationDebugService._sync_source_rack_progress(
+        run,
+        run.configuration_json["plan_resources"]["bin_source_racks"],
     )
     repository = _Repository(run)
     confirmations = AsyncMock()
@@ -2254,6 +2399,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
     device_commands.create_manual_debug_command.assert_not_awaited()
     assert result["steps"][0]["status"] == "SUCCEEDED"
     assert result["steps"][0]["request"]["device_code"] == "STATION_SCAN10"
+    assert result["steps"][0]["request"]["source_cycle_no"] == 0
     assert result["steps"][0]["result"] == {"simulated": True}
 
 
@@ -2505,6 +2651,10 @@ async def test_whole_inbound_batch_dispatch_replay_and_completion(count: int) ->
                 for index in range(count)
             ],
         },
+    )
+    IntegrationDebugService._sync_source_rack_progress(
+        run,
+        run.configuration_json["plan_resources"]["bin_source_racks"],
     )
     repository = _Repository(run)
     transport = AsyncMock()

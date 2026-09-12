@@ -278,6 +278,84 @@ async def test_disabled_test_mode_does_not_promote_station_scan_event() -> None:
     )
 
 
+@pytest.mark.parametrize(("active_run", "expected"), [(object(), True), (None, False)])
+async def test_manual_outbound_run_suppresses_event_debug_command(
+    monkeypatch: pytest.MonkeyPatch,
+    active_run: object | None,
+    expected: bool,
+) -> None:
+    service, _repository, sessions, _publisher = _service()
+    manual_outbound_runs = SimpleNamespace(
+        get_active_for_workline=AsyncMock(return_value=active_run),
+        get_active_for_device_code=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "src.app.transport.debug_run_service.integration_run_repository",
+        manual_outbound_runs,
+    )
+
+    actual = await service.should_suppress_event_debug_command_in_session(
+        sessions.db,
+        workline_id=3,
+        device_code="STATION_SCAN10",
+    )
+
+    assert actual is expected
+    manual_outbound_runs.get_active_for_workline.assert_awaited_once_with(sessions.db, 3)
+    if active_run is None:
+        manual_outbound_runs.get_active_for_device_code.assert_awaited_once_with(sessions.db, "STATION_SCAN10")
+
+
+async def test_inactive_workline_binding_still_suppresses_by_static_device_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _repository, sessions, _publisher = _service()
+    service._devices = SimpleNamespace(get_by_device_code=AsyncMock(return_value=SimpleNamespace(work_line_id=3)))
+    manual_outbound_runs = SimpleNamespace(
+        get_active_for_workline=AsyncMock(return_value=object()),
+        get_active_for_device_code=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "src.app.transport.debug_run_service.integration_run_repository",
+        manual_outbound_runs,
+    )
+
+    actual = await service.should_suppress_event_debug_command_in_session(
+        sessions.db,
+        workline_id=None,
+        device_code="STATION_SCAN10",
+    )
+
+    assert actual is True
+    service._devices.get_by_device_code.assert_awaited_once_with(sessions.db, "STATION_SCAN10")
+    manual_outbound_runs.get_active_for_workline.assert_awaited_once_with(sessions.db, 3)
+
+
+async def test_unbound_frozen_site_device_is_suppressed_by_active_manual_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _repository, sessions, _publisher = _service()
+    service._devices = SimpleNamespace(get_by_device_code=AsyncMock(return_value=SimpleNamespace(work_line_id=None)))
+    manual_outbound_runs = SimpleNamespace(
+        get_active_for_workline=AsyncMock(return_value=None),
+        get_active_for_device_code=AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "src.app.transport.debug_run_service.integration_run_repository",
+        manual_outbound_runs,
+    )
+
+    actual = await service.should_suppress_event_debug_command_in_session(
+        sessions.db,
+        workline_id=None,
+        device_code="STATION_SCAN10",
+    )
+
+    assert actual is True
+    manual_outbound_runs.get_active_for_workline.assert_not_awaited()
+    manual_outbound_runs.get_active_for_device_code.assert_awaited_once_with(sessions.db, "STATION_SCAN10")
+
+
 async def test_get_run_returns_complete_step_history() -> None:
     service, repository, _, _ = _service()
     created = await service.create_run(_request(), actor_id=7)

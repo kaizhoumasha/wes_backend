@@ -36,7 +36,7 @@ def action(rack_id="610007", template="F01", position="OUT65", face="90"):
 
 
 @pytest.mark.parametrize(
-    "transport_action", [action(), action("510002", "CTU01", "KT16"), action("510012", "CTU01", "KT17", "270")]
+    "transport_action", [action(), action("510002", "CTU01", "KT16"), action("510012", "CTU01", "KT16", "270")]
 )
 def test_role_selects_template_position_and_preserves_plan_face(transport_action):
     IntegrationDebugService._validate_manual_outbound_transport(

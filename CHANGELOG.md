@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1.0] - 2026-09-12
+
+### Fixed
+
+- 手工出库联调运行期间忽略 ECS `is_debug=true` 的直接下发事件，保留忽略证据且不创建调试命令。
+- 五层货架工作位固定为 KT16，按来源货架、面向和料箱循环推进；旧运行从既有步骤恢复实物上下文，跨轮次确认不复用上一轮运输终态。
+
 ## [0.43.0.0] - 2026-09-11
 
 ### Changed

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import wes_plugin_sdk as sdk
 from sqlalchemy.exc import IntegrityError
 
+from src.app.device.repositories.device_repository import DeviceRepository
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.execution.repositories import InboundEvidenceRepository, WmsConfirmationRepository
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
@@ -47,6 +48,7 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     parse_bin_return_batch_response,
 )
 from src.app.workline.repositories import WorkLineRepository
+from src.app.workline_integration_debug.repository import integration_run_repository
 from src.core.exceptions import NotFoundException
 from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
@@ -184,6 +186,7 @@ class TransportDebugRunService:
         clock: Callable[[], datetime] = timezone.now_for_db,
         event_publisher: TransportDebugRunEventPublisher = event_stream_service,
         task_queue_gateway: TaskQueueGateway | None = None,
+        device_repository: DeviceRepository | None = None,
     ) -> None:
         self._worklines = WorkLineRepository()
         self._confirmations = WmsConfirmationRepository()
@@ -195,6 +198,7 @@ class TransportDebugRunService:
         self._clock = clock
         self._event_publisher = event_publisher
         self._task_queue = task_queue_gateway
+        self._devices = device_repository or DeviceRepository()
 
     async def is_event_debug_enabled_in_session(
         self,
@@ -207,6 +211,20 @@ class TransportDebugRunService:
             return False
         run = await self._repository.get_active_run(db)
         return run is not None and run.configuration_json.get("test_mode") is True
+
+    async def should_suppress_event_debug_command_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None,
+        device_code: str,
+    ) -> bool:
+        if workline_id is None:
+            device = await self._devices.get_by_device_code(db, device_code)
+            workline_id = device.work_line_id if device is not None else None
+        if workline_id is not None and await integration_run_repository.get_active_for_workline(db, workline_id):
+            return True
+        return await integration_run_repository.get_active_for_device_code(db, device_code) is not None
 
     async def create_run(
         self,

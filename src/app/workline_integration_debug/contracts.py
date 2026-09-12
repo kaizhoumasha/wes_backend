@@ -70,7 +70,7 @@ class ManualOutboundSiteConfiguration(TypedDict):
 MANUAL_OUTBOUND_SITE_CONFIGURATION: ManualOutboundSiteConfiguration = {
     "outbound_rcs_template": "CTU01",
     "return_rcs_template": "CTU03",
-    "bin_rack_positions": ["KT16", "KT17"],
+    "bin_rack_positions": ["KT16"],
     "outbound_transfer_position": "OUT65",
     "return_zone_code": "WH05",
     "infeed_position": "CNV0301",
