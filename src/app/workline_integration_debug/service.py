@@ -112,8 +112,6 @@ class EventPublisherPort(Protocol):
 class ManualDebugCommandFencePort(Protocol):
     async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
 
-    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> object | None: ...
-
 
 class IntegrationRunWorkLineOwner:
     """只允许已由联调 run 冻结的两个人工 WMS 请求继续收敛。"""
@@ -180,9 +178,6 @@ class IntegrationDebugService:
             device_codes = sorted({request.device_code, *site_device_codes})
             for device_code in device_codes:
                 await self._command_fence.lock_creation_for_device(db, device_code)
-            for device_code in device_codes:
-                if await self._command_fence.get_unclosed_for_device_for_update(db, device_code) is not None:
-                    raise IntegrationDebugConflict(f"设备 {device_code} 存在未闭合指令，不能启动手工出库联调 run")
             run_id = new_uuid7()
             run = IntegrationRun(
                 run_id=run_id,

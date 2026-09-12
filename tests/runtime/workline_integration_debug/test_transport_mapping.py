@@ -259,11 +259,11 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
     assert command_fence.locks == sorted(
         ["SIM-ECS-01", "STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12"]
     )
-    assert command_fence.checks == command_fence.locks
+    assert command_fence.checks == []
 
 
 @pytest.mark.asyncio
-async def test_create_run_rejects_an_unclosed_command_on_a_frozen_site_device() -> None:
+async def test_create_run_does_not_query_or_block_on_an_unclosed_device_command() -> None:
     repository = _Repository(None)  # type: ignore[arg-type]
     command_fence = _CommandFence(unclosed_device_code="STATION_SCAN10")
     service = IntegrationDebugService(
@@ -276,18 +276,19 @@ async def test_create_run_rejects_an_unclosed_command_on_a_frozen_site_device() 
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugConflict, match="STATION_SCAN10 存在未闭合指令"):
-        await service.create_run(
-            CreateIntegrationRun(
-                workline_code="KT16",
-                profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
-                environment_label="integration",
-                device_code="SIM-ECS-01",
-            ),
-            actor_id=42,
-        )
+    result = await service.create_run(
+        CreateIntegrationRun(
+            workline_code="KT16",
+            profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
+            environment_label="integration",
+            device_code="SIM-ECS-01",
+        ),
+        actor_id=42,
+    )
 
-    assert repository.run is None
+    assert result["workline_id"] == 3
+    assert repository.run is not None
+    assert command_fence.checks == []
 
 
 @pytest.mark.asyncio
