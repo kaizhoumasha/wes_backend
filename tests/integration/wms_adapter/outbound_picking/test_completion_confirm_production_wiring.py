@@ -46,6 +46,7 @@ async def test_completion_decision_persists_without_automatic_reissue_or_device_
     confirmation_database, monkeypatch: pytest.MonkeyPatch, data: dict, state: PickingTaskStatus
 ) -> None:
     monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", "[]")
+    monkeypatch.setenv("WMS_DIAGNOSTICS_BUDGET_MS", "500")
     _, sessions = confirmation_database
     server = ConfirmationServer(status_code=200, code="DECIDED", data=data)
     async with picking_confirmation_worker(confirmation_database, server=server, status=state) as (

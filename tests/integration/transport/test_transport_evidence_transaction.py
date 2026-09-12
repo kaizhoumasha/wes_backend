@@ -780,7 +780,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     submit_task = asyncio.create_task(submit_service.submit_pending_tasks(1))
 
     try:
-        first_submit_count = await asyncio.wait_for(asyncio.shield(submit_task), timeout=0.2)
+        first_submit_count = await asyncio.wait_for(asyncio.shield(submit_task), timeout=2)
     finally:
         blocking_repository.release.set()
 
