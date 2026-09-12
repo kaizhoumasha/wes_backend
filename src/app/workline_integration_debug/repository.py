@@ -48,6 +48,18 @@ class IntegrationRunRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
+    async def get_active_for_device_code(self, db: AsyncSession, device_code: str) -> IntegrationRun | None:
+        columns = cast("Any", IntegrationRun).__table__.c
+        runs = await db.scalars(select(IntegrationRun).where(columns.active_scope.is_not(None)))
+        for run in runs:
+            site = run.configuration_json.get("site_configuration")
+            scan_device_codes = site.get("scan_device_codes") if isinstance(site, dict) else None
+            if run.device_code == device_code or (
+                isinstance(scan_device_codes, list) and device_code in scan_device_codes
+            ):
+                return run
+        return None
+
     async def list_recent(self, db: AsyncSession, *, limit: int) -> list[IntegrationRun]:
         columns = cast("Any", IntegrationRun).__table__.c
         return list(

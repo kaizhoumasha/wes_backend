@@ -321,9 +321,11 @@ class FakeEventDebugCommandService:
 
 
 class FakeEventDebugModePolicy:
-    def __init__(self, enabled: bool) -> None:
+    def __init__(self, enabled: bool, *, suppress_command: bool = False) -> None:
         self.enabled = enabled
+        self.suppress_command = suppress_command
         self.calls: list[tuple[str, str]] = []
+        self.suppression_calls: list[tuple[int | None, str]] = []
 
     async def is_event_debug_enabled_in_session(
         self,
@@ -334,6 +336,16 @@ class FakeEventDebugModePolicy:
     ) -> bool:
         self.calls.append((event_type, device_code))
         return self.enabled
+
+    async def should_suppress_event_debug_command_in_session(
+        self,
+        _db: object,
+        *,
+        workline_id: int | None,
+        device_code: str,
+    ) -> bool:
+        self.suppression_calls.append((workline_id, device_code))
+        return self.suppress_command
 
 
 class FakePublisher:
@@ -619,6 +631,54 @@ async def test_debug_event_creates_command_without_waking_business_processing() 
     assert queue.execution_wakes == 0
     assert queue.device_command_wakes == 1
     assert publisher.events[0][2]["command_code"] == "EVENT-DEBUG-CMD-001"
+
+
+@pytest.mark.asyncio
+async def test_manual_outbound_run_ignores_debug_event_without_creating_command() -> None:
+    queue = FakeTaskQueue()
+    debug_commands = FakeEventDebugCommandService()
+    policy = FakeEventDebugModePolicy(enabled=False, suppress_command=True)
+    commands = FakeCommandRepository(None)
+    service, repository = _service(
+        None,
+        event_workline_id=11,
+        task_queue=queue,
+        event_debug_commands=debug_commands,
+        event_debug_mode_policy=policy,
+        command_repository=commands,
+    )
+    receipt = await service.accept_event(_event(is_debug=True))
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "IGNORED"
+    assert debug_commands.evidences == []
+    assert queue.device_command_wakes == 0
+    assert commands.creation_locks == ["ARM-01"]
+    assert policy.suppression_calls == [(11, "ARM-01")]
+
+
+@pytest.mark.asyncio
+async def test_unbound_debug_event_still_uses_device_identity_for_manual_run_suppression() -> None:
+    commands = FakeCommandRepository(None)
+    debug_commands = FakeEventDebugCommandService()
+    policy = FakeEventDebugModePolicy(enabled=False, suppress_command=True)
+    service, repository = _service(
+        None,
+        event_workline_id=None,
+        event_debug_commands=debug_commands,
+        event_debug_mode_policy=policy,
+        command_repository=commands,
+    )
+    receipt = await service.accept_event(_event(is_debug=True))
+
+    assert await service.process_one() is True
+
+    assert repository.evidences[receipt.source_event_id].apply_status == "IGNORED"
+    assert commands.creation_locks == ["ARM-01"]
+    assert policy.suppression_calls == [(None, "ARM-01")]
+    assert debug_commands.evidences == []
 
 
 @pytest.mark.asyncio

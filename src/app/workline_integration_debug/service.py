@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.models.command import MANUAL_DEBUG_REF_TYPE, DeviceCommandRequestData
+from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services import device_service
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
@@ -108,6 +109,12 @@ class EventPublisherPort(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool: ...
 
 
+class ManualDebugCommandFencePort(Protocol):
+    async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
+
+    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> object | None: ...
+
+
 class IntegrationRunWorkLineOwner:
     """只允许已由联调 run 冻结的两个人工 WMS 请求继续收敛。"""
 
@@ -141,6 +148,7 @@ class IntegrationDebugService:
         confirmations: WmsConfirmationLifecycleService,
         transport: TransportService,
         device_commands: DeviceCommandService,
+        command_fence: ManualDebugCommandFencePort | None = None,
         prepare: PickingTaskPrepareCoordinator | None = None,
         publisher: EventPublisherPort | None = None,
     ) -> None:
@@ -149,6 +157,7 @@ class IntegrationDebugService:
         self._confirmations = confirmations
         self._transport = transport
         self._device_commands = device_commands
+        self._command_fence = command_fence or device_command_repository
         self._prepare = prepare
         self._publisher = publisher or event_stream_service
 
@@ -167,6 +176,13 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("当前临时联调能力仅支持 KT16")
             if await self._runs.get_active_for_workline(db, workline.id, for_update=True) is not None:
                 raise IntegrationDebugConflict("该 WorkLine 已有活动联调 run")
+            site_device_codes = MANUAL_OUTBOUND_SITE_CONFIGURATION["scan_device_codes"]
+            device_codes = sorted({request.device_code, *site_device_codes})
+            for device_code in device_codes:
+                await self._command_fence.lock_creation_for_device(db, device_code)
+            for device_code in device_codes:
+                if await self._command_fence.get_unclosed_for_device_for_update(db, device_code) is not None:
+                    raise IntegrationDebugConflict(f"设备 {device_code} 存在未闭合指令，不能启动手工出库联调 run")
             run_id = new_uuid7()
             run = IntegrationRun(
                 run_id=run_id,
@@ -200,14 +216,21 @@ class IntegrationDebugService:
     async def get_run(self, run_id: str) -> dict[str, Any]:
         async with self._sessions() as db:
             run = await self._require_run(db, run_id)
-            return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            steps = await self._runs.list_steps(db, run_id)
+            self._ensure_source_rack_progress(run, steps)
+            return self._snapshot(run, steps)
 
     async def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not 1 <= limit <= 100:
             raise IntegrationDebugContractError("limit 必须为 1..100")
         async with self._sessions() as db:
             runs = await self._runs.list_recent(db, limit=limit)
-            return [self._snapshot(run, await self._runs.list_steps(db, run.run_id)) for run in runs]
+            run_steps = [(run, await self._runs.list_steps(db, run.run_id)) for run in runs]
+            snapshots = []
+            for run, steps in run_steps:
+                self._ensure_source_rack_progress(run, steps)
+                snapshots.append(self._snapshot(run, steps))
+            return snapshots
 
     async def bind_task(
         self,
@@ -431,7 +454,12 @@ class IntegrationDebugService:
                 "target_rack": {"rack_id": task.target_rack_id, "rack_face": task.target_rack_face},
                 **resources,
             }
-            run.configuration_json = {**run.configuration_json, "plan_resources": plan}
+            run.configuration_json = {
+                **run.configuration_json,
+                "site_configuration": deepcopy(MANUAL_OUTBOUND_SITE_CONFIGURATION),
+                "plan_resources": plan,
+            }
+            self._sync_source_rack_progress(run, plan.get("bin_source_racks"))
             if current_phase is IntegrationDebugPhase.PLAN_RECEIPT:
                 run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
                 run.status = IntegrationDebugRunStatus.ACTIVE
@@ -470,18 +498,25 @@ class IntegrationDebugService:
             rack_face = request_data.rack_face
             plan = run.configuration_json.get("plan_resources")
             sources = plan.get("bin_source_racks") if isinstance(plan, dict) else None
+            steps = await self._runs.list_steps(db, run_id)
+            self._ensure_source_rack_progress(run, steps)
             if not isinstance(sources, list) or not any(
                 isinstance(item, dict) and item.get("rack_id") == rack_id and item.get("rack_face") == rack_face
                 for item in sources
             ):
                 raise IntegrationDebugContractError("inbound_batch 必须引用 plan_delta 中的五层料箱架及朝向")
+            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            current_source = self._current_source_rack(run)
+            if existing is None and current_source is None:
+                raise IntegrationDebugConflict("历史 run 缺少可证明的当前来源货架及面，请先现场对账")
+            if existing is None and current_source != {"rack_id": rack_id, "rack_face": rack_face}:
+                raise IntegrationDebugContractError("inbound_batch 必须引用当前占用 KT16 的来源货架及当前面")
             if profile_uses_real_transport(IntegrationDebugProfile(run.profile)):
                 self._assert_rack_arrived_for_inbound_batch(
-                    await self._runs.list_steps(db, run_id),
+                    steps,
                     rack_id=rack_id,
                     rack_face=rack_face,
                 )
-            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 inbound_batch 联调步骤缺少 operation_id")
             operation_id = existing.operation_id if existing is not None else new_uuid7()
@@ -495,7 +530,7 @@ class IntegrationDebugService:
             payload = encode_inbound_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
                 self._assert_no_open_wms_action(
-                    await self._runs.list_steps(db, run_id),
+                    steps,
                     IntegrationDebugPhase.BIN_INBOUND_BATCH,
                     BIN_INBOUND_BATCH_OPERATION,
                 )
@@ -561,7 +596,17 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError(
                     "return_batch data.return_candidates[0].bin_code 必须等于本 run 的 Bin"
                 )
+            steps = await self._runs.list_steps(db, run_id)
+            self._ensure_source_rack_progress(run, steps)
+            current_source = self._current_source_rack(run)
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is None and current_source is None:
+                raise IntegrationDebugConflict("历史 run 缺少可证明的当前来源货架及面，请先现场对账")
+            if existing is None and current_source != {
+                "rack_id": request_data.rack_id,
+                "rack_face": request_data.rack_face,
+            }:
+                raise IntegrationDebugContractError("return_batch 必须引用当前占用 KT16 的来源货架及当前面")
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 return_batch 联调步骤缺少 operation_id")
             operation_id = existing.operation_id if existing is not None else new_uuid7()
@@ -577,7 +622,7 @@ class IntegrationDebugService:
             payload = encode_return_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
                 self._assert_no_open_wms_action(
-                    await self._runs.list_steps(db, run_id),
+                    steps,
                     IntegrationDebugPhase.BIN_RETURN_BATCH,
                     BIN_RETURN_BATCH_OPERATION,
                 )
@@ -636,6 +681,15 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("departure_decide 缺少 PickingTask")
             if request_data.task_id != run.task_id:
                 raise IntegrationDebugContractError("departure_decide data.task_id 必须等于本 run 已绑定的 PickingTask")
+            departure_candidate = run.configuration_json.get("departure_candidate")
+            if not isinstance(departure_candidate, dict):
+                raise IntegrationDebugContractError("departure_decide 缺少当前待离场货架的实物上下文")
+            if (
+                request_data.rack_id != departure_candidate.get("rack_id")
+                or request_data.current_face != departure_candidate.get("rack_face")
+                or request_data.current_location.location_code != departure_candidate.get("current_location")
+            ):
+                raise IntegrationDebugContractError("departure_decide 必须引用当前待离场货架、实际位置及当前面")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 departure_decide 联调步骤缺少 operation_id")
@@ -783,6 +837,9 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.POINT2_SCAN)
+            pending_bin_codes = run.configuration_json.get("pending_inbound_bin_codes")
+            if isinstance(pending_bin_codes, list) and pending_bin_codes and pending_bin_codes[0] != bin_code:
+                raise IntegrationDebugContractError("point2 扫码 Bin 必须是当前 WMS 投料批次的队头")
             run.bin_code = bin_code
             run.configuration_json = {**run.configuration_json, "point2_scanned_at": scanned_at}
             run.current_phase = IntegrationDebugPhase.WORK_ADMISSION
@@ -818,6 +875,8 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("准入 task_id 必须等于本 run 已绑定的 PickingTask")
             if run.bin_code is None:
                 raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
+            if request_data.bin_code != run.bin_code:
+                raise IntegrationDebugContractError("准入 bin_code 必须等于本 run 的 point2 实际扫码 Bin")
             run.bin_code = request_data.bin_code
             run.configuration_json = {
                 **run.configuration_json,
@@ -889,6 +948,8 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_operator_and_version(run, expected_version, actor_id)
+            steps = await self._runs.list_steps(db, run_id)
+            self._ensure_source_rack_progress(run, steps)
             transport_phases = {
                 IntegrationDebugPhase.RACK_TRANSPORT,
                 IntegrationDebugPhase.BIN_TRANSPORT,
@@ -897,6 +958,15 @@ class IntegrationDebugService:
             }
             if IntegrationDebugPhase(run.current_phase) not in transport_phases:
                 raise IntegrationDebugConflict(f"当前步骤 {run.current_phase} 不能创建 Transport")
+            if (
+                IntegrationDebugPhase(run.current_phase)
+                in {
+                    IntegrationDebugPhase.BIN_TRANSPORT,
+                    IntegrationDebugPhase.BIN_RETURN_TRANSPORT,
+                }
+                and self._current_source_rack(run) is None
+            ):
+                raise IntegrationDebugConflict("历史 run 缺少可证明的当前来源货架及面，请先现场对账")
             expected_request = {
                 "kind": action.kind,
                 "rack_id": action.rack_id,
@@ -905,6 +975,7 @@ class IntegrationDebugService:
                 "target": action.target,
                 "rcs_template_id": action.rcs_template_id,
                 "target_face": action.target_face,
+                "source_cycle_no": run.configuration_json.get("source_cycle_no", 0),
             }
             if IntegrationDebugPhase(run.current_phase) is IntegrationDebugPhase.BIN_TRANSPORT:
                 expected_request["inbound_bins"] = deepcopy(run.configuration_json.get("inbound_bins"))
@@ -913,15 +984,15 @@ class IntegrationDebugService:
             if existing is not None:
                 if (
                     existing.run_id != run_id
-                    or existing.request_summary_json != expected_request
+                    or not self._transport_request_matches(existing.request_summary_json, expected_request)
                     or (real_transport and existing.transport_task_id is None)
                 ):
                     raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或请求内容已变化")
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
             self._assert_transport_member_not_created(
-                await self._runs.list_steps(db, run_id),
+                steps,
                 IntegrationDebugPhase(run.current_phase),
-                action,
+                expected_request,
             )
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("Transport 缺少已绑定 PickingTask")
@@ -961,7 +1032,12 @@ class IntegrationDebugService:
                 IntegrationDebugPhase(run.current_phase), run.configuration_json, action
             )
             if run.workline_code == "KT16":
-                self._validate_manual_outbound_transport(IntegrationDebugPhase(run.current_phase), action, plan)
+                self._validate_manual_outbound_transport(
+                    IntegrationDebugPhase(run.current_phase),
+                    action,
+                    plan,
+                    run.configuration_json,
+                )
             request = build_transport_request(action, bin_moves=bin_moves)
             handle = await self._transport.create_debug_task_in_session(db, request) if real_transport else None
             await self._append_step(
@@ -1007,11 +1083,18 @@ class IntegrationDebugService:
             if step is None or step.run_id != run_id or step.transport_task_id != transport_task_id:
                 raise IntegrationDebugConflict("Transport 联调步骤已变化")
             previous_reason_code = step.reason_code
-            updates_current_run = step.phase == run.current_phase and (
-                run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
-                or (
-                    run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
-                    and run.attention_code == previous_reason_code
+            updates_current_run = (
+                step.phase == run.current_phase
+                and self._request_cycle_matches(
+                    step.request_summary_json,
+                    run.configuration_json.get("source_cycle_no", 0),
+                )
+                and (
+                    run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
+                    or (
+                        run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
+                        and run.attention_code == previous_reason_code
+                    )
                 )
             )
             step.result_summary_json = transport.result or {"status": transport.status}
@@ -1092,6 +1175,7 @@ class IntegrationDebugService:
                     result_summary = {**result_summary, "request_replacement_history": replacement_history}
                 step.result_summary_json = result_summary
                 if should_advance:
+                    self._ensure_source_rack_progress(run, await self._runs.list_steps(db, run_id))
                     if step.operation == COMPLETION_CONFIRM_OPERATION and confirmation.response_result == "COMPLETED":
                         if run.task_id is None or run.picking_task_id is None:
                             raise IntegrationDebugContractError("completion_confirm 缺少已绑定 PickingTask")
@@ -1232,6 +1316,248 @@ class IntegrationDebugService:
         return snapshot
 
     @staticmethod
+    def _ensure_source_rack_progress(
+        run: IntegrationRun,
+        steps: list[IntegrationRunStep] | None = None,
+    ) -> None:
+        if isinstance(run.configuration_json.get("source_rack_progress"), dict):
+            return
+        plan = run.configuration_json.get("plan_resources")
+        sources = plan.get("bin_source_racks") if isinstance(plan, dict) else None
+        IntegrationDebugService._sync_source_rack_progress(run, sources)
+        if steps is None:
+            return
+        restored = IntegrationDebugService._restore_source_rack_from_steps(run, sources, steps)
+        if restored or IntegrationDebugPhase(run.current_phase) is IntegrationDebugPhase.RACK_TRANSPORT:
+            return
+        configuration = dict(run.configuration_json)
+        for key in ("source_rack_progress", "current_source_rack", "pending_source_racks"):
+            configuration.pop(key, None)
+        run.configuration_json = configuration
+
+    @staticmethod
+    def _restore_source_rack_from_steps(
+        run: IntegrationRun,
+        sources: object,
+        steps: list[IntegrationRunStep],
+    ) -> bool:
+        if not isinstance(sources, list):
+            return False
+        planned = {
+            (item.get("rack_id"), item.get("rack_face"))
+            for item in sources
+            if isinstance(item, dict)
+            and isinstance(item.get("rack_id"), str)
+            and isinstance(item.get("rack_face"), str)
+        }
+        current: tuple[str, str] | None = None
+        for step in reversed(steps):
+            request = step.request_summary_json
+            rack_id = request.get("rack_id")
+            rack_face = request.get("rack_face") or request.get("target_face")
+            if not isinstance(rack_face, str):
+                for endpoint in (request.get("source"), request.get("target")):
+                    if isinstance(endpoint, dict) and endpoint.get("rack_id") == rack_id:
+                        rack_face = endpoint.get("rack_face")
+                        if isinstance(rack_face, str):
+                            break
+            if isinstance(rack_id, str) and isinstance(rack_face, str) and (rack_id, rack_face) in planned:
+                current = (rack_id, rack_face)
+                break
+        if current is None:
+            return False
+        progress = deepcopy(run.configuration_json.get("source_rack_progress"))
+        if not isinstance(progress, dict) or not isinstance(progress.get("racks"), list):
+            return False
+        racks = progress["racks"]
+        rack_index = next(
+            (index for index, rack in enumerate(racks) if isinstance(rack, dict) and rack.get("rack_id") == current[0]),
+            None,
+        )
+        if rack_index is None:
+            return False
+        rack = racks.pop(rack_index)
+        faces = rack.get("faces")
+        if not isinstance(faces, list) or current[1] not in faces:
+            return False
+        faces.remove(current[1])
+        faces.insert(0, current[1])
+        racks.insert(0, rack)
+        progress["current_rack_index"] = 0
+        progress["current_face_index"] = 0
+        run.configuration_json = {**run.configuration_json, "source_rack_progress": progress}
+        IntegrationDebugService._refresh_source_rack_context(run)
+        return True
+
+    @staticmethod
+    def _sync_source_rack_progress(run: IntegrationRun, sources: object) -> None:
+        if not isinstance(sources, list):
+            return
+        existing = run.configuration_json.get("source_rack_progress")
+        racks = deepcopy(existing.get("racks", [])) if isinstance(existing, dict) else []
+        rack_by_id = {
+            rack.get("rack_id"): rack
+            for rack in racks
+            if isinstance(rack, dict) and isinstance(rack.get("rack_id"), str)
+        }
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            rack_id = source.get("rack_id")
+            rack_face = source.get("rack_face")
+            if not isinstance(rack_id, str) or not isinstance(rack_face, str):
+                continue
+            rack = rack_by_id.get(rack_id)
+            if rack is None:
+                rack = {"rack_id": rack_id, "faces": [], "completed_faces": []}
+                racks.append(rack)
+                rack_by_id[rack_id] = rack
+            faces = rack.get("faces")
+            if isinstance(faces, list) and rack_face not in faces:
+                faces.append(rack_face)
+        current_rack_index = existing.get("current_rack_index", 0) if isinstance(existing, dict) else 0
+        current_face_index = existing.get("current_face_index", 0) if isinstance(existing, dict) else 0
+        progress = {
+            "work_position": MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"][0],
+            "current_rack_index": current_rack_index,
+            "current_face_index": current_face_index,
+            "racks": racks,
+        }
+        run.configuration_json = {**run.configuration_json, "source_rack_progress": progress}
+        IntegrationDebugService._refresh_source_rack_context(run)
+
+    @staticmethod
+    def _current_source_rack(run: IntegrationRun) -> dict[str, str] | None:
+        progress = run.configuration_json.get("source_rack_progress")
+        if not isinstance(progress, dict):
+            return None
+        racks = progress.get("racks")
+        rack_index = progress.get("current_rack_index")
+        face_index = progress.get("current_face_index")
+        if (
+            not isinstance(racks, list)
+            or not isinstance(rack_index, int)
+            or not isinstance(face_index, int)
+            or rack_index < 0
+            or rack_index >= len(racks)
+        ):
+            return None
+        rack = racks[rack_index]
+        faces = rack.get("faces") if isinstance(rack, dict) else None
+        rack_id = rack.get("rack_id") if isinstance(rack, dict) else None
+        if (
+            not isinstance(rack_id, str)
+            or not isinstance(faces, list)
+            or face_index < 0
+            or face_index >= len(faces)
+            or not isinstance(faces[face_index], str)
+        ):
+            return None
+        return {"rack_id": rack_id, "rack_face": faces[face_index]}
+
+    @staticmethod
+    def _refresh_source_rack_context(run: IntegrationRun) -> None:
+        configuration = dict(run.configuration_json)
+        current = IntegrationDebugService._current_source_rack(run)
+        if current is None:
+            configuration.pop("current_source_rack", None)
+            configuration["pending_source_racks"] = []
+        else:
+            configuration["current_source_rack"] = current
+            progress = configuration["source_rack_progress"]
+            racks = progress["racks"]
+            configuration["pending_source_racks"] = [
+                {"rack_id": rack["rack_id"], "faces": list(rack["faces"])}
+                for rack in racks[progress["current_rack_index"] + 1 :]
+            ]
+        run.configuration_json = configuration
+
+    @staticmethod
+    def _finish_current_bin(run: IntegrationRun) -> IntegrationDebugPhase:
+        pending = run.configuration_json.get("pending_inbound_bin_codes")
+        if not isinstance(pending, list):
+            inbound_bins = run.configuration_json.get("inbound_bins")
+            if isinstance(inbound_bins, list):
+                pending = [
+                    item.get("bin_code")
+                    for item in inbound_bins
+                    if isinstance(item, dict) and isinstance(item.get("bin_code"), str)
+                ]
+        if (
+            not isinstance(pending, list)
+            and IntegrationDebugService._current_source_rack(run) is not None
+            and isinstance(run.bin_code, str)
+        ):
+            pending = [run.bin_code]
+        if not isinstance(pending, list):
+            return IntegrationDebugPhase.RACK_DEPARTURE
+        if not isinstance(pending, list) or not pending or pending[0] != run.bin_code:
+            raise IntegrationDebugConflict("当前料箱不属于 WMS 已冻结投料批次队头")
+        remaining = pending[1:]
+        configuration = {
+            key: value
+            for key, value in run.configuration_json.items()
+            if key
+            not in {
+                "return_moves",
+                "admission_task_id",
+                "manual_bin_admission_result",
+                "point2_scanned_at",
+            }
+        }
+        configuration["pending_inbound_bin_codes"] = remaining
+        configuration["source_cycle_no"] = int(configuration.get("source_cycle_no", 0)) + 1
+        if not remaining:
+            configuration.pop("inbound_bins", None)
+        run.configuration_json = configuration
+        run.bin_code = None
+        return IntegrationDebugPhase.POINT1_ARRIVAL if remaining else IntegrationDebugPhase.BIN_INBOUND_BATCH
+
+    @staticmethod
+    def _finish_current_source_departure(run: IntegrationRun, departed_rack_id: str | None) -> IntegrationDebugPhase:
+        current = IntegrationDebugService._current_source_rack(run)
+        if current is None:
+            return IntegrationDebugPhase.TASK_COMPLETION
+        if departed_rack_id != current["rack_id"]:
+            raise IntegrationDebugConflict("离场成功货架与当前占用 KT16 的来源货架不一致")
+        progress = deepcopy(run.configuration_json["source_rack_progress"])
+        progress["current_rack_index"] += 1
+        progress["current_face_index"] = 0
+        configuration = {
+            key: value
+            for key, value in run.configuration_json.items()
+            if key
+            not in {
+                "departure_ready_rack_id",
+                "rack_destination",
+                "departure_candidate",
+                "rack_transport_mode",
+            }
+        }
+        configuration["source_rack_progress"] = progress
+        configuration["source_cycle_no"] = int(configuration.get("source_cycle_no", 0)) + 1
+        run.configuration_json = configuration
+        IntegrationDebugService._refresh_source_rack_context(run)
+        next_source = IntegrationDebugService._current_source_rack(run)
+        if next_source is not None:
+            run.configuration_json = {**run.configuration_json, "rack_transport_mode": "MOVE_SOURCE_RACK"}
+            return IntegrationDebugPhase.RACK_TRANSPORT
+        plan = run.configuration_json.get("plan_resources")
+        target = plan.get("target_rack") if isinstance(plan, dict) else None
+        if isinstance(target, dict) and isinstance(target.get("rack_id"), str):
+            run.configuration_json = {
+                **run.configuration_json,
+                "departure_candidate": {
+                    "rack_id": target["rack_id"],
+                    "rack_face": target.get("rack_face", "0"),
+                    "current_location": MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"],
+                    "role": "TARGET_RACK",
+                },
+            }
+            return IntegrationDebugPhase.RACK_DEPARTURE
+        return IntegrationDebugPhase.TASK_COMPLETION
+
+    @staticmethod
     def _advance_completed_wms_action(
         run: IntegrationRun,
         step: IntegrationRunStep,
@@ -1282,14 +1608,55 @@ class IntegrationDebugService:
             except ValidationError as exc:
                 raise IntegrationDebugConflict("inbound_batch READY 必须包含 1–4 个有效且不重复的料箱") from exc
             run.configuration_json = {**run.configuration_json, "inbound_bins": batch.model_dump(mode="json")["bins"]}
+            run.configuration_json = {
+                **run.configuration_json,
+                "pending_inbound_bin_codes": [member.bin_code for member in batch.bins],
+            }
             run.current_phase = IntegrationDebugPhase.BIN_TRANSPORT
             run.status = IntegrationDebugRunStatus.ACTIVE
         elif response_result == "NO_BATCH":
             run.status = IntegrationDebugRunStatus.ACTIVE
         elif response_result == "RACK_FACE_DONE":
-            run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-            run.attention_code = "RACK_FACE_DONE"
-            run.attention_detail = "WMS 已关闭当前来源货架面；当前联调不自动调度下一来源面，请现场协调后关闭本 run。"
+            current = IntegrationDebugService._current_source_rack(run)
+            progress = deepcopy(run.configuration_json.get("source_rack_progress"))
+            if current is None or not isinstance(progress, dict):
+                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                run.attention_code = "RACK_FACE_DONE"
+                run.attention_detail = (
+                    "WMS 已关闭当前来源货架面，但该历史 run 缺少来源货架游标，请现场协调后关闭本 run。"
+                )
+                return
+            rack = progress["racks"][progress["current_rack_index"]]
+            if current["rack_face"] not in rack["completed_faces"]:
+                rack["completed_faces"].append(current["rack_face"])
+            configuration = dict(run.configuration_json)
+            configuration["source_rack_progress"] = progress
+            configuration.pop("inbound_bins", None)
+            configuration.pop("pending_inbound_bin_codes", None)
+            run.configuration_json = configuration
+            if progress["current_face_index"] + 1 < len(rack["faces"]):
+                progress["current_face_index"] += 1
+                run.configuration_json = {
+                    **run.configuration_json,
+                    "source_rack_progress": progress,
+                    "rack_transport_mode": "ROTATE_SOURCE_RACK",
+                }
+                IntegrationDebugService._refresh_source_rack_context(run)
+                run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
+            else:
+                run.configuration_json = {
+                    **run.configuration_json,
+                    "departure_candidate": {
+                        "rack_id": current["rack_id"],
+                        "rack_face": current["rack_face"],
+                        "current_location": progress["work_position"],
+                        "role": "SOURCE_RACK",
+                    },
+                }
+                run.current_phase = IntegrationDebugPhase.RACK_DEPARTURE
+            run.status = IntegrationDebugRunStatus.ACTIVE
+            run.attention_code = None
+            run.attention_detail = None
         else:
             raise IntegrationDebugConflict("inbound_batch 响应结果不在固定联合内")
 
@@ -1524,10 +1891,13 @@ class IntegrationDebugService:
             ):
                 raise IntegrationDebugContractError("ECS device_code 必须来自本 run 冻结的扫码位")
             phase_steps = await self._runs.list_steps(db, run_id)
+            source_cycle_no = run.configuration_json.get("source_cycle_no", 0)
             real_ecs = profile_uses_real_ecs(IntegrationDebugProfile(run.profile))
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None and any(
-                step.phase == current and isinstance(step.request_summary_json.get("task_type"), str)
+                step.phase == current
+                and self._request_cycle_matches(step.request_summary_json, source_cycle_no)
+                and isinstance(step.request_summary_json.get("task_type"), str)
                 for step in phase_steps
             ):
                 raise IntegrationDebugConflict("本节点已创建 ECS 指令；请刷新原动作，禁止换 identity 重发")
@@ -1579,10 +1949,11 @@ class IntegrationDebugService:
             expected_request = {
                 **request_without_creator,
                 "created_by": original_creator,
+                "source_cycle_no": source_cycle_no,
                 **({"endpoint_base_url": endpoint} if real_ecs else {}),
             }
             if existing is not None:
-                if existing.run_id != run_id or stored_request != expected_request:
+                if existing.run_id != run_id or not self._device_request_matches(stored_request, expected_request):
                     raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或请求内容已变化")
                 if existing.device_command_code is not None or not real_ecs:
                     return self._snapshot(run, await self._runs.list_steps(db, run_id))
@@ -1732,17 +2103,21 @@ class IntegrationDebugService:
             IntegrationDebugPhase.POINT1_ARRIVAL: IntegrationDebugPhase.POINT2_SCAN,
             IntegrationDebugPhase.POINT3_ROUTE: IntegrationDebugPhase.RETURN_BUFFER,
             IntegrationDebugPhase.RETURN_BUFFER: IntegrationDebugPhase.BIN_RETURN_BATCH,
-            IntegrationDebugPhase.BIN_RETURN_TRANSPORT: IntegrationDebugPhase.RACK_DEPARTURE,
-            IntegrationDebugPhase.RACK_DEPARTURE: IntegrationDebugPhase.TASK_COMPLETION,
         }
         if not note.strip():
             raise IntegrationDebugContractError("现场步骤确认必须填写简短记录")
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_operator_and_version(run, expected_version, actor_id)
+            steps = await self._runs.list_steps(db, run_id)
+            self._ensure_source_rack_progress(run, steps)
             current = IntegrationDebugPhase(run.current_phase)
             target = next_phases.get(current)
-            if target is None and current is not IntegrationDebugPhase.POINT2_RELEASE:
+            if target is None and current not in {
+                IntegrationDebugPhase.POINT2_RELEASE,
+                IntegrationDebugPhase.BIN_RETURN_TRANSPORT,
+                IntegrationDebugPhase.RACK_DEPARTURE,
+            }:
                 raise IntegrationDebugConflict(f"当前步骤 {current} 不能人工确认推进")
             if current in {
                 IntegrationDebugPhase.RACK_TRANSPORT,
@@ -1750,17 +2125,7 @@ class IntegrationDebugService:
                 IntegrationDebugPhase.BIN_RETURN_TRANSPORT,
                 IntegrationDebugPhase.RACK_DEPARTURE,
             }:
-                phase_steps = [
-                    step
-                    for step in await self._runs.list_steps(db, run_id)
-                    if step.phase == current
-                    and (
-                        step.transport_task_id is not None
-                        or step.request_summary_json.get("kind") in {"MOVE_RACK", "ROTATE_RACK", "MOVE_BINS"}
-                    )
-                ]
-                if not phase_steps or any(step.status != "SUCCEEDED" for step in phase_steps):
-                    raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
+                self._assert_current_transport_succeeded(run, current, steps)
             if current is IntegrationDebugPhase.RACK_ARRIVAL and profile_uses_real_transport(
                 IntegrationDebugProfile(run.profile)
             ):
@@ -1781,6 +2146,10 @@ class IntegrationDebugService:
                     step
                     for step in await self._runs.list_steps(db, run_id)
                     if step.phase == IntegrationDebugPhase.POINT2_RELEASE
+                    and self._request_cycle_matches(
+                        step.request_summary_json,
+                        run.configuration_json.get("source_cycle_no", 0),
+                    )
                 ]
                 profile = IntegrationDebugProfile(run.profile)
                 release_succeeded = any(self._device_action_succeeded(step, profile) for step in phase_steps)
@@ -1817,14 +2186,27 @@ class IntegrationDebugService:
             if current is IntegrationDebugPhase.POINT3_ROUTE:
                 profile = IntegrationDebugProfile(run.profile)
                 steps = await self._runs.list_steps(db, run_id)
-                phase_steps = [step for step in steps if step.phase == IntegrationDebugPhase.POINT3_ROUTE]
+                phase_steps = [
+                    step
+                    for step in steps
+                    if step.phase == IntegrationDebugPhase.POINT3_ROUTE
+                    and self._request_cycle_matches(
+                        step.request_summary_json,
+                        run.configuration_json.get("source_cycle_no", 0),
+                    )
+                ]
                 if not any(self._device_action_succeeded(step, profile) for step in phase_steps):
                     raise IntegrationDebugConflict("point3 分流前必须取得本 run 的 DeviceCommand 或模拟动作 SUCCEEDED")
                 task_type = self._expected_device_task_type(current, run.configuration_json, steps)
                 target = (
-                    IntegrationDebugPhase.RACK_DEPARTURE
-                    if task_type == "MOVE_LEFT"
-                    else IntegrationDebugPhase.RETURN_BUFFER
+                    self._finish_current_bin(run) if task_type == "MOVE_LEFT" else IntegrationDebugPhase.RETURN_BUFFER
+                )
+            if current is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
+                target = self._finish_current_bin(run)
+            if current is IntegrationDebugPhase.RACK_DEPARTURE:
+                target = self._finish_current_source_departure(
+                    run,
+                    run.configuration_json.get("departure_ready_rack_id"),
                 )
             if target is None:
                 raise RuntimeError("联调步骤缺少下一阶段")
@@ -1914,17 +2296,107 @@ class IntegrationDebugService:
     def _assert_transport_member_not_created(
         steps: list[IntegrationRunStep],
         phase: IntegrationDebugPhase,
-        action: IntegrationTransportAction,
+        expected_request: dict[str, Any],
     ) -> None:
         for step in steps:
-            request = step.request_summary_json
-            if (
-                step.phase == phase
-                and request.get("kind") == action.kind
-                and request.get("rack_id") == action.rack_id
-                and request.get("bin_code") == action.bin_code
+            if step.phase != phase:
+                continue
+            stored = step.request_summary_json
+            if not IntegrationDebugService._request_cycle_matches(
+                stored,
+                expected_request.get("source_cycle_no", 0),
             ):
+                continue
+            same_member = IntegrationDebugService._transport_request_matches(stored, expected_request)
+            if phase is IntegrationDebugPhase.BIN_TRANSPORT:
+                same_member = stored.get("kind") == "MOVE_BINS"
+            elif phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
+                same_member = stored.get("kind") == "MOVE_BINS" and stored.get("bin_code") == expected_request.get(
+                    "bin_code"
+                )
+            elif phase is IntegrationDebugPhase.RACK_TRANSPORT:
+                same_member = (
+                    stored.get("kind") == expected_request.get("kind")
+                    and stored.get("rack_id") == expected_request.get("rack_id")
+                    and stored.get("target_face") == expected_request.get("target_face")
+                )
+            elif phase is IntegrationDebugPhase.RACK_DEPARTURE:
+                same_member = stored.get("rack_id") == expected_request.get("rack_id")
+            if same_member:
                 raise IntegrationDebugConflict("本节点已为该批次成员创建 Transport；请刷新原动作，禁止换 identity 重发")
+
+    @staticmethod
+    def _request_cycle_matches(stored: dict[str, Any], expected_cycle: object) -> bool:
+        if "source_cycle_no" in stored:
+            return stored.get("source_cycle_no") == expected_cycle
+        return expected_cycle == 0
+
+    @staticmethod
+    def _device_request_matches(stored: dict[str, Any], expected: dict[str, Any]) -> bool:
+        if stored == expected:
+            return True
+        if not IntegrationDebugService._request_cycle_matches(stored, expected.get("source_cycle_no", 0)):
+            return False
+        legacy_expected = dict(expected)
+        legacy_expected.pop("source_cycle_no", None)
+        return stored == legacy_expected
+
+    @staticmethod
+    def _transport_request_matches(stored: dict[str, Any], expected: dict[str, Any]) -> bool:
+        if stored == expected:
+            return True
+        if expected.get("source_cycle_no") != 0 or "source_cycle_no" in stored:
+            return False
+        legacy_expected = dict(expected)
+        legacy_expected.pop("source_cycle_no")
+        return stored == legacy_expected
+
+    @staticmethod
+    def _assert_current_transport_succeeded(
+        run: IntegrationRun,
+        phase: IntegrationDebugPhase,
+        steps: list[IntegrationRunStep],
+    ) -> None:
+        source_cycle_no = run.configuration_json.get("source_cycle_no", 0)
+        phase_steps = [
+            step
+            for step in steps
+            if step.phase == phase
+            and step.request_summary_json.get("source_cycle_no", 0) == source_cycle_no
+            and (
+                step.transport_task_id is not None
+                or step.request_summary_json.get("kind") in {"MOVE_RACK", "ROTATE_RACK", "MOVE_BINS"}
+            )
+        ]
+        if not phase_steps or any(step.status != "SUCCEEDED" for step in phase_steps):
+            raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
+        if phase is IntegrationDebugPhase.RACK_TRANSPORT:
+            current_source = IntegrationDebugService._current_source_rack(run)
+            expected_kind = (
+                IntegrationTransportActionKind.ROTATE_RACK
+                if run.configuration_json.get("rack_transport_mode") == "ROTATE_SOURCE_RACK"
+                else IntegrationTransportActionKind.MOVE_RACK
+            )
+            if current_source is not None and not any(
+                step.status == "SUCCEEDED"
+                and step.request_summary_json.get("kind") == expected_kind
+                and step.request_summary_json.get("rack_id") == current_source["rack_id"]
+                and step.request_summary_json.get("target_face") == current_source["rack_face"]
+                for step in phase_steps
+            ):
+                raise IntegrationDebugConflict("当前来源货架尚未取得匹配货架、面和动作的 Transport SUCCEEDED")
+        if phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT and not any(
+            step.status == "SUCCEEDED" and step.request_summary_json.get("bin_code") == run.bin_code
+            for step in phase_steps
+        ):
+            raise IntegrationDebugConflict("当前料箱尚未取得匹配退箱 Transport SUCCEEDED")
+        if phase is IntegrationDebugPhase.RACK_DEPARTURE:
+            departure_rack_id = run.configuration_json.get("departure_ready_rack_id")
+            if not any(
+                step.status == "SUCCEEDED" and step.request_summary_json.get("rack_id") == departure_rack_id
+                for step in phase_steps
+            ):
+                raise IntegrationDebugConflict("当前离场货架尚未取得匹配 Transport SUCCEEDED")
 
     @staticmethod
     def _assert_rack_arrived_for_inbound_batch(
@@ -1937,7 +2409,11 @@ class IntegrationDebugService:
         for step in steps:
             request = step.request_summary_json
             result = step.result_summary_json
-            target = request.get("target")
+            target = (
+                request.get("target")
+                if request.get("kind") == IntegrationTransportActionKind.MOVE_RACK
+                else request.get("source")
+            )
             members = result.get("members")
             member = (
                 next(
@@ -1950,7 +2426,8 @@ class IntegrationDebugService:
             if (
                 step.phase == IntegrationDebugPhase.RACK_TRANSPORT
                 and step.status == "SUCCEEDED"
-                and request.get("kind") == IntegrationTransportActionKind.MOVE_RACK
+                and request.get("kind")
+                in {IntegrationTransportActionKind.MOVE_RACK, IntegrationTransportActionKind.ROTATE_RACK}
                 and request.get("rack_id") == rack_id
                 and request.get("target_face") == rack_face
                 and isinstance(target, dict)
@@ -1962,7 +2439,7 @@ class IntegrationDebugService:
                 and member.get("arrival_face") == rack_face
             ):
                 return
-        raise IntegrationDebugConflict("真实模式必须先取得该来源货架在 KT16/KT17 且朝向一致的 Transport 成功终态")
+        raise IntegrationDebugConflict("真实模式必须先取得该来源货架在 KT16 且朝向一致的 Transport 成功终态")
 
     async def _freeze_return_rack_arrival_report(
         self,
@@ -2102,34 +2579,10 @@ class IntegrationDebugService:
         phase: IntegrationDebugPhase,
         action: IntegrationTransportAction,
         plan_resources: dict[str, Any] | None,
+        configuration: dict[str, Any] | None = None,
     ) -> None:
         if phase is IntegrationDebugPhase.RACK_TRANSPORT:
-            if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
-                raise IntegrationDebugContractError("KT16 出库货架步骤只允许 MOVE_RACK")
-            if action.source != {"kind": "RACK", "location_code": action.rack_id}:
-                raise IntegrationDebugContractError("KT16 出库来源必须直接使用货架号")
-            if not isinstance(plan_resources, dict):
-                raise IntegrationDebugContractError("出库搬运缺少已应用的 plan_delta 资源")
-            target_rack = plan_resources.get("target_rack")
-            if isinstance(target_rack, dict) and target_rack.get("rack_id") == action.rack_id:
-                resource = target_rack
-                template = "F01"
-                positions = [MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"]]
-            else:
-                resource = next(
-                    (row for row in plan_resources.get("bin_source_racks", []) if row["rack_id"] == action.rack_id),
-                    None,
-                )
-                if resource is None:
-                    raise IntegrationDebugContractError("出库货架必须是 plan_delta 的转运货架或五层来源货架")
-                template = MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_rcs_template"]
-                positions = MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"]
-            if action.rcs_template_id != template:
-                raise IntegrationDebugContractError(f"该资源的出库搬运必须使用 {template}")
-            if action.target.get("kind") != "RACK_POSITION" or action.target.get("location_code") not in positions:
-                raise IntegrationDebugContractError(f"该资源的目标工作位只能是 {'、'.join(positions)}")
-            if action.target_face != resource.get("rack_face"):
-                raise IntegrationDebugContractError("出库目标面必须与 plan_delta 的 rack_face 完全一致")
+            IntegrationDebugService._validate_rack_transport(action, plan_resources, configuration)
         elif phase is IntegrationDebugPhase.BIN_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_BINS or action.target != {
                 "kind": "HANDOFF_POSITION",
@@ -2143,17 +2596,101 @@ class IntegrationDebugService:
             }:
                 raise IntegrationDebugContractError("KT16 退箱必须从 CNV0302 发起")
         elif phase is IntegrationDebugPhase.RACK_DEPARTURE:
-            if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
-                raise IntegrationDebugContractError("KT16 回库货架步骤只允许 MOVE_RACK")
-            if action.rcs_template_id != MANUAL_OUTBOUND_SITE_CONFIGURATION["return_rcs_template"]:
-                raise IntegrationDebugContractError("KT16 回库必须使用 CTU03")
-            if action.source != {"kind": "RACK", "location_code": action.rack_id}:
-                raise IntegrationDebugContractError("KT16 回库来源必须直接使用货架号")
-            if action.target != {
-                "kind": "ZONE",
-                "location_code": MANUAL_OUTBOUND_SITE_CONFIGURATION["return_zone_code"],
+            IntegrationDebugService._validate_rack_departure(action, configuration)
+
+    @staticmethod
+    def _validate_rack_transport(
+        action: IntegrationTransportAction,
+        plan_resources: dict[str, Any] | None,
+        configuration: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(plan_resources, dict):
+            raise IntegrationDebugContractError("出库搬运缺少已应用的 plan_delta 资源")
+        if action.bin_code is not None:
+            raise IntegrationDebugContractError("货架搬运动作不得携带 bin_code")
+        target_rack = plan_resources.get("target_rack")
+        if isinstance(target_rack, dict) and target_rack.get("rack_id") == action.rack_id:
+            if isinstance(configuration, dict) and configuration.get("rack_transport_mode") in {
+                "MOVE_SOURCE_RACK",
+                "ROTATE_SOURCE_RACK",
             }:
-                raise IntegrationDebugContractError("KT16 回库目标库区必须是 WH05")
+                raise IntegrationDebugContractError("转运货架已完成首次入位，来源架循环中禁止重复呼叫")
+            resource = target_rack
+            template = "F01"
+            positions = [MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"]]
+            kind = IntegrationTransportActionKind.MOVE_RACK
+            source = {"kind": "RACK", "location_code": action.rack_id}
+        else:
+            resource = next(
+                (
+                    row
+                    for row in plan_resources.get("bin_source_racks", [])
+                    if row["rack_id"] == action.rack_id and row.get("rack_face") == action.target_face
+                ),
+                None,
+            )
+            if resource is None:
+                raise IntegrationDebugContractError("出库货架必须是 plan_delta 的转运货架或五层来源货架")
+            positions = MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"]
+            current_source = configuration.get("current_source_rack") if isinstance(configuration, dict) else None
+            if isinstance(current_source, dict) and (
+                action.rack_id != current_source.get("rack_id") or action.target_face != current_source.get("rack_face")
+            ):
+                raise IntegrationDebugContractError("KT16 容量为 1，只能呼叫当前排队来源货架及面向")
+            mode = configuration.get("rack_transport_mode") if isinstance(configuration, dict) else None
+            if mode == "ROTATE_SOURCE_RACK":
+                template = "CTU02"
+                kind = IntegrationTransportActionKind.ROTATE_RACK
+                source = {"kind": "RACK_POSITION", "location_code": positions[0]}
+            else:
+                template = MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_rcs_template"]
+                kind = IntegrationTransportActionKind.MOVE_RACK
+                source = {"kind": "RACK", "location_code": action.rack_id}
+        if action.kind is not kind:
+            raise IntegrationDebugContractError(f"当前货架动作必须是 {kind}")
+        if action.source != source:
+            if kind is IntegrationTransportActionKind.MOVE_RACK:
+                raise IntegrationDebugContractError("KT16 出库来源必须直接使用货架号")
+            raise IntegrationDebugContractError("KT16 货架动作来源与当前物理位置不一致")
+        if action.rcs_template_id != template:
+            raise IntegrationDebugContractError(f"该资源的出库搬运必须使用 {template}")
+        if action.kind is IntegrationTransportActionKind.MOVE_RACK and (
+            action.target.get("kind") != "RACK_POSITION" or action.target.get("location_code") not in positions
+        ):
+            raise IntegrationDebugContractError(f"该资源的目标工作位只能是 {'、'.join(positions)}")
+        if action.kind is IntegrationTransportActionKind.ROTATE_RACK and action.target:
+            raise IntegrationDebugContractError("旋转货架动作不得携带 target")
+        if action.target_face != resource.get("rack_face"):
+            raise IntegrationDebugContractError("出库目标面必须与 plan_delta 的 rack_face 完全一致")
+
+    @staticmethod
+    def _validate_rack_departure(
+        action: IntegrationTransportAction,
+        configuration: dict[str, Any] | None,
+    ) -> None:
+        if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
+            raise IntegrationDebugContractError("KT16 回库货架步骤只允许 MOVE_RACK")
+        if action.bin_code is not None:
+            raise IntegrationDebugContractError("货架回库动作不得携带 bin_code")
+        departure_candidate = configuration.get("departure_candidate") if isinstance(configuration, dict) else None
+        if not isinstance(departure_candidate, dict):
+            raise IntegrationDebugContractError("货架回库缺少当前待离场货架的实物上下文")
+        expected_template = (
+            "F01"
+            if isinstance(departure_candidate, dict) and departure_candidate.get("role") == "TARGET_RACK"
+            else MANUAL_OUTBOUND_SITE_CONFIGURATION["return_rcs_template"]
+        )
+        if action.rcs_template_id != expected_template:
+            raise IntegrationDebugContractError(f"KT16 当前货架回库必须使用 {expected_template}")
+        if action.source != {"kind": "RACK", "location_code": action.rack_id}:
+            raise IntegrationDebugContractError("KT16 回库来源必须直接使用货架号")
+        if action.target != {
+            "kind": "ZONE",
+            "location_code": MANUAL_OUTBOUND_SITE_CONFIGURATION["return_zone_code"],
+        }:
+            raise IntegrationDebugContractError("KT16 回库目标库区必须是 WH05")
+        if action.target_face != departure_candidate.get("rack_face"):
+            raise IntegrationDebugContractError("KT16 回库目标面必须与当前待离场货架面一致")
 
     @staticmethod
     def _validate_batch_transport(
@@ -2280,6 +2817,13 @@ class IntegrationDebugService:
                     "admission_task_id",
                     "manual_bin_admission_result",
                     "departure_ready_rack_id",
+                    "departure_candidate",
+                    "source_rack_progress",
+                    "current_source_rack",
+                    "pending_source_racks",
+                    "pending_inbound_bin_codes",
+                    "source_cycle_no",
+                    "rack_transport_mode",
                 )
                 if key in run.configuration_json
             },
