@@ -741,7 +741,7 @@ SDK 业务接口优先接收类型化声明对象；确需代码值的接口使�
 ### 8.2 单线活动流程
 
 自动 WorkLine 可以同时具备自动上架和自动拣货插件，但一条 WorkLine 同时只激活其中一个流程。人工 WorkLine 只激活统一
-`manual_bin_processing` 插件；人工上架或拣货由 WMS/PDA 完成，不触发 WorkLine 插件切换。自动线不降级运行人工插件，人工线不伪造机械臂角色运行自动插件。
+`manual-picking` 插件；人工上架或拣货由 WMS/PDA 完成，不触发 WorkLine 插件切换。自动线不降级运行人工插件，人工线不伪造机械臂角色运行自动插件。
 
 切换要求：
 
@@ -1030,7 +1030,7 @@ WMS 负责：
 - 出库来源物料和料格。
 - 库存事务和人工任务完成。
 
-人工入库与人工出库对 WES 使用同一 `manual_bin_processing` 插件：
+人工入库与人工出库对 WES 使用同一 `manual-picking` 插件：
 
 ```text
 Task 驱动货架和 Bin 入站
@@ -1059,7 +1059,7 @@ Task 驱动货架和 Bin 入站
 | --- | --- | --- | --- |
 | `automatic_putaway` | WMS `putaway_plan_id` + WES `putaway_execution_id` | 南向机械臂可靠 PUT，位置 Fact 被 WMS `RECORDED \| DUPLICATE` | 全部来源成员以正常或明确终态闭合，WMS 返回 `COMPLETED` |
 | `automatic_picking` | WMS `task_id`；`plan_revision` 只表达连续计划版本 | 目标机械臂可靠 PUT，位置结果被 WMS `RECORDED \| DUPLICATE` | 全部已接收明细有确定结果且版本一致，WMS 返回 `COMPLETED` |
-| `manual_bin_processing` | WMS 既有且全局唯一的 `task_id` | 物料正确放入 Bin 或从 Bin 拣出，并由 PDA/WMS 持久化 | 全部应完成子任务完成且 WMS 确认不再追加；取消/失败使用独立终态 |
+| `manual-picking` | WMS 既有且全局唯一的 `task_id` | 物料正确放入 Bin 或从 Bin 拣出，并由 PDA/WMS 持久化 | 全部应完成子任务完成且 WMS 确认不再追加；取消/失败使用独立终态 |
 
 Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件业务合同或 operation：
 
@@ -1067,7 +1067,7 @@ Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件
 | --- | --- | --- | --- |
 | `automatic_putaway` | 当前 `putaway_execution_id` 的 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 冻结预期/实际身份和位置，等待独立恢复 wire；不替代预期成员 | WMS 稳定业务 NG、无法识别或明确物理隔离要求 |
 | `automatic_picking` | 本 WorkLine 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 冻结预期/实际身份和位置，等待独立恢复 wire；预期成员保持未完成 | 无法识别、方向异常、CELL NG 后续路由或 WMS 稳定业务 NG |
-| `manual_bin_processing` | 本 WorkLine 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 不进入人工业务；冻结预期/实际身份和位置，等待独立恢复 wire | 无法识别、明确物理隔离要求或 WMS 稳定业务 NG |
+| `manual-picking` | 本 WorkLine 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 不进入人工业务；冻结预期/实际身份和位置，等待独立恢复 wire | 无法识别、明确物理隔离要求或 WMS 稳定业务 NG |
 
 三种插件都遵守相同的 WorkLine 级规则：
 
@@ -1182,7 +1182,7 @@ Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件
    不交付人工或自动业务插件，也不为其预建 operation、空包或兼容路径。
 10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
-12. `manual_bin_processing` 教学式开发：用户亲自完成生产代码、测试、migration 和 Composition，Agent 负责指导、Review 与诊断。
+12. `manual-picking` 教学式开发：用户亲自完成生产代码、测试、migration 和 Composition，Agent 负责指导、Review 与诊断。
 13. 自动插件开发：按真实合同分别交付 `automatic_putaway` 与 `automatic_picking`，不建设通用工作流。
 14. 当前交付范围系统验收：从空库分别验证核心、Adapter、设备统一接口、实际交付插件、质量、部署装配和旧架构缺席门禁。
 
@@ -1313,7 +1313,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 ### 15.5 四线
 
 - 两条自动线可激活 `automatic_putaway` 或 `automatic_picking`，一条 WorkLine 同时只运行其中一个。
-- 两条人工线都使用 `manual_bin_processing`；人工上架和拣货不切换插件。
+- 两条人工线都使用 `manual-picking`；人工上架和拣货不切换插件。
 - 自动线不降级运行人工插件，人工线不运行自动插件；当前部署不使用 `HYBRID`。
 - NG 料箱在后续 SCAN1/SCAN3 只直行、不进入 SCAN4，并最终到达统一 NG 区。
 - 非 NG 料箱只能从其 `owner_workline_id` 对应退料口离开。

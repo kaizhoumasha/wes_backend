@@ -543,7 +543,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **人工发料：**
 
-1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual_bin_processing` 的人工 WorkLine 中选线。
+1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual-picking` 的人工 WorkLine 中选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 依据 CTU、缓存和当前工作位货架状态执行 Transport；入站 Bin 需求是正常运行时换面或换架的唯一触发。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
 4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。

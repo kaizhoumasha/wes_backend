@@ -44,7 +44,7 @@
     "task_id": "WMS-PICKING-001",
     "plan_revision": 1,
     "target_rack": {"rack_id": "TARGET-001", "rack_face": "A"},
-    "added_bin_source_racks": [{"rack_id": "SOURCE-001", "rack_face": "B"}]
+    "added_bin_source_racks": [{"rack_id": "SOURCE-001", "rack_face": ["90", "270"]}]
   }
 }
 ```

@@ -60,7 +60,7 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | 1 | WMS → WES | `outbound.picking_task.issued@v1` | `task_id=PICK-20260902-001` | `202/RECEIVED` |
 | 2 | WES → WMS | `outbound.picking_task.prepare@v1` | 选中该任务和 WorkLine `LINE3` | `202/PREPARE_ACCEPTED` |
-| 3 | WMS → WES | `outbound.picking_task.plan_delta@v1`（revision 1） | `target_rack=TRANSFER-RACK-01/A`；`added_bin_source_racks=[RACK-5F-001/A]`；`added_direct_picks=[RETURN-RACK-01/A/A-03]` | `202/RECEIVED` |
+| 3 | WMS → WES | `outbound.picking_task.plan_delta@v1`（revision 1） | `target_rack=TRANSFER-RACK-01/A`；`added_bin_source_racks=[RACK-5F-001/[90,270]]`；`added_direct_picks=[RETURN-RACK-01/A/A-03]` | `202/RECEIVED` |
 
 **子流程 A：五层货架 Bin，走点1～点4（§3.1～§3.4）**
 
@@ -104,7 +104,8 @@ flowchart TD
 - 任务发布与队列：`outbound.picking_task.issued@v1`、`outbound.picking_task.queue_changed@v1`；
   人工任务使用同一个 PickingTask 实体和队列，发布时固定 `data.task_type=MANUAL`，不建立人工任务表或人工任务业务键；
 - 任务准备与计划增量：`outbound.picking_task.prepare@v1`、`outbound.picking_task.plan_delta@v1`（含 `added_direct_picks[]`
-  退料货架直接取料明细与 `added_bin_source_racks[]` 五层货架来源面；人工任务与自动任务字段零差异，人工线两类来源均可能出现）；
+  退料货架直接取料明细与 `added_bin_source_racks[]` 五层来源货架；后者的 `rack_face` 是非空数组，WES 按面展开；人工任务与自动任务字段
+  零差异，人工线两类来源均可能出现）；
 - 退料货架到位事实：`outbound.return_rack.arrival_report@v1`；WMS/RCS 的通用 Transport 结果由 WES 业务模块识别后，复用同一事实
   上报更新当前 PickingTask 的退料货架到位状态；
 - 五层货架入站分批：`outbound.bin.inbound_batch@v1`；
@@ -460,10 +461,10 @@ C1～C7（当时的 point2 任务准入、完成释放、应用结果三个 oper
 | `tests/contracts/wms_adapter/` 的 Event handler 合同测试 | 激活验收目标：唯一静态接收路由不随业务 owner 安装状态变化；零消费者仍可靠接收且业务应用 fail closed；新 ID 持久化后 `202`；同 ID 同内容 `200`；同 ID 不同内容 `409`；持久化失败 `503` 且无虚假 ACK |
 | `tests/integration/wms_adapter/test_manual_bin_event_receipts.py` | 使用真实 PostgreSQL 验证并发重放只有一个收据 owner、digest 冲突、evidence/ACK 事务回滚与失败后原 identity 可重试 |
 | `tests/contracts/wms_adapter/test_outbound_openapi.py` | OpenAPI 的 `reason_code` 闭集包含 `MANUAL_PICK_NG`，并准确表达各 reason 的条件联合，不把插件业务判断写入 schema |
-| `workline_plugins/manual_bin_processing/tests/test_work_admission.py` | point2 合法实际 Bin 构造包含 `task_id/bin_code/scanned_at` 的严格三字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
-| `workline_plugins/manual_bin_processing/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 验证返回任务与请求一致后冻结绑定；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
+| `workline_plugins/manual-picking/tests/test_work_admission.py` | point2 合法实际 Bin 构造包含 `task_id/bin_code/scanned_at` 的严格三字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
+| `workline_plugins/manual-picking/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 验证返回任务与请求一致后冻结绑定；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
 
-前六项核心测试不导入 `manual_bin_processing` 插件，只证明共享 completion ingress、可靠接收、路由与 NG wire；任务准入 operation 的请求数据及其因果恢复由后两项插件测试承接，底层 HTTP/JSON 继续复用共享 `WmsClient`，不在插件内重造传输。
+前六项核心测试不导入 `manual-picking` 插件，只证明共享 completion ingress、可靠接收、路由与 NG wire；任务准入 operation 的请求数据及其因果恢复由后两项插件测试承接，底层 HTTP/JSON 继续复用共享 `WmsClient`，不在插件内重造传输。
 
 `tests/runtime/execution/test_wms_confirmation_service.py` 负责共享 `WmsConfirmation` 回归：既有
 `material_execution_id` 消费者行为不变；数据库与 Service 要求 MaterialExecution、PickingTask 或 WorkLine 恰好一个 owner；相同
@@ -474,10 +475,10 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `workline_plugins/manual_bin_processing/tests/test_work_completed_decision.py` | 纯 Decision 只依赖 SDK 不可变 Fact/Snapshot；`NORMAL` 和 `NG` 各返回封闭决策，不读数据库、HTTP、Celery 或 Repository |
-| `workline_plugins/manual_bin_processing/tests/test_external_wait_policy.py` | `WORK_REQUIRED` 保存后启动人工处理 SLA；阈值内保持 `WAITING_EXTERNAL`；超时只告警并停止新入线，不释放 point2、不改 NG、不改 FIFO、不换执行或命令身份 |
-| `workline_plugins/manual_bin_processing/tests/test_work_completed_application.py` | `task_id + bin_code` 命中冻结的 `WORK_REQUIRED`、当前启用的 WorkLine、point2 当前 task 和料箱等待 后，原子保存 `completed_at` 与结果并只创建一个 point2 `MOVE_FORWARD` 释放命令；`completed_at < work_admission.scanned_at` 进入 `RECONCILING`；已成功应用后换新 ID 的同结果消息即使料箱已离开 point2 仍为 no-op；冲突结果以及首次消息早到、晚到、错点位、无唯一等待或 WorkLine 已停用均进入 `RECONCILING` 且零命令 |
-| `workline_plugins/manual_bin_processing/tests/integration/test_work_completed_postgresql.py` | 真实 PostgreSQL 下按固定顺序锁定 WorkLine、点2待处理动作和当前位置；并发同结果最多一个 `MANUAL_BIN_POINT2_RELEASE` 命令；并发冲突结果 fail closed；任一写入失败时整个业务应用回滚 |
+| `workline_plugins/manual-picking/tests/test_work_completed_decision.py` | 纯 Decision 只依赖 SDK 不可变 Fact/Snapshot；`NORMAL` 和 `NG` 各返回封闭决策，不读数据库、HTTP、Celery 或 Repository |
+| `workline_plugins/manual-picking/tests/test_external_wait_policy.py` | `WORK_REQUIRED` 保存后启动人工处理 SLA；阈值内保持 `WAITING_EXTERNAL`；超时只告警并停止新入线，不释放 point2、不改 NG、不改 FIFO、不换执行或命令身份 |
+| `workline_plugins/manual-picking/tests/test_work_completed_application.py` | `task_id + bin_code` 命中冻结的 `WORK_REQUIRED`、当前启用的 WorkLine、point2 当前 task 和料箱等待 后，原子保存 `completed_at` 与结果并只创建一个 point2 `MOVE_FORWARD` 释放命令；`completed_at < work_admission.scanned_at` 进入 `RECONCILING`；已成功应用后换新 ID 的同结果消息即使料箱已离开 point2 仍为 no-op；冲突结果以及首次消息早到、晚到、错点位、无唯一等待或 WorkLine 已停用均进入 `RECONCILING` 且零命令 |
+| `workline_plugins/manual-picking/tests/integration/test_work_completed_postgresql.py` | 真实 PostgreSQL 下按固定顺序锁定 WorkLine、点2待处理动作和当前位置；并发同结果最多一个 `MANUAL_BIN_POINT2_RELEASE` 命令；并发冲突结果 fail closed；任一写入失败时整个业务应用回滚 |
 
 核心 `tests/runtime/` 继续只证明 `InboundEvidence`、WorkLine 准入、`PositionProjection`、`DeviceCommand` 和静态绑定的中立不变量，
 不导入人工插件，不代替上述业务测试。
@@ -486,16 +487,16 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `workline_plugins/manual_bin_processing/tests/test_scan_decisions.py` | point1 只记录缓存进入和 FIFO 顺序且零方向命令；point2 对任意合法实际 Bin 请求 WMS 任务准入，不比较预期 Bin；条码不可读保留执行并释放至 point3 NG 分支；point3 无法证明当前处置关联时零命令并拒绝，匹配时按 `NO_WORK` 或已绑定的 `NORMAL/NG` 创建方向命令；缺业务结果进入 `RECONCILING`；point4 不重复校验；同一阶段的重复扫码只取得原 DeviceCommand，载荷漂移时 fail closed |
-| `workline_plugins/manual_bin_processing/tests/test_bin_lifecycle.py` | `NORMAL` 经点4加入 `RETURN_BUFFER`；退料严格从 FIFO 队首取连续前缀；NG 独立保存实际原因且不发送出口报告；正常业务无需等待人工取走；工位等待由匹配的权威离位/释放事实闭合 |
-| `workline_plugins/manual_bin_processing/tests/integration/test_manual_bin_flow_postgresql.py` | 真实 PostgreSQL 下验证 FIFO 并发不越过未闭合队首、冲突分支零命令、NG 未决物理动作和有效占用持续阻塞冲突动作，以及权威终态应用的原子性 |
+| `workline_plugins/manual-picking/tests/test_scan_decisions.py` | point1 只记录缓存进入和 FIFO 顺序且零方向命令；point2 对任意合法实际 Bin 请求 WMS 任务准入，不比较预期 Bin；条码不可读保留执行并释放至 point3 NG 分支；point3 无法证明当前处置关联时零命令并拒绝，匹配时按 `NO_WORK` 或已绑定的 `NORMAL/NG` 创建方向命令；缺业务结果进入 `RECONCILING`；point4 不重复校验；同一阶段的重复扫码只取得原 DeviceCommand，载荷漂移时 fail closed |
+| `workline_plugins/manual-picking/tests/test_bin_lifecycle.py` | `NORMAL` 经点4加入 `RETURN_BUFFER`；退料严格从 FIFO 队首取连续前缀；NG 独立保存实际原因且不发送出口报告；正常业务无需等待人工取走；工位等待由匹配的权威离位/释放事实闭合 |
+| `workline_plugins/manual-picking/tests/integration/test_manual_bin_flow_postgresql.py` | 真实 PostgreSQL 下验证 FIFO 并发不越过未闭合队首、冲突分支零命令、NG 未决物理动作和有效占用持续阻塞冲突动作，以及权威终态应用的原子性 |
 
 上述自动化测试只证明 WES 决策、事务和命令边界；不把 Mock 命令成功当作真实物理完成，也不代替 ECS/设备一致性验收与现场业务验收。
 
 ### 8.4 真实 worker 端到端装配
 
-`workline_plugins/manual_bin_processing/tests/e2e/test_business_loop.py` 必须使用真实 PostgreSQL、broker 和 Celery worker，
-安装并通过宿主静态 composition 激活真实 `manual_bin_processing` 插件，至少覆盖：
+`workline_plugins/manual-picking/tests/e2e/test_business_loop.py` 必须使用真实 PostgreSQL、broker 和 Celery worker，
+安装并通过宿主静态 composition 激活真实 `manual-picking` 插件，至少覆盖：
 
 - point2 扫描实际 Bin → `work_admission_decide`；`WORK_REQUIRED` 停留并开放人工操作，`NO_WORK` 正常直通，`WAIT` 停留重求值，响应未知时用原 identity 重试；
 - `NORMAL`：公共 WMS Event 入口 → evidence → worker → 插件应用 → 唯一 DeviceCommand → 正常返库路径；
@@ -561,7 +562,7 @@ CODE PATHS                                              USER / ONSITE FLOWS
 
 ### 9.1 Bin 级最终结果的有界查找
 
-Task 2 必须在 `manual_bin_processing` 业务所有权内建立一条窄的 per-Bin 最终结果记录，至少显式保存：
+Task 2 必须在 `manual-picking` 业务所有权内建立一条窄的 per-Bin 最终结果记录，至少显式保存：
 
 - `task_id`；
 - `bin_code`；
@@ -573,7 +574,7 @@ Task 2 必须在 `manual_bin_processing` 业务所有权内建立一条窄的 pe
 数据库必须使用 `(task_id, bin_code)` 唯一约束直接保证单终态，并通过该唯一索引完成重复与冲突查找。不得扫描
 `InboundEvidence.normalized_payload` JSON 重建当前业务状态，人工任务字段只存于插件，也不为该单行索引查询增加缓存。
 
-该记录的 SQLModel、Repository 和业务查询位于 `workline_plugins/manual_bin_processing/` 应用层。建表、唯一约束和索引仍通过根仓库
+该记录的 SQLModel、Repository 和业务查询位于 `workline_plugins/manual-picking/` 应用层。建表、唯一约束和索引仍通过根仓库
 `migrations/versions/` 的单一 Alembic revision 交付；迁移工具显式登记插件模型 metadata，但生产 `src/` 不导入具体插件。宿主只在
 静态 composition 安装该插件时注入数据库 Session、基础 Service 端口和 Repository 依赖。migration 及插件模型路径必须同步加入
 `docs/architecture/heavy-test-impact.toml` 的精确 mapping，并在干净临时 PostgreSQL 逻辑库验证 base → head。
@@ -632,7 +633,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | WorkLine 准入与 `PositionProjection` | WorkLine 承载当前插件准入；位置投影只提供有效位置诊断，不作为跨任务对象冲突授权；不塞入 PDA/人工任务字段 |
 | `DeviceCommand`、统一 ECS Adapter、ACK/CALLBACK | 直接复用；按当前待处理动作与物理阶段提供稳定命令身份 |
 | `outbound.bin.return_batch@v1` 与 `RETURN_BUFFER` FIFO | 正常运行直接复用；停线/切换排空 decision 留在 `TODOS.md` |
-| `manual_bin_processing` 插件骨架 | 在原包内补齐模型、Decision、应用与测试；不新建动态 runtime 或 registry |
+| `manual-picking` 插件骨架 | 在原包内补齐模型、Decision、应用与测试；不新建动态 runtime 或 registry |
 
 ## 10. Failure modes
 
@@ -660,7 +661,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | Step | Modules touched | Depends on |
 | --- | --- | --- |
 | T1 合同与机器合同冻结 | `docs/contracts/`、WMS/WES OpenAPI | — |
-| T2 模型与单一 migration | `src/app/execution/`、`workline_plugins/manual_bin_processing/application/`、`migrations/` | T1 |
+| T2 模型与单一 migration | `src/app/execution/`、`workline_plugins/manual-picking/application/`、`migrations/` | T1 |
 | T3 共享 wire 与任务准入 | `src/app/wms_adapter/`、`tests/contracts/wms_adapter/`、插件 WMS request 层 | T1、T2 |
 | T4 completion 决策与应用 | 插件 Decision/application、shared ingress tests | T1、T2 |
 | T5 扫码、分流、NG 与 RETURN 生命周期 | 插件 scan/lifecycle、plugin integration tests | T1、T2 |
@@ -690,27 +691,27 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Verify: C1～C7 均为 `APPROVED`；运行 WMS wire/OpenAPI 聚焦测试和 `git diff --check`。
 - [ ] **T2 (P1, human: ~1.5d / CC: ~3h)** — 数据层 — 建立 Bin 可靠义务关联与人工结果唯一记录
   - Surfaced by: Performance / Claude — 禁止 JSON 扫描，且现有 `WmsConfirmation` 只能关联料盘。
-  - Files: `src/app/execution/models/wms_confirmation.py`、execution Repository/Service、`workline_plugins/manual_bin_processing/src/manual_bin_processing/application/`、`migrations/versions/`、`docs/architecture/heavy-test-impact.toml`。
+  - Files: `src/app/execution/models/wms_confirmation.py`、execution Repository/Service、`workline_plugins/manual-picking/src/manual_picking/application/`、`migrations/versions/`、`docs/architecture/heavy-test-impact.toml`。
   - Verify: WmsConfirmation 料盘/料箱 XOR、`(task_id, bin_code)` 唯一约束、干净 PostgreSQL base → head migration 与相关回归通过。
 - [ ] **T3 (P1, human: ~1.5d / CC: ~3h)** — point2 准入 — 实现实际 Bin 的 `WORK_REQUIRED | NO_WORK | WAIT` 决策
   - Surfaced by: 用户现场澄清 — point2 不做错箱比较，只向 WMS 确认当前料箱是否有任务。
-  - Files: `src/app/wms_adapter/`、`workline_plugins/manual_bin_processing/src/manual_bin_processing/`、对应 contracts/integration tests。
-  - Verify: `uv run pytest workline_plugins/manual_bin_processing/tests/test_work_admission.py workline_plugins/manual_bin_processing/tests/integration/test_work_admission_postgresql.py -q`。
+  - Files: `src/app/wms_adapter/`、`workline_plugins/manual-picking/src/manual_picking/`、对应 contracts/integration tests。
+  - Verify: `uv run pytest workline_plugins/manual-picking/tests/test_work_admission.py workline_plugins/manual-picking/tests/integration/test_work_admission_postgresql.py -q`。
 - [ ] **T4 (P1, human: ~2d / CC: ~4h)** — completion — 实现最终结果本地应用与稳定释放命令
   - Surfaced by: Code Quality / Claude — 业务幂等优先级、`completed_at`、异步失败反馈和 DeviceCommand identity 必须闭合。
   - Files: `src/app/wms_adapter/` completion ingress、插件 Decision/application、point2 release、本地应用事务测试。
-  - Verify: `uv run pytest tests/contracts/wms_adapter workline_plugins/manual_bin_processing/tests/test_work_completed_decision.py workline_plugins/manual_bin_processing/tests/test_work_completed_application.py workline_plugins/manual_bin_processing/tests/integration/test_work_completed_postgresql.py -q`。
+  - Verify: `uv run pytest tests/contracts/wms_adapter workline_plugins/manual-picking/tests/test_work_completed_decision.py workline_plugins/manual-picking/tests/test_work_completed_application.py workline_plugins/manual-picking/tests/integration/test_work_completed_postgresql.py -q`。
 - [ ] **T5 (P1, human: ~2d / CC: ~4h)** — 物理生命周期 — 实现自主 FIFO、point3 分流、NG 独立分支与正常退料
   - Surfaced by: Architecture / Test Review — 现场拓扑、point3 当前处置关联校验和 NGZone 管辖边界必须由证据驱动。
   - Files: 插件 scan/lifecycle application、DeviceCommand 接口、`RETURN_BUFFER`/NG tests。
-  - Verify: `uv run pytest workline_plugins/manual_bin_processing/tests/test_scan_decisions.py workline_plugins/manual_bin_processing/tests/test_bin_lifecycle.py workline_plugins/manual_bin_processing/tests/integration/test_manual_bin_flow_postgresql.py -q`。
+  - Verify: `uv run pytest workline_plugins/manual-picking/tests/test_scan_decisions.py workline_plugins/manual-picking/tests/test_bin_lifecycle.py workline_plugins/manual-picking/tests/integration/test_manual_bin_flow_postgresql.py -q`。
 - [ ] **T6 (P1, human: ~1.5d / CC: ~3h)** — 装配与门禁 — 完成静态 composition、真实 worker E2E 与最终验证
   - Surfaced by: Test Review — 公共入口、broker、真实插件、PostgreSQL、设备 mock 和可靠恢复尚无纵向绿灯。
-  - Files: 宿主 composition、`workline_plugins/manual_bin_processing/tests/e2e/`、插件配置、`docs/architecture/heavy-test-impact.toml`。
+  - Files: 宿主 composition、`workline_plugins/manual-picking/tests/e2e/`、插件配置、`docs/architecture/heavy-test-impact.toml`。
   - Verify: plugin E2E、聚焦 FAST、migration、QUALITY、staged selector HEAVY 全部通过；真实设备/现场/WMS 验收单独记录。
 - [ ] **T7 (P2, human: ~30min / CC: ~10min)** — 测试治理 — 用结构化断言替换插件源码字符串黑名单
   - Surfaced by: Claude — `registry/discover/PhaseN` 文本搜索会误伤注释且不能证明静态装配。
-  - Files: `workline_plugins/manual_bin_processing/tests/test_plugin_package.py`、宿主 composition tests。
+  - Files: `workline_plugins/manual-picking/tests/test_plugin_package.py`、宿主 composition tests。
   - Verify: 插件 AST 依赖、pyproject 无 entry point、唯一静态 handler 映射和 owner 缺失 fail-closed 测试通过。
 
 ## GSTACK REVIEW REPORT

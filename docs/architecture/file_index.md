@@ -44,8 +44,7 @@
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
-| `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
-| `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化与 Evidence 追溯；原人工 R4 已由正常 record/replay 自动应用取代 |
+| `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁；原人工 R4 已由正常 record/replay 自动应用取代 |
 | `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution/LineRunEpoch 退役、WorkLine 当前插件与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-master.md` | 稳定性与中断恢复总计划；基础、消费、运维三个独立子计划及验收边界 |

@@ -505,20 +505,17 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
     "added_bin_source_racks": [
       {
         "rack_id": "RACK-5F-001",
-        "rack_face": "A"
-      },
-      {
-        "rack_id": "RACK-5F-001",
-        "rack_face": "B"
+        "rack_face": ["90", "270"]
       }
     ]
   }
 }
 ```
 
-`added_bin_source_racks[]` 的每一项表示 WMS 已为当前任务安排的一个可取料五层货架面。同一货架的 A、B 面都有当前任务需要取出的 Bin 时，
-必须按两个来源货架面分别记录，即使 `rack_id` 相同。如果某一面只用于承接退箱，没有当前任务需要取出的 Bin，则该面不进入
-`added_bin_source_racks[]`。两个面同时确定时可以放在同一 `plan_revision`；后确定的货架面使用更高版本追加。Bin 在货架到位后由
+`added_bin_source_racks[]` 的每一项表示 WMS 已为当前任务安排的一个可取料五层货架，`rack_face[]` 列出本次新增的全部可取料面。
+同一货架的两个面都有当前任务需要取出的 Bin 时，必须在同一项中返回，例如 `"rack_face": ["90", "270"]`。如果某一面只用于承接退箱，
+没有当前任务需要取出的 Bin，则该面不进入 `rack_face[]`。WES 接收后按面展开并独立记录；两个面同时确定时可以放在同一
+`plan_revision`，后确定的货架面使用更高版本追加。Bin 在货架到位后由
 `outbound.bin.inbound_batch@v1` 分批选择；Cell 仍在 Bin 实际到达 SCAN2 后由 `outbound.bin.work_plan@v1` 返回。
 
 `target_rack` 仅在 `plan_revision=1` 必填。`added_direct_picks` 和 `added_bin_source_racks` 均为条件可选；字段出现时必须包含
@@ -535,9 +532,9 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 | `data.target_rack.rack_face` | 条件 | code / WMS | 当前允许 PUT 的货架面 |
 | `data.added_direct_picks[]` | 条件 | array / WMS | 新增退料货架直接取料明细 |
 | `data.added_direct_picks[].source_locator` | 条件 | `RACK_SLOT` / WMS | 精确退料货架、面和 SLOT；明细接收后不可变 |
-| `data.added_bin_source_racks[]` | 条件 | array / WMS | 新增五层来源货架面；不携带 Bin 或 Cell |
+| `data.added_bin_source_racks[]` | 条件 | array / WMS | 新增五层来源货架；不携带 Bin 或 Cell |
 | `data.added_bin_source_racks[].rack_id` | 条件 | string / WMS | WMS 已为当前任务安排的五层来源货架 |
-| `data.added_bin_source_racks[].rack_face` | 条件 | code / WMS | 本次允许取 Bin 的货架面；同一 `task_id + rack_id + rack_face` 只能新增一次 |
+| `data.added_bin_source_racks[].rack_face` | 条件 | non-empty array of code / WMS | 本次允许取 Bin 的一个或多个货架面；WES 按面展开，同一 `task_id + rack_id + rack_face` 只能新增一次 |
 
 成功接收后返回 `202 / RECEIVED + data={}`；同一 `operation_id` 和相同请求内容再次到达时返回 `200 / DUPLICATE + data={}`。缺少有效
 接料货架面、重复的明细唯一字段组合或改写既有不可变字段时，整个 revision 整批拒绝，不允许部分接收。
@@ -589,8 +586,8 @@ WES 接收任一 revision 后，只要下面任意一类数据完整，就可以
 - 五层来源货架面和任务当前接料货架面完整：可以请求五层货架与目标转运货架到位；`inbound_batch` 仍必须等待来源货架实际到位。
 
 计划增量不包含运输起点、设备命令或 CTU 内部动作。WES 从自己保存的已确认位置读取运输起点，并使用 WorkLine 静态
-拓扑中的不同货架类型目标位。多个五层来源货架面同时可用时，只选择一个当前来源面并创建必要的货架 Transport；禁止为多个货架同时
-创建指向同一 CTU 工作位的 `RACK_MOVE`。
+拓扑中的不同货架类型目标位。多个五层来源货架同时可用时，WES 可以为每架分别创建指向同一 `FIVE_RACK` 绑定工作位的
+`CTU01/RACK_MOVE`；RCS 负责接纳、排队和物理互斥。一个货架的多个来源面只创建一次进场 Transport，不按面重复提交。
 
 ## 9. 货架、Bin 和 Cell 执行
 
@@ -692,7 +689,8 @@ WmsConfirmation 派发。本地真实 worker／HTTP 验证通过；插件基于�
 5. 没有可执行来源面时，只能等待当前任务尚未送达的正常 `plan_delta`、退箱数据或任务清理条件。已经空取、NG 或因 Transport
    确定失败而结束的任务明细，不能再由当前任务的计划增量替换。
 
-`plan_delta` 可以一次提供多个来源货架面，但 WES 不能同时创建多条指向同一 CTU 工作位的货架任务。来源面按下面的固定顺序选择：
+`plan_delta` 可以一次提供多个来源货架面，WES 可以为不同货架提交多条指向同一 CTU 工作位的进场任务，
+但只能在 RCS 权威结果证明某一货架实际进入该工作位后开始该架的取料作业。来源面按下面的固定顺序选择：
 
 1. 当前已经在 CTU 工作位、并且尚未结束的计划来源面；
 2. 当前货架的另一个尚未结束的计划来源面；
@@ -702,13 +700,13 @@ WmsConfirmation 派发。本地真实 worker／HTTP 验证通过；插件基于�
 
 - 当前货架和工作面已经正确时，不创建 Transport；
 - `rack_id` 相同但目标面不同，创建一个 `RACK_ROTATE`；
-- `rack_id` 不同，必须先保存旧架去向、新架可靠来源和两个完整搬运输入，再完成旧架移出和新架移入；两个 `RACK_MOVE` 禁止并行；
+- `rack_id` 不同，新架进场若已提交并由 RCS 排队，不得再建第二条进场 Transport；旧架离场与新架实际进位分别等待各自权威结果，不从计划或提交顺序推断新架已到位；
 - `RACK_MOVE` 已经携带正确 `target_face` 时，到位后不再补一个 `RACK_ROTATE`；
 - CTU 仍携带 Bin、存在未完成 Bin 搬运、实际位置不明确，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架。
 
 WES 保留每个 `inbound_batch` Bin 的原来源，但该记录只用于审计和业务追溯，不限定退箱目标。Bin 可靠进入 `RETURN_BUFFER` 后已有明确位置，可在本 WorkLine 中跨任务、
 跨货架面继续等待，不锁定原来源面。只有 Bin 仍在入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或存在以当前面为冻结目标的退箱决定时，才阻止相关货架换面、换架或离场。
-当前来源货架在实际到位期间仍由当前 WorkLine 独占；WMS 根据主账、Bin 业务资格和当前面实际空位决定是否分配退箱目标。
+当前来源货架的实际占用由 RCS 管理；WMS 根据主账、Bin 业务资格和当前面实际空位决定是否分配退箱目标。
 
 本文中的“批次完成”不是收到 WMS `READY`。只有对应 Transport 得到确定 `SUCCEEDED`，并且所有成员的最终位置已经可靠保存，
 本批次才完成。随后重新执行上述判断，并再次从退箱优先开始。

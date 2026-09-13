@@ -125,7 +125,7 @@ SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于未来�
 | Phase 6 | 分拣执行插件组优化 | Phase 9 | 最小执行基础闭合 | 只交付 Phase 10 必需的核心对象和 successor，不交付人工/自动业务插件 |
 | Phase 7 | 旧平台代码最终闭环清理 | Phase 10 | 旧平台代码最终闭环清理 | 只处理 Phase 5–9 跨阶段残留 |
 | Phase 8 | 旧数据模型与迁移链清理 | Phase 11 | 旧数据模型与迁移链清理 | 依赖 Phase 10 零旧路径 |
-| Phase 9 | 最终基线与系统验收 | Phase 12 | `manual_bin_processing` 教学式开发 | 用户主导完成真实人工 Bin 纵向切片 |
+| Phase 9 | 最终基线与系统验收 | Phase 12 | `manual-picking` 教学式开发 | 用户主导完成真实人工 Bin 纵向切片 |
 | 无 | 无 | Phase 13 | 自动插件开发 | 分别交付 `automatic_putaway` 与 `automatic_picking` |
 | 无 | 无 | Phase 14 | 当前交付范围系统验收 | 验收基础能力、Adapter、设备统一接口和实际交付插件 |
 
@@ -206,7 +206,7 @@ Phase 10 Task 7 联调环境 Deploy/Cutover（已完成；不代表供应商、�
    ↓
 Phase 11 旧数据模型与迁移链
    ↓
-Phase 12 manual_bin_processing 教学式开发
+Phase 12 manual-picking 教学式开发
    ↓
 Phase 13 automatic_putaway / automatic_picking
    ↓
@@ -640,7 +640,7 @@ ECS 急停/复位/恢复执行与 WES 对 `ESTOP_PRESSED` 的入站拒绝边界�
 位置投影和可靠对象是基础能力；料箱只使用实际 `bin_code` 及插件必要的工位/业务关联，不建立全程料箱执行实体。必须交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。
 
-**Explicit out-of-scope:** `manual_bin_processing`、RETURN_BUFFER、人工 Task、PDA/WMS 人工业务 wire、自动上架、自动拣货、
+**Explicit out-of-scope:** `manual-picking`、RETURN_BUFFER、人工 Task、PDA/WMS 人工业务 wire、自动上架、自动拣货、
 动态 registry、DSL、兼容层和供应商私有协议。
 
 **Deliverables:** Phase 10 可验证的最小 successor、当前 operation consumer/`DELETE → NONE` 裁决表，以及每个基础对象的测试和
@@ -719,7 +719,7 @@ Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 t
 
 **风险及防止阶段越权的约束:** 禁止在模型未稳定前生成基线；禁止因保留开发数据引入兼容迁移。
 
-## 17. Phase 12：`manual_bin_processing` 教学式开发
+## 17. Phase 12：`manual-picking` 教学式开发
 
 **Objective:** 由用户亲自完成一个真实人工 Bin 纵向切片，掌握后续插件和二次开发的完整路径。
 
@@ -732,7 +732,7 @@ Bootstrap 准入不等于生产实现、部署、设备物理或业务验收准�
 **Scope:** 用户实现生产代码、测试、migration、静态 Composition、命令和验证；Agent 只提供现有调用链说明、任务拆解、只读影响分析、
 Review 与根因诊断。只有用户对具体切片另行授权时，Agent 才直接修改生产代码。
 
-**实施子计划:** `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md`。旧 Phase 9 人工合同、设备附录和
+**实施子计划已退役并移至项目外归档。** 旧 Phase 9 人工合同、设备附录和
 OpenAPI 仅作为归档输入；Task 2 生产实现开始前必须按真实教学范围重新联合评审，不能沿用旧批准状态。
 
 **Exit gate:** 用户能说明 owner、数据流、失败语义、事务边界和测试归属；人工 Bin 业务合同、插件独立测试和部署激活通过，

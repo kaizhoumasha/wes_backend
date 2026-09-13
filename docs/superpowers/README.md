@@ -16,7 +16,7 @@
 | `plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据、普通 TEST FULL 验收及既有备份计划接入 | APPROVED；承接旧发布静默计划剩余 Task 5，未部署 |
 | `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 核心退役与三类整线插件分开验收；具体实施、交付及未完成项以该 SPEC 和 S0 记录为准，不复用历史状态作当前部署证据 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
-| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；原 R4 人工 apply-correction 已被 2026-09-11 无阻塞设计取代，修正仅走正常 plan_delta record/replay |
+| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；prepare 所有权已收敛；原 R4 人工 apply-correction 已被 2026-09-11 无阻塞设计取代，修正仅走正常 plan_delta record/replay |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源；[第 7 章插件顶层设计](specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、系统关系、资源装配与验收 | Approved；插件边界于 2026-09-09 汇总，不代表业务插件交付或现场验收 |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、WorkLine 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
@@ -35,13 +35,14 @@
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
-| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Task 0–1 Bootstrap admitted；Task 2–7 在人工业务合同冻结且开发环境验证通过前阻断 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
 | `plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施切片、验证和现场交接入口 | Implemented and merged；仓内验证已完成并已部署联调；现场交接与验收未执行 |
 
 ## 项目外历史归档
+
+- `../archive_docs/wes_backend/2026-08-27-phase12-manual-bin-processing-guided-development.md`
 
 - `../archive_docs/wes_backend/stability-recovery-20260909/2026-08-26-release-operational-readiness.md`：保留原文；已实现机制以 `docs/devops/prod-release-deploy.md` 为准，未完成普通 TEST FULL 验收由 `plans/2026-09-09-stability-recovery-operations.md` C2 完整承接。
 

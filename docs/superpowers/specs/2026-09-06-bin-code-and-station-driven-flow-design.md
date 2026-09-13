@@ -81,7 +81,7 @@ WMS 业务 `bin_code` 复用原 Identifier 校验：`[A-Za-z0-9][A-Za-z0-9._:/-]
 | 人工出库 | point2 当前等待的 task、bin_code、准入决定、最终结果及释放命令关联 | 以 BinExecution 为回调应用前提；等待 NG 人工取走才结束正常业务 |
 | 入库上架 | 当前可投料目标箱、真实工位占用、未完成 placement/Cell 分配与释放决定 | 用 WMS 库存代替当前工位事实；全程箱执行作为可投料的唯一授权 |
 
-当前 `manual_bin_processing` 仅有插件骨架和 prepare policy，尚无站点等待、扫码 handler 或退箱 FIFO。下表及本节业务语义是后续插件合同，
+当前 `manual-picking` 仅有插件骨架和 prepare policy，尚无站点等待、扫码 handler 或退箱 FIFO。下表及本节业务语义是后续插件合同，
 不是已实现能力；不得为核心退役创建占位 handler、模拟业务完成或强行补齐整线业务。
 
 已有业务记录能够承接就直接复用。确需持久化当前工位等待时，仅保存能支撑等待与动作关联的字段，
@@ -278,7 +278,7 @@ WMS READY 只能选连续队首并冻结成员与目标；NO_BATCH/WAIT 不跳�
 | 位置与 Transport 授权 | `src/app/execution/models/position_projection.py`、`src/app/execution/services/position_projection_service.py`、`src/app/transport/models.py`、`src/app/transport/contracts.py` | `tests/runtime/execution/test_position_projection.py`、`tests/runtime/transport/test_transport_execution_authority.py` 及映射的持久化测试 |
 | Epoch 退役与运行入口 | `src/app/workline/models/workline.py`、`src/app/workline/activation.py`、`src/app/workline/services/workline_start_service.py`、`src/app/workline/services/workline_configuration_service.py`、`src/app/workline/plugin_routing.py` | `tests/integration/workline_capabilities/test_workline_start_postgresql.py`、`test_workline_configuration_postgresql.py`、`test_workline_retirement_schema_postgresql.py`（后两者同目录）；设备/事件及插件测试按 S0 清单 |
 | 可靠 owner 与切换 | `src/app/execution/services/wms_confirmation_service.py`、`src/app/workline/repositories/workline_repository.py` | `tests/runtime/execution/test_wms_confirmation_service.py`、`tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py` |
-| 插件业务、动作关联 | `workline_plugins/rough_sorter/` 迁移已有业务；`workline_plugins/manual_bin_processing/` 新站点业务仍属 S3B | 插件各自 `tests/`；不进入核心默认 QUALITY/覆盖率 |
+| 插件业务、动作关联 | `workline_plugins/rough_sorter/` 迁移已有业务；`workline_plugins/manual-picking/` 新站点业务仍属 S3B | 插件各自 `tests/`；不进入核心默认 QUALITY/覆盖率 |
 | 测试治理与 schema | `tests/README.md`、`docs/architecture/heavy-test-impact.toml`、`migrations/versions/` | 精确 selector、迁移链与选中 HEAVY；不扩大到无关整仓测试 |
 
 文档本身只做路径/引用、结构和 diff 检查，禁止新增正文测试。行为实现按高风险 TDD 推进。
