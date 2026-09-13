@@ -184,7 +184,7 @@ class IntegrationDebugService:
                 workline_id=workline.id,
                 workline_code=workline.line_code,
                 scenario_key=IntegrationDebugScenario.MANUAL_OUTBOUND_PICKING_V1,
-                expected_plugin_key="manual_bin_processing",
+                expected_plugin_key="manual-picking",
                 profile=request.profile,
                 environment_label=request.environment_label.strip(),
                 operator_user_id=actor_id,
@@ -444,6 +444,9 @@ class IntegrationDebugService:
             if task.plan_blocked_evidence_id is not None:
                 raise IntegrationDebugConflict("plan_delta 处于冲突对账，不能启动资源搬运")
             resources = await self._runs.list_plan_resources(db, task.id)
+            source_racks = resources.get("bin_source_racks")
+            if not isinstance(source_racks, list) or not source_racks:
+                raise IntegrationDebugContractError("手工出库 plan_delta 必须至少包含一个五层来源货架")
             plan = {
                 "plan_revision": task.last_applied_plan_revision,
                 "target_rack": {"rack_id": task.target_rack_id, "rack_face": task.target_rack_face},
@@ -2376,9 +2379,23 @@ class IntegrationDebugService:
             raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
         if phase is IntegrationDebugPhase.RACK_TRANSPORT:
             current_source = IntegrationDebugService._current_source_rack(run)
+            plan = run.configuration_json.get("plan_resources")
+            target_rack = plan.get("target_rack") if isinstance(plan, dict) else None
+            mode = run.configuration_json.get("rack_transport_mode")
+            if mode not in {"MOVE_SOURCE_RACK", "ROTATE_SOURCE_RACK"} and (
+                not isinstance(target_rack, dict)
+                or not any(
+                    step.status == "SUCCEEDED"
+                    and step.request_summary_json.get("kind") == IntegrationTransportActionKind.MOVE_RACK
+                    and step.request_summary_json.get("rack_id") == target_rack.get("rack_id")
+                    and step.request_summary_json.get("target_face") == target_rack.get("rack_face")
+                    for step in phase_steps
+                )
+            ):
+                raise IntegrationDebugConflict("目标转运货架尚未取得匹配货架、面和动作的 Transport SUCCEEDED")
             expected_kind = (
                 IntegrationTransportActionKind.ROTATE_RACK
-                if run.configuration_json.get("rack_transport_mode") == "ROTATE_SOURCE_RACK"
+                if mode == "ROTATE_SOURCE_RACK"
                 else IntegrationTransportActionKind.MOVE_RACK
             )
             if current_source is not None and not any(

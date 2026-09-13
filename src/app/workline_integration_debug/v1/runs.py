@@ -180,7 +180,7 @@ class IntegrationRunResponse(_StrictModel):
     workline_id: int
     workline_code: str
     scenario_key: Literal["manual_outbound_picking@v1"]
-    expected_plugin_key: Literal["manual_bin_processing"]
+    expected_plugin_key: Literal["manual-picking"]
     profile: IntegrationDebugProfile
     environment_label: str
     operator_user_id: int

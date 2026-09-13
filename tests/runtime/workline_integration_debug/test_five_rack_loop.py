@@ -32,7 +32,7 @@ def _run(*, phase: str = "BIN_INBOUND_BATCH", rack_count: int = 2) -> Integratio
         workline_id=3,
         workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
-        expected_plugin_key="manual_bin_processing",
+        expected_plugin_key="manual-picking",
         profile="CONTRACT_SIMULATION",
         environment_label="integration",
         operator_user_id=42,
@@ -97,6 +97,28 @@ def test_rack_face_done_rotates_same_rack_then_departure_releases_next_rack() ->
     phase = IntegrationDebugService._finish_current_source_departure(run, "RACK-01")
     assert phase == IntegrationDebugPhase.RACK_TRANSPORT
     assert run.configuration_json["current_source_rack"] == {"rack_id": "RACK-02", "rack_face": "180"}
+
+
+def test_rack_face_done_requires_operator_coordination_and_close() -> None:
+    run = IntegrationRun(
+        run_id="run-rack-face-done",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual-picking",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="BIN_INBOUND_BATCH",
+    )
+
+    IntegrationDebugService._advance_inbound_batch(run, "RACK_FACE_DONE", {})
+
+    assert run.status == "NEEDS_ATTENTION"
+    assert run.attention_code == "RACK_FACE_DONE"
+    assert "关闭本 run" in (run.attention_detail or "")
 
 
 @pytest.mark.parametrize(
@@ -722,4 +744,34 @@ async def test_rack_phase_cannot_advance_before_current_source_arrives() -> None
     )
 
     with pytest.raises(IntegrationDebugConflict, match="当前来源货架"):
+        await service.confirm_current_phase(run.run_id, note="已到位", expected_version=0, actor_id=42)
+
+
+@pytest.mark.asyncio
+async def test_initial_rack_phase_cannot_advance_before_target_rack_arrives() -> None:
+    run = _run(phase="RACK_TRANSPORT")
+    steps = [
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=0,
+            phase="RACK_TRANSPORT",
+            status="SUCCEEDED",
+            request_summary_json={
+                "kind": "MOVE_RACK",
+                "rack_id": "RACK-01",
+                "target_face": "90",
+                "source_cycle_no": 0,
+            },
+        )
+    ]
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=_Repository(run, steps),  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="目标转运货架"):
         await service.confirm_current_phase(run.run_id, note="已到位", expected_version=0, actor_id=42)
