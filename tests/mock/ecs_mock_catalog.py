@@ -50,15 +50,6 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
         contract_version="2.0",
         supported_commands=("PICK_AND_PLACE", "MOVE"),
     ),
-    "RS-MOCK-PLACEMENT-01": MockEcsDevice(
-        device_code="RS-MOCK-PLACEMENT-01",
-        device_name="粗分拣放置设备",
-        device_type="ROUGH_SORTER_PLACEMENT",
-        role="PLACEMENT_DEVICE",
-        contract_key="rough_sorter.placement_device",
-        contract_version="1.0",
-        supported_commands=("PICK_AND_PUT",),
-    ),
     "STATION_SCAN1": MockEcsDevice(
         device_code="STATION_SCAN1",
         device_name="SMT 流水线扫描工位 1",

@@ -170,7 +170,7 @@ def test_admission_request_is_strict_and_preserves_measurement_strings() -> None
                 "ng_evidence_id": "EVIDENCE-1",
                 "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
                 "reason_code": "BUSINESS_REJECT",
-                "business_context": "ROUGH_SORT_INBOUND",
+                "business_context": "AUTOMATIC_PUTAWAY",
             },
         ),
         (
@@ -201,7 +201,7 @@ def test_optional_pkg_id_must_be_omitted_instead_of_null() -> None:
                     "ng_evidence_id": "EVIDENCE-1",
                     "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
                     "reason_code": "BUSINESS_REJECT",
-                    "business_context": "ROUGH_SORT_INBOUND",
+                    "business_context": "AUTOMATIC_PUTAWAY",
                 },
             )
         )
@@ -217,12 +217,12 @@ def test_ng_placement_business_context_is_an_opaque_contract_value() -> None:
                 "ng_evidence_id": "EVIDENCE-1",
                 "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
                 "reason_code": "BUSINESS_REJECT",
-                "business_context": "MANUAL_BIN_PROCESSING",
+                "business_context": "EXAMPLE_CONTEXT",
             },
         )
     )
 
-    assert request.data.business_context == "MANUAL_BIN_PROCESSING"
+    assert request.data.business_context == "EXAMPLE_CONTEXT"
 
 
 def test_identifier_constraints_follow_the_authoritative_field_owners() -> None:
@@ -242,12 +242,12 @@ def test_identifier_constraints_follow_the_authoritative_field_owners() -> None:
                 },
                 "measurements": {"diameter_mm": "12.345", "thickness_mm": "0.500"},
                 "shape_result": "PASS",
-                "workline_code": "粗分工作线" * 30,
+                "workline_code": "示例工作线" * 30,
                 "source_position": _handoff("入口位置" * 30),
             },
         )
     )
-    assert request.data.workline_code == "粗分工作线" * 30
+    assert request.data.workline_code == "示例工作线" * 30
 
     for field, value in (("material_execution_id", "E" * 121), ("material_trace_id", "T" * 161)):
         invalid = request.model_dump(mode="json")

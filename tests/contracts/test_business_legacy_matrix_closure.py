@@ -69,16 +69,12 @@ def test_business_legacy_matrix_has_no_dedicated_drop_items() -> None:
 
 def test_retired_phase5_business_carriers_are_absent_from_generator_and_ledgers() -> None:
     retired_paths = {
-        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
-        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter_context.py",
         "src/app/runtime/capabilities/material_flow/contracts/smt_inbound_handoff_reason.py",
         "src/app/runtime/capabilities/material_flow/contracts/smt_usage_policy.py",
         "src/app/runtime/capabilities/material_flow/contracts/sorting_inbound_context.py",
         "src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py",
         "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py",
-        "src/app/workline/domain/contexts/rough_sorter.py",
         "src/app/workline/domain/contexts/smt_sorting_inbound.py",
-        "src/app/workline/domain/contracts/rough_sorter.py",
         "src/app/workline/domain/services/smt_inbound_handoff_reason.py",
         "src/app/workline/domain/services/smt_inbound_handoff_route_service.py",
         "src/app/workline/domain/services/smt_usage_policy.py",

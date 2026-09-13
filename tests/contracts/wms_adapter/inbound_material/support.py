@@ -32,7 +32,7 @@ def _request(operation: str = ADMISSION_OPERATION) -> dict[str, object]:
             "ng_evidence_id": "EVIDENCE-1",
             "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
             "reason_code": "BUSINESS_REJECT",
-            "business_context": "ROUGH_SORT_INBOUND",
+            "business_context": "AUTOMATIC_PUTAWAY",
         }
     elif operation == PLACEMENT_OPERATION:
         data = {

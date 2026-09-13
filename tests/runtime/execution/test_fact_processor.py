@@ -93,7 +93,7 @@ class _WorkLines:
             line_name="Line",
             line_type="AUTO",
             is_active=True,
-            plugin_key="rough_sorter",
+            plugin_key="sample_plugin",
             plugin_version="1.0.0",
             flow_mode="AUTO",
         )
@@ -413,7 +413,7 @@ def _plugins(target: object = _handle_initial, *, correlator: object | None = _C
     return StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(target,),
                 fact_factory=_IdentityFactFactory(),
@@ -458,7 +458,7 @@ def _changing_processor(
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(_handle_changing,),
                 fact_factory=factory,
@@ -883,7 +883,7 @@ async def test_recovery_fact_targets_exactly_one_execution() -> None:
         plugin_binding=StaticPluginBinding(
             (
                 PluginRuntimeBinding(
-                    plugin_key="rough_sorter",
+                    plugin_key="sample_plugin",
                     plugin_version="1.0.0",
                     handlers=(_handle_recovery,),
                     fact_factory=_IdentityFactFactory(),
@@ -1035,7 +1035,7 @@ async def test_declared_plugin_without_handlers_only_observes_unowned_device_eve
         (),
         definitions=(
             PluginDefinition(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version=version,
                 display_name="Example",
                 supported_line_types=("AUTO",),

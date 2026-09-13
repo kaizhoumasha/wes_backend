@@ -54,7 +54,7 @@ def _evidence(kind: InboundEvidenceKind, **changes: object) -> InboundEvidence:
         "received_at": datetime(2026, 8, 17),
         "workline_id": 7,
         "material_execution_id": 21,
-        "contract_key": "rough_sorter.measurement_device",
+        "contract_key": "example.measurement_device",
         "contract_version": "1.0",
         "apply_status": InboundEvidenceApplyStatus.APPLIED,
     }

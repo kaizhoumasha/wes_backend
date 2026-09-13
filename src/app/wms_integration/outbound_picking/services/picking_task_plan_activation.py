@@ -10,7 +10,6 @@ from wes_plugin_sdk import (
     PickingTaskPlanHandlingResult,
     PickingTaskPlanRack,
     PositionBindingSnapshot,
-    TransportRcsTemplateId,
 )
 
 from src.app.execution.repositories import transport_decision_binding_repository
@@ -129,7 +128,11 @@ class PickingTaskPlanActivationService:
             result = handler(fact)
             self._validate_result(fact, result)
             for intent in result.transports:
-                step = TARGET_RACK_IN_STEP if intent.position_role == "TRANSFER_RACK" else BIN_SOURCE_RACK_IN_STEP
+                step = (
+                    TARGET_RACK_IN_STEP
+                    if fact.target_rack is not None and intent.rack_id == fact.target_rack.rack_id
+                    else BIN_SOURCE_RACK_IN_STEP
+                )
                 _ = await self._transport_creator.create(
                     db,
                     workline_id=workline_id,
@@ -164,11 +167,8 @@ class PickingTaskPlanActivationService:
     def _validate_result(fact: PickingTaskPlanAppliedFact, result: object) -> None:
         if type(result) is not PickingTaskPlanHandlingResult:
             raise TypeError("plan handler must return PickingTaskPlanHandlingResult")
-        candidates = {
-            rack.rack_id: (rack, "TRANSFER_RACK")
-            for rack in ((fact.target_rack,) if fact.target_rack is not None else ())
-        }
-        candidates.update({rack.rack_id: (rack, "FIVE_RACK") for rack in fact.pending_bin_source_racks})
+        candidates = {rack.rack_id: rack for rack in ((fact.target_rack,) if fact.target_rack is not None else ())}
+        candidates.update({rack.rack_id: rack for rack in fact.pending_bin_source_racks})
         seen: set[str] = set()
         bindings = {binding.position_role: binding for binding in fact.position_bindings}
         for intent in result.transports:
@@ -178,20 +178,15 @@ class PickingTaskPlanActivationService:
                 or intent.rack_id in seen
                 or intent.task_id != fact.task_id
                 or intent.fact_id != fact.fact_id
-                or intent.source_evidence_id != candidate[0].source_evidence_id
-                or intent.position_role != candidate[1]
+                or intent.source_evidence_id != candidate.source_evidence_id
             ):
                 raise ValueError("plan handler returned an intent outside the frozen fact")
             binding = bindings.get(intent.position_role)
-            expected_template = (
-                TransportRcsTemplateId.F01 if intent.position_role == "TRANSFER_RACK" else TransportRcsTemplateId.CTU01
-            )
             if (
                 binding is None
                 or binding.location_type != "RACK_POSITION"
                 or intent.target.location_code != binding.location_id
-                or intent.target_face not in candidate[0].rack_faces
-                or intent.rcs_template_id != expected_template
+                or intent.target_face not in candidate.rack_faces
             ):
                 raise ValueError("plan handler returned an intent outside the frozen fact")
             seen.add(intent.rack_id)

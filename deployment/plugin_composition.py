@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 from deployment.plugin_definitions import load_plugin_definitions
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
-from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
+from src.app.execution.plugin_binding import StaticPluginBinding
 from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
@@ -67,37 +67,6 @@ def build_deployment_runtime(
     by_key = {definition.plugin_key: definition for definition in definitions}
 
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
-    if "rough_sorter" in enabled_plugin_keys:
-        from rough_sorter.application.business_blocker import RoughSorterBusinessBlocker
-        from rough_sorter.application.factory import RoughSorterPluginFactFactory
-        from rough_sorter.application.persistence import RoughSorterInitialExecutionCorrelator
-        from rough_sorter.application.start_plan import RoughSorterStartPlanBuilder
-        from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
-        from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
-        from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, build_handlers
-
-        factory = RoughSorterPluginFactFactory(
-            transport_repository=transport_runtime.repository,
-            device_adapter_provider=device_adapter_provider,
-        )
-        rough_sorter_start_plan_builder = RoughSorterStartPlanBuilder(adapter_provider=device_adapter_provider)
-        rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher()
-        plugins = (
-            InstalledWorkLinePlugin(
-                definition=by_key["rough_sorter"],
-                runtime_binding=PluginRuntimeBinding(
-                    plugin_key=PLUGIN_KEY,
-                    plugin_version=PLUGIN_VERSION,
-                    handlers=build_handlers(),
-                    fact_factory=factory,
-                    initial_execution_correlator=RoughSorterInitialExecutionCorrelator(),
-                ),
-                start_plan_builder=rough_sorter_start_plan_builder,
-                business_blocker=RoughSorterBusinessBlocker(),
-                wms_confirmation_follow_up_planner=RoughSorterWmsFollowUpPlanner(),
-                transport_outcome_publisher=rough_sorter_transport_outcome_publisher,
-            ),
-        )
     if "manual-picking" in enabled_plugin_keys:
         from manual_picking.plugin import build_handlers, build_prepare_policy, build_transport_outcome_publisher
 
@@ -129,17 +98,6 @@ def build_deployment_runtime(
             CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner())
         ),
     )
-    recovery_handler = None
-    if "rough_sorter" in enabled_plugin_keys:
-        from rough_sorter.application.wms_recovery import RecoveryEventEvidenceRecorder, RecoveryEventHandler
-
-        recovery_handler = RecoveryEventHandler(
-            RecoveryEventEvidenceRecorder(
-                session_factory,
-                evidence_service=execution.inbound_evidence_service,
-                task_queue_gateway=task_queue_gateway,
-            )
-        )
     return DeploymentRuntime(
         execution=execution,
         plugins=plugins,
@@ -156,7 +114,7 @@ def build_deployment_runtime(
             device_cache_invalidator=device_service,
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),
-        wms_recovery_event_handler=recovery_handler,
+        wms_recovery_event_handler=None,
         picking_task_prepare_service=PickingTaskPrepareBatchService(
             session_factory,
             plugins=plugins,

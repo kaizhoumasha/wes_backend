@@ -43,9 +43,9 @@ class _Worklines:
         self.line = line
 
     async def list_active_for_plugin_identities(self, _db, identities, *, limit):  # type: ignore[no-untyped-def]
-        assert identities == (("manual-picking", "0.1.0"),)
+        assert identities == (("sample_plugin", "0.1.0"),)
         assert limit == 100
-        return [(7, "manual-picking", "0.1.0")]
+        return [(7, "sample_plugin", "0.1.0")]
 
     async def get_for_update(self, _db, workline_id):  # type: ignore[no-untyped-def]
         assert workline_id == 7
@@ -65,24 +65,24 @@ class _Handler:
                     task_id=fact.task_id,
                     fact_id=fact.fact_id,
                     source_evidence_id=target.source_evidence_id,
-                    position_role="TRANSFER_RACK",
+                    position_role="TARGET_SLOT",
                     rack_id=target.rack_id,
                     source=TransportRackReference(target.rack_id),
-                    target=TransportRackPosition("TRANSFER-POS"),
+                    target=TransportRackPosition("TARGET-POS"),
                     target_face=target.rack_faces[0],
-                    rcs_template_id=TransportRcsTemplateId.F01,
+                    rcs_template_id=TransportRcsTemplateId.CTU02,
                 ),
                 *(
                     PickingTaskRackTransportIntent(
                         task_id=fact.task_id,
                         fact_id=fact.fact_id,
                         source_evidence_id=bin_rack.source_evidence_id,
-                        position_role="FIVE_RACK",
+                        position_role="SOURCE_SLOT",
                         rack_id=bin_rack.rack_id,
                         source=TransportRackReference(bin_rack.rack_id),
-                        target=TransportRackPosition("FIVE-POS"),
+                        target=TransportRackPosition("SOURCE-POS"),
                         target_face=bin_rack.rack_faces[0],
-                        rcs_template_id=TransportRcsTemplateId.CTU01,
+                        rcs_template_id=TransportRcsTemplateId.CTU03,
                     )
                     for bin_rack in fact.pending_bin_source_racks
                 ),
@@ -118,18 +118,17 @@ async def test_batch_does_not_read_business_state_without_plan_handler() -> None
 
 
 @pytest.mark.asyncio
-async def test_batch_creates_all_bin_rack_transports_to_same_rcs_queued_position() -> None:
+async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping() -> None:
     line = SimpleNamespace(
         id=7,
         line_code="L-1",
         is_active=True,
         is_deleted=False,
-        plugin_key="manual-picking",
+        plugin_key="sample_plugin",
         plugin_version="0.1.0",
-        config={"position_bindings": {"FIVE_RACK": "FIVE-CODE"}},
         position_bindings={
-            "FIVE_RACK": {"location_id": "FIVE-POS", "location_type": "RACK_POSITION"},
-            "TRANSFER_RACK": {"location_id": "TRANSFER-POS", "location_type": "RACK_POSITION"},
+            "SOURCE_SLOT": {"location_id": "SOURCE-POS", "location_type": "RACK_POSITION"},
+            "TARGET_SLOT": {"location_id": "TARGET-POS", "location_type": "RACK_POSITION"},
         },
     )
     task = SimpleNamespace(
@@ -155,7 +154,7 @@ async def test_batch_creates_all_bin_rack_transports_to_same_rcs_queued_position
         _Sessions(),
         plugins=(
             SimpleNamespace(
-                plugin_key="manual-picking",
+                plugin_key="sample_plugin",
                 plugin_version="0.1.0",
                 picking_task_plan_applied_handler=handler,
             ),
@@ -176,6 +175,11 @@ async def test_batch_creates_all_bin_rack_transports_to_same_rcs_queued_position
     ]
     assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1", "BIN-2"]
     assert [call["source_evidence_id"] for call in creator.calls] == [10, 11, 12]
+    assert [call["step"] for call in creator.calls] == [
+        "PICKING_TASK_TARGET_RACK_IN",
+        "PICKING_TASK_BIN_SOURCE_RACK_IN",
+        "PICKING_TASK_BIN_SOURCE_RACK_IN",
+    ]
     assert [call["correlation_id"] for call in creator.calls] == [
         "pt:1:e:10:rack:TARGET-1",
         "pt:1:e:11:rack:BIN-1",
@@ -189,11 +193,11 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
         id=7,
         is_active=True,
         is_deleted=False,
-        plugin_key="manual-picking",
+        plugin_key="sample_plugin",
         plugin_version="0.1.0",
         position_bindings={
-            "FIVE_RACK": {"location_id": "FIVE-POS", "location_type": "RACK_POSITION"},
-            "TRANSFER_RACK": {"location_id": "TRANSFER-POS", "location_type": "RACK_POSITION"},
+            "SOURCE_SLOT": {"location_id": "SOURCE-POS", "location_type": "RACK_POSITION"},
+            "TARGET_SLOT": {"location_id": "TARGET-POS", "location_type": "RACK_POSITION"},
         },
     )
     task = SimpleNamespace(
@@ -213,7 +217,7 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
         _Sessions(),
         plugins=(
             SimpleNamespace(
-                plugin_key="manual-picking",
+                plugin_key="sample_plugin",
                 plugin_version="0.1.0",
                 picking_task_plan_applied_handler=_Handler(),
             ),
@@ -245,7 +249,7 @@ def test_host_rejects_handler_that_omits_a_pending_rack() -> None:
             PickingTaskPlanRack("BIN-A", ("90",), "11", 1),
             PickingTaskPlanRack("BIN-B", ("270",), "12", 2),
         ),
-        position_bindings=(PositionBindingSnapshot("FIVE_RACK", "FIVE-POS", "RACK_POSITION"),),
+        position_bindings=(PositionBindingSnapshot("SOURCE_SLOT", "SOURCE-POS", "RACK_POSITION"),),
     )
     result = PickingTaskPlanHandlingResult(transports=())
 
@@ -258,8 +262,8 @@ def test_host_rejects_handler_that_omits_a_pending_rack() -> None:
     [
         (0, {"target_face": "270"}, None),
         (1, {"target_face": "180"}, None),
-        (0, {"rcs_template_id": TransportRcsTemplateId.CTU01}, None),
-        (1, {"rcs_template_id": TransportRcsTemplateId.F01}, None),
+        (0, {"position_role": "UNBOUND_SLOT"}, None),
+        (1, {"target": TransportRackPosition("OTHER-POS")}, None),
         (1, {}, "ZONE"),
     ],
 )
@@ -275,8 +279,8 @@ def test_host_rejects_transport_outside_plan_and_position_contract(
         target_rack=PickingTaskPlanRack("TARGET-1", ("90",), "10", 1),
         pending_bin_source_racks=(PickingTaskPlanRack("BIN-1", ("90", "270"), "12", 2),),
         position_bindings=(
-            PositionBindingSnapshot("TRANSFER_RACK", "TRANSFER-POS", "RACK_POSITION"),
-            PositionBindingSnapshot("FIVE_RACK", "FIVE-POS", binding_type or "RACK_POSITION"),
+            PositionBindingSnapshot("TARGET_SLOT", "TARGET-POS", "RACK_POSITION"),
+            PositionBindingSnapshot("SOURCE_SLOT", "SOURCE-POS", binding_type or "RACK_POSITION"),
         ),
     )
     result = _Handler()(fact)

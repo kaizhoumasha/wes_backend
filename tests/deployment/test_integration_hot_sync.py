@@ -59,9 +59,9 @@ def _init_source_repositories(tmp_path: Path) -> tuple[Path, Path, str]:
         "migrations/env.py": "# baseline\n",
         "src/app.py": "VALUE = 'base'\n",
         "deployment/plugin_composition.py": "# composition\n",
-        "workline_plugins/rough_sorter/src/plugin.py": "# plugin\n",
-        "workline_plugins/rough_sorter/.venv/lib/runtime.bin": "large cache\n",
-        "workline_plugins/rough_sorter/tests/test_plugin.py": "def test_plugin(): pass\n",
+        "workline_plugins/manual-picking/src/plugin.py": "# plugin\n",
+        "workline_plugins/manual-picking/.venv/lib/runtime.bin": "large cache\n",
+        "workline_plugins/manual-picking/tests/test_plugin.py": "def test_plugin(): pass\n",
         "scripts/frontend-dev-entrypoint.sh": "#!/bin/sh\nexec pnpm dev\n",
         "docker-compose.integration-hot.yml": "services: {}\n",
     }
@@ -148,8 +148,9 @@ def test_bootstrap_transfers_runtime_sources_without_local_state(tmp_path: Path)
     assert "src/main.ts" in transferred
     assert ".env\n" not in transferred
     assert ".env.local" not in transferred
-    assert "workline_plugins/rough_sorter/.venv" not in transferred
-    assert "workline_plugins/rough_sorter/tests" not in transferred
+    assert "workline_plugins/manual-picking/src/plugin.py" in transferred
+    assert "workline_plugins/manual-picking/.venv" not in transferred
+    assert "workline_plugins/manual-picking/tests" not in transferred
     assert transferred.count("scp ") == 2
     assert "CANTAISYS@100.94.216.118" in transferred
     assert "/srv/wes/app/current-single" in transferred

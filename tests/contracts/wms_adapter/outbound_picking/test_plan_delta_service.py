@@ -165,7 +165,7 @@ async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_c
             return_value=SimpleNamespace(
                 is_active=True,
                 is_deleted=False,
-                plugin_key="manual-picking",
+                plugin_key="sample_plugin",
                 plugin_version="0.1.0",
             )
         )
@@ -176,7 +176,7 @@ async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_c
         deferred,
     )
     service, _, _, _ = setup_service(
-        plan_activation_plugin_identities=(("manual-picking", "0.1.0"),),
+        plan_activation_plugin_identities=(("sample_plugin", "0.1.0"),),
         task_queue_gateway=queue,
         workline_repository=worklines,
     )

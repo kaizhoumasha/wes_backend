@@ -9,7 +9,7 @@
 当前工作树已完成内部 Transport 料箱成员改名、BinExecution 与 LineRunEpoch 定义及消费者迁移，以及已有 rough_sorter 业务关联迁移。
 历史货架围栏、Transport 结果发布并发及退箱 owner 缓存问题已修复，独立代码评审通过；最终标准 HEAVY 383 项通过、零跳过。
 QUIT 后重试接管曾出现间歇性退出超时，最终标准回归通过但原因尚未定位，保留在 S0 证据中。
-本轮未提交、推送或部署；S3B 新站点业务、WMS 联合确认与现场验收仍待执行。实施范围和证据见 [S0 清单](../plans/2026-09-06-bin-workline-retirement-s0.md)。
+以下为当时的实施记录，不代表当前状态；S0 清单已移出项目归档。S3B 新站点业务、WMS 联合确认与现场验收仍须按当前合同独立验证。
 
 > 执行入口：使用 `wes-implementation`，按项目 AGENTS.md 的 Execution Lock、影响分析、测试所有权和最终门禁推进。
 > 本文采用 writing-plans 的任务与验收组织方式，按项目规则不粘贴完整实现或测试代码，不要求逐阶段重复确认、自动提交或部署。

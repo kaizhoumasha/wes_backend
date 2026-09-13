@@ -121,7 +121,7 @@ class _WorkLines:
             device_code="TRANSFER-1",
             device_role="TRANSFER_DEVICE",
             endpoint_base_url="http://ecs-decision:8080",
-            contract_key="rough_sorter.transfer",
+            contract_key="example.transfer",
             contract_version="1.0",
             status_max_age_ms=1000,
             command_timeout_ms=5000,

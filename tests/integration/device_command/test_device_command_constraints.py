@@ -363,12 +363,12 @@ def _command(binding: WorkLineDeviceBinding, code: str, status: CommandStatus) -
 def _manual_command(identity: str, code: str, status: CommandStatus = CommandStatus.PENDING) -> DeviceCommand:
     return DeviceCommand(
         command_code=code,
-        device_code=f"RS-MOCK-PLACEMENT-{identity[-8:]}",
+        device_code=f"MOCK-PLACEMENT-{identity[-8:]}",
         workline_id=None,
         execution_ref_type="MANUAL_DEBUG",
         execution_ref_id=identity,
         material_execution_id=None,
-        contract_key="rough_sorter.placement_device",
+        contract_key="example.placement_device",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
         params={"target_code": "OUTLET-1"},
@@ -629,7 +629,7 @@ async def test_postgresql_manual_debug_identity_remains_unique_without_workline(
     async with integration_session_factory.begin() as db:
         first = _manual_command(identity, f"CMD-{uuid4().hex}-1", CommandStatus.SUCCEEDED)
         second = _manual_command(identity, f"CMD-{uuid4().hex}-2", CommandStatus.PENDING)
-        second.device_code = f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}"
+        second.device_code = f"MOCK-PLACEMENT-{uuid4().hex[:8]}"
         db.add(first)
         await db.flush()
         db.add(second)
@@ -645,8 +645,8 @@ async def test_postgresql_concurrent_manual_debug_same_identity_replays_original
     request = {
         "client_request_id": identity,
         "endpoint_base_url": "http://ecs-mock:8080",
-        "device_code": f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
-        "contract_key": "rough_sorter.placement_device",
+        "device_code": f"MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        "contract_key": "example.placement_device",
         "contract_version": "1.0",
         "command_timeout_ms": 30_000,
         "task_type": "PICK_AND_PUT",
@@ -690,7 +690,7 @@ async def test_postgresql_manual_debug_same_identity_rejects_different_device(
     request = {
         "client_request_id": identity,
         "endpoint_base_url": "http://ecs-mock:8080",
-        "contract_key": "rough_sorter.placement_device",
+        "contract_key": "example.placement_device",
         "contract_version": "1.0",
         "command_timeout_ms": 30_000,
         "task_type": "PICK_AND_PUT",
@@ -703,12 +703,12 @@ async def test_postgresql_manual_debug_same_identity_rejects_different_device(
 
     await service.create_manual_debug_command(
         **request,
-        device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        device_code=f"MOCK-PLACEMENT-{uuid4().hex[:8]}",
     )
     with pytest.raises(DeviceCommandIdentityConflictError):
         await service.create_manual_debug_command(
             **request,
-            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+            device_code=f"MOCK-PLACEMENT-{uuid4().hex[:8]}",
         )
 
 
@@ -720,7 +720,7 @@ async def test_postgresql_concurrent_manual_debug_same_identity_different_device
     request = {
         "client_request_id": identity,
         "endpoint_base_url": "http://ecs-mock:8080",
-        "contract_key": "rough_sorter.placement_device",
+        "contract_key": "example.placement_device",
         "contract_version": "1.0",
         "command_timeout_ms": 30_000,
         "task_type": "PICK_AND_PUT",
@@ -735,11 +735,11 @@ async def test_postgresql_concurrent_manual_debug_same_identity_different_device
     results = await asyncio.gather(
         first_service.create_manual_debug_command(
             **request,
-            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+            device_code=f"MOCK-PLACEMENT-{uuid4().hex[:8]}",
         ),
         second_service.create_manual_debug_command(
             **request,
-            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+            device_code=f"MOCK-PLACEMENT-{uuid4().hex[:8]}",
         ),
         return_exceptions=True,
     )
@@ -766,11 +766,11 @@ async def test_postgresql_concurrent_manual_debug_same_identity_different_device
 async def test_postgresql_concurrent_manual_debug_different_identities_create_independent_commands(
     integration_session_factory,
 ) -> None:
-    device_code = f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}"
+    device_code = f"MOCK-PLACEMENT-{uuid4().hex[:8]}"
     request = {
         "endpoint_base_url": "http://ecs-mock:8080",
         "device_code": device_code,
-        "contract_key": "rough_sorter.placement_device",
+        "contract_key": "example.placement_device",
         "contract_version": "1.0",
         "command_timeout_ms": 30_000,
         "task_type": "PICK_AND_PUT",

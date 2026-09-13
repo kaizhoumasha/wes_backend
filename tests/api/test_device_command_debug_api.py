@@ -81,7 +81,7 @@ def _payload() -> dict[str, object]:
     return {
         "client_request_id": new_uuid7(),
         "endpoint_base_url": "http://ecs-mock:8080",
-        "device_code": "RS-MOCK-PLACEMENT-01",
+        "device_code": "MOCK-PLACEMENT-01",
         "timeout": 30_000,
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
@@ -297,9 +297,9 @@ async def test_get_debug_command_exposes_lifecycle_and_normalized_callback() -> 
     runtime.command_service.get_command_snapshot.return_value = SimpleNamespace(
         command_code="CMD-MANUAL-001",
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
-        device_code="RS-MOCK-PLACEMENT-01",
+        device_code="MOCK-PLACEMENT-01",
         endpoint_base_url="http://ecs-mock:8080",
-        contract_key="rough_sorter.placement_device",
+        contract_key="example.placement_device",
         contract_version="1.0",
         command_timeout_ms=30_000,
         task_type="PICK_AND_PUT",

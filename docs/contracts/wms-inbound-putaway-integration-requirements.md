@@ -6,7 +6,6 @@ updated_at: 2026-08-20
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: Phase 13 `automatic_putaway` 的满箱交换、自动上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
-  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/architecture/SRS.md
   - docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
@@ -25,8 +24,7 @@ related:
 本文是 `ReviewRequired` 的联合评审基线，拟冻结调用方向、operation、请求与响应字段、幂等、物理证据门禁、失败边界和联调验收口径；
 只有第 20 节确认项全部闭合并转为 `Approved` 后，才构成正式实施授权。
 
-Phase 8 粗分逐盘入库已经拆分到获批真源
-[`wms-rough-sorter-inbound-integration-requirements.md`](wms-rough-sorter-inbound-integration-requirements.md)。本文只消费其已闭合的
+Phase 8 粗分逐盘入库插件已从代码库移除，历史合同已移出项目归档；运行环境未变更。本文仍为 `ReviewRequired`，仅描述未来可能消费的
 placement、单层货架和释放快照事实，不复制其准入、目标晚绑定、设备链、换架 Transport 或五态生命周期。
 
 本文只依赖重构后的 `MaterialExecution`、`PositionProjection`、`DeviceCommand`、`TransportTask`、

@@ -7,18 +7,6 @@
 
 ## WorkLine
 
-### 粗分插件静态声明与运行依赖拆分（本期不实施）
-
-**What:** 将 `rough_sorter` 的插件身份、设备角色和工作位插槽移入独立 `definition.py`，启动构造器与业务代码直接复用具名 SDK 声明。
-
-**Why:** 当前声明读取仍需导入 `RoughSorterStartPlanBuilder` 及其业务依赖，无法独立于宿主运行模块加载。
-
-**Scope:** 迁移粗分声明与直接消费者，删除原重复定义，并验证声明可独立导入、原 START 和业务行为不变；沿用显式部署组合，不重建插件加载框架。
-
-**Boundary:** 按用户确认，本期仅实施 `manual-picking` 与宿主声明/运行分离，不包含粗分插件内部重构。
-
----
-
 ### 人工 PickingTask 自动准备生产激活
 
 **What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成
@@ -142,32 +130,6 @@ PickingTask、WMS 业务确认等业务指标继续由各业务 owner 定义，�
 `application_name` 落地，并产生真实或接近真实的试运行数据。业务指标由对应业务计划另行交付。
 
 **Effort:** M-L
-
-**Priority:** P2
-
----
-
-### 分拣机/粗分机供应商联调操作手册
-
-**What:** 在最终 DeviceCommand、CALLBACK、InboundEvidence、WMS 同步能力和入库流程稳定后，编写分拣机/粗分机供应商联调手册。
-
-**Why:** 顶层设计只定义 WES/ECS/WMS 边界和业务合同；供应商联调还需要可执行的 payload 样例、回调样例、异常码、测试步骤和恢复流程。
-
-**Context:** 手册应在第三方设备统一接口和该设备合同附录稳定后，从真实接口与回调样例生成，不引用旧 Runtime、
-WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
-
-**Scope:**
-
-- 设备角色、统一命令 payload、callback result/event 样例
-- 正常入库、NG、满箱/换架、设备失败、WMS/RCS 拒绝五类联调场景
-- 稳定 `command_code`、部署级唯一 `source_event_id`、`trace_id` 与核心关联键的使用约定
-- ECS 同步 ACK 只表示请求接纳；后续动作由 WorkLine 插件产生封闭 Decision，经 `DeviceCommand` 和统一设备接口下发；
-  供应商内部协议由 ECS/网关收敛，不进入 WES 私有 Adapter
-- 进程重启后的证据核对、人工清线和新 LineRunEpoch 恢复步骤
-
-**Depends on:** 最终 DeviceCommand、第三方设备统一接口、粗分机设备合同附录和入库业务合同稳定。
-
-**Effort:** M
 
 **Priority:** P2
 

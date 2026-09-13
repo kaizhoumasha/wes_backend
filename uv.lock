@@ -2239,9 +2239,6 @@ dev = [
 manual-picking = [
     { name = "wes-manual-picking-plugin" },
 ]
-rough-sorter = [
-    { name = "wes-rough-sorter-plugin" },
-]
 
 [package.dev-dependencies]
 build = [
@@ -2301,10 +2298,9 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.44.0" },
     { name = "wes-manual-picking-plugin", marker = "extra == 'manual-picking'", directory = "workline_plugins/manual-picking" },
     { name = "wes-plugin-sdk", directory = "src/wes_plugin_sdk" },
-    { name = "wes-rough-sorter-plugin", marker = "extra == 'rough-sorter'", directory = "workline_plugins/rough_sorter" },
     { name = "xdbsearchip", specifier = ">=1.0.2" },
 ]
-provides-extras = ["rough-sorter", "manual-picking", "dev"]
+provides-extras = ["manual-picking", "dev"]
 
 [package.metadata.requires-dev]
 build = [{ name = "hatchling", specifier = ">=1.27" }]
@@ -2341,24 +2337,6 @@ requires-dist = [{ name = "wes-plugin-sdk", directory = "src/wes_plugin_sdk" }]
 name = "wes-plugin-sdk"
 version = "0.1.0"
 source = { directory = "src/wes_plugin_sdk" }
-
-[[package]]
-name = "wes-rough-sorter-plugin"
-version = "1.0.0"
-source = { directory = "workline_plugins/rough_sorter" }
-dependencies = [
-    { name = "wes-plugin-sdk" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "wes-plugin-sdk", directory = "src/wes_plugin_sdk" }]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = ">=1.28.0" },
-    { name = "pytest", specifier = ">=9.0.3" },
-    { name = "ruff", specifier = ">=0.15.0" },
-]
 
 [[package]]
 name = "win32-setctime"

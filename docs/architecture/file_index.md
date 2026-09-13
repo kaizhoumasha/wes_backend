@@ -36,8 +36,6 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
-| `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
 | `docs/integration/transport-joint-acceptance.md` | Transport 自动联调的单面/多面、恢复与现场分层验收清单；明确代码、部署、物理闭环和业务验收证据不可互相替代 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
@@ -60,7 +58,6 @@
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
 | `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 WorkLine 物理缓存的 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
 | `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；point2 按实际 Bin 请求人工任务准入，WMS 完成决定授权释放，WES 回报异步应用状态；PDA 归属 WMS，不在 WES 集成范围 |
-| `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
@@ -94,7 +91,7 @@ API → Service → Repository → Database
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/execution/` | 通用执行对象、RACK/BIN 当前位置投影、可靠 WMS confirmation 生命周期与静态插件事实处理；不拥有具体 operation 的请求重建、顺序或结果语义 |
 | `src/app/runtime/` | 保留当前 Session/Timeline/位置事件、诊断与最小能力合同；Phase 10 旧 Runtime/Intent/Effect/Hold/Provider 应用消费者与 Phase 11 终裁删除的 legacy model identity 均已移出活动源码 |
-| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，`TRANSPORT_DEBUG` 终态只更新 Transport 自有的可丢弃联调投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，`TRANSPORT_DEBUG` 终态只更新 Transport 自有的可丢弃联调投影；业务 producer 由当前启用的插件装配 |
 | `src/app/transport/debug_run_contracts.py` | Transport 自动联调轮次、面组、选中料箱、步骤与状态的稳定内部合同 |
 | `src/app/transport/debug_run_state_machine.py` | `CTU01 → 分面料箱 → SCAN12 → 原 slot 回架 → CTU02/CTU03` 的纯状态迁移和正式 Transport request 构造 |
 | `src/app/transport/debug_run_evidence.py` | 从中性 `InboundEvidence` 严格筛选 `SCAN12` 扫码事实，不拥有 ECS 入站协议 |

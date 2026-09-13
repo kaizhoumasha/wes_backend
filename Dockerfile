@@ -75,9 +75,8 @@ ARG WES_PLUGIN_EXTRAS=""
 RUN --mount=type=bind,target=/context \
     cp -a /context/. /app/ && \
     for extra in ${WES_PLUGIN_EXTRAS}; do \
-        case "$extra" in rough-sorter|manual-picking) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
+        case "$extra" in manual-picking) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
     done && \
-    case " ${WES_PLUGIN_EXTRAS} " in *" rough-sorter "*) ;; *) rm -rf /app/workline_plugins/rough_sorter ;; esac && \
     case " ${WES_PLUGIN_EXTRAS} " in *" manual-picking "*) ;; *) rm -rf /app/workline_plugins/manual-picking ;; esac
 
 # ============================================
@@ -100,7 +99,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     set -- --no-build-isolation-package wes-plugin-sdk; \
     for extra in ${WES_PLUGIN_EXTRAS}; do \
         case "$extra" in \
-            rough-sorter) package=wes-rough-sorter-plugin ;; \
             manual-picking) package=wes-manual-picking-plugin ;; \
             *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; \
         esac; \

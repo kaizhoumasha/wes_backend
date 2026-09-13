@@ -55,16 +55,15 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
 | WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES、OpenAPI 和行为测试已对齐 0.3.0；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree；WMS 实现和真实联调仍为 `NOT RUN` |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
-| 粗分自动入库 | `Approved` | `FINAL_VALIDATION_PENDING` | `OLD_OUT/NEW_IN` 生产调用链和当前联调镜像已交付；历史 `f2129982` 镜像 E2E 已通过，但尚未对当前镜像重新执行完整粗分业务 E2E；真实联调与业务验收均为 `NOT RUN` |
+| 粗分自动入库 | 仓库已移除 | `DEPLOYMENT_UNCHANGED` | 历史合同与验收资料已移出项目归档；本次不操作运行环境 |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`。容器中间位置事件
+公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果的合同生命周期为 `Approved`；粗分插件已从代码库移除，运行环境未变更。容器中间位置事件
 一般只在供应商能够提供权威逐容器中间事实时启用；但当前现场 CTU/RCS 对每个完成的料箱回架会提供一条到位事实，WMS 必须转发该
 `TARGET_PLACED` 事件，作为成功回架聚合结果接纳前的逐箱前置条件；
-Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
-但当前镜像仍缺完整粗分业务 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
+Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分插件已从代码库移除，本次未重新部署。基础通信或 Transport 验收不能证明
 自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -88,8 +87,7 @@ Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调
 公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
 样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
 
-当前 WMS **不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts`，也不要求为粗分入库新增专用 endpoint 或 operation。
-粗分 `OLD_OUT/NEW_IN` 业务合同已批准并由 WES 生产调用链消费，但 WMS 侧只需实现上表共享的 Transport submit/result 接口。
+当前 WMS **不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts`，也不要求为仓库已移除的粗分业务新增专用 endpoint 或 operation。
 自动出库、自动上架等未批准场景仍为 `ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
 
 ### 0.3 WMS C# 技术基线
@@ -131,7 +129,7 @@ Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调
 2. WMS/RCS 团队实现搬运时阅读第 3 节的搬运提交、搬运最终结果；只有供应商能提供权威逐容器中间事实时才实施容器中间位置事件。
 3. 按第 4～7 节确认实现边界、交付物、不提供的接口和文档治理规则。
 4. WMS 出库团队按附录 A 的自动出库场景顺序参加联合评审；转为 `Approved` 后才实现。
-5. WMS 入库团队按附录 B 的粗分入库场景及其链接的获批粗分合同实施与联调。
+5. 附录 B 的粗分入库场景已从仓库实施范围移除，不作为本次 WMS/WES 联调任务。
 6. WMS 上架团队按附录 C 的自动上架场景顺序参加联合评审；转为 `Approved` 后才实现。
 
 ### 0.6 外发文档完整性
@@ -2440,13 +2438,13 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 ### 5.1 WMS 团队必须交付
 
-当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景；是否已经进入具体实现迭代以实施计划为准。当前 Transport 实施范围包括
+当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果；粗分入库插件已从代码库移除，运行环境未变更。当前 Transport 实施范围包括
 搬运提交、搬运最终结果，以及每个成功 BIN 回架到冻结 `RACK_BIN_SLOT` 所需的逐箱精确目标 `TARGET_PLACED` 转发；其它容器中间位置事件仍待供应商提供对应权威事实后条件启用。
 自动出库和自动上架场景只进入待评审清单，不提交实现、OpenAPI 或占位 JSON 样例。
 
 | 交付物 | 最低要求 |
 | --- | --- |
-| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景标明负责人、路径、operation 和实现状态；标明成功 BIN 回架的逐箱 `TARGET_PLACED` 当前必须转发，其它容器中间位置事件按权威事实条件启用；自动出库和自动上架场景只列为 `ReviewRequired` |
+| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果标明负责人、路径、operation 和实现状态；标明成功 BIN 回架的逐箱 `TARGET_PLACED` 当前必须转发，其它容器中间位置事件按权威事实条件启用；仓库已移除的粗分与待评审的自动出库、自动上架须明确标注状态 |
 | 搬运提交 OpenAPI | WMS 提供其服务端 `POST {{TRANSPORT_SUBMIT_PATH}}` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
 | 容器中间位置事件/搬运最终结果 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 当前必须实现搬运最终结果和成功 BIN 回架的逐箱 `TARGET_PLACED`，其它容器中间位置事件条件启用且仍使用该权威定义，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
@@ -2613,10 +2611,9 @@ WMS 不能把同一个正在搬运的货架或 Bin 同时分配给两个未结�
 PickingTask 不设置 `FAILED` 状态。`COMPLETED` 只表示当前任务的明细都已处理完，不表示订单需求全部满足。空取、NG 和 Transport
 确定失败造成的未满足需求，都由新的 PickingTask 处理。任务完成后的退箱和货架离场继续按各自流程执行。
 
-## 附录 B. 粗分自动入库场景（Approved）
+## 附录 B. 粗分自动入库历史场景（仓库已移除，运行环境未变更）
 
-> 本附录面向联调人员说明场景顺序；严格字段、结果联合和失败门禁以
-> [`wms-rough-sorter-inbound-integration-requirements.md`](../contracts/wms-rough-sorter-inbound-integration-requirements.md) 为唯一真源。
+> 本附录保留历史场景，不构成当前实施或联调授权；严格合同已移出项目归档。
 
 ### 料盘扫码和测量完成后请求 GRN 准入
 

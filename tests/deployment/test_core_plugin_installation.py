@@ -75,7 +75,7 @@ async def test_zero_plugins_keep_the_wms_adapter_available_for_existing_confirma
     assert transport.requests[0].path == "/api/v1/wes/decisions"
 
 
-@pytest.mark.parametrize("keys", [("unknown-plugin",), ("rough_sorter", "rough_sorter")])
+@pytest.mark.parametrize("keys", [("unknown-plugin",), ("manual-picking", "manual-picking")])
 def test_invalid_plugin_selection_fails_before_constructing_resources(keys: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
         build_deployment_runtime(

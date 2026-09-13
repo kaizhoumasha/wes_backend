@@ -70,7 +70,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
-reviewed_content_sha256 = "14c8c360b05839c8644b64e86a8cb42d9b877ec05de5a029075f12de9dd57893"
+reviewed_content_sha256 = "e75996c786fb8ed0728703c8a3d3099073c14098acd50c348e3d7f6999bf2659"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
 
@@ -842,7 +842,7 @@ heavy_tests = []
 source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
-# WMS Adapter 公共导出同时承载 Transport 与粗分 ACL，由各自唯一 HEAVY owner 承接。
+# WMS Adapter 公共导出由对应 operation 的 HEAVY owner 承接。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/__init__.py"
@@ -862,7 +862,7 @@ heavy_tests = [
 source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
-# 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
+# 入库 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_material/{adapter.py,wire.py,typed.py,__init__.py}"
@@ -1233,31 +1233,11 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "deployment/{_rough_sorter_device_facts.py,_rough_sorter_factory.py,_rough_sorter_persistence.py,_rough_sorter_transport.py,_rough_sorter_transport_recovery_facts.py,_rough_sorter_types.py,_rough_sorter_values.py,_rough_sorter_wms_facts.py,_rough_sorter_wms_resolver.py}"
-heavy_tests = [
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-]
-
-# 公开 START 的粗分机部署组合同时由通用 PostgreSQL START owner 承接；插件业务 E2E 按插件边界显式运行。
-
-[[mapping]]
 source_glob = "deployment/plugin_composition.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "deployment/rough_sorter_composition.py"
-heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
@@ -1384,11 +1364,11 @@ reviewed_content_sha256 = "bc33fe1079fce8a1f97e470edcbf743a5fa9bf4e68225a7b4eca7
 # Phase 5 只将已删除的业务能力标记为 NONE，不覆盖同目录存活的基础能力。
 
 [[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,rough_sorter_q19_admission_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
+source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
+source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
 heavy_tests = []
 
 # NG reason 枚举与 DTO 的退役插件身份缺席由专用 FAST 合同承接。
@@ -1451,7 +1431,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
-reviewed_content_sha256 = "4cfdb1e2f9192e5f9902fcd2294540449d6873246540b4074ceb33c106b109c2"
+reviewed_content_sha256 = "86c7fb95ebb0d8d6eaad17b103c11f619d9d9c05c00685625ec2c757ff71bda2"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 
@@ -1504,7 +1484,7 @@ source_glob = "scripts/check_release_operational_readiness.py"
 heavy_tests = ["tests/integration/test_release_operational_readiness_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
+source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
 heavy_tests = [
 ]
 
@@ -1836,7 +1816,7 @@ heavy_tests = [
 source_glob = "src/app/wms_adapter/inbound_auth.py"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
-# 唯一 WMS event route 同时静态分派 Transport 与粗分对账；不建立第二入口。
+# 唯一 WMS event route 静态分派 Transport 和具体 operation；不建立第二入口。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"

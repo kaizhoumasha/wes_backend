@@ -120,29 +120,6 @@ def test_ecs_mock_acknowledges_known_device_and_callbacks_success(monkeypatch) -
     assert callback["headers"]["X-App-ID"]
 
 
-def test_ecs_mock_supports_rough_sorter_placement_command(monkeypatch) -> None:
-    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
-    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
-
-    with TestClient(ecs_mock_server.app) as client:
-        response = client.post(
-            "/api/v1/device/command",
-            json=_command_payload(
-                "CMD-RS-PLACEMENT-001",
-                task_type="PICK_AND_PUT",
-                device_code="RS-MOCK-PLACEMENT-01",
-                params={"target_code": "OUTLET-1"},
-            ),
-        )
-
-    assert response.status_code == 200
-    assert response.json()["message"] == "ACK"
-    callback = CapturingAsyncClient.requests[0]["json"]
-    assert callback["result"] == "SUCCESS"
-    assert callback["device_code"] == "RS-MOCK-PLACEMENT-01"
-    assert callback["data"]["accepted_params"] == {"target_code": "OUTLET-1"}
-
-
 @pytest.mark.parametrize("device_code", ["STATION_SCAN1", "STATION_SCAN12"])
 def test_ecs_mock_supports_scanner_command(monkeypatch, device_code) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)

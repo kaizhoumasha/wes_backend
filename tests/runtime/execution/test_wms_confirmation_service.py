@@ -25,7 +25,7 @@ def test_confirmation_owner_foreign_key_resolves_in_a_fresh_process() -> None:
             "-c",
             "import sys; import deployment.plugin_composition; "
             "from src.app.execution.models.wms_confirmation import WmsConfirmation; "
-            "assert not any(name.split('.')[0] in {'rough_sorter', 'manual_picking'} for name in sys.modules); "
+            "assert not any(name.split('.')[0] == 'manual_picking' for name in sys.modules); "
             "fk = next(iter(WmsConfirmation.__table__.c.picking_task_id.foreign_keys)); "
             "assert fk.column.table.fullname == 'wes_biz.picking_tasks'",
         ],

@@ -60,7 +60,7 @@ class VendorHandoffPosition(HandoffPosition):
 
 
 def test_four_request_contracts_accept_minimal_valid_data() -> None:
-    source = RackPosition("ROUGH_SORTER")
+    source = RackPosition("RACK_SOURCE")
     target = RackPosition("STATION_A")
 
     move_rack = MoveRackRequest(_REQUEST_ID, _caller(), "rack-1", source, target, "90")

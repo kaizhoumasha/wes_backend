@@ -48,7 +48,7 @@ Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合�
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 
-**Phase 8 rough-sorter contract baseline:** `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`（`Approved`）
+**Phase 8 historical baseline:** 粗分插件已从代码库移除，运行环境未变更；原合同位于项目外 `../archive_docs/wes_backend/docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`，不作为当前实施入口。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
@@ -569,7 +569,7 @@ Transport；WorkLine 管理当前插件与资源绑定，命令冻结自身合�
 **Objective:** 在独立 Device/ECS 基础能力已批准、实施并切换为唯一生产路径后，以粗分机交付首个真实执行插件、
 设备合同附录、endpoint/device 绑定，并以分层测试、本机 Mock 验收和 GitLab PUSH 生成可追溯后端镜像关闭后端 RC。
 
-**Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`、
+**历史输入:** 顶层 SPEC §7/§11.1、已归档的粗分业务合同、
 第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、粗分机真实拓扑、供应商原始资料和 Phase 6 Transport 基线。
 
 **Entry conditions:** Phase 7 Device/ECS 退出门禁通过；入库合同已由 WMS、WES、RCS 和 ECS 联合批准；粗分机供应商资料
@@ -619,8 +619,7 @@ absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从�
 前端进度和现场验证均不得参与或替代该门禁。
 
 **需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；WorkLine 配置/前端增量以
-`docs/contracts/device-annexes/rough-sorter-device-contract.md` 为真源；当前 RC 与外部验收状态以
-`docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
+已归档的粗分设备合同为历史真源；原 RC 与外部验收资料已移出项目。历史后端功能与 Mock 曾完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、

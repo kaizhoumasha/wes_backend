@@ -7,7 +7,6 @@ wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
 related:
   - docs/hardware/SMT流水线接口调用说明书20260320-v1.pdf
-  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 

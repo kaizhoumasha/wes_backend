@@ -75,7 +75,7 @@ def test_static_binding_resolves_exact_plugin_version_and_fact_type() -> None:
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(_handle_evidence,),
                 fact_factory=_IdentityFactFactory(),
@@ -83,11 +83,11 @@ def test_static_binding_resolves_exact_plugin_version_and_fact_type() -> None:
         )
     )
 
-    assert binding.resolve_handler("rough_sorter", "1.0.0", _fact()) is _handle_evidence
+    assert binding.resolve_handler("sample_plugin", "1.0.0", _fact()) is _handle_evidence
     with pytest.raises(LookupError):
-        binding.resolve_handler("rough_sorter", "1.0.1", _fact())
+        binding.resolve_handler("sample_plugin", "1.0.1", _fact())
     with pytest.raises(LookupError):
-        binding.resolve_handler("rough_sorter", "1.0.0", _fact(version="2.0"))
+        binding.resolve_handler("sample_plugin", "1.0.0", _fact(version="2.0"))
 
 
 def test_two_static_plugins_reuse_one_typed_operation_without_a_default_consumer() -> None:
@@ -130,7 +130,7 @@ def test_static_binding_rejects_duplicate_fact_route() -> None:
         StaticPluginBinding(
             (
                 PluginRuntimeBinding(
-                    plugin_key="rough_sorter",
+                    plugin_key="sample_plugin",
                     plugin_version="1.0.0",
                     handlers=(_handle_evidence, _handle_evidence),
                     fact_factory=_IdentityFactFactory(),
@@ -145,7 +145,7 @@ def test_initial_execution_correlator_is_explicit_and_optional() -> None:
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(_handle_evidence,),
                 fact_factory=_IdentityFactFactory(),
@@ -154,7 +154,7 @@ def test_initial_execution_correlator_is_explicit_and_optional() -> None:
         )
     )
 
-    assert binding.resolve_initial_execution_correlator("rough_sorter", "1.0.0") is correlator
+    assert binding.resolve_initial_execution_correlator("sample_plugin", "1.0.0") is correlator
 
     unbound = StaticPluginBinding(
         (
@@ -179,7 +179,7 @@ def test_binding_rejects_handler_without_static_metadata() -> None:
         StaticPluginBinding(
             (
                 PluginRuntimeBinding(
-                    plugin_key="rough_sorter",
+                    plugin_key="sample_plugin",
                     plugin_version="1.0.0",
                     handlers=(undecorated,),
                     fact_factory=_IdentityFactFactory(),
@@ -216,7 +216,7 @@ async def test_fact_factory_augments_only_an_immutable_reference_without_raw_pay
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(_handle_typed_evidence,),
                 fact_factory=factory,
@@ -224,7 +224,7 @@ async def test_fact_factory_augments_only_an_immutable_reference_without_raw_pay
         )
     )
 
-    typed_fact = await binding.resolve_fact_factory("rough_sorter", "1.0.0").build(_FACTORY_DB, _fact())
+    typed_fact = await binding.resolve_fact_factory("sample_plugin", "1.0.0").build(_FACTORY_DB, _fact())
 
     assert typed_fact == _TypedEvidenceFact(
         fact_id="fact-1",
@@ -233,5 +233,5 @@ async def test_fact_factory_augments_only_an_immutable_reference_without_raw_pay
         material_execution_id="10",
         shape_result="PASS",
     )
-    assert binding.resolve_handler("rough_sorter", "1.0.0", typed_fact) is _handle_typed_evidence
+    assert binding.resolve_handler("sample_plugin", "1.0.0", typed_fact) is _handle_typed_evidence
     assert not hasattr(typed_fact, "normalized_payload")

@@ -21,9 +21,8 @@
 
 ## 安装与验证
 
-在后端根目录运行 `uv sync --dev --extra manual-picking` 安装本插件；需要同时保留粗分插件时增加
-`--extra rough-sorter`。镜像构建 extra 为 `manual-picking`，部署启用键为 `manual-picking`。
-本机开发 Compose 已同时安装并启用粗分和人工拣料声明；依赖变化后通过 `scripts/dev-env.sh up` 重建。
+在后端根目录运行 `uv sync --dev --extra manual-picking` 安装本插件。镜像构建 extra 和部署启用键均为
+`manual-picking`。本机开发 Compose 只安装并启用人工拣料；依赖变化后通过 `scripts/dev-env.sh up` 重建。
 
 工作线页面可选择本插件、绑定资源并保存草稿或完整配置。完整装配通过归属、位置类型和设备实时准入后可 START；
 没有业务启动计划时 `flow_mode` 为 `null`。基础准入使用统一设备合同，状态时效与命令超时由宿主

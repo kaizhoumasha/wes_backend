@@ -11,7 +11,7 @@
 > 负责把这些需求收敛为当前目标架构；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口合同。
-> `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 粗分逐盘入库的 `Approved` 业务合同；
+> Phase 8 粗分逐盘入库插件已从代码库移除，其历史合同移出项目归档；运行环境未变更。以下粗分场景仅是产品范围，不代表当前启用。
 > `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是后续满箱交换和自动上架的 `ReviewRequired` 合同，
 > 不构成 Phase 13 自动上架实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
@@ -437,10 +437,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.1 SMT 智能装箱协调 (Smart Kitting Coordination)
 
-粗分逐盘入库的 operation、严格 DTO、幂等、物理门禁与失败边界由已获批的
-`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 定义；后续满箱交换和自动上架由
+粗分逐盘入库插件已从代码库移除，历史合同已归档；后续满箱交换和自动上架由
 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义并保持 `ReviewRequired`。本节与 §3.3.2 只保留产品级
-场景和职责边界，不得复制或把 Phase 8 授权扩大到 Phase 13 自动上架。
+场景和职责边界，不构成粗分重新启用或 Phase 13 自动上架的实施授权。
 
 * **场景**: 工人把标准整盘物料放入粗分机入口，设备自动输送、扫码、测量并放入单层货架目标 Bin/Cell。
 * **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN 并返回稳定料盘身份，但不分配目标 Cell。

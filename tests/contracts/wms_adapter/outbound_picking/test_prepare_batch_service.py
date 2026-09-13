@@ -67,13 +67,13 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     ignored_policy = object()
     plugins = (
         SimpleNamespace(
-            plugin_key="manual-picking",
+            plugin_key="sample_plugin",
             plugin_version="0.1.0",
             picking_task_prepare_policy=manual_policy,
         ),
         SimpleNamespace(plugin_key="inactive", plugin_version="1.0", picking_task_prepare_policy=ignored_policy),
     )
-    worklines = _Worklines([(7, "manual-picking", "0.1.0"), (8, "manual-picking", "0.1.0")])
+    worklines = _Worklines([(7, "sample_plugin", "0.1.0"), (8, "sample_plugin", "0.1.0")])
     calls: list[tuple[object, int]] = []
 
     def coordinator_factory(_sessions, *, policy, **_kwargs):  # type: ignore[no-untyped-def]
@@ -88,7 +88,7 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     )
 
     assert await service.prepare_batch() == 1
-    assert worklines.identities == (("inactive", "1.0"), ("manual-picking", "0.1.0"))
+    assert worklines.identities == (("inactive", "1.0"), ("sample_plugin", "0.1.0"))
     assert calls == [(manual_policy, 7), (manual_policy, 8)]
 
 

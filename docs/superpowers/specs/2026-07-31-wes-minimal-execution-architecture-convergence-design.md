@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-09-09
+updated_at: 2026-09-12
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC closed at f51677b62f5da906d4b60fa5a528d04692aff7a2 with immutable image 88-f51677b; current status in docs/integration/rough-sorter-joint-acceptance.md
+implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 historical RC f51677b62f5da906d4b60fa5a528d04692aff7a2 has been retired from the active repository
 delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -25,7 +25,6 @@ related:
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
-  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
 ---
 
@@ -835,9 +834,9 @@ Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或
 
 ## 11. 业务流程
 
-Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 集中定义并已获批；满箱交换和自动
+Phase 8 粗分逐盘入库插件已从代码库移除，历史合同已移出项目归档；运行环境未变更。满箱交换和自动
 上架由 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义，仍为 `ReviewRequired`。本节只保留顶层流程和
-基础对象边界；不得把 Phase 8 授权扩大为 Phase 12/13 业务插件授权。
+基础对象边界；不得把历史 Phase 8 授权视作当前启用或 Phase 12/13 业务插件授权。
 
 ### 11.1 粗分机
 

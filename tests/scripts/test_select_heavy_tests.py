@@ -478,9 +478,9 @@ def test_ignored_paths_select_nothing(tmp_path: Path, changed_path: str) -> None
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "workline_plugins/rough_sorter/src/rough_sorter/handler.py",
-        "workline_plugins/rough_sorter/tests/test_handler.py",
-        "workline_plugins/rough_sorter/tests/e2e/test_inbound_flow.py",
+        "workline_plugins/manual-picking/src/manual_picking/handler.py",
+        "workline_plugins/manual-picking/tests/test_handler.py",
+        "workline_plugins/manual-picking/tests/e2e/test_outbound_flow.py",
     ],
 )
 def test_plugin_package_assets_do_not_select_core_heavy_tests(changed_path: str) -> None:
@@ -841,7 +841,7 @@ def test_retired_outbound_picking_management_package_keeps_exact_heavy_tombstone
         ),
     ),
 )
-def test_rough_sorter_runtime_paths_independently_select_concrete_execution_owner(
+def test_execution_runtime_paths_independently_select_concrete_execution_owner(
     changed_path: str,
     expected: list[str],
 ) -> None:
@@ -1017,7 +1017,7 @@ def test_release_checker_tests_and_fixtures_are_explicitly_ignored_by_heavy_sele
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "tests/fixtures/workline_contract/rough_sorter/new.json",
+        "tests/fixtures/workline_contract/sample_plugin/new.json",
         "tests/fixtures/workline_contract/start_admission/new.json",
         "tests/support/smt_sorting_inbound_postgresql.py",
         "tests/support/wms_conveyor_batch_postgresql.py",

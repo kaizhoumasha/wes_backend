@@ -132,8 +132,8 @@ def _service(
         else SimpleNamespace(
             id=7,
             line_code="LINE-1",
-            plugin_key="manual-picking",
-            flow_mode="LEGACY_FLOW",
+            plugin_key="sample_plugin",
+            flow_mode="EXAMPLE_FLOW",
             is_active=True,
             line_type=LineType.MANUAL,
             run_mode=WorkLineRunMode.AUTO,

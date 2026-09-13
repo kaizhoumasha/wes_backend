@@ -123,7 +123,7 @@ create_archives() {
     [[ -d "$FRONTEND_ROOT/public" ]] && frontend_paths+=(public)
     [[ -f "$FRONTEND_ROOT/tailwind.config.js" ]] && frontend_paths+=(tailwind.config.js)
     tar -czf "$temp_dir/backend.tar.gz" -C "$BACKEND_ROOT" \
-        src deployment workline_plugins/rough_sorter/src main.py \
+        src deployment workline_plugins/manual-picking/src main.py \
         scripts/frontend-dev-entrypoint.sh docker-compose.integration-hot.yml
     tar -czf "$temp_dir/frontend.tar.gz" -C "$FRONTEND_ROOT" "${frontend_paths[@]}"
 }

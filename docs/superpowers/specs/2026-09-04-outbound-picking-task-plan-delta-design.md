@@ -534,7 +534,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 
     两类模式均在提交后才启动 Transport、DeviceCommand 或其它外部副作用，ACK 均不代表物理完成。
   - 文件：`AGENTS.md` 保留法规；在 `docs/contracts/wms-async-callback-envelope-contract.md` 规定分类字段，并在当前所有含 WMS→WES
-    operation 的所属合同就地标注模式：`transport-fulfillment-contract.md`、`wms-rough-sorter-inbound-integration-requirements.md`、
+    operation 的所属合同就地标注模式：`transport-fulfillment-contract.md`、
     `wms-outbound-picking-task-integration-requirements.md`、`wms-manual-outbound-picking-integration-requirements.md`、
     `wms-inbound-putaway-integration-requirements.md`。不在 `AGENTS.md` 建重复中央清单，不 grandfather 存量，不新增运行时 enum/registry，
     不借分类改变既有 wire 或 ACK。

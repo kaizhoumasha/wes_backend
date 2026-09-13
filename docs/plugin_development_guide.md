@@ -299,26 +299,28 @@ uv run ruff check .
 ```
 
 插件包含 `application/` 时，先在 WES 仓库根目录安装对应的可选 extra，再显式运行插件 FAST。
-后续命令使用 `--no-sync` 保留已选 extra；以当前粗分插件为例：
+后续命令使用 `--no-sync` 保留已选 extra；以当前人工拣料插件为例：
 
 ```bash
-uv sync --dev --extra rough-sorter
-WES_PLUGIN_DIR=workline_plugins/rough_sorter
-uv run --no-sync pytest "$WES_PLUGIN_DIR/tests" -q \
-  --ignore="$WES_PLUGIN_DIR/tests/integration" \
-  --ignore="$WES_PLUGIN_DIR/tests/e2e"
+uv sync --dev --extra manual-picking
+WES_PLUGIN_DIR=workline_plugins/manual-picking
+uv run --no-sync pytest "$WES_PLUGIN_DIR/tests" -q
 uv run --no-sync ruff format --check "$WES_PLUGIN_DIR"
 uv run --no-sync ruff check "$WES_PLUGIN_DIR"
 ```
 
 基础安装不选择业务 extra，启动配置 `ENABLED_WORKLINE_PLUGINS` 默认为空。现场 Web 与所有 Worker 使用相同的
-`ENABLED_WORKLINE_PLUGINS='["rough_sorter"]'`；镜像构建选择 `WES_PLUGIN_EXTRAS=rough-sorter`。
+`ENABLED_WORKLINE_PLUGINS='["manual-picking"]'`；镜像构建选择 `WES_PLUGIN_EXTRAS=manual-picking`。
 前端统一使用 `pnpm build`，不包含具体业务插件、专属表单或现场构建模式。
 这些配置只选择已安装能力，工作线自身仍通过业务装配选择插件及工作位、设备插槽绑定。
 
 Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备。需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，
 由插件自己的 integration/e2e 入口显式运行，并通过 WES 公共边界验收安装后的组合；这不会赋予纯 Decision 子层数据库或网络
 依赖。WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 不得发现或运行具体插件测试或部署验收。
+
+人工拣料插件的可复用经验：先实现能启动业务的 `prepare`，再接计划与设备结果；`definition.py` 只声明资源，
+handler 处理一个已确认的业务事实，`plugin.py` 显式装配流程；插件只给出业务决定，锁、事务、WMS 可靠义务、
+Transport 和 Celery 注册由宿主负责。禁用插件应阻止新的业务触发，但不能丢弃既有证据和可靠义务。
 
 ## 6. 交付检查
 

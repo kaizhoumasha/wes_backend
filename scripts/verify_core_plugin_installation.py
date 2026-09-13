@@ -9,10 +9,7 @@ from pathlib import Path
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    for package, directory in (
-        ("rough_sorter", "rough_sorter"),
-        ("manual_picking", "manual-picking"),
-    ):
+    for package, directory in (("manual_picking", "manual-picking"),):
         if find_spec(package) is not None or (root / "workline_plugins" / directory).exists():
             raise RuntimeError(f"基础制品包含业务包或源码: {package}")
 
@@ -24,13 +21,13 @@ def main() -> None:
         raise RuntimeError("基础 Web/Worker 入口不可用")
     try:
         build_deployment_runtime(
-            enabled_plugin_keys=("rough_sorter",),
+            enabled_plugin_keys=("manual-picking",),
             session_factory=object(),
             transport_runtime=object(),
             device_command_service=object(),
         )
     except ModuleNotFoundError as exc:
-        if exc.name != "rough_sorter":
+        if exc.name != "manual_picking":
             raise
     else:
         raise RuntimeError("启用缺失插件时未明确失败")
