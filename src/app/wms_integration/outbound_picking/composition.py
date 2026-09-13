@@ -17,6 +17,8 @@ from src.app.wms_integration.outbound_picking.services.picking_task_queue_change
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.core.task_queue_gateway import TaskQueueGateway
+
 
 @dataclass(frozen=True, slots=True)
 class OutboundPickingRuntime:
@@ -29,9 +31,20 @@ class OutboundPickingRuntime:
 def build_outbound_picking_runtime(
     *,
     session_factory: async_sessionmaker[AsyncSession],
+    prepare_plugin_identities: tuple[tuple[str, str], ...] = (),
+    plan_activation_plugin_identities: tuple[tuple[str, str], ...] = (),
+    task_queue_gateway: TaskQueueGateway | None = None,
 ) -> OutboundPickingRuntime:
-    service = PickingTaskIssuedService(session_factory)
-    plan_delta = PickingTaskPlanDeltaService(session_factory)
+    service = PickingTaskIssuedService(
+        session_factory,
+        prepare_plugin_identities=prepare_plugin_identities,
+        task_queue_gateway=task_queue_gateway,
+    )
+    plan_delta = PickingTaskPlanDeltaService(
+        session_factory,
+        plan_activation_plugin_identities=plan_activation_plugin_identities,
+        task_queue_gateway=task_queue_gateway,
+    )
     queue_changed = PickingTaskQueueChangedService(session_factory)
     manual_bin_completed = ManualBinCompletedService(session_factory)
     return OutboundPickingRuntime(

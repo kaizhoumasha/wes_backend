@@ -1,4 +1,4 @@
-"""计划 Evidence 与业务事实同事务提交；不触发物理动作。"""
+"""计划 Evidence 与业务事实同事务提交；提交后仅唤醒独立计划激活。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERA
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.app.workline.repositories import workline_repository as default_workline_repository
+from src.core.transaction_wakeup import defer_wakeup
 from src.utils.timezone import timezone
 
 
@@ -32,11 +34,17 @@ class PickingTaskPlanDeltaService:
         evidence_service: Any = None,
         task_repository: Any = None,
         plan_repository: Any = None,
+        plan_activation_plugin_identities: tuple[tuple[str, str], ...] = (),
+        task_queue_gateway: Any = None,
+        workline_repository: Any = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = task_repository or picking_task_repository
         self._plans = plan_repository or PickingTaskPlanDeltaRepository()
+        self._plan_activation_plugin_identities = plan_activation_plugin_identities
+        self._task_queue = task_queue_gateway
+        self._worklines = workline_repository or default_workline_repository
 
     async def record(
         self, envelope: PickingTaskPlanDeltaEvent | PickingTaskPlanDeltaInvalidData, *, received_at: datetime
@@ -90,6 +98,7 @@ class PickingTaskPlanDeltaService:
             # validate_plan 已确认 blocker 归属；与计划应用共用任务锁和一次版本推进。
             task.plan_blocked_evidence_id = None
             await self.apply_plan(db, task, envelope.data, evidence, received_at=received_at)
+            await self._defer_activation_if_enabled(db, task)
             return self._result(evidence, "RECEIVED")
 
     @staticmethod
@@ -183,7 +192,9 @@ class PickingTaskPlanDeltaService:
             (p.source_locator.rack_id, p.source_locator.rack_face, p.source_locator.slot_id)
             for p in data.added_direct_picks or ()
         ]
-        incoming_racks = [(r.rack_id, r.rack_face) for r in data.added_bin_source_racks or ()]
+        incoming_racks = [
+            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
+        ]
         picks, racks = await self._plans.source_identities(
             db, task.id, direct_picks=incoming_picks, bin_racks=incoming_racks
         )
@@ -216,6 +227,18 @@ class PickingTaskPlanDeltaService:
         evidence.apply_status = ApplyStatus.APPLIED
         evidence.processed_at = received_at
         _ = await self._plans.add_members(db, task.id, data, evidence.id)
+
+    async def _defer_activation_if_enabled(self, db: Any, task: Any) -> None:
+        if self._task_queue is None or not self._plan_activation_plugin_identities or task.workline_id is None:
+            return
+        line = await self._worklines.get_by_id(db, task.workline_id)
+        if (
+            line is not None
+            and line.is_active
+            and not line.is_deleted
+            and (line.plugin_key, line.plugin_version) in self._plan_activation_plugin_identities
+        ):
+            defer_wakeup(db, self._task_queue.enqueue_picking_task_plans)
 
 
 __all__ = ["PickingTaskPlanDeltaService"]

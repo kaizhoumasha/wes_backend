@@ -319,7 +319,12 @@ heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
 heavy_tests = []
-reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa35126a8eb4c"
+reviewed_content_sha256 = "09621142cc6b8620b91beab6bbac36591058d3f1d05673830d4c77271fd93497"
+
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/picking_task_plan.py"
+heavy_tests = []
+reviewed_content_sha256 = "8bb06b4bc0a0e9151539a64dbb34a7c3f70d0a61b026a2864fb168c47b5c1cfc"
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
@@ -1161,7 +1166,7 @@ source_glob = "src/app/execution/plugin_binding.py"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py}"
+source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py,reliable_rack_transport.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
@@ -1323,6 +1328,14 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "src/celery_app/tasks/picking_task_prepare.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/picking_task_plan.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
 source_glob = "src/app/resource/models/{__init__.py,resource.py}"
 heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
 
@@ -1438,7 +1451,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
-reviewed_content_sha256 = "c4ad13e49214e78b5f025b5a1a4783bff08af5dea73c1b213fd8b03bf0b9f1b8"
+reviewed_content_sha256 = "4cfdb1e2f9192e5f9902fcd2294540449d6873246540b4074ceb33c106b109c2"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 

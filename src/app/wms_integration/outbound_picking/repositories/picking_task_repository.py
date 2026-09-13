@@ -100,6 +100,21 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         )
         return task_id is not None
 
+    async def get_executing_for_workline_for_update(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> PickingTask | None:
+        columns = cast("Any", PickingTask).__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status == PickingTaskStatus.EXECUTING,
+            )
+            .with_for_update()
+        )
+
     async def claim_next_queued(
         self, db: AsyncSession, *, task_type: PickingTaskType, now_ms: int
     ) -> PickingTask | None:

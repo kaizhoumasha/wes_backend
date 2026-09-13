@@ -101,6 +101,11 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
         outbound_picking_runtime = build_outbound_picking_runtime(
             session_factory=db_module.AsyncSessionLocal,
+            prepare_plugin_identities=deployment_runtime.picking_task_prepare_service.plugin_identities,
+            plan_activation_plugin_identities=(
+                deployment_runtime.picking_task_plan_activation_service.plugin_identities
+            ),
+            task_queue_gateway=task_queue_gateway,
         )
         _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
         _app.state.wms_picking_task_plan_delta_handler = outbound_picking_runtime.picking_task_plan_delta_handler

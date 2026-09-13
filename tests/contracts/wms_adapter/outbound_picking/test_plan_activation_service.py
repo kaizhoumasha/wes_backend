@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from wes_plugin_sdk import (
+    PickingTaskPlanAppliedFact,
+    PickingTaskPlanHandlingResult,
+    PickingTaskPlanRack,
+    PickingTaskRackTransportIntent,
+    PositionBindingSnapshot,
+    TransportRackPosition,
+    TransportRackReference,
+    TransportRcsTemplateId,
+)
+
+
+def _service_type():  # type: ignore[no-untyped-def]
+    try:
+        from src.app.wms_integration.outbound_picking.services.picking_task_plan_activation import (
+            PickingTaskPlanActivationService,
+        )
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"plan activation service is missing: {exc}")
+    return PickingTaskPlanActivationService
+
+
+class _Sessions:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @asynccontextmanager
+    async def begin(self):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        yield object()
+
+
+class _Worklines:
+    def __init__(self, line: object | None) -> None:
+        self.line = line
+
+    async def list_active_for_plugin_identities(self, _db, identities, *, limit):  # type: ignore[no-untyped-def]
+        assert identities == (("manual-picking", "0.1.0"),)
+        assert limit == 100
+        return [(7, "manual-picking", "0.1.0")]
+
+    async def get_for_update(self, _db, workline_id):  # type: ignore[no-untyped-def]
+        assert workline_id == 7
+        return self.line
+
+
+class _Handler:
+    def __init__(self) -> None:
+        self.fact = None
+
+    def __call__(self, fact):  # type: ignore[no-untyped-def]
+        self.fact = fact
+        target = fact.target_rack
+        return PickingTaskPlanHandlingResult(
+            transports=(
+                PickingTaskRackTransportIntent(
+                    task_id=fact.task_id,
+                    fact_id=fact.fact_id,
+                    source_evidence_id=target.source_evidence_id,
+                    position_role="TRANSFER_RACK",
+                    rack_id=target.rack_id,
+                    source=TransportRackReference(target.rack_id),
+                    target=TransportRackPosition("TRANSFER-POS"),
+                    target_face=target.rack_faces[0],
+                    rcs_template_id=TransportRcsTemplateId.F01,
+                ),
+                *(
+                    PickingTaskRackTransportIntent(
+                        task_id=fact.task_id,
+                        fact_id=fact.fact_id,
+                        source_evidence_id=bin_rack.source_evidence_id,
+                        position_role="FIVE_RACK",
+                        rack_id=bin_rack.rack_id,
+                        source=TransportRackReference(bin_rack.rack_id),
+                        target=TransportRackPosition("FIVE-POS"),
+                        target_face=bin_rack.rack_faces[0],
+                        rcs_template_id=TransportRcsTemplateId.CTU01,
+                    )
+                    for bin_rack in fact.pending_bin_source_racks
+                ),
+            ),
+        )
+
+
+class _Creator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_batch_does_not_read_business_state_without_plan_handler() -> None:
+    sessions = _Sessions()
+    service = _service_type()(
+        sessions,
+        plugins=(
+            SimpleNamespace(
+                plugin_key="other",
+                plugin_version="1.0",
+                picking_task_plan_applied_handler=None,
+            ),
+        ),
+        transport_creator=SimpleNamespace(),
+    )
+
+    assert await service.activate_batch() == 0
+    assert sessions.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_creates_all_bin_rack_transports_to_same_rcs_queued_position() -> None:
+    line = SimpleNamespace(
+        id=7,
+        line_code="L-1",
+        is_active=True,
+        is_deleted=False,
+        plugin_key="manual-picking",
+        plugin_version="0.1.0",
+        config={"position_bindings": {"FIVE_RACK": "FIVE-CODE"}},
+        position_bindings={
+            "FIVE_RACK": {"location_id": "FIVE-POS", "location_type": "RACK_POSITION"},
+            "TRANSFER_RACK": {"location_id": "TRANSFER-POS", "location_type": "RACK_POSITION"},
+        },
+    )
+    task = SimpleNamespace(
+        id=1,
+        task_id="TASK-1",
+        status="EXECUTING",
+        workline_id=7,
+        last_applied_plan_revision=2,
+        target_rack_id="TARGET-1",
+        target_rack_face="90",
+        initial_plan_evidence_id=10,
+        last_plan_evidence_id=12,
+        plan_blocked_evidence_id=None,
+    )
+    rows = [
+        SimpleNamespace(rack_id="BIN-2", rack_face="90", plan_revision=2, source_evidence_id=12),
+        SimpleNamespace(rack_id="BIN-1", rack_face="270", plan_revision=1, source_evidence_id=11),
+        SimpleNamespace(rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11),
+    ]
+    handler = _Handler()
+    creator = _Creator()
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="manual-picking",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=handler,
+            ),
+        ),
+        transport_creator=creator,
+        workline_repository=_Worklines(line),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=task)),
+        plan_repository=SimpleNamespace(list_bin_source_racks=AsyncMock(return_value=rows)),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+        ),
+    )
+
+    assert await service.activate_batch() == 3
+    assert [(rack.rack_id, rack.rack_faces) for rack in handler.fact.pending_bin_source_racks] == [
+        ("BIN-1", ("270", "90")),
+        ("BIN-2", ("90",)),
+    ]
+    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1", "BIN-2"]
+    assert [call["source_evidence_id"] for call in creator.calls] == [10, 11, 12]
+    assert [call["correlation_id"] for call in creator.calls] == [
+        "pt:1:e:10:rack:TARGET-1",
+        "pt:1:e:11:rack:BIN-1",
+        "pt:1:e:12:rack:BIN-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_old_transport_failure_does_not_block_new_rack_submission() -> None:
+    line = SimpleNamespace(
+        id=7,
+        is_active=True,
+        is_deleted=False,
+        plugin_key="manual-picking",
+        plugin_version="0.1.0",
+        position_bindings={
+            "FIVE_RACK": {"location_id": "FIVE-POS", "location_type": "RACK_POSITION"},
+            "TRANSFER_RACK": {"location_id": "TRANSFER-POS", "location_type": "RACK_POSITION"},
+        },
+    )
+    task = SimpleNamespace(
+        id=1,
+        task_id="TASK-1",
+        status="EXECUTING",
+        workline_id=7,
+        last_applied_plan_revision=1,
+        plan_blocked_evidence_id=None,
+        target_rack_id="TARGET-1",
+        target_rack_face="90",
+        initial_plan_evidence_id=10,
+        last_plan_evidence_id=11,
+    )
+    creator = _Creator()
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="manual-picking",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=_Handler(),
+            ),
+        ),
+        transport_creator=creator,
+        workline_repository=_Worklines(line),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=task)),
+        plan_repository=SimpleNamespace(
+            list_bin_source_racks=AsyncMock(
+                return_value=[SimpleNamespace(rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11)]
+            )
+        ),
+        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+    )
+
+    assert await service.activate_batch() == 2
+    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1"]
+
+
+def test_host_rejects_handler_that_omits_a_pending_rack() -> None:
+    fact = PickingTaskPlanAppliedFact(
+        fact_id="FACT-1",
+        evidence_id="12",
+        fact_version="1.0",
+        task_id="TASK-1",
+        plan_revision=2,
+        target_rack=None,
+        pending_bin_source_racks=(
+            PickingTaskPlanRack("BIN-A", ("90",), "11", 1),
+            PickingTaskPlanRack("BIN-B", ("270",), "12", 2),
+        ),
+        position_bindings=(PositionBindingSnapshot("FIVE_RACK", "FIVE-POS", "RACK_POSITION"),),
+    )
+    result = PickingTaskPlanHandlingResult(transports=())
+
+    with pytest.raises(ValueError, match="omitted a pending rack"):
+        _service_type()._validate_result(fact, result)
+
+
+@pytest.mark.parametrize(
+    ("intent_index", "change", "binding_type"),
+    [
+        (0, {"target_face": "270"}, None),
+        (1, {"target_face": "180"}, None),
+        (0, {"rcs_template_id": TransportRcsTemplateId.CTU01}, None),
+        (1, {"rcs_template_id": TransportRcsTemplateId.F01}, None),
+        (1, {}, "ZONE"),
+    ],
+)
+def test_host_rejects_transport_outside_plan_and_position_contract(
+    intent_index: int, change: dict[str, object], binding_type: str | None
+) -> None:
+    fact = PickingTaskPlanAppliedFact(
+        fact_id="FACT-1",
+        evidence_id="12",
+        fact_version="1.0",
+        task_id="TASK-1",
+        plan_revision=2,
+        target_rack=PickingTaskPlanRack("TARGET-1", ("90",), "10", 1),
+        pending_bin_source_racks=(PickingTaskPlanRack("BIN-1", ("90", "270"), "12", 2),),
+        position_bindings=(
+            PositionBindingSnapshot("TRANSFER_RACK", "TRANSFER-POS", "RACK_POSITION"),
+            PositionBindingSnapshot("FIVE_RACK", "FIVE-POS", binding_type or "RACK_POSITION"),
+        ),
+    )
+    result = _Handler()(fact)
+    transports = list(result.transports)
+    transports[intent_index] = replace(transports[intent_index], **change)
+
+    with pytest.raises(ValueError, match="outside the frozen fact"):
+        _service_type()._validate_result(fact, PickingTaskPlanHandlingResult(tuple(transports)))

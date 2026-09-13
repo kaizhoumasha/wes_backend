@@ -9,6 +9,7 @@ from deployment.plugin_definitions import load_plugin_definitions
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
+from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 
@@ -16,6 +17,12 @@ from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.app.wms_integration.outbound_picking.services.picking_task_confirmation_owner import (
     PickingTaskConfirmationOwnerService,
+)
+from src.app.wms_integration.outbound_picking.services.picking_task_plan_activation import (
+    PickingTaskPlanActivationService,
+)
+from src.app.wms_integration.outbound_picking.services.picking_task_prepare_batch import (
+    PickingTaskPrepareBatchService,
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
@@ -42,6 +49,8 @@ class DeploymentRuntime:
     workline_configuration_service: WorkLineConfigurationService
     transport_outcome_publisher: InstalledPluginTransportOutcomePublisher
     wms_recovery_event_handler: object | None
+    picking_task_prepare_service: PickingTaskPrepareBatchService
+    picking_task_plan_activation_service: PickingTaskPlanActivationService
 
 
 def build_deployment_runtime(
@@ -90,7 +99,18 @@ def build_deployment_runtime(
             ),
         )
     if "manual-picking" in enabled_plugin_keys:
-        plugins += (InstalledWorkLinePlugin(definition=by_key["manual-picking"]),)
+        from manual_picking.plugin import build_handlers, build_prepare_policy, build_transport_outcome_publisher
+
+        (plan_handler,) = build_handlers()
+
+        plugins += (
+            InstalledWorkLinePlugin(
+                definition=by_key["manual-picking"],
+                picking_task_prepare_policy=build_prepare_policy(),
+                picking_task_plan_applied_handler=plan_handler,
+                transport_outcome_publisher=build_transport_outcome_publisher(),
+            ),
+        )
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,
@@ -123,7 +143,11 @@ def build_deployment_runtime(
     return DeploymentRuntime(
         execution=execution,
         plugins=plugins,
-        workline_start_service=WorkLineStartService(plugins=plugins, device_adapter_provider=device_adapter_provider),
+        workline_start_service=WorkLineStartService(
+            plugins=plugins,
+            device_adapter_provider=device_adapter_provider,
+            task_queue_gateway=task_queue_gateway,
+        ),
         workline_configuration_service=WorkLineConfigurationService(
             definitions=definitions,
             business_blockers={
@@ -133,6 +157,16 @@ def build_deployment_runtime(
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),
         wms_recovery_event_handler=recovery_handler,
+        picking_task_prepare_service=PickingTaskPrepareBatchService(
+            session_factory,
+            plugins=plugins,
+            task_queue_gateway=task_queue_gateway,
+        ),
+        picking_task_plan_activation_service=PickingTaskPlanActivationService(
+            session_factory,
+            plugins=plugins,
+            transport_creator=ReliableRackTransportCreator(transport_runtime.service),
+        ),
     )
 
 

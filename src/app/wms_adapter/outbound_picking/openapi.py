@@ -66,6 +66,10 @@ __all__ = [
 # 计划增量保持独立 schema，公开 Event route 负责静态接入。
 _RACK_FACE = {"type": "string", "minLength": 1, "maxLength": 10, "pattern": r"^[^\u0000\uD800-\uDFFF]+$"}
 _PLAN_RACK = _closed(["rack_id", "rack_face"], {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": _RACK_FACE})
+_PLAN_BIN_SOURCE_RACK = _closed(
+    ["rack_id", "rack_face"],
+    {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": {"type": "array", "minItems": 1, "items": _RACK_FACE}},
+)
 _PLAN_SLOT = _closed(
     ["type", "rack_id", "rack_face", "slot_id"],
     {
@@ -81,7 +85,7 @@ _PLAN_DELTA_DATA = _closed(
         "task_id": _BUSINESS_IDENTIFIER,
         "plan_revision": _POSITIVE_INTEGER,
         "target_rack": _PLAN_RACK,
-        "added_bin_source_racks": {"type": "array", "minItems": 1, "items": _PLAN_RACK},
+        "added_bin_source_racks": {"type": "array", "minItems": 1, "items": _PLAN_BIN_SOURCE_RACK},
         "added_direct_picks": {
             "type": "array",
             "minItems": 1,
@@ -279,7 +283,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
                 "task_id": "PICK-SWAGGER-001",
                 "plan_revision": 1,
                 "target_rack": {"rack_id": "TARGET-RACK-01", "rack_face": "A"},
-                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": "A"}],
+                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["90", "270"]}],
             },
         },
     },

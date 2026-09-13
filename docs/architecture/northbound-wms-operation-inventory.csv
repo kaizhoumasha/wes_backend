@@ -18,7 +18,7 @@ wms-list-grn-packages,wms_provider,src/app/wms_integration/operation_registry.py
 wms-get-pick-order,wms_provider,src/app/wms_integration/operation_registry.py,wms.document.get_pick_order@v1,NONE,DELETE → NONE,NONE,no current business consumer,automatic picking 未实施
 wms-get-outbound-order,wms_provider,src/app/wms_integration/operation_registry.py,wms.document.get_outbound_order@v1,NONE,DELETE → NONE,NONE,no current business consumer,automatic picking 未实施
 wms-get-wave,wms_provider,src/app/wms_integration/operation_registry.py,wms.document.get_wave@v1,NONE,DELETE → NONE,NONE,no current business consumer,automatic picking 未实施
-wms-get-task-snapshot,wms_provider,src/app/wms_integration/operation_registry.py,wms.document.get_task_snapshot@v1,NONE,DELETE → NONE,NONE,no current business consumer,manual_bin_processing 未实施
+wms-get-task-snapshot,wms_provider,src/app/wms_integration/operation_registry.py,wms.document.get_task_snapshot@v1,NONE,DELETE → NONE,NONE,no current business consumer,manual-picking 未实施
 wms-query-inventory,wms_provider,src/app/wms_integration/operation_registry.py,wms.inventory.query_inventory@v1,NONE,DELETE → NONE,NONE,no current business consumer,只有旧 Provider 通用能力
 wms-get-reservation,wms_provider,src/app/wms_integration/operation_registry.py,wms.inventory.get_reservation@v1,NONE,DELETE → NONE,NONE,no current business consumer,只有旧 Provider 通用能力
 wms-check-bin-drift,wms_provider,src/app/wms_integration/operation_registry.py,wms.reconciliation.check_bin_drift@v1,NONE,DELETE → NONE,NONE,no current business consumer,只有旧 Provider 通用能力
@@ -33,5 +33,5 @@ wms-confirm-return-putaway,wms_provider,src/app/wms_integration/operation_regist
 wms-notify-pkg-binding,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.notify_pkg_binding@v1,NONE,DELETE → NONE,NONE,no current business owner,当前无业务插件声明该 operation
 wms-request-rack-supply,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.request_rack_supply@v1,NONE,DELETE → NONE,NONE,no current business producer,旧 async EFFECT 无业务发起方
 wms-change-rack-face,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.change_rack_face@v1,NONE,DELETE → NONE,NONE,no current business consumer,automatic putaway 未实施
-wms-publish-manual-task,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.publish_manual_task@v1,NONE,DELETE → NONE,NONE,no current business consumer,manual_bin_processing 未实施
+wms-publish-manual-task,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.publish_manual_task@v1,NONE,DELETE → NONE,NONE,no current business consumer,manual-picking 未实施
 wms-cancel-request,wms_provider,src/app/wms_integration/operation_registry.py,wms.fulfillment.cancel_request@v1,NONE,DELETE → NONE,NONE,no current business consumer,没有可取消的当前 target operation

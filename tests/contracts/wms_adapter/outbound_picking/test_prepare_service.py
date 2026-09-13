@@ -46,7 +46,7 @@ class _Policy:
         return PrepareTaskType.MANUAL if context.is_active else None
 
     def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        return facts.has_position_bindings
+        return bool(facts.position_roles)
 
 
 class _Facts:
@@ -54,7 +54,7 @@ class _Facts:
         self.ready = ready
 
     async def read_facts(self, _db: object, *, workline_id: int) -> PrepareRuntimeFacts:
-        return PrepareRuntimeFacts(self.ready, (), False)
+        return PrepareRuntimeFacts((), ("POSITION",) if self.ready else ())
 
 
 class _Tasks:
@@ -132,8 +132,8 @@ def _service(
         else SimpleNamespace(
             id=7,
             line_code="LINE-1",
-            plugin_key="manual_bin_processing",
-            flow_mode="MANUAL_BIN_PROCESSING",
+            plugin_key="manual-picking",
+            flow_mode="LEGACY_FLOW",
             is_active=True,
             line_type=LineType.MANUAL,
             run_mode=WorkLineRunMode.AUTO,

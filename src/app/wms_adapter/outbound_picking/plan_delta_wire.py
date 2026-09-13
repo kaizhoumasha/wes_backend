@@ -25,6 +25,11 @@ class PlanRackFace(StrictWireModel):
     rack_face: RackFaceText
 
 
+class PlanBinSourceRack(StrictWireModel):
+    rack_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
+    rack_face: Annotated[list[RackFaceText], Field(min_length=1)]
+
+
 class PlanRackSlot(PlanRackFace):
     type: Literal["RACK_SLOT"]
     slot_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
@@ -38,7 +43,7 @@ class PickingTaskPlanDeltaData(StrictWireModel):
     task_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
     plan_revision: PositiveInteger
     target_rack: PlanRackFace | None = None
-    added_bin_source_racks: Annotated[list[PlanRackFace], Field(min_length=1)] | None = None
+    added_bin_source_racks: Annotated[list[PlanBinSourceRack], Field(min_length=1)] | None = None
     added_direct_picks: Annotated[list[PlanDirectPick], Field(min_length=1)] | None = None
 
     @model_validator(mode="before")

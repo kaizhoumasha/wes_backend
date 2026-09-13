@@ -11,7 +11,6 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     for package, directory in (
         ("rough_sorter", "rough_sorter"),
-        ("manual_bin_processing", "manual_bin_processing"),
         ("manual_picking", "manual-picking"),
     ):
         if find_spec(package) is not None or (root / "workline_plugins" / directory).exists():

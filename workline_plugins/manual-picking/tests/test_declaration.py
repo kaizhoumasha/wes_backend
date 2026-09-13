@@ -6,7 +6,7 @@ from deployment.plugin_composition import build_deployment_runtime
 from src.app.workline.models.workline import LineType
 
 
-def test_manual_picking_can_be_selected_without_business_implementation():
+def test_manual_picking_deployment_assembles_prepare_policy_without_device_handlers():
     runtime = build_deployment_runtime(
         enabled_plugin_keys=("manual-picking",),
         session_factory=object(),
@@ -29,6 +29,7 @@ def test_manual_picking_can_be_selected_without_business_implementation():
         "OUTLET",
     ]
     assert runtime.plugins[0].runtime_binding is None
+    assert runtime.plugins[0].picking_task_prepare_policy is not None
     assert runtime.wms_recovery_event_handler is None
 
 

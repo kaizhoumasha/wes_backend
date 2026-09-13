@@ -11,7 +11,7 @@ SCAN3 = WorkLineDeviceRole(role_key="SCAN3", display_name="退箱检验扫码")
 # 料箱经过后计入退箱 FIFO 队列。
 SCAN4 = WorkLineDeviceRole(role_key="SCAN4", display_name="退箱入队扫码")
 
-# 一个位点，容量由工作线配置，包含一个作业位与其余排队位。
+# 一个绑定工作位；多架进场由 RCS 排队，插件不定义物理排队容量。
 FIVE_RACK = WorkLinePositionSlot(
     slot_key="FIVE_RACK",
     display_name="五层货架位",

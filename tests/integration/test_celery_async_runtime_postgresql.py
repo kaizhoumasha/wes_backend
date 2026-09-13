@@ -68,6 +68,8 @@ FAMILY_TASKS = (
     "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
     "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
     "src.celery_app.tasks.execution.process_execution_facts_batch",
+    "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch",
+    "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch",
     "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
 )
 
@@ -909,7 +911,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         family_tasks = list(
             zip(
                 FAMILY_TASKS,
-                ([], [100], [100], [100], [100]),
+                ([], [100], [100], [100], [100], [100], [100]),
                 strict=True,
             )
         )
@@ -929,7 +931,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
                 else []
             ),
             TASK_TIMEOUT,
-            "five task families PID evidence",
+            "seven task families PID evidence",
         )
         marker_by_id = {str(marker["task_id"]): marker for marker in family_markers}
         family_pids = [int(marker_by_id[str(result.id)]["pid"]) for result in family_results]
