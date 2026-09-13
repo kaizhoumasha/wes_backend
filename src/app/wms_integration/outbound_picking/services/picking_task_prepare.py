@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from wes_plugin_sdk import wms_operations
 from wes_plugin_sdk.prepare_policy import PickingTaskPreparePolicy, PrepareContext, PrepareTaskType
@@ -20,9 +20,7 @@ from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERA
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.repositories import (
     PickingTaskRepository,
-    PickingWorklineFactsRepository,
     picking_task_repository,
-    picking_workline_facts_repository,
 )
 from src.app.workline.repositories import (
     WorkLineRepository,
@@ -71,7 +69,6 @@ class PickingTaskPrepareCoordinator:
         *,
         policy: PickingTaskPreparePolicy,
         workline_repository: WorkLineRepository | None = None,
-        facts_repository: PickingWorklineFactsRepository | None = None,
         task_repository: PickingTaskRepository | None = None,
         confirmation_service: ConfirmationLifecyclePort | None = None,
         task_queue_gateway: TaskQueueGateway,
@@ -79,7 +76,6 @@ class PickingTaskPrepareCoordinator:
         self._policy = policy
         self._sessions = session_factory
         self._worklines = workline_repository or default_workline_repository
-        self._facts = facts_repository or picking_workline_facts_repository
         self._tasks = task_repository or picking_task_repository
         self._confirmations = confirmation_service or WmsConfirmationLifecycleService()
         self._task_queue = task_queue_gateway
@@ -124,8 +120,6 @@ class PickingTaskPrepareCoordinator:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK)
             if expected_task_id is not None and task.task_id != expected_task_id:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT)
-            if not await self._runtime_context_ready(db, workline_id, current):
-                return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_id = getattr(task, "id", None)
             line_code = wms_workline_code or getattr(workline, "line_code", None)
             if not isinstance(task_id, int) or task_id <= 0 or not isinstance(line_code, str):
@@ -157,19 +151,6 @@ class PickingTaskPrepareCoordinator:
         except Exception:
             logger.exception("outbound_picking.prepare_enqueue_failed")
         return prepared
-
-    async def _runtime_context_ready(
-        self,
-        db: Any,
-        workline_id: int,
-        now: datetime,
-    ) -> bool:
-        # 历史执行和待反馈义务独立续行；新 prepare 由当前任务与插件策略决定准入。
-        facts = await self._facts.read_facts(
-            db,
-            workline_id=workline_id,
-        )
-        return self._policy.is_ready(facts, now=now)
 
 
 def _timestamp_ms(value: datetime) -> int:

@@ -1,8 +1,6 @@
 """人工 PickingTask 的纯准入策略。"""
 
-from datetime import datetime
-
-from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from manual_picking.definition import DEFINITION
 
@@ -20,12 +18,6 @@ class ManualPickingPreparePolicy:
         ):
             return PrepareTaskType.MANUAL
         return None
-
-    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        del now
-        expected_devices = sorted(role.role_key for role in DEFINITION.device_roles)
-        expected_positions = sorted(slot.slot_key for slot in DEFINITION.position_slots)
-        return sorted(facts.device_roles) == expected_devices and sorted(facts.position_roles) == expected_positions
 
 
 __all__ = ["ManualPickingPreparePolicy"]

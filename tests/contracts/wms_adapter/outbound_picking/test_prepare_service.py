@@ -6,7 +6,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from src.app.execution.models import WmsConfirmation
 from src.app.execution.services import WmsConfirmationAcceptance
@@ -44,17 +44,6 @@ class _Worklines:
 class _Policy:
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType | None:
         return PrepareTaskType.MANUAL if context.is_active else None
-
-    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        return bool(facts.position_roles)
-
-
-class _Facts:
-    def __init__(self, ready: bool = True) -> None:
-        self.ready = ready
-
-    async def read_facts(self, _db: object, *, workline_id: int) -> PrepareRuntimeFacts:
-        return PrepareRuntimeFacts((), ("POSITION",) if self.ready else ())
 
 
 class _Tasks:
@@ -122,7 +111,6 @@ def _service(
     *,
     task: PickingTask | None = None,
     workline: object | None = None,
-    ready: bool = True,
     queue: _Queue | None = None,
     policy: _Policy | None = None,
 ) -> tuple[PickingTaskPrepareCoordinator, _Worklines, _Tasks, _Confirmations, _Queue]:
@@ -149,7 +137,6 @@ def _service(
             _Sessions(),  # type: ignore[arg-type]
             policy=policy or _Policy(),
             workline_repository=worklines,  # type: ignore[arg-type]
-            facts_repository=_Facts(ready),  # type: ignore[arg-type]
             task_repository=tasks,  # type: ignore[arg-type]
             confirmation_service=confirmations,  # type: ignore[arg-type]
             task_queue_gateway=queue_value,  # type: ignore[arg-type]
@@ -218,6 +205,30 @@ async def test_prepare_active_business_task_still_blocks_independent_request() -
 
 
 @pytest.mark.asyncio
+async def test_prepare_does_not_recheck_static_bindings_for_active_workline() -> None:
+    service, _worklines, tasks, confirmations, queue = _service(
+        workline=SimpleNamespace(
+            id=7,
+            line_code="LINE-1",
+            plugin_key="sample_plugin",
+            flow_mode=None,
+            is_active=True,
+            line_type=LineType.MANUAL,
+            run_mode=WorkLineRunMode.AUTO,
+            config={"device_bindings": {}, "position_bindings": {}},
+            position_bindings={},
+        )
+    )
+
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+
+    assert result.prepared is True
+    assert tasks.task is not None and tasks.task.status == PickingTaskStatus.PREPARING
+    assert confirmations.kwargs is not None
+    assert queue.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_prepare_allows_integration_caller_to_supply_the_wms_workline_code() -> None:
     service, _worklines, _tasks, confirmations, _queue = _service()
 
@@ -276,7 +287,6 @@ async def test_prepare_keeps_persisted_obligation_when_immediate_enqueue_fails()
             {"workline": SimpleNamespace(id=7, is_active=False)},
             PickingTaskPrepareNoopReason.WORKLINE_NOT_READY,
         ),
-        ({"ready": False}, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY),
         ({"task": None}, PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK),
     ],
 )

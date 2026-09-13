@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from src.app.device.models import Device, DeviceStatusObservation
 from src.app.execution.models import (
@@ -468,6 +468,3 @@ class _Policy:
 
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType:
         return PrepareTaskType.MANUAL
-
-    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        return True
