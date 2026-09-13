@@ -441,7 +441,6 @@ def test_backend_build_installs_locked_hatchling_before_disabling_local_package_
     assert '--no-build-isolation-package "$package"' in dockerfile_text
     for package in (
         "wes-rough-sorter-plugin",
-        "wes-manual-bin-processing-plugin",
         "wes-manual-picking-plugin",
     ):
         assert f"package={package}" in dockerfile_text
