@@ -8,7 +8,6 @@ from wes_plugin_sdk import (
     TransportRackPosition,
     TransportRackReference,
     TransportRcsTemplateId,
-    handler,
 )
 
 from manual_picking.definition import FIVE_RACK, TRANSFER_RACK
@@ -25,11 +24,6 @@ def _required_rack_position(
     return TransportRackPosition(matches[0].location_id)
 
 
-@handler(
-    fact_type=PickingTaskPlanAppliedFact,
-    name="picking_task_plan_applied",
-    supported_versions=("1.0",),
-)
 class PickingTaskPlanAppliedHandler:
     """只决定计划资源如何进场；宿主负责持久化、幂等与 Transport。"""
 

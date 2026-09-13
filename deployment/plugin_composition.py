@@ -25,7 +25,6 @@ from src.app.wms_integration.outbound_picking.services.picking_task_prepare_batc
     PickingTaskPrepareBatchService,
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
-from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
@@ -39,6 +38,7 @@ if TYPE_CHECKING:
     from src.app.device.services import DeviceCommandService
     from src.app.execution.services.wms_confirmation_service import WmsConfirmationAdapterPort
     from src.app.transport.composition import TransportRuntime
+    from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,22 +64,11 @@ def build_deployment_runtime(
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
-    by_key = {definition.plugin_key: definition for definition in definitions}
-
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "manual-picking" in enabled_plugin_keys:
-        from manual_picking.plugin import build_handlers, build_prepare_policy, build_transport_outcome_publisher
+        from manual_picking.application.plugin import build_plugin
 
-        (plan_handler,) = build_handlers()
-
-        plugins += (
-            InstalledWorkLinePlugin(
-                definition=by_key["manual-picking"],
-                picking_task_prepare_policy=build_prepare_policy(),
-                picking_task_plan_applied_handler=plan_handler,
-                transport_outcome_publisher=build_transport_outcome_publisher(),
-            ),
-        )
+        plugins = (build_plugin(),)
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,

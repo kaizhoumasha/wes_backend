@@ -164,9 +164,10 @@ Handler 只返回以下封闭 Decision 类别；具体 SDK 使用可判别类型
 
 ### 2.5 静态元数据、显式组合和配置
 
-每个 Handler 类使用 SDK `@handler(...)` 声明不可变静态元数据：类型化 Fact、稳定名称和支持版本。装饰器只把
-`HandlerMetadata` 附着到类，不扫描包、不实例化 Handler，也不写入全局注册表。插件入口通过稳定 Python 引用返回固定
-Handler tuple；部署 Composition Root 显式导入该入口并注入核心侧 factory、resolver 和可靠对象应用端口。
+进入 `StaticPluginBinding` 的执行 Handler 使用 SDK `@handler(...)` 声明类型化 Fact、稳定名称和支持版本。
+装饰器只附着不可变元数据，不扫描包、不实例化 Handler，也不写入全局注册表。通过专用类型化端口调用的业务
+Handler（例如 PickingTask 计划应用）不加无消费者的路由元数据。插件装配入口显式构造已接入的能力，部署
+Composition Root 只选择并调用该入口；核心侧 factory、resolver 和可靠对象应用端口仍由宿主注入。
 
 静态元数据和组合内容包括插件身份、版本、支持的工作线类型/流程模式、Handler 输入，以及工作位插槽和设备插槽声明。
 插件插槽与资源绑定的顶层合同见[架构设计 7.6 节][architecture-spec]；本节不另建业务插槽清单。
@@ -215,10 +216,11 @@ workline_plugins/<plugin_key>/
 ├── src/
 │   └── <plugin_package>/
 │       ├── __init__.py
+│       ├── definition.py
 │       ├── facts.py
-│       ├── plugin.py
 │       ├── <decision_helper>.py # 存在真实纯逻辑职责时才创建
-│       ├── application/        # 需要业务事务或基础能力接线时才创建
+│       ├── application/        # 需要宿主能力接线时才创建
+│       │   └── plugin.py       # 显式构造 InstalledWorkLinePlugin，不执行 I/O
 │       └── handlers/
 │           ├── __init__.py
 │           ├── _guards.py
@@ -232,7 +234,7 @@ workline_plugins/<plugin_key>/
 
 插件包包含职责不同的两个子层：
 
-- 纯 Decision 子层通常包含 `facts.py`、`plugin.py`、`handlers/` 和必要的纯逻辑 helper，只依赖公开 `wes_plugin_sdk` 与 Python 标准库；
+- 纯 Decision 子层通常包含 `definition.py`、`facts.py`、`handlers/` 和必要的纯逻辑 helper，只依赖公开 `wes_plugin_sdk` 与 Python 标准库；
 - 业务 Application 子层只在需要业务事务、事实构造或可靠对象协调时创建，可依赖 `src` 提供的基础端口、Service、Repository
   与模型；基础 `src` 和 SDK 均不得反向导入具体插件。
 
@@ -240,10 +242,10 @@ workline_plugins/<plugin_key>/
 Adapter 包、客户尚未需要的扩展点或业务模板。Application 子层依赖 WES 运行环境，不得为让插件自己的最小开发环境运行完整
 应用测试而复制核心依赖、基础实现或可靠性机制。
 
-Handler 按稳定业务触发拆分，而不是按物理 `EVENT`、`COMMAND`、`ACK`、`CALLBACK` 各建一套文件。`plugin.py` 只显式构造
-固定 tuple，不扫描 `handlers/`、不使用动态 import，也不提供可变 registry。部署 Composition Root 只显式装配插件 factory、
-Handler 与核心端口；插件 Application 在核心提供的当前事务中构造类型化 Fact，Handler 只消费该不可变快照。核心只消费
-`PluginFactFactory` 抽象，不导入具体插件。
+Handler 按稳定业务触发拆分，而不是按物理 `EVENT`、`COMMAND`、`ACK`、`CALLBACK` 各建一套文件。
+`application/plugin.py` 只显式构造当前业务能力，不扫描 `handlers/`、不使用动态 import，也不提供可变 registry；
+部署 Composition Root 显式选择插件并接入宿主端口。插件 Application 在核心提供的当前事务中构造类型化 Fact，
+Handler 只消费该不可变快照；核心不导入具体插件。
 
 Transport 结果 publisher 的插件 Application 接收宿主传入的 `db`，在同一事务保存 Evidence 并返回唤醒意图；不得另开 Session 或直接 enqueue。
 宿主持有任务行锁直到 Evidence 提交，并在提交后唤醒执行处理，避免嵌套连接占用及结果发布竞态。
@@ -319,7 +321,7 @@ Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备�
 依赖。WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 不得发现或运行具体插件测试或部署验收。
 
 人工拣料插件的可复用经验：先实现能启动业务的 `prepare`，再接计划与设备结果；`definition.py` 只声明资源，
-handler 处理一个已确认的业务事实，`plugin.py` 显式装配流程；插件只给出业务决定，锁、事务、WMS 可靠义务、
+handler 处理一个已确认的业务事实，`application/plugin.py` 显式装配业务能力；插件只给出业务决定，锁、事务、WMS 可靠义务、
 Transport 和 Celery 注册由宿主负责。禁用插件应阻止新的业务触发，但不能丢弃既有证据和可靠义务。
 
 ## 6. 交付检查

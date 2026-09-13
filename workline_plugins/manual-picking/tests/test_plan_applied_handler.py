@@ -2,9 +2,7 @@ from dataclasses import replace
 
 import pytest
 from manual_picking.handlers import PickingTaskPlanAppliedHandler
-from manual_picking.plugin import build_handlers
 from wes_plugin_sdk import (
-    HandlerMetadata,
     PickingTaskPlanAppliedFact,
     PickingTaskPlanRack,
     PositionBindingSnapshot,
@@ -32,16 +30,12 @@ FACT = PickingTaskPlanAppliedFact(
 )
 
 
-def test_plugin_assembles_plan_applied_handler_with_static_metadata() -> None:
-    handlers = build_handlers()
+def test_plugin_assembles_plan_applied_handler() -> None:
+    from manual_picking.application.plugin import build_plugin
 
-    assert len(handlers) == 1
-    assert type(handlers[0]) is PickingTaskPlanAppliedHandler
-    assert handlers[0].__wes_handler__ == HandlerMetadata(
-        fact_type=PickingTaskPlanAppliedFact,
-        name="picking_task_plan_applied",
-        supported_versions=("1.0",),
-    )
+    plugin = build_plugin()
+
+    assert type(plugin.picking_task_plan_applied_handler) is PickingTaskPlanAppliedHandler
 
 
 def test_plan_rack_transport_intent_preserves_source_evidence_identity() -> None:

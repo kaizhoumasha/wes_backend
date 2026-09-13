@@ -28,8 +28,9 @@
 没有业务启动计划时 `flow_mode` 为 `null`。基础准入使用统一设备合同，状态时效与命令超时由宿主
 `src/core/conf.py` 的 `WORKLINE_DEVICE_STATUS_MAX_AGE_MS`、`WORKLINE_DEVICE_COMMAND_TIMEOUT_MS` 管理，START 时冻结。
 
-`src/manual_picking/plugin.py` 显式构造 `ManualPickingPreparePolicy` 和当前 handler 集合，不扫描模块，也不访问数据库、HTTP 或 Celery。
-策略只为活动、AUTO、`manual-picking` 人工线选择 MANUAL PickingTask，并核对静态设备角色与位置角色完整绑定；
+`src/manual_picking/application/plugin.py` 显式构造 prepare 策略、计划 handler 和 Transport 结果适配器，不扫描模块，
+构造时不访问数据库、HTTP 或 Celery。策略只为活动、AUTO、`manual-picking` 人工线选择 MANUAL PickingTask；
+设备与位置绑定完整性由 WorkLine START 准入检查，prepare 不重复校验。
 设备实时状态和历史位置投影不作为新 prepare 的准入依据，物理接纳由 ECS/RCS 判断。
 任务领取、并发锁、状态迁移和可靠 `outbound.picking_task.prepare@v1` 义务仍由宿主统一负责。
 
