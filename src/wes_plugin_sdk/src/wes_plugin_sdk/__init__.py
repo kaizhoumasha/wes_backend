@@ -23,12 +23,20 @@ from .facts import (
     EvidenceReadyFact,
     Fact,
     FactReference,
+    HandlerFact,
     RecoveryDecidedFact,
     RecoveryDecision,
     TransportResultReadyFact,
     WmsResultReadyFact,
 )
 from .handler import HandlerMetadata, handler
+from .picking_task_plan import (
+    PickingTaskPlanAppliedFact,
+    PickingTaskPlanAppliedHandler,
+    PickingTaskPlanHandlingResult,
+    PickingTaskPlanRack,
+    PickingTaskRackTransportIntent,
+)
 from .protocols import (
     DeviceBindingSnapshot,
     ExecutionLifecycle,
@@ -152,6 +160,7 @@ __all__ = (
     "Fact",
     "FactRecorded",
     "FactReference",
+    "HandlerFact",
     "HandlerMetadata",
     "InboundWmsIntent",
     "ManualBinAdmissionIntent",
@@ -181,9 +190,14 @@ __all__ = (
     "PickingTargetRotate",
     "PickingTaskBusinessInProgress",
     "PickingTaskCompleted",
+    "PickingTaskPlanAppliedFact",
+    "PickingTaskPlanAppliedHandler",
+    "PickingTaskPlanHandlingResult",
+    "PickingTaskPlanRack",
     "PickingTaskPlanRevisionStale",
     "PickingTaskPrepareIntent",
     "PickingTaskPrepareOutcome",
+    "PickingTaskRackTransportIntent",
     "PlacementIntent",
     "PlacementOutcome",
     "PluginDefinition",

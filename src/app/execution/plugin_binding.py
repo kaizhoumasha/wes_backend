@@ -68,6 +68,8 @@ class StaticPluginBinding:
                 metadata = getattr(target, "__wes_handler__", None)
                 if type(metadata) is not HandlerMetadata:
                     raise TypeError("handler must declare static metadata with wes_plugin_sdk.handler")
+                if not issubclass(metadata.fact_type, FactReference):
+                    raise TypeError("execution handler fact_type must inherit FactReference")
                 for fact_version in metadata.supported_versions:
                     route = (*binding_key, metadata.fact_type, fact_version)
                     if route in self._handlers:

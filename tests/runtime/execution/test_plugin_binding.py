@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import pytest
-from wes_plugin_sdk import EvidenceReadyFact, FactReference, Wait, handler, wms_operations
+from wes_plugin_sdk import EvidenceReadyFact, FactReference, HandlerFact, Wait, handler, wms_operations
 from wes_plugin_sdk.wms_types import ReplacementPlanIntent
 
 from src.app.execution.plugin_binding import (
@@ -182,6 +182,28 @@ def test_binding_rejects_handler_without_static_metadata() -> None:
                     plugin_key="rough_sorter",
                     plugin_version="1.0.0",
                     handlers=(undecorated,),
+                    fact_factory=_IdentityFactFactory(),
+                ),
+            )
+        )
+
+
+def test_execution_binding_rejects_non_execution_handler_metadata() -> None:
+    @dataclass(frozen=True, slots=True)
+    class BusinessFact(HandlerFact):
+        pass
+
+    @handler(fact_type=BusinessFact, name="business", supported_versions=("1.0",))
+    def business_handler(_fact: BusinessFact) -> tuple[()]:
+        return ()
+
+    with pytest.raises(TypeError, match="execution handler fact_type"):
+        StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="business",
+                    plugin_version="1.0.0",
+                    handlers=(business_handler,),
                     fact_factory=_IdentityFactFactory(),
                 ),
             )

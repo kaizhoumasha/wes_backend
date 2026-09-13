@@ -18,9 +18,11 @@ from src.app.workline.installed_plugin import (
 from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.conf import settings
+from src.core.transaction_wakeup import defer_wakeup
 
 if TYPE_CHECKING:
     from src.app.device.composition import DeviceEndpointAdapterProvider
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 
 class WorkLineStartNotFoundError(LookupError):
@@ -48,12 +50,14 @@ class WorkLineStartService:
         position_repository=workline_position_repository,
         device_repository=device_repository,
         device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
         self._positions = position_repository
         self._devices = device_repository
         self._adapter_provider = device_adapter_provider
+        self._task_queue = task_queue_gateway
 
     async def assert_execution_worker_startable(self, db: Any) -> None:
         for plugin_key, plugin_version in await self._worklines.list_active_plugin_identities(db):
@@ -117,7 +121,10 @@ class WorkLineStartService:
         workline.flow_mode = plan.flow_mode
         workline.device_contracts = contracts
         workline.position_bindings = positions
-        return await self._worklines.set_active_for_start(db, workline)
+        activated = await self._worklines.set_active_for_start(db, workline)
+        if self._task_queue is not None and plugin.picking_task_prepare_policy is not None:
+            defer_wakeup(db, self._task_queue.enqueue_picking_task_prepare)
+        return activated
 
     async def _build_basic_plan(
         self,

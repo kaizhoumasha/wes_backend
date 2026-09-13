@@ -21,23 +21,9 @@ class PrepareContext:
 
 
 @dataclass(frozen=True, slots=True)
-class PrepareDeviceFact:
-    contract_key: str
-    contract_version: str
-    status_max_age_ms: int
-    observed_contract_key: str | None
-    observed_contract_version: str | None
-    received_at: datetime | None
-    mode: str | None
-    status: str | None
-    current_command_code: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class PrepareRuntimeFacts:
-    has_position_bindings: bool
-    devices: tuple[PrepareDeviceFact, ...]
-    has_positioned_object: bool
+    device_roles: tuple[str, ...]
+    position_roles: tuple[str, ...]
 
 
 class PickingTaskPreparePolicy(Protocol):

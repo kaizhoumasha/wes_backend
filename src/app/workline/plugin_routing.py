@@ -121,19 +121,28 @@ class InstalledPluginTransportOutcomePublisher:
                 raise LookupError("Transport outcome WorkLine 不存在")
             plugin = resolve_installed_plugin_version(self._plugins, workline.plugin_key, workline.plugin_version)
             publisher = plugin.transport_outcome_publisher
+            should_wake_plans = plugin.picking_task_plan_applied_handler is not None
             if publisher is None:
                 raise LookupError(
                     f"plugin has no Transport outcome publisher: {plugin.plugin_key}@{plugin.plugin_version}"
                 )
             # Share the transaction: workers have one database connection. Keep the task
             # locked through evidence commit so another publisher cannot admit a plugin switch.
-            should_wake = await publisher.publish(db, outcome)
-        if should_wake:
+            should_wake_execution = await publisher.publish(db, outcome)
+        if should_wake_execution:
             try:
                 self._queue.enqueue_execution_facts()
             except Exception:
                 logger.exception(
                     "transport.execution_wake_failed",
+                    extra={"transport_task_id": outcome.transport_task_id},
+                )
+        if should_wake_plans:
+            try:
+                self._queue.enqueue_picking_task_plans()
+            except Exception:
+                logger.exception(
+                    "transport.picking_task_plan_wake_failed",
                     extra={"transport_task_id": outcome.transport_task_id},
                 )
 

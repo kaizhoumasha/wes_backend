@@ -11,6 +11,8 @@ PROCESS_TRANSPORT_EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transp
 PROCESS_EXECUTION_FACTS_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
 DISPATCH_WMS_CONFIRMATIONS_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 DISPATCH_DEVICE_COMMANDS_TASK = "src.celery_app.tasks.device_command.dispatch_device_commands_batch"
+PREPARE_PICKING_TASKS_TASK = "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch"
+ACTIVATE_PICKING_TASK_PLANS_TASK = "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch"
 
 
 class TaskQueueGateway(Protocol):
@@ -31,6 +33,10 @@ class TaskQueueGateway(Protocol):
     def enqueue_wms_confirmations(self) -> None: ...
 
     def enqueue_device_commands(self) -> None: ...
+
+    def enqueue_picking_task_prepare(self) -> None: ...
+
+    def enqueue_picking_task_plans(self) -> None: ...
 
 
 class CeleryTaskQueueGateway:
@@ -65,13 +71,21 @@ class CeleryTaskQueueGateway:
     def enqueue_device_commands(self) -> None:
         self._send_task(DISPATCH_DEVICE_COMMANDS_TASK, kwargs={"limit": 100})
 
+    def enqueue_picking_task_prepare(self) -> None:
+        self._send_task(PREPARE_PICKING_TASKS_TASK, kwargs={"limit": 100})
+
+    def enqueue_picking_task_plans(self) -> None:
+        self._send_task(ACTIVATE_PICKING_TASK_PLANS_TASK, kwargs={"limit": 100})
+
 
 task_queue_gateway = CeleryTaskQueueGateway()
 
 __all__ = [
+    "ACTIVATE_PICKING_TASK_PLANS_TASK",
     "ADVANCE_TRANSPORT_DEBUG_TASK",
     "DISPATCH_DEVICE_COMMANDS_TASK",
     "DISPATCH_WMS_CONFIRMATIONS_TASK",
+    "PREPARE_PICKING_TASKS_TASK",
     "PROCESS_DEVICE_EVIDENCE_TASK",
     "PROCESS_EXECUTION_FACTS_TASK",
     "PROCESS_TRANSPORT_EVIDENCE_TASK",

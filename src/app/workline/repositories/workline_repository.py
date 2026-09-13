@@ -92,6 +92,43 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         )
         return list(result.tuples())
 
+    async def list_active_for_plugin_identities(
+        self,
+        db: AsyncSession,
+        identities: tuple[tuple[str, str], ...],
+        *,
+        limit: int,
+    ) -> list[tuple[int, str, str]]:
+        """按部署能力列出活动工作线；插件缺席时调用方不进入数据库。"""
+
+        if not identities:
+            return []
+        columns = cast("Any", WorkLine).__table__.c
+        identity_predicate = or_(
+            *(
+                and_(columns.plugin_key == plugin_key, columns.plugin_version == plugin_version)
+                for plugin_key, plugin_version in identities
+            )
+        )
+        result = await db.execute(
+            select(columns.id, columns.plugin_key, columns.plugin_version)
+            .where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                identity_predicate,
+            )
+            .order_by(columns.id)
+            .limit(limit)
+        )
+        return [(int(row.id), str(row.plugin_key), str(row.plugin_version)) for row in result]
+
+    async def has_active_plugin_identity(
+        self,
+        db: AsyncSession,
+        identities: tuple[tuple[str, str], ...],
+    ) -> bool:
+        return bool(await self.list_active_for_plugin_identities(db, identities, limit=1))
+
     async def list_bindings(self, db: AsyncSession, workline_id: int) -> list[WorkLineDeviceBinding]:
         line = await self.get_for_update(db, workline_id)
         if line is None:
