@@ -244,3 +244,4 @@ sessions/
 .sources/*
 .superpowers/brainstorm/
 .ua/
+.agents/*
