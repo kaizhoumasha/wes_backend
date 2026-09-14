@@ -53,7 +53,7 @@ def _resolve_device_event_business_key(
     return (
         non_empty_str(payload.get("business_key"))
         or non_empty_str(data.get("business_key"))
-        or non_empty_str(data.get("barcode"))
+        or non_empty_str(data.get("bin_code"))
     )
 
 

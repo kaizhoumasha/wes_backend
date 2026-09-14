@@ -454,7 +454,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
                     "device_code": exit_scanner,
                     "event_type": "SCAN_COMPLETED",
                     "timestamp": event_timestamp,
-                    "data": {"barcode": bin_code},
+                    "data": {"bin_code": bin_code},
                 }
             )
         )

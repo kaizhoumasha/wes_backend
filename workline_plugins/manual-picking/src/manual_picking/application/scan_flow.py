@@ -268,7 +268,8 @@ class ManualPickingScanFlow:
         role = next((key for key, device_code in bindings.items() if device_code == evidence.device_code), None)
         if role is None:
             return None, "DEVICE_UNBOUND"
-        raw = event.data.get("barcode")
+        # ECS 扫码合同固定使用 bin_code。
+        raw = event.data.get("bin_code")
         raw_code = raw if isinstance(raw, str) else None
         if role == "SCAN1":
             positions = parse_position_bindings(workline.config, DEFINITION.position_slots)

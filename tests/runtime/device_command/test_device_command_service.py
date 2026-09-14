@@ -613,7 +613,7 @@ async def test_event_debug_command_uses_configured_endpoint_and_event_data_witho
             "timestamp": 1_787_589_900_163,
             "source_event_id": source_identity,
             "is_debug": True,
-            "data": {"event_id": "EVT-1", "location": "STATION_SCAN11", "barcode": "NHW002069-B"},
+            "data": {"event_id": "EVT-1", "location": "STATION_SCAN11", "bin_code": "NHW002069-B"},
         },
         received_at=datetime(2026, 8, 25),
         device_code="STATION_SCAN11",

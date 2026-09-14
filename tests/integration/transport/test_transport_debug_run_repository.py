@@ -496,7 +496,7 @@ async def test_committed_scan12_conflict_fences_dispatch_before_run_scanner_upda
         kind=InboundEvidenceKind.DEVICE_EVENT,
         source_identity=source_id,
         payload_digest="a" * 64,
-        normalized_payload={"source_event_id": source_id, "data": {"barcode": "BIN-1"}},
+        normalized_payload={"source_event_id": source_id, "data": {"bin_code": "BIN-1"}},
         received_at=now,
         device_code="SCAN12",
         contract_key="device.event",
@@ -514,7 +514,7 @@ async def test_committed_scan12_conflict_fences_dispatch_before_run_scanner_upda
                 source_identity=source_id,
                 first_evidence_id=evidence.id,
                 conflicting_digest="b" * 64,
-                normalized_payload={"source_event_id": source_id, "data": {"barcode": "OTHER"}},
+                normalized_payload={"source_event_id": source_id, "data": {"bin_code": "OTHER"}},
                 reason_code="SOURCE_IDENTITY_PAYLOAD_CONFLICT",
                 received_at=now,
             )

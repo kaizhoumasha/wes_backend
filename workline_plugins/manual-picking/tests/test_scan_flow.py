@@ -24,7 +24,7 @@ def _scan(evidence_id: int, device_code: str, bin_code: str) -> InboundEvidence:
         timestamp=1_788_389_900_000 + evidence_id,
         source_event_id=f"EVENT-{evidence_id}",
         is_debug=False,
-        data={"barcode": bin_code},
+        data={"bin_code": bin_code},
     )
     return InboundEvidence(
         id=evidence_id,

@@ -509,7 +509,7 @@ def test_ecs_mock_event_openapi_keeps_business_data_opaque() -> None:
     assert content["examples"]["scan_completed"]["value"] == {
         "device_code": "CAMERA-CONVEYOR-01",
         "event_type": "SCAN_COMPLETED",
-        "data": {"barcode": "BIN_104"},
+        "data": {"bin_code": "BIN_104"},
     }
 
 

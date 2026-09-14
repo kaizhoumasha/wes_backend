@@ -366,7 +366,7 @@ def _event(**overrides: object) -> EcsDeviceEventReport:
         "device_code": "ARM-01",
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1_786_579_204_000,
-        "data": {"event_id": "EVENT-001", "location": "STATION_SCAN1", "barcode": "PKG12345678"},
+        "data": {"event_id": "EVENT-001", "location": "STATION_SCAN1", "bin_code": "PKG12345678"},
     }
     payload.update(overrides)
     return EcsDeviceEventReport.model_validate(payload)

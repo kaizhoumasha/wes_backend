@@ -104,7 +104,7 @@ MockEventRequestBody = Annotated[
                 "value": {
                     "device_code": "CAMERA-CONVEYOR-01",
                     "event_type": "SCAN_COMPLETED",
-                    "data": {"barcode": "BIN_104"},
+                    "data": {"bin_code": "BIN_104"},
                 },
             },
         },

@@ -1394,6 +1394,13 @@ source_glob = "src/app/runtime/normalization/normalizers/event_mapper.py"
 heavy_tests = []
 reviewed_content_sha256 = "1d12d9ca08e7e463be7e48944c1a8d1e4e975f36ca351eae8feac89d440bebcd"
 
+# 设备扫码业务键的字段读取是纯函数；仓内无生产调用点，由对应 FAST 合同承接。
+
+[[mapping]]
+source_glob = "src/app/runtime/normalization/normalizers/input_normalizer.py"
+heavy_tests = []
+reviewed_content_sha256 = "d7b3a496e6f03dc2cd8b69be2cad08ce0fd8ce55f60be216b77caf1c864b2c46"
+
 # 平台事件分类只退役 WES 安全事件保留字；插件声明与规范化均由对应 FAST 合同承接。
 
 [[mapping]]

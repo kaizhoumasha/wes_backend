@@ -28,7 +28,7 @@ def _evidence(**changes: object) -> InboundEvidence:
             "timestamp": NOT_BEFORE_MS,
             "source_event_id": "SCAN12-EVENT-101",
             "is_debug": True,
-            "data": {"barcode": "A000001922"},
+            "data": {"bin_code": "A000001922"},
         },
         "received_at": datetime(2026, 9, 2),
         "device_code": "SCAN12",
@@ -82,7 +82,7 @@ def test_scan12_matches_selected_bin_after_removing_direction_suffix(direction: 
     evidence = _evidence(
         normalized_payload={
             **_evidence().normalized_payload,
-            "data": {"barcode": f"A000001922-{direction}"},
+            "data": {"bin_code": f"A000001922-{direction}"},
         }
     )
 
@@ -90,7 +90,7 @@ def test_scan12_matches_selected_bin_after_removing_direction_suffix(direction: 
 
     assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
     assert evaluation.bin_code == "A000001922"
-    assert evidence.normalized_payload["data"] == {"barcode": f"A000001922-{direction}"}
+    assert evidence.normalized_payload["data"] == {"bin_code": f"A000001922-{direction}"}
 
 
 @pytest.mark.parametrize(
@@ -123,15 +123,17 @@ def test_scan12_matches_selected_bin_after_removing_direction_suffix(direction: 
             "OTHER_EVENT",
         ),
         (
-            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "OTHER-BIN"}}),
+            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"bin_code": "OTHER-BIN"}}),
             "UNSELECTED_BIN",
         ),
         (
-            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "A000001922-E"}}),
+            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"bin_code": "A000001922-E"}}),
             "UNSELECTED_BIN",
         ),
         (
-            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "A000001922-A-EXTRA"}}),
+            _evidence(
+                normalized_payload={**_evidence().normalized_payload, "data": {"bin_code": "A000001922-A-EXTRA"}}
+            ),
             "UNSELECTED_BIN",
         ),
     ],
@@ -165,7 +167,7 @@ def test_scan12_accepts_a_late_commit_even_when_its_id_is_below_the_recorded_bou
             "INVALID_NORMALIZED_PAYLOAD",
         ),
         (
-            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": 123}}),
+            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"bin_code": 123}}),
             "INVALID_BARCODE",
         ),
         (

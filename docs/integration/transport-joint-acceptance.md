@@ -26,7 +26,7 @@ CTU01 货架搬出
 | 代码/合同 | 单面、多面、重复 Evidence、未知结果、重启恢复和全局单活动轮次均已有自动化验收资产；同资源独立 Transport 不由 WES 阻止 | 聚焦或集成测试通过只证明对应代码快照 |
 | WMS Mock | Mock 可接受 `CTU01 RACK→RACK_POSITION`、`CTU02` 显式 `RACK_POSITION`、`CTU03 RACK→ZONE`，终态仍显式返回精确 `RACK_POSITION` | Mock 不证明真实 WMS/RCS 接纳、执行或回调 |
 | 部署 | 待 release evidence、镜像 digest、OCI source revision 和迁移结果一致后记录 | `/health`、进程存活或 Swagger 可访问不证明业务链路 |
-| 出料口扫码现场 schema | `device_code` 必须精确匹配本轮 SCAN4 所填设备编码（默认 `STATION_SCAN12`），并按 `event_type=SCAN_COMPLETED`、`data.barcode=<料箱编码>` 验收 | 联调时必须确认真实 ECS payload、时间戳、`source_event_id` 和 apply status |
+| 出料口扫码现场 schema | `device_code` 必须精确匹配本轮 SCAN4 所填设备编码（默认 `STATION_SCAN12`），并按 `event_type=SCAN_COMPLETED`、`data.bin_code=<料箱编码>` 验收 | 联调时必须确认真实 ECS payload、时间戳、`source_event_id` 和 apply status |
 | RCS/WMS/ECS 物理闭环 | 此前默认区域轮次经操作员确认直接录入进入真实 WMS/RCS，`SCAN12` 驱动料箱回架并触发最终 `CTU03` | 历史确认不代表新区域已验收；各区域仍须核对逐消息原始 payload、统一时间窗和现场记录 |
 | 业务验收 | 待操作员确认选架、选箱、WMS 分配 slot 回架及最终返库均符合业务预期 | 只有现场业务 owner 可以签署 |
 
@@ -140,7 +140,7 @@ CTU01("90")
 
 - 同一料箱重复扫码只计一次；旧于步骤 high-watermark 或 `not_before` 的扫码不得推进。
 - 非选中料箱、其它设备和其它事件类型不得推进当前面。
-- `InboundEvidence.apply_status=PENDING|RECONCILING`、无效 barcode 或身份冲突必须进入 `NEEDS_ATTENTION`，不得创建回架 task。
+- `InboundEvidence.apply_status=PENDING|RECONCILING`、无效 `bin_code` 或身份冲突必须进入 `NEEDS_ATTENTION`，不得创建回架 task。
 - Transport `RECONCILING`/`DELIVERY_UNKNOWN`、`position_unknown=true` 或精确位置不一致时不得创建后继 task；
   携带目标面的请求仍须校验面值，省略目标面的 `CTU03` 允许省略 `arrival_face` 或传 `null`，但不放宽精确位置及其它终态校验。
 - 对 `DELIVERY_UNKNOWN` 只能等待同一个 `transport_task_id` 的权威终态；不得生成新 `client_request_id` 重发。
@@ -156,7 +156,7 @@ CTU01("90")
 - Git revision、release evidence、后端镜像 digest、迁移 revision；
 - `run_id`、每步 ordinal/phase/status、冻结的工作线、区域及扫码配置和全部 `client_request_id`/`transport_task_id`；
 - WMS submit/ACK/callback 的 `operation_id`、时间戳和原始 body digest；
-- 本轮出料口扫码的 `device_code`、Evidence id、`source_event_id`、设备时间戳、barcode、apply status；
+- 本轮出料口扫码的 `device_code`、Evidence id、`source_event_id`、设备时间戳、`bin_code`、apply status；
 - RCS 对应任务号、实际位置和面向证据；
 - 操作员确认的工作线、货架、料箱、初始及 WMS 分配 slot、异常处理和最终业务结论。
 

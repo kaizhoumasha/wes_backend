@@ -409,7 +409,7 @@ def _event(device_code: str, *, marker: str) -> EcsDeviceEventReport:
         device_code=device_code,
         event_type="SCAN_COMPLETED",
         timestamp=1_786_579_204_000,
-        data={"location": f"STATION-{marker}", "barcode": f"BARCODE-{marker}"},
+        data={"location": f"STATION-{marker}", "bin_code": f"BARCODE-{marker}"},
     )
 
 

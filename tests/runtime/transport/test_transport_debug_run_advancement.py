@@ -1060,7 +1060,7 @@ def _scan(
             "timestamp": NOT_BEFORE_MS,
             "source_event_id": source_event_id,
             "is_debug": True,
-            "data": {"barcode": barcode},
+            "data": {"bin_code": barcode},
         },
         received_at=received_at,
         device_code="SCAN12",
