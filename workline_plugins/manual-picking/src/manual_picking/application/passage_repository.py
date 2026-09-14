@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlmodel import select
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
@@ -25,12 +25,18 @@ class PassageRepository:
         return passage
 
     async def has_prior_unpublished_scan(
-        self, db: AsyncSession, *, workline_id: int, device_code: str, evidence_id: int
+        self, db: AsyncSession, *, workline_id: int, device_code: str, evidence: InboundEvidence
     ) -> bool:
         statement = (
             select(_EVIDENCE_COLUMNS.id)
             .where(
-                _EVIDENCE_COLUMNS.id < evidence_id,
+                or_(
+                    _EVIDENCE_COLUMNS.received_at < evidence.received_at,
+                    and_(
+                        _EVIDENCE_COLUMNS.received_at == evidence.received_at,
+                        _EVIDENCE_COLUMNS.id < evidence.id,
+                    ),
+                ),
                 _EVIDENCE_COLUMNS.workline_id == workline_id,
                 _EVIDENCE_COLUMNS.device_code == device_code,
                 _EVIDENCE_COLUMNS.kind == InboundEvidenceKind.DEVICE_EVENT,

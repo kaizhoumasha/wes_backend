@@ -1,6 +1,6 @@
 """人工料箱经过只属于插件，不占用物料执行身份。"""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -92,7 +92,12 @@ async def test_unpublished_scan4_evidence_fences_later_scan() -> None:
     try:
         async with engine.begin() as db:
             await db.run_sync(table.create)
-            for evidence_id, device_code in ((1, "S4"), (2, "S3"), (3, "S4")):
+            for evidence_id, device_code, received_at in (
+                (1, "S4", now + timedelta(seconds=1)),
+                (2, "S3", now),
+                (3, "S4", now),
+                (4, "S4", now - timedelta(seconds=1)),
+            ):
                 await db.execute(
                     insert(table).values(
                         id=evidence_id,
@@ -100,14 +105,17 @@ async def test_unpublished_scan4_evidence_fences_later_scan() -> None:
                         source_identity=f"scan:{evidence_id}",
                         payload_digest="a" * 64,
                         normalized_payload={"event_type": "SCAN_COMPLETED"},
-                        received_at=now,
+                        received_at=received_at,
                         workline_id=7,
                         device_code=device_code,
-                        apply_status="RECONCILING" if evidence_id == 1 else "APPLIED",
+                        apply_status="RECONCILING" if evidence_id in {1, 4} else "APPLIED",
                     )
                 )
             repository = PassageRepository()
-            assert await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence_id=3)
+            target = SimpleNamespace(id=3, received_at=now)
+            assert await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence=target)
+            await db.execute(update(table).where(table.c.id == 4).values(published_at=now, decision_digest="b" * 64))
+            assert not await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence=target)
     finally:
         await engine.dispose()
 

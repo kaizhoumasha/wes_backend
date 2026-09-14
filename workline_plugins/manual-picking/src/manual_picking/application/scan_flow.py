@@ -106,7 +106,7 @@ class ManualPickingScanFlow:
         elif evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
             result, role = await self._apply_device_event(db, evidence, workline, bindings)
         elif evidence.kind == InboundEvidenceKind.DEVICE_RESULT:
-            result = await self._apply_device_result(db, evidence, workline_id)
+            result = await self._apply_device_result(db, evidence, workline_id, bindings)
             role = "DEVICE_RESULT"
         elif evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT:
             result = await self._apply_transport_result(db, evidence, workline_id)
@@ -376,7 +376,7 @@ class ManualPickingScanFlow:
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
         if await self._passages.has_prior_unpublished_scan(
-            db, workline_id=workline_id, device_code=bindings["SCAN4"], evidence_id=evidence.id
+            db, workline_id=workline_id, device_code=bindings["SCAN4"], evidence=evidence
         ):
             return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN4"):
@@ -420,15 +420,32 @@ class ManualPickingScanFlow:
         passage.scan4_command_code = await self._move(db, workline_id, bindings, "SCAN4", evidence.id, decision.route)
         return decision.route
 
-    async def _apply_device_result(self, db: Any, evidence: Any, workline_id: int) -> str | None:
+    async def _apply_device_result(  # noqa: PLR0911
+        self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str]
+    ) -> str | None:
         command_code = evidence.command_code
         if not command_code:
             return None
         passage = await self._passages.by_command_code_for_update(db, command_code)
-        if passage is None or passage.workline_id != workline_id:
+        if passage is not None and passage.workline_id != workline_id:
             return None
         command = await self._command_reader.get_by_command_code(db, command_code)
         if command is None:
+            return None
+        if passage is None:
+            identity = command.execution_ref_id.split(":")
+            if (
+                command.workline_id == workline_id
+                and command.device_code == evidence.device_code == bindings["SCAN3"]
+                and command.execution_ref_type == WORKLINE_BUSINESS_REF_TYPE
+                and len(identity) == 3
+                and identity[0] == "manual-picking"
+                and identity[1].isdigit()
+                and identity[2] == "SCAN3"
+                and command.task_type == "MOVE_LEFT"
+                and command.status == CommandStatus.SUCCEEDED
+            ):
+                return "UNKNOWN_BIN_NG_EXIT_CLOSED"
             return None
         if passage.scan4_command_code == command_code:
             if passage.return_state != "MOVE_PENDING" or command.status != CommandStatus.SUCCEEDED:

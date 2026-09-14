@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - 扫码和 WMS 完成通知按冻结的料箱身份、FIFO 队头及原始证据处理；无法确认的早到结果进入对账，不提前下发物理命令。
+- SCAN3 未关联料箱的 `MOVE_LEFT` 结果按原命令成功事实闭合；SCAN4 前序围栏与退箱 FIFO 统一按接收时间和证据 ID 排序。
 - CI 增加基础设施预检和发布重试，改善外部依赖暂时不可用时的失败诊断。
 
 ## [0.43.1.0] - 2026-09-12

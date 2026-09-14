@@ -142,9 +142,9 @@ class _Passages:
     async def scan2_head_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return next((row for row in self.rows if row.scan2_evidence_id is None and row.disposition == "OPEN"), None)
 
-    async def has_prior_unpublished_scan(self, db, *, workline_id, device_code, evidence_id):  # type: ignore[no-untyped-def]
+    async def has_prior_unpublished_scan(self, db, *, workline_id, device_code, evidence):  # type: ignore[no-untyped-def]
         return any(
-            row.id < evidence_id
+            (row.received_at, row.id) < (evidence.received_at, evidence.id)
             and row.workline_id == workline_id
             and row.device_code == device_code
             and row.kind == InboundEvidenceKind.DEVICE_EVENT
@@ -234,7 +234,15 @@ class _Commands:
         return SimpleNamespace(command_code=f"COMMAND-{len(self.requests)}")
 
     async def get_by_command_code(self, db, command_code, *, for_update=False):  # type: ignore[no-untyped-def]
-        return SimpleNamespace(status=self.statuses.get(command_code, "SUCCEEDED"))
+        request = self.requests[int(command_code.removeprefix("COMMAND-")) - 1]
+        return SimpleNamespace(
+            status=self.statuses.get(command_code, "SUCCEEDED"),
+            device_code=request.device_code,
+            workline_id=request.workline_id,
+            execution_ref_type=request.execution_ref_type,
+            execution_ref_id=request.execution_ref_id,
+            task_type=request.task_type,
+        )
 
     async def has_unclosed_for_device_for_update(self, db, *, workline_id, device_code):  # type: ignore[no-untyped-def]
         return any(
@@ -709,6 +717,14 @@ async def test_scan3_unknown_goes_left_and_scan4_unreadable_holds() -> None:
 
     assert (await flow.apply_in_session(object(), 3, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert commands.requests[-1].task_type == "MOVE_LEFT"
+    unknown_command_code = f"COMMAND-{len(commands.requests)}"
+    evidences.rows[6] = _result(6, unknown_command_code, device_code="S3")
+    commands.statuses[unknown_command_code] = "ACKNOWLEDGED"
+    assert (
+        await flow.apply_in_session(object(), 6, workline_id=7)
+    ).disposition is BusinessEvidenceDisposition.RECONCILING
+    commands.statuses[unknown_command_code] = "SUCCEEDED"
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     before = len(commands.requests)
     assert (
         await flow.apply_in_session(object(), 4, workline_id=7)
