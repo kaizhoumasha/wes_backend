@@ -22,8 +22,8 @@ class _Repository:
     async def return_retry_due(self, _db, _workline_id, _rack_id, _rack_face, _now):  # type: ignore[no-untyped-def]
         return self.return_due
 
-    async def inbound_retry_due(self, _db, _workline_id, _task_id, _rack_id, _rack_face, _now):  # type: ignore[no-untyped-def]
-        return not self.face_done
+    async def inbound_progress(self, _db, _workline_id, _task_id, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(next_offset=None) if self.face_done else None
 
 
 class _Passages:
@@ -42,13 +42,21 @@ class _Scheduler:
         self.intents.append((intent, workline_id, created_at))
 
 
+class _Inbound:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def create_inbound_chunk(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+
+
 @pytest.mark.asyncio
 async def test_batch_flow_claims_fifo_before_inbound_and_keeps_single_wms_request() -> None:
     module = import_module("manual_picking.application.batch_flow")
     repo = _Repository()
     passages = _Passages(("A000000001", "A000000002"))
     scheduler = _Scheduler()
-    flow = module.ManualPickingBatchFlow(repo, passages, scheduler, uuid_factory=lambda: "op-1")
+    flow = module.ManualPickingBatchFlow(repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1")
     now = datetime(2026, 9, 13, 12)
 
     created = await flow.advance_in_session(
@@ -59,6 +67,7 @@ async def test_batch_flow_claims_fifo_before_inbound_and_keeps_single_wms_reques
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
+        inlet_location="CNV0301",
         now=now,
     )
 
@@ -79,6 +88,7 @@ async def test_batch_flow_claims_fifo_before_inbound_and_keeps_single_wms_reques
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
+        inlet_location="CNV0301",
         now=now,
     )
     assert len(scheduler.intents) == 1
@@ -89,7 +99,7 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
     module = import_module("manual_picking.application.batch_flow")
     scheduler = _Scheduler()
     flow = module.ManualPickingBatchFlow(
-        _Repository(return_due=False), _Passages(("A000000001",)), scheduler, uuid_factory=lambda: "op-2"
+        _Repository(return_due=False), _Passages(("A000000001",)), scheduler, _Inbound(), uuid_factory=lambda: "op-2"
     )
 
     assert await flow.advance_in_session(
@@ -100,20 +110,64 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
+        inlet_location="CNV0301",
         now=datetime(2026, 9, 13, 12),
     )
     assert type(scheduler.intents[0][0]) is sdk.BinInboundBatchIntent
-    assert scheduler.intents[0][0].max_bin_count == 4
+    assert scheduler.intents[0][0].rack_face == "90"
+
+
+@pytest.mark.asyncio
+async def test_frozen_face_schedules_second_transport_without_second_wms_request() -> None:
+    module = import_module("manual_picking.application.batch_flow")
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+    )
+    ready = sdk.BinInboundBatchReady(
+        tuple(
+            sdk.BinInboundBatchMember(f"BIN-{index}", sdk.TransportRackBinSlot("R1", "90", f"S-{index}"))
+            for index in range(1, 6)
+        )
+    )
+
+    class Repository(_Repository):
+        async def inbound_progress(self, _db, _workline_id, _task_id, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(intent=intent, result=ready, evidence_id=31, next_offset=4)
+
+    scheduler = _Scheduler()
+    inbound = _Inbound()
+    flow = module.ManualPickingBatchFlow(
+        Repository(return_due=False), _Passages(()), scheduler, inbound, uuid_factory=lambda: "unused"
+    )
+    assert await flow.advance_in_session(
+        object(),
+        workline_id=7,
+        workline_code="LINE-1",
+        task_id="PICK-1",
+        rack_id="R1",
+        rack_face="90",
+        return_location="CNV0302",
+        inlet_location="CNV0301",
+        now=datetime(2026, 9, 13, 12),
+    )
+    assert scheduler.intents == []
+    assert inbound.calls[0]["offset"] == 4
+    assert inbound.calls[0]["evidence_id"] == 31
 
 
 @pytest.mark.asyncio
 async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack_face() -> None:
     module = import_module("manual_picking.application.batch_result")
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90", max_bin_count=4
+        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     outcome = sdk.BinInboundBatchOutcome(
-        sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("A000000001", sdk.TransportRackBinSlot("R1", "90", "S1")),))
+        sdk.BinInboundBatchReady(
+            tuple(
+                sdk.BinInboundBatchMember(f"A00000000{index}", sdk.TransportRackBinSlot("R1", "90", f"S{index}"))
+                for index in range(1, 6)
+            )
+        )
     )
 
     class Reader:
@@ -140,9 +194,23 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
     )
     assert len(transport.calls) == 1
     assert transport.calls[0]["source_evidence_id"] == 31
-    assert transport.calls[0]["correlation_id"] == "batch-1"
-    assert transport.calls[0]["moves"] == (
-        BinMove("A000000001", RackBinSlot("R1", "90", "S1"), HandoffPosition("CNV0301")),
+    assert transport.calls[0]["correlation_id"] == "batch-1:0"
+    assert transport.calls[0]["moves"] == tuple(
+        BinMove(f"A00000000{index}", RackBinSlot("R1", "90", f"S{index}"), HandoffPosition("CNV0301"))
+        for index in range(1, 5)
+    )
+    await flow.create_inbound_chunk(
+        object(),
+        workline_id=7,
+        intent=intent,
+        ready=outcome.result,
+        evidence_id=31,
+        offset=4,
+        inlet_location="CNV0301",
+    )
+    assert transport.calls[1]["correlation_id"] == "batch-1:4"
+    assert transport.calls[1]["moves"] == (
+        BinMove("A000000005", RackBinSlot("R1", "90", "S5"), HandoffPosition("CNV0301")),
     )
     assert (
         await flow.apply_inbound_in_session(
@@ -150,7 +218,7 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
         )
         is None
     )
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -287,6 +355,7 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
     assert flow.calls[0]["rack_id"] == "R1"
     assert flow.calls[0]["rack_face"] == "90"
     assert flow.calls[0]["return_location"] == "CNV0302"
+    assert flow.calls[0]["inlet_location"] == "CNV0301"
     transports["source-move"] = SimpleNamespace(status="ACCEPTED")
     assert await driver.advance_in_session(object(), line, task) == 0
     assert len(flow.calls) == 1
@@ -357,6 +426,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         position_bindings={
             "FIVE_RACK": {"location_id": "FIVE-POS"},
             "TRANSFER_RACK": {"location_id": "TRANSFER-POS"},
+            "INLET": {"location_id": "CNV0301"},
             "OUTLET": {"location_id": "CNV0302"},
         },
     )

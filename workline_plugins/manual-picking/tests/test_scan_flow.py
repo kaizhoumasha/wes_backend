@@ -24,7 +24,7 @@ def _scan(evidence_id: int, device_code: str, bin_code: str) -> InboundEvidence:
         timestamp=1_788_389_900_000 + evidence_id,
         source_event_id=f"EVENT-{evidence_id}",
         is_debug=False,
-        data={"bin_code": bin_code},
+        data={"barcode": bin_code},
     )
     return InboundEvidence(
         id=evidence_id,
@@ -306,7 +306,7 @@ def _setup(
 @pytest.mark.asyncio
 async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_position_is_confirmed() -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90", max_bin_count=4
+        operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))

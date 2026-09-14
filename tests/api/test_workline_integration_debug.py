@@ -312,7 +312,7 @@ async def test_prepare_passes_the_explicit_wms_workline_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
+async def test_bin_inbound_batch_passes_the_admin_selected_face() -> None:
     service = _service()
     payload = {
         "expected_version": 0,
@@ -321,7 +321,6 @@ async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
             "task_id": "PICK-001",
             "rack_id": "RACK-01",
             "rack_face": "90",
-            "max_bin_count": 1,
         },
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:

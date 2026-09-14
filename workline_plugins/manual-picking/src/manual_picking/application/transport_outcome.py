@@ -70,8 +70,12 @@ class ManualPickingTransportOutcomePublisher:
                 source is None
                 or source.kind != InboundEvidenceKind.WMS_RESULT
                 or source.operation != batch_operations[binding.step]
-                or source.operation_id != binding.correlation_id
-                or binding.resource_fence_id != binding.correlation_id
+                or source.operation_id != binding.resource_fence_id
+                or (
+                    binding.correlation_id != binding.resource_fence_id
+                    if binding.step == "MANUAL_PICKING_RETURN_BATCH"
+                    else not binding.correlation_id.startswith(f"{binding.resource_fence_id}:")
+                )
             ):
                 raise LookupError("manual-picking Transport outcome 缺少原批次 Evidence")
             task = await self._transports.get_task_by_client_request(db, outcome.client_request_id)
@@ -90,7 +94,7 @@ class ManualPickingTransportOutcomePublisher:
                 )
                 if actual != expected:
                     raise ValueError("manual-picking Transport outcome bin members 不匹配")
-            business_identity = {"batch_operation_id": binding.correlation_id}
+            business_identity = {"batch_operation_id": binding.resource_fence_id}
         accepted = await self._evidence_service.accept(
             db,
             kind=InboundEvidenceKind.TRANSPORT_RESULT,

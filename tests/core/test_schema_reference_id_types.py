@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.dialects import postgresql
 
+from src.app.device.models.command import DeviceCommand
 from src.app.execution.models.transport_decision_binding import TransportDecisionBinding
 from src.app.resource.models import (
     BinContentSnapshot,
@@ -17,6 +18,7 @@ from src.app.runtime.orchestration.models.workline_position import WorkLinePosit
 
 def test_reference_and_evidence_ids_compile_to_postgresql_bigint() -> None:
     columns = (
+        DeviceCommand.__table__.c.workline_id,
         TransportDecisionBinding.__table__.c.workline_id,
         BinContentSnapshot.__table__.c.source_session_id,
         BinMaterialMount.__table__.c.writeback_evidence_id,

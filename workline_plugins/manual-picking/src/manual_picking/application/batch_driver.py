@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from manual_picking.definition import FIVE_RACK, OUTLET, TRANSFER_RACK
+from manual_picking.definition import FIVE_RACK, INLET, OUTLET, TRANSFER_RACK
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.utils.timezone import timezone
 
@@ -71,6 +71,7 @@ class ManualPickingBatchDriver:
                 rack_id=ready.rack_id,
                 rack_face=ready.rack_face,
                 return_location=bindings[OUTLET.slot_key]["location_id"],
+                inlet_location=bindings[INLET.slot_key]["location_id"],
                 now=timezone.now_for_db(),
             )
         )

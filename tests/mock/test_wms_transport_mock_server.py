@@ -334,7 +334,7 @@ def test_decision_route_returns_scannable_bin_code_for_inbound_batch() -> None:
         "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4475",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1786060800000,
-        "data": {"task_id": "PICK-20260811-001", "rack_id": "RACK-01", "rack_face": "90", "max_bin_count": 1},
+        "data": {"task_id": "PICK-20260811-001", "rack_id": "RACK-01", "rack_face": "90"},
     }
 
     with TestClient(wms_mock_server.app) as client:
@@ -1431,93 +1431,22 @@ def test_return_batch_requires_explicit_infeed_to_return_handoff_arrival():
         assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "READY"
 
 
-def test_inbound_batch_finishes_one_bin_face_only_after_return_transport_result():
+def test_inbound_batch_freezes_one_face_before_transport_and_replays_original_result():
     inbound = {
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4531",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1700000000000,
-        "data": {"task_id": "PICK-ONE", "rack_id": "rack-1", "rack_face": "90", "max_bin_count": 1},
+        "data": {"task_id": "PICK-ONE", "rack_id": "rack-1", "rack_face": "90"},
     }
-    out = deepcopy(BIN_MOVE)
-    out["data"]["moves"][0] = {
-        "container_id": "A000000001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "SLOT-01"},
-        "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
-    }
-    returned = deepcopy(out)
-    returned["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4535"
-    returned["data"]["transport_task_id"] = "transport-bin-return"
-    returned["data"]["moves"][0]["source"] = {"kind": "HANDOFF_POSITION", "location_code": "CNV0302"}
-    returned["data"]["moves"][0]["target"] = out["data"]["moves"][0]["source"]
-    returning = deepcopy(RETURN_BATCH)
-    returning["data"]["return_candidates"] = [
-        {"sequence_no": 1, "bin_code": "A000000001", "source": {"type": "HANDOFF_POSITION", "location_code": "CNV0302"}}
-    ]
-
+    another = deepcopy(inbound)
+    another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4532"
     with TestClient(wms_mock_server.app) as client:
         first = client.post("/api/v1/wes/decisions", json=inbound)
-        pending_request = deepcopy(inbound)
-        pending_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4532"
-        pending = client.post("/api/v1/wes/decisions", json=pending_request)
-        assert client.post("/api/v1/wes/transport-requests", json=out).status_code == 202
-        wms_mock_server.transport_submission_store.apply_result(
-            {
-                "transport_task_id": out["data"]["transport_task_id"],
-                "kind": "BIN_MOVE",
-                "outcome_revision": 1,
-                "results": [
-                    {
-                        "container_id": "A000000001",
-                        "status": "SUCCEEDED",
-                        "final_position": out["data"]["moves"][0]["target"],
-                    }
-                ],
-            }
-        )
-        arrival = {
-            "bin_code": "A000000001",
-            "source": {"type": "HANDOFF_POSITION", "location_code": "CNV0301"},
-            "target": {"type": "HANDOFF_POSITION", "location_code": "CNV0302"},
-        }
-        assert client.post("/debug/bin-handoff-arrivals", json=arrival).status_code == 200
-        allocation = client.post("/api/v1/wes/decisions", json=returning)
-        assert client.post("/api/v1/wes/transport-requests", json=returned).status_code == 202
-        pending_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4533"
-        returning_bin = client.post("/api/v1/wes/decisions", json=pending_request)
-        wms_mock_server.transport_submission_store.apply_position(
-            {
-                "transport_task_id": returned["data"]["transport_task_id"],
-                "container_id": "A000000001",
-                "milestone": "TARGET_PLACED",
-                "final_position": returned["data"]["moves"][0]["target"],
-            }
-        )
-        pending_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4536"
-        placed_but_active = client.post("/api/v1/wes/decisions", json=pending_request)
-        wms_mock_server.transport_submission_store.apply_result(
-            {
-                "transport_task_id": returned["data"]["transport_task_id"],
-                "kind": "BIN_MOVE",
-                "outcome_revision": 1,
-                "results": [
-                    {
-                        "container_id": "A000000001",
-                        "status": "SUCCEEDED",
-                        "final_position": returned["data"]["moves"][0]["target"],
-                    }
-                ],
-            }
-        )
-        pending_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4534"
-        finished = client.post("/api/v1/wes/decisions", json=pending_request)
+        second = client.post("/api/v1/wes/decisions", json=another)
         replay = client.post("/api/v1/wes/decisions", json=inbound)
 
     assert first.json()["data"]["result"] == "READY"
-    assert pending.json()["data"]["result"] == "NO_BATCH"
-    assert allocation.json()["data"]["result"] == "READY"
-    assert returning_bin.json()["data"]["result"] == "NO_BATCH"
-    assert placed_but_active.json()["data"]["result"] == "NO_BATCH"
-    assert finished.json()["data"] == {"result": "RACK_FACE_DONE"}
+    assert second.json()["data"] == {"result": "RACK_FACE_DONE"}
     assert replay.json() == first.json()
 
 

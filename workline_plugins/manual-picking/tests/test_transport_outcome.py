@@ -116,7 +116,7 @@ async def test_inbound_batch_transport_result_matches_all_frozen_bin_members() -
         client_request_id="REQUEST-1",
         step="MANUAL_PICKING_INBOUND_BATCH",
         resource_fence_id="batch-1",
-        correlation_id="batch-1",
+        correlation_id="batch-1:0",
         source_evidence_id=101,
     )
     source = SimpleNamespace(

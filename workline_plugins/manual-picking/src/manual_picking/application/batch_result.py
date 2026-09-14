@@ -6,6 +6,7 @@ from typing import Any
 
 from wes_plugin_sdk import (
     BinBatchNoBatch,
+    BinInboundBatchIntent,
     BinInboundBatchRackFaceDone,
     BinInboundBatchReady,
     BinReturnBatchReady,
@@ -41,22 +42,43 @@ class ManualPickingBatchResultFlow:
             return None
         result = outcome.result
         if isinstance(result, BinInboundBatchReady):
-            moves = inbound_moves(intent, result, inlet_location=inlet_location)
-            await self._transport.create(
+            await self.create_inbound_chunk(
                 db,
                 workline_id=workline_id,
-                source_evidence_id=evidence.id,
-                correlation_id=intent.operation_id,
-                step=INBOUND_STEP,
-                resource_fence_id=intent.operation_id,
-                moves=moves,
+                intent=intent,
+                ready=result,
+                evidence_id=evidence.id,
+                offset=0,
+                inlet_location=inlet_location,
             )
             return "INBOUND_READY"
-        if isinstance(result, BinBatchNoBatch):
-            return "INBOUND_NO_BATCH"
         if isinstance(result, BinInboundBatchRackFaceDone):
             return "RACK_FACE_DONE"
         return None
+
+    async def create_inbound_chunk(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        intent: BinInboundBatchIntent,
+        ready: BinInboundBatchReady,
+        evidence_id: int,
+        offset: int,
+        inlet_location: str,
+    ) -> None:
+        moves = inbound_moves(intent, ready, inlet_location=inlet_location)[offset : offset + 4]
+        if not moves:
+            raise ValueError("inbound chunk offset exceeds frozen face allocation")
+        await self._transport.create(
+            db,
+            workline_id=workline_id,
+            source_evidence_id=evidence_id,
+            correlation_id=f"{intent.operation_id}:{offset}",
+            step=INBOUND_STEP,
+            resource_fence_id=intent.operation_id,
+            moves=moves,
+        )
 
     async def apply_return_in_session(
         self,

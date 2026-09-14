@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select
-from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchRackFaceDone
+from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBatchRackFaceDone, BinInboundBatchReady
 
-from src.app.execution.models import InboundEvidence, InboundEvidenceKind, WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.models import (
+    InboundEvidence,
+    InboundEvidenceKind,
+    TransportDecisionBinding,
+    WmsConfirmation,
+    WmsConfirmationStatus,
+)
 from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
+from .batch_result import INBOUND_STEP
 from .passage_model import ManualPickingPassage
 
 if TYPE_CHECKING:
@@ -22,6 +30,15 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _BATCH_OPERATIONS = (BIN_INBOUND_BATCH_OPERATION, BIN_RETURN_BATCH_OPERATION)
+
+
+@dataclass(frozen=True)
+class InboundFaceProgress:
+    intent: BinInboundBatchIntent
+    result: BinInboundBatchReady | BinInboundBatchRackFaceDone
+    evidence_id: int
+    next_offset: int | None
+    complete: bool
 
 
 class BatchRepository:
@@ -103,20 +120,74 @@ class BatchRepository:
         )
         return new_ready is not None
 
-    async def inbound_retry_due(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, now: datetime
-    ) -> bool:
-        latest = await self._history.latest_inbound(
+    async def inbound_progress(
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ) -> InboundFaceProgress | None:
+        detail = await self._history.latest_inbound_detail(
             db, workline_id=workline_id, task_id=task_id, rack_id=rack_id, rack_face=rack_face
         )
-        if latest is None:
-            return True
-        outcome, completed_at = latest
-        if isinstance(outcome.result, BinInboundBatchRackFaceDone):
-            return False
-        if isinstance(outcome.result, BinBatchNoBatch):
-            return now >= completed_at + timedelta(milliseconds=outcome.result.retry_after_ms)
-        return True
+        if detail is None:
+            return None
+        intent, outcome, evidence, _ = detail
+        result = outcome.result
+        if isinstance(result, BinInboundBatchRackFaceDone):
+            return InboundFaceProgress(intent, result, evidence.id, None, True)
+        if not isinstance(result, BinInboundBatchReady):
+            raise TypeError("inbound face allocation has no determinate result")
+        bindings = cast("Any", TransportDecisionBinding).__table__.c
+        transports = cast("Any", TransportTask).__table__.c
+        passages = cast("Any", ManualPickingPassage).__table__.c
+        legacy_binding = await db.scalar(
+            select(bindings.id)
+            .where(
+                bindings.workline_id == workline_id,
+                bindings.correlation_id == intent.operation_id,
+                bindings.step == INBOUND_STEP,
+                bindings.resource_fence_id == intent.operation_id,
+                bindings.source_evidence_id == evidence.id,
+            )
+            .limit(1)
+        )
+        if legacy_binding is not None:
+            raise ValueError("legacy inbound binding requires reconciliation before chunk dispatch")
+        for offset in range(0, len(result.bins), 4):
+            row = (
+                await db.execute(
+                    select(TransportTask)
+                    .join(TransportDecisionBinding, bindings.client_request_id == transports.client_request_id)
+                    .where(
+                        bindings.workline_id == workline_id,
+                        bindings.correlation_id == f"{intent.operation_id}:{offset}",
+                        bindings.step == INBOUND_STEP,
+                        bindings.resource_fence_id == intent.operation_id,
+                        bindings.source_evidence_id == evidence.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return InboundFaceProgress(intent, result, evidence.id, offset, False)
+            if (
+                row.status != "SUCCEEDED"
+                or row.outcome_version == 0
+                or row.published_outcome_version < row.outcome_version
+            ):
+                return InboundFaceProgress(intent, result, evidence.id, None, False)
+            chunk_codes = {member.bin_code for member in result.bins[offset : offset + 4]}
+            scanned = set(
+                (
+                    await db.scalars(
+                        select(passages.bin_code).where(
+                            passages.workline_id == workline_id,
+                            passages.task_id == task_id,
+                            passages.bin_code.in_(chunk_codes),
+                            passages.scan1_evidence_id.is_not(None),
+                        )
+                    )
+                ).all()
+            )
+            if scanned != chunk_codes:
+                return InboundFaceProgress(intent, result, evidence.id, None, False)
+        return InboundFaceProgress(intent, result, evidence.id, None, True)
 
 
-__all__ = ["BatchRepository"]
+__all__ = ["BatchRepository", "InboundFaceProgress"]

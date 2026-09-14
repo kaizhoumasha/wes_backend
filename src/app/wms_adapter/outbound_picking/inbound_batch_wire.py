@@ -7,7 +7,6 @@ from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, TypeAdapter, model_validator
 
 from src.app.wms_adapter.outbound_picking.response_wire import (
-    BinBatchNoBatch,
     ConflictResponse,
     RejectedResponse,
     UnavailableResponse,
@@ -24,7 +23,6 @@ class BinInboundBatchData(StrictWireModel):
     task_id: Identifier
     rack_id: Identifier
     rack_face: RackFaceText
-    max_bin_count: Annotated[int, Field(ge=1, le=4)]
 
 
 class BinInboundBatchRequest(StrictWireModel):
@@ -48,7 +46,7 @@ class BinInboundBatchMember(StrictWireModel):
 
 class BinInboundBatchReady(StrictWireModel):
     result: Literal["READY"]
-    bins: Annotated[list[BinInboundBatchMember], Field(min_length=1, max_length=4)]
+    bins: Annotated[list[BinInboundBatchMember], Field(min_length=1)]
 
     @model_validator(mode="after")
     def validate_unique_members(self) -> BinInboundBatchReady:
@@ -71,7 +69,7 @@ class BinInboundBatchDecidedResponse(StrictWireModel):
     operation_id: OperationId
     code: Literal["DECIDED"]
     timestamp: NonnegativeMilliseconds
-    data: Annotated[BinInboundBatchReady | BinBatchNoBatch | BinInboundBatchRackFaceDone, Field(discriminator="result")]
+    data: Annotated[BinInboundBatchReady | BinInboundBatchRackFaceDone, Field(discriminator="result")]
 
 
 type BinInboundBatchResponse = (
@@ -112,13 +110,14 @@ def parse_bin_inbound_batch_response(
                 path=("operation_id",),
                 expected_value=request.operation_id,
             )
-        if isinstance(response, BinInboundBatchDecidedResponse) and isinstance(response.data, BinInboundBatchReady):
-            if len(response.data.bins) > request.data.max_bin_count:
-                raise observed_contract_error(observation, "READY Bin 数量超过请求容量")
-            if any(
+        if (
+            isinstance(response, BinInboundBatchDecidedResponse)
+            and isinstance(response.data, BinInboundBatchReady)
+            and any(
                 (item.source_locator.rack_id, item.source_locator.rack_face)
                 != (request.data.rack_id, request.data.rack_face)
                 for item in response.data.bins
-            ):
-                raise observed_contract_error(observation, "READY 来源必须匹配请求货架面")
+            )
+        ):
+            raise observed_contract_error(observation, "READY 来源必须匹配请求货架面")
     return response

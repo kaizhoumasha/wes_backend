@@ -346,39 +346,26 @@ class TransportSubmissionStore:
         return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def inbound_batch_result(self, data: BinInboundBatchData) -> dict[str, Any]:
-        # 本机 Mock 只模拟一面一个箱；以搬运终态而非接纳/在途位置判定该面完成。
+        # 本机 Mock 一次冻结当前面的完整清单；后续搬运与退箱不再改变该分配。
         with self._lock:
             face = (data.task_id, data.rack_id, data.rack_face)
-            if face not in self._served_inbound_faces:
-                self._served_inbound_faces.add(face)
-                return {
-                    "result": "READY",
-                    "bins": [
-                        {
-                            "bin_code": "A000000001",
-                            "source_locator": {
-                                "type": "RACK_BIN_SLOT",
-                                "rack_id": data.rack_id,
-                                "rack_face": data.rack_face,
-                                "slot_id": "SLOT-01",
-                            },
-                        }
-                    ],
-                }
-            reservation = self._return_reservations.get("A000000001")
-            if (
-                reservation
-                == {
-                    "kind": "RACK_BIN_SLOT",
-                    "rack_id": data.rack_id,
-                    "rack_face": data.rack_face,
-                    "slot_id": "SLOT-01",
-                }
-                and self._bin_positions.get("A000000001") == reservation
-                and ("BIN", "A000000001") not in self._resource_tasks
-            ):
+            if face in self._served_inbound_faces:
                 return {"result": "RACK_FACE_DONE"}
-            return {"result": "NO_BATCH", "retry_after_ms": 1000}
+            self._served_inbound_faces.add(face)
+            return {
+                "result": "READY",
+                "bins": [
+                    {
+                        "bin_code": "A000000001",
+                        "source_locator": {
+                            "type": "RACK_BIN_SLOT",
+                            "rack_id": data.rack_id,
+                            "rack_face": data.rack_face,
+                            "slot_id": "SLOT-01",
+                        },
+                    }
+                ],
+            }
 
     def _frozen_data(self, transport_task_id: str) -> dict[str, Any] | None:
         operation_id = self._task_operations.get(transport_task_id)

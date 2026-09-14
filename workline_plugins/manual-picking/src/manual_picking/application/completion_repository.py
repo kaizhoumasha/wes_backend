@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, or_, select
-from wes_plugin_sdk import BinInboundBatchRackFaceDone
 
 from manual_picking.definition import DEFINITION
 from src.app.execution.models import (
@@ -23,6 +22,7 @@ from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatch
 from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionResultReader
 from src.app.workline.installed_plugin import parse_device_bindings
 
+from .batch_repository import BatchRepository
 from .passage_model import ManualPickingPassage
 from .rack_readiness import rack_ready
 
@@ -42,6 +42,7 @@ class ManualPickingCompletionRepository:
     ) -> None:
         self._plans = plans or PickingTaskPlanDeltaRepository()
         self._history = history or BinBatchResultReader()
+        self._batches = BatchRepository(self._history)
         self._completion_reader = completion_reader or PickingTaskCompletionResultReader()
         self._positions = positions or position_projection_repository
         self._transports = transports or TransportRepository()
@@ -97,15 +98,11 @@ class ManualPickingCompletionRepository:
         ):
             return False
         for source in sources:
-            latest = await self._history.latest_inbound(
-                db,
-                workline_id=line.id,
-                task_id=task.task_id,
-                rack_id=source.rack_id,
-                rack_face=source.rack_face,
-            )
-            if latest is not None and isinstance(latest[0].result, BinInboundBatchRackFaceDone):
-                continue
+            progress = await self._batches.inbound_progress(db, line.id, task.task_id, source.rack_id, source.rack_face)
+            if progress is not None:
+                if progress.complete:
+                    continue
+                return False
             binding = cast("Any", TransportDecisionBinding).__table__.c
             transport = cast("Any", TransportTask).__table__.c
             member = cast("Any", TransportMember).__table__.c

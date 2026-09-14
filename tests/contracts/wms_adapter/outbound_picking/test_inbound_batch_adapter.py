@@ -19,7 +19,7 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": OPERATION,
         "timestamp": 0,
-        "data": {"task_id": "TASK-1", "rack_id": "RACK-1", "rack_face": "A", "max_bin_count": 1},
+        "data": {"task_id": "TASK-1", "rack_id": "RACK-1", "rack_face": "A"},
     }
 
 
@@ -70,7 +70,6 @@ def client_response(data, code="DECIDED", status=200, operation_id=OPERATION_ID)
                 }
             ],
         },
-        {"result": "NO_BATCH", "retry_after_ms": 1000},
         {"result": "RACK_FACE_DONE"},
     ],
 )

@@ -28,7 +28,7 @@ def test_return_fifo_precedes_inbound_and_is_bounded_to_four() -> None:
     ]
 
 
-def test_inbound_uses_four_only_when_return_cannot_run() -> None:
+def test_inbound_requests_face_only_when_return_cannot_run() -> None:
     policy = import_module("manual_picking.application.batch_policy")
     fields = {
         "operation_id": "019f0000-0000-7000-8000-000000000002",
@@ -44,5 +44,5 @@ def test_inbound_uses_four_only_when_return_cannot_run() -> None:
     intent = policy.choose_next_batch(**fields, return_retry_due=False)
 
     assert type(intent) is sdk.BinInboundBatchIntent
-    assert intent.max_bin_count == 4
+    assert (intent.task_id, intent.rack_id, intent.rack_face) == ("PICK-1", "R1", "90")
     assert policy.choose_next_batch(**(fields | {"allow_inbound": False}), return_retry_due=False) is None

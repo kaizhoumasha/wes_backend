@@ -113,6 +113,7 @@ def build_deployment_runtime(
                 BatchRepository(batch_reader),
                 passages,
                 BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+                batch_result,
                 uuid_factory=new_uuid7,
             ),
             plans=PickingTaskPlanDeltaRepository(),

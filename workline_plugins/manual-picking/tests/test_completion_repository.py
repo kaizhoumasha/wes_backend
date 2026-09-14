@@ -39,11 +39,19 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
 
     class History:
         done = False
+        result = sdk.BinInboundBatchRackFaceDone()
 
-        async def latest_inbound(self, _db, *, workline_id, task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+        async def latest_inbound_detail(self, _db, *, workline_id, task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
             assert (workline_id, task_id, rack_id, rack_face) == (7, "PICK-1", "R1", "90")
             return (
-                (sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone()), datetime(2026, 9, 14, 4))
+                (
+                    sdk.wms_operations.outbound_bin_inbound_batch(
+                        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+                    ),
+                    sdk.BinInboundBatchOutcome(self.result),
+                    SimpleNamespace(id=31),
+                    datetime(2026, 9, 14, 4),
+                )
                 if self.done
                 else None
             )
@@ -184,6 +192,12 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             transport.published_outcome_version = 1
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
+            history.done = True
+            history.result = sdk.BinInboundBatchReady(
+                (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
+            )
+            assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", "R1", "90")).complete
+            assert not await repository.ready_to_confirm(db, line, task)
     finally:
         await engine.dispose()
 

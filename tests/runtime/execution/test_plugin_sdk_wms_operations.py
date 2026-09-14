@@ -239,17 +239,14 @@ def test_return_rack_arrival_outcome_has_only_approved_branches() -> None:
     assert sdk.ReturnRackArrivalReportOutcome(sdk.OperationConflict("REVISION_CONFLICT")).result.reason_code
 
 
-def test_bin_inbound_batch_facade_validates_capacity_and_preserves_face() -> None:
-    values = {"operation_id": "batch", "task_id": "task", "rack_id": "rack", "rack_face": "来源面", "max_bin_count": 4}
+def test_bin_inbound_batch_facade_preserves_face() -> None:
+    values = {"operation_id": "batch", "task_id": "task", "rack_id": "rack", "rack_face": "来源面"}
     intent = wms_operations.outbound_bin_inbound_batch(**values)
     assert type(intent) is sdk.BinInboundBatchIntent
     assert intent.rack_face == "来源面"
     with pytest.raises(FrozenInstanceError):
-        intent.max_bin_count = 1
+        intent.rack_face = "other"
     for name, value in [
-        ("max_bin_count", True),
-        ("max_bin_count", 0),
-        ("max_bin_count", 5),
         ("rack_face", "x" * 11),
         ("task_id", "坏 id"),
         ("rack_id", "x" * 101),

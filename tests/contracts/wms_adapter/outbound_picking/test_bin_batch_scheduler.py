@@ -36,7 +36,6 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
         task_id="PICK-001",
         rack_id="R1",
         rack_face="90",
-        max_bin_count=4,
     )
     returned = sdk.wms_operations.outbound_bin_return_batch(
         operation_id="019f0000-0000-7000-8000-000000000002",
@@ -58,7 +57,6 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
         "task_id": "PICK-001",
         "rack_id": "R1",
         "rack_face": "90",
-        "max_bin_count": 4,
     }
     assert confirmations.calls[1]["request_payload"]["data"]["return_candidates"] == [
         {
@@ -84,16 +82,13 @@ async def test_inbound_batch_owner_requires_current_task_and_planned_face() -> N
         "operation_id": "019f0000-0000-7000-8000-000000000001",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90", "max_bin_count": 4},
+        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
     }
 
     assert await owner.validate_owner(object(), workline_id=7, request_payload=payload)
     assert not await owner.validate_owner(object(), workline_id=8, request_payload=payload)
     assert not await owner.validate_owner(
         object(), workline_id=7, request_payload=payload | {"data": payload["data"] | {"rack_face": "270"}}
-    )
-    assert not await owner.validate_owner(
-        object(), workline_id=7, request_payload=payload | {"data": payload["data"] | {"max_bin_count": 2}}
     )
 
 
@@ -104,7 +99,7 @@ async def test_inbound_result_reader_binds_frozen_request_to_response_evidence()
         "operation": "outbound.bin.inbound_batch@v1",
         "operation_id": operation_id,
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90", "max_bin_count": 4},
+        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
     }
     response = {
         "operation_id": operation_id,
@@ -144,6 +139,17 @@ async def test_inbound_result_reader_binds_frozen_request_to_response_evidence()
     assert outcome.result.bins[0].bin_code == "A000000001"
     with pytest.raises(ValueError, match="original confirmation"):
         await reader.read_inbound(object(), SimpleNamespace(**(vars(evidence) | {"id": 32})), workline_id=7)
+
+
+@pytest.mark.asyncio
+async def test_inbound_face_reader_rejects_multiple_distinct_allocations() -> None:
+    class Db:
+        async def execute(self, _statement):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(all=lambda: [(SimpleNamespace(id=1), datetime(2026, 9, 13, 12))] * 2)
+
+    reader = bin_batch.BinBatchResultReader()
+    with pytest.raises(ValueError, match="multiple inbound allocations"):
+        await reader.latest_inbound_detail(Db(), workline_id=7, task_id="PICK-1", rack_id="R1", rack_face="90")
 
 
 @pytest.mark.asyncio

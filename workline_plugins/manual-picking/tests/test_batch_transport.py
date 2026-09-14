@@ -11,7 +11,7 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 def test_inbound_ready_uses_wms_source_and_workline_handoff() -> None:
     module = import_module("manual_picking.application.batch_transport")
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="op-1", task_id="PICK-1", rack_id="R1", rack_face="90", max_bin_count=4
+        operation_id="op-1", task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady(
         (sdk.BinInboundBatchMember("A000000001", sdk.TransportRackBinSlot("R1", "90", "S1")),)

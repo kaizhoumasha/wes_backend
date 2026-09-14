@@ -18,12 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 插件业务流程统一在 manual-picking 内装配，基础执行能力与插件业务决策保持分离；更新相应业务合同和开发指引。
 - 退役粗分拣和旧 manual_bin_processing 插件及其项目内资源，集中维护 manual-picking。
+- 五层来源货架面到位后每面只请求一次 WMS `inbound_batch`；WES 按冻结的完整料箱清单分段搬运，并在上一段搬运及 SCAN1 扫码闭合后推进下一段。
+- 设备命令的 `workline_id` 扩为 BIGINT，与工作线雪花 ID 保持一致。
 
 ### Fixed
 
 - 扫码和 WMS 完成通知按冻结的料箱身份、FIFO 队头及原始证据处理；无法确认的早到结果进入对账，不提前下发物理命令。
 - SCAN3 未关联料箱的 `MOVE_LEFT` 结果按原命令成功事实闭合；SCAN4 前序围栏与退箱 FIFO 统一按接收时间和证据 ID 排序。
 - CI 增加基础设施预检和发布重试，改善外部依赖暂时不可用时的失败诊断。
+- 人工拣料 SCAN1 从设备 `data.barcode` 读取条码；WMS 已返回 `READY` 的货架面未搬扫完成时，不允许按旧货架搬运失败路径提前确认任务完成。
 
 ## [0.43.1.0] - 2026-09-12
 

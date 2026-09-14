@@ -94,7 +94,6 @@ class BinInboundBatchOwnerService:
             or task.workline_id != workline_id
             or task.status != PickingTaskStatus.EXECUTING
             or task.task_type != PickingTaskType.MANUAL
-            or request.data.max_bin_count != 4
         ):
             return False
         return any(
@@ -148,7 +147,6 @@ class BinBatchResultReader:
             task_id=request.data.task_id,
             rack_id=request.data.rack_id,
             rack_face=request.data.rack_face,
-            max_bin_count=request.data.max_bin_count,
         )
         return intent, decode_inbound(payload)
 
@@ -195,14 +193,16 @@ class BinBatchResultReader:
                 evidences.published_at.is_not(None),
             )
             .order_by(confirmations.completed_at.desc(), confirmations.id.desc())
-            .limit(1)
+            .limit(2 if operation == BIN_INBOUND_BATCH_OPERATION else 1)
         )
         if task_id is not None:
             statement = statement.where(confirmations.request_payload["data"]["task_id"].as_string() == task_id)
-        row = (await db.execute(statement)).one_or_none()
-        if row is None:
+        rows = (await db.execute(statement)).all()
+        if not rows:
             return None
-        evidence, completed_at = row
+        if operation == BIN_INBOUND_BATCH_OPERATION and len(rows) > 1:
+            raise ValueError("multiple inbound allocations for one rack face require reconciliation")
+        evidence, completed_at = rows[0]
         if completed_at is None:
             raise ValueError("completed batch confirmation lacks completion time")
         return evidence, completed_at
@@ -218,6 +218,17 @@ class BinBatchResultReader:
         return outcome, completed_at
 
     async def latest_inbound(self, db: AsyncSession, *, workline_id: int, task_id: str, rack_id: str, rack_face: str):
+        detail = await self.latest_inbound_detail(
+            db, workline_id=workline_id, task_id=task_id, rack_id=rack_id, rack_face=rack_face
+        )
+        if detail is None:
+            return None
+        _, outcome, _, completed_at = detail
+        return outcome, completed_at
+
+    async def latest_inbound_detail(
+        self, db: AsyncSession, *, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ):
         latest = await self._latest_for_face(
             db,
             workline_id=workline_id,
@@ -229,8 +240,8 @@ class BinBatchResultReader:
         if latest is None:
             return None
         evidence, completed_at = latest
-        _, outcome = await self.read_inbound(db, evidence, workline_id=workline_id)
-        return outcome, completed_at
+        intent, outcome = await self.read_inbound(db, evidence, workline_id=workline_id)
+        return intent, outcome, evidence, completed_at
 
 
 __all__ = ["BinBatchResultReader", "BinBatchScheduler", "BinInboundBatchOwnerService"]

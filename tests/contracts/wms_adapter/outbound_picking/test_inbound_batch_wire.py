@@ -17,7 +17,7 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 0,
-        "data": {"task_id": "PICK-1", "rack_id": "RACK-1", "rack_face": "正面", "max_bin_count": 2},
+        "data": {"task_id": "PICK-1", "rack_id": "RACK-1", "rack_face": "正面"},
     }
 
 
@@ -36,8 +36,6 @@ def response(data):
     "data",
     [
         {"result": "READY", "bins": [bin_item()]},
-        {"result": "NO_BATCH", "retry_after_ms": 1},
-        {"result": "NO_BATCH", "retry_after_ms": 60000},
         {"result": "RACK_FACE_DONE"},
     ],
 )
@@ -46,13 +44,17 @@ def test_closed_decisions(data):
     assert parsed.model_dump(mode="json") == response(data)
 
 
+def test_ready_freezes_complete_face_beyond_transport_capacity():
+    bins = [bin_item(f"BIN-{index}", f"S-{index}") for index in range(1, 6)]
+    parsed = parse_bin_inbound_batch_response(
+        200, response({"result": "READY", "bins": bins}), request=parse_bin_inbound_batch_request(request())
+    )
+    assert [item.bin_code for item in parsed.data.bins] == [f"BIN-{index}" for index in range(1, 6)]
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("max_bin_count", 0),
-        ("max_bin_count", 5),
-        ("max_bin_count", True),
-        ("max_bin_count", "2"),
         ("rack_face", "a" * 11),
         ("rack_face", ""),
         ("rack_face", "a\x00"),
@@ -74,6 +76,7 @@ def test_invalid_request_fields(field, value):
         {"result": "READY", "bins": [bin_item(), bin_item()]},
         {"result": "READY", "bins": [bin_item(), bin_item("BIN-2")]},
         {"result": "NO_BATCH", "retry_after_ms": 0},
+        {"result": "NO_BATCH", "retry_after_ms": 1},
         {"result": "NO_BATCH", "retry_after_ms": 60001},
         {"result": "NO_BATCH", "retry_after_ms": True},
         {"result": "WAIT", "retry_after_ms": 1},
@@ -84,12 +87,8 @@ def test_invalid_decisions(data):
         parse_bin_inbound_batch_response(200, response(data))
 
 
-def test_ready_matches_requested_capacity_and_exact_face():
+def test_ready_matches_requested_exact_face():
     body = response({"result": "READY", "bins": [bin_item(), bin_item("BIN-2", "S-2")]})
-    req = request()
-    req["data"]["max_bin_count"] = 1
-    with pytest.raises(ValueError):
-        parse_bin_inbound_batch_response(200, body, request=parse_bin_inbound_batch_request(req))
     for field in ("rack_id", "rack_face"):
         changed = deepcopy(body)
         changed["data"]["bins"][0]["source_locator"][field] = "other"
@@ -143,7 +142,6 @@ def test_rejection_data_is_closed(data):
     "data",
     [
         {"result": "READY", "bins": [bin_item()], "retry_after_ms": 1},
-        {"result": "NO_BATCH", "bins": [], "retry_after_ms": 1},
         {"result": "RACK_FACE_DONE", "bins": None},
     ],
 )

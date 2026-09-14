@@ -8,8 +8,6 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 def inbound_moves(
     intent: BinInboundBatchIntent, ready: BinInboundBatchReady, *, inlet_location: str
 ) -> tuple[BinMove, ...]:
-    if len(ready.bins) > intent.max_bin_count:
-        raise ValueError("inbound result exceeds frozen batch request")
     moves: list[BinMove] = []
     for member in ready.bins:
         source = member.source_locator

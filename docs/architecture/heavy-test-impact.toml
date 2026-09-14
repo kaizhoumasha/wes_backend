@@ -2864,6 +2864,13 @@ source_glob = "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 [[mapping]]
+source_glob = "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "deployment/plugin_models.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 

@@ -1395,6 +1395,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260912_2328_6cf85c1760e4_retire_device_event_command_blocks.py",
         "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py",
         "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py",
+        "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

@@ -32,7 +32,6 @@ def choose_next_batch(
             task_id=task_id,
             rack_id=rack_id,
             rack_face=rack_face,
-            max_bin_count=4,
         )
     return None
 

@@ -1473,7 +1473,19 @@ async def test_point3_ng_route_skips_return_buffer_and_continues_with_rack_depar
         task_id="PICK-001",
         bin_code="BIN-001",
         device_code="SIM-ECS-01",
-        configuration_json={"manual_bin_admission_result": "WORK_REQUIRED"},
+        configuration_json={
+            "manual_bin_admission_result": "WORK_REQUIRED",
+            "inbound_bins": [{"bin_code": "BIN-001"}],
+            "pending_inbound_bin_codes": ["BIN-001"],
+            "inbound_transport_offset": 1,
+            "current_source_rack": {"rack_id": "RACK-01", "rack_face": "90"},
+            "source_rack_progress": {
+                "work_position": "KT16",
+                "current_rack_index": 0,
+                "current_face_index": 0,
+                "racks": [{"rack_id": "RACK-01", "faces": ["90"], "completed_faces": []}],
+            },
+        },
     )
     repository = _Repository(run)
     repository.steps.extend(
@@ -2210,8 +2222,7 @@ def test_manual_outbound_rack_return_uses_ctu03_and_wh05() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("max_bin_count", [1, 2, 4])
-async def test_bin_inbound_batch_accepts_contract_batch_sizes(max_bin_count: int) -> None:
+async def test_bin_inbound_batch_requests_complete_face() -> None:
     run = IntegrationRun(
         run_id="run-inbound-batch",
         workline_id=3,
@@ -2256,22 +2267,18 @@ async def test_bin_inbound_batch_accepts_contract_batch_sizes(max_bin_count: int
     result = await service.send_bin_inbound_batch(
         "run-inbound-batch",
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-        request_data=BinInboundBatchData(
-            task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=max_bin_count
-        ),
+        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
         expected_version=0,
         actor_id=42,
     )
 
-    assert result["steps"][0]["request"]["max_bin_count"] == max_bin_count
+    assert result["steps"][0]["request"] == {"task_id": "PICK-001", "rack_id": "RACK-01", "rack_face": "90"}
 
     with pytest.raises(IntegrationDebugConflict, match="WMS 请求内容已变化"):
         await service.send_bin_inbound_batch(
             "run-inbound-batch",
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-            request_data=BinInboundBatchData(
-                task_id="PICK-001", rack_id="RACK-02", rack_face="180", max_bin_count=max_bin_count
-            ),
+            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-02", rack_face="180"),
             expected_version=1,
             actor_id=42,
         )
@@ -2350,7 +2357,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
         await service.send_bin_inbound_batch(
             run.run_id,
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=1),
+            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
             expected_version=0,
             actor_id=42,
         )
@@ -2359,7 +2366,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
     result = await service.send_bin_inbound_batch(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=1),
+        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
         expected_version=0,
         actor_id=42,
     )
@@ -2638,44 +2645,6 @@ async def test_device_command_recovery_reuses_the_original_creator_and_endpoint(
         execution_reason="首次创建",
         created_by=41,
     )
-
-
-@pytest.mark.parametrize("count", [1, 2, 4])
-def test_bin_transport_uses_the_complete_wms_batch(count: int) -> None:
-    inbound = IntegrationTransportAction(
-        kind=IntegrationTransportActionKind.MOVE_BINS,
-        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4480",
-        rack_id="RACK-01",
-        source={"kind": "RACK", "location_code": "RACK-01"},
-        target={"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
-        rcs_template_id="CTU01",
-    )
-    configuration = {
-        "inbound_bins": [
-            {
-                "bin_code": f"BIN-{index}",
-                "source_locator": {
-                    "type": "RACK_BIN_SLOT",
-                    "rack_id": "RACK-01",
-                    "rack_face": "90",
-                    "slot_id": f"SLOT-{index}",
-                },
-            }
-            for index in range(count)
-        ]
-    }
-
-    moves = IntegrationDebugService._validate_batch_transport(
-        IntegrationDebugPhase.BIN_TRANSPORT, configuration, inbound
-    )
-    request = build_transport_request(inbound, bin_moves=moves)
-    assert [move.bin_code for move in request.moves] == [f"BIN-{index}" for index in range(count)]
-    assert [move.source.slot_id for move in request.moves] == [f"SLOT-{index}" for index in range(count)]
-    assert all(move.target.location_code == "CNV0301" for move in request.moves)
-
-    inbound.source["location_code"] = "RACK-OTHER"
-    with pytest.raises(IntegrationDebugContractError, match="inbound_batch READY"):
-        IntegrationDebugService._validate_batch_transport(IntegrationDebugPhase.BIN_TRANSPORT, configuration, inbound)
 
 
 @pytest.mark.asyncio

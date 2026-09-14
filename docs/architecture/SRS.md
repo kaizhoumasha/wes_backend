@@ -503,9 +503,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    重新判断一个下一动作；Transport 基础能力不理解这个业务循环。
    当前面能为 `RETURN_BUFFER` FIFO 队首形成可执行批次时，优先调用 `outbound.bin.return_batch@v1`。候选按本次请求从 1 设置 `sequence_no`；WMS 为连续前缀
    分配当前 `rack_id + rack_face` 的任意合格精确空位，并原样返回 `sequence_no + bin_code`。当前面无合格空位时返回 `NO_BATCH`，候选留在 FIFO，不转 NG 或 `STATE_CONFLICT`；无资源冲突的新入站需求可以推动换面或换架。
-   没有可执行退箱批次时，WES 计算 CTU 空闲背篓数和入料缓存空闲数的较小值，再通过 `outbound.bin.inbound_batch@v1` 请求 WMS 选择
-   `bin_code + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 最终成功、实扫身份匹配并创建
-   当前工位关联后才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
+   没有可执行退箱批次时，WES 在来源面权威到位后为该面一次请求 `outbound.bin.inbound_batch@v1`；WMS 原子冻结完整最终的
+   `bin_code + source_locator` 清单。WES 补充本地目标，按最多 4 箱拆成顺序 `BIN_MOVE`。只有前一分段 Transport 最终成功、可靠发布且实扫身份匹配后才推进下一分段；不再请求同一面。
+   `RACK_FACE_DONE` 表示首次分配的最终空清单；所有分段完成后当前面才关闭。CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
    计划中选择下一来源面，同架下一面使用
    `RACK_ROTATE`，不同货架严格按
    旧架移出、新架移入的顺序切换。CTU 非空、搬运未完成、位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待，不再锁定原来源面。

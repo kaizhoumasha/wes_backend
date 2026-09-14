@@ -2546,20 +2546,20 @@ WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为
 五层来源货架到位后，WES 检查当前面能否为 `RETURN_BUFFER` FIFO 队首形成可执行批次：
 
 - 有可执行批次：先调用 `outbound.bin.return_batch@v1`；
-- 没有可执行批次：取 CTU 空闲背篓数和入料缓存空闲数的较小值，作为 `max_bin_count` 调用
-  `outbound.bin.inbound_batch@v1`。
+- 没有可执行批次：当前来源面尚未分配时，一次调用 `outbound.bin.inbound_batch@v1`；已分配时由 WES 从冻结清单继续拆批。
 
 `return_batch.return_candidates[]` 是本 WorkLine 的跨任务 FIFO，每个候选增加本次请求内从 1 连续递增的 `sequence_no`。WMS 只为连续前缀分配目标，
 并在 `moves[]` 中原样返回 `sequence_no + bin_code`。每个目标必须位于请求中的当前 `rack_id + rack_face`，但不要求原货架、原面或原储位。顺序号只在当前
 `operation_id` 内有效；新请求根据当时的队首候选重新从 1 编号。
 
-WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本地入料位置，组成 Transport `BIN_MOVE`。WMS 返回 `READY` 只表示
-本批 Bin 已经选定；对应 Transport 确定成功并保存完整位置后，本批才完成。WES 随后重新判断下一动作。
+WMS 一次返回该面完整且最终的 Bin 清单及精确来源。WES 选择本地入料位置，按每条最多 4 箱拆成顺序 Transport `BIN_MOVE`；
+前一分段最终成功、可靠发布且实扫身份匹配后才安排下一分段。WMS `READY` 只表示分配已冻结，不表示物理搬运完成。
 
-入站 `NO_BATCH` 表示当前来源面暂时没有可取 Bin，货架面保持开放。`RACK_FACE_DONE` 表示不会再从当前面选择新 Bin，但不表示货架可以
-立即离场，也不表示以前选中的 Bin 已经退回。WES 需要切换来源时，只能从已经接收的 `added_bin_source_racks[]` 中选择下一面；同架换面
-使用 `RACK_ROTATE`，不同货架先移出旧架、再移入新架。CTU 不携带 Bin、没有未结束搬运或位置未知、没有以当前面为冻结目标的退箱决定后即可切换；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待。`inbound_batch` 不返回新的
-来源货架方案。入站 `NO_BATCH` 到期前，WES 不重复请求，也不据此换面；期间当前面有可执行批次时仍优先处理退箱。
+入站 `RACK_FACE_DONE` 是该面首次分配的最终空清单；非空清单的全部分段完成并实扫匹配后，当前面才关闭。
+它不表示货架可以立即离场，也不表示以前选中的 Bin 已经退回。WES 需要切换来源时，只能从已接收的
+`added_bin_source_racks[]` 选择另一个真实来源面；同架换面使用 `RACK_ROTATE`，不同货架先移出旧架、再移入新架。
+CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定后即可切换；已可靠进入
+`RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待。`inbound_batch` 不返回新的来源货架方案，也不对同一面再次请求。
 
 `return_batch` 不返回换面或换架方案。WMS 暂时不能分配当前面合格空位，包括当前面已没有合格空位时，均返回 `NO_BATCH`。这是正常等待，不转 NG 或 `STATE_CONFLICT`；新入站需求可以驱动换面或换架。
 只要 Bin 仍位于入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或已经以当前面为冻结目标，相关货架面就必须保持在工作位；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不再锁定原来源面。

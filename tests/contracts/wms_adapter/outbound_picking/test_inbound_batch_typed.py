@@ -15,13 +15,12 @@ def test_encode_complete_request_and_timestamp_boundaries() -> None:
         task_id="task",
         rack_id="rack",
         rack_face="000A",
-        max_bin_count=2,
     )
     assert encode_request(intent, timestamp=0) == {
         "operation_id": OPERATION_ID,
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 0,
-        "data": {"task_id": "task", "rack_id": "rack", "rack_face": "000A", "max_bin_count": 2},
+        "data": {"task_id": "task", "rack_id": "rack", "rack_face": "000A"},
     }
     for value in (-1, 2**63, True):
         with pytest.raises(ValueError):
@@ -61,7 +60,6 @@ def test_decode_ready_detaches_mutable_wire() -> None:
 @pytest.mark.parametrize(
     "code,data,kind",
     [
-        ("DECIDED", {"result": "NO_BATCH", "retry_after_ms": 60000}, sdk.BinBatchNoBatch),
         ("DECIDED", {"result": "RACK_FACE_DONE"}, sdk.BinInboundBatchRackFaceDone),
         ("UNAVAILABLE", {}, sdk.OperationUnavailable),
         ("CONFLICT", {"reason_code": "REVISION_CONFLICT"}, sdk.OperationConflict),
@@ -81,6 +79,7 @@ def test_decode_closed_responses(code, data, kind) -> None:
         (None, {}),
         ("BUSY", {"retry_after_ms": 1}),
         ("DECIDED", {"result": "READY", "bins": []}),
+        ("DECIDED", {"result": "NO_BATCH", "retry_after_ms": 1000}),
         ("DECIDED", {"result": "NO_BATCH", "retry_after_ms": 0}),
         ("DECIDED", {"result": "UNKNOWN", "bins": []}),
         ("CONFLICT", {"reason_code": "POSITION_CONFLICT"}),
