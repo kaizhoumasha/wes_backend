@@ -21,6 +21,8 @@ from wes_plugin_sdk import (
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.plugin_binding import (
+    BusinessEvidenceApplication,
+    BusinessEvidenceDisposition,
     InitialExecutionDescriptor,
     PluginRuntimeBinding,
     StaticPluginBinding,
@@ -93,7 +95,7 @@ class _WorkLines:
             line_name="Line",
             line_type="AUTO",
             is_active=True,
-            plugin_key="rough_sorter",
+            plugin_key="sample_plugin",
             plugin_version="1.0.0",
             flow_mode="AUTO",
         )
@@ -190,6 +192,20 @@ class _RejectingCorrelator:
 class _IdentityFactFactory:
     async def build(self, _db: object, fact: FactReference) -> FactReference:
         return fact
+
+
+class _BusinessConsumer:
+    def __init__(self, result: BusinessEvidenceDisposition = BusinessEvidenceDisposition.APPLIED) -> None:
+        self.result = result
+        self.calls: list[tuple[object, int, int]] = []
+
+    async def apply_in_session(self, db: object, evidence_id: int, *, workline_id: int) -> BusinessEvidenceApplication:
+        self.calls.append((db, evidence_id, workline_id))
+        return BusinessEvidenceApplication(
+            self.result,
+            "a" * 64 if self.result is BusinessEvidenceDisposition.APPLIED else None,
+            retry_after_ms=1000 if self.result.value == "DEFERRED" else None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,7 +429,7 @@ def _plugins(target: object = _handle_initial, *, correlator: object | None = _C
     return StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(target,),
                 fact_factory=_IdentityFactFactory(),
@@ -458,7 +474,7 @@ def _changing_processor(
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version="1.0.0",
                 handlers=(_handle_changing,),
                 fact_factory=factory,
@@ -488,6 +504,174 @@ def _changing_processor(
         token_factory=lambda: "claim-changing",
     )
     return processor, evidence, executions, service, applier, factory
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disposition", [BusinessEvidenceDisposition.APPLIED, BusinessEvidenceDisposition.RECONCILING])
+@pytest.mark.parametrize(
+    ("kind", "operation"),
+    [
+        (InboundEvidenceKind.DEVICE_EVENT, None),
+        (InboundEvidenceKind.DEVICE_RESULT, None),
+        (InboundEvidenceKind.TRANSPORT_RESULT, None),
+        (InboundEvidenceKind.WMS_EVENT, "outbound.manual_bin.work_completed@v1"),
+        (InboundEvidenceKind.WMS_RESULT, "outbound.manual_bin.work_admission_decide@v1"),
+    ],
+)
+async def test_workline_business_evidence_uses_bound_consumer_without_material_execution(
+    kind: InboundEvidenceKind, operation: str | None, disposition: BusinessEvidenceDisposition
+) -> None:
+    evidence = _evidence(
+        kind=kind,
+        operation=operation,
+        transport_task_id="TRANSPORT-1" if kind is InboundEvidenceKind.TRANSPORT_RESULT else None,
+    )
+    consumer = _BusinessConsumer(disposition)
+    applier = _Applier()
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="sample_plugin",
+                    plugin_version="1.0.0",
+                    handlers=(),
+                    fact_factory=_IdentityFactFactory(),
+                    business_evidence_consumer=consumer,
+                    business_wms_operations=(
+                        "outbound.manual_bin.work_completed@v1",
+                        "outbound.manual_bin.work_admission_decide@v1",
+                    ),
+                ),
+            )
+        ),
+        decision_applier=applier,
+        evidence_repository=_Evidences(evidence),
+        execution_repository=_Executions(),
+        workline_repository=_WorkLines(),
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-business",
+    )
+
+    assert await processor.process_batch() == 1
+    assert evidence.material_execution_id is None
+    assert evidence.published_at == (NOW if disposition is BusinessEvidenceDisposition.APPLIED else None)
+    assert evidence.decision_digest == ("a" * 64 if disposition is BusinessEvidenceDisposition.APPLIED else None)
+    assert evidence.apply_status == InboundEvidenceApplyStatus(disposition.value)
+    assert len(consumer.calls) == 1
+    assert consumer.calls[0][1:] == (31, 7)
+    assert applier.calls == []
+    assert await processor.process_batch() == 0
+    assert len(consumer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_business_evidence_can_defer_original_claim_without_reconciling() -> None:
+    evidence = _evidence(kind=InboundEvidenceKind.DEVICE_EVENT)
+    consumer = _BusinessConsumer(BusinessEvidenceDisposition.DEFERRED)
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="sample_plugin",
+                    plugin_version="1.0.0",
+                    handlers=(),
+                    business_evidence_consumer=consumer,
+                ),
+            )
+        ),
+        decision_applier=_Applier(),
+        evidence_repository=_Evidences(evidence),
+        execution_repository=_Executions(),
+        workline_repository=_WorkLines(),
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-deferred",
+    )
+
+    assert await processor.process_batch() == 1
+    assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+    assert evidence.published_at is None
+    assert evidence.decision_digest is None
+    assert evidence.decision_next_attempt_at == NOW + timedelta(seconds=1)
+    assert evidence.decision_attempt_count == 0
+    assert evidence.decision_claim_token is None
+
+
+@pytest.mark.asyncio
+async def test_reserved_workline_defers_business_evidence_without_calling_plugin() -> None:
+    evidence = _evidence(kind=InboundEvidenceKind.TRANSPORT_RESULT, transport_task_id="TRANSPORT-1")
+    consumer = _BusinessConsumer(BusinessEvidenceDisposition.APPLIED)
+    reserved = AsyncMock(return_value=True)
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="sample_plugin",
+                    plugin_version="1.0.0",
+                    handlers=(),
+                    business_evidence_consumer=consumer,
+                ),
+            )
+        ),
+        decision_applier=_Applier(),
+        evidence_repository=_Evidences(evidence),
+        execution_repository=_Executions(),
+        workline_repository=_WorkLines(),
+        workline_reserved=reserved,
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-reserved",
+    )
+
+    assert await processor.process_batch() == 1
+    reserved.assert_awaited_once()
+    assert consumer.calls == []
+    assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+    assert evidence.published_at is None
+    assert evidence.decision_claim_token is None
+    assert evidence.decision_next_attempt_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "operation"),
+    [
+        (InboundEvidenceKind.WMS_EVENT, "outbound.manual_bin.work_completed@v1"),
+        (InboundEvidenceKind.WMS_RESULT, "outbound.manual_bin.work_admission_decide@v1"),
+    ],
+)
+async def test_claimed_business_wms_evidence_rechecks_direct_consumption_before_plugin(
+    kind: InboundEvidenceKind, operation: str
+) -> None:
+    evidence = _evidence(kind=kind, operation=operation)
+    evidence.processed_at = NOW
+    consumer = _BusinessConsumer(BusinessEvidenceDisposition.APPLIED)
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="sample_plugin",
+                    plugin_version="1.0.0",
+                    handlers=(),
+                    business_evidence_consumer=consumer,
+                    business_wms_operations=(operation,),
+                ),
+            )
+        ),
+        decision_applier=_Applier(),
+        evidence_repository=_Evidences(evidence),
+        execution_repository=_Executions(),
+        workline_repository=_WorkLines(),
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-before-direct-consumption",
+    )
+
+    assert await processor.process_batch() == 1
+    assert consumer.calls == []
+    assert evidence.decision_claim_token is None
+    assert evidence.published_at is None
 
 
 @pytest.mark.asyncio
@@ -883,7 +1067,7 @@ async def test_recovery_fact_targets_exactly_one_execution() -> None:
         plugin_binding=StaticPluginBinding(
             (
                 PluginRuntimeBinding(
-                    plugin_key="rough_sorter",
+                    plugin_key="sample_plugin",
                     plugin_version="1.0.0",
                     handlers=(_handle_recovery,),
                     fact_factory=_IdentityFactFactory(),
@@ -1035,7 +1219,7 @@ async def test_declared_plugin_without_handlers_only_observes_unowned_device_eve
         (),
         definitions=(
             PluginDefinition(
-                plugin_key="rough_sorter",
+                plugin_key="sample_plugin",
                 plugin_version=version,
                 display_name="Example",
                 supported_line_types=("AUTO",),

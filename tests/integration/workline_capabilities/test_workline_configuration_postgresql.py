@@ -48,6 +48,43 @@ def _plugin() -> InstalledWorkLinePlugin:
     )
 
 
+def test_workline_state_lock_allows_inbound_evidence_foreign_key() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (_database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            engine = create_async_engine(database_url, pool_pre_ping=True)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            try:
+                async with sessions.begin() as db:
+                    line = WorkLine(line_code="LOCK-FK", line_name="Lock FK", line_type=LineType.MANUAL)
+                    db.add(line)
+                    await db.flush()
+                    line_id = line.id
+
+                async with sessions.begin() as owner:
+                    assert await WorkLineRepository().get_for_update(owner, line_id) is not None
+                    async with sessions() as receiver:
+                        receiver.add(
+                            InboundEvidence(
+                                kind=InboundEvidenceKind.WMS_EVENT,
+                                source_identity="LOCK-FK-EVIDENCE",
+                                operation="outbound.picking_task.issued@v1",
+                                operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4480",
+                                payload_digest="a" * 64,
+                                normalized_payload={"data": {}},
+                                received_at=datetime(2026, 9, 14, 12),
+                                workline_id=line_id,
+                                apply_status=InboundEvidenceApplyStatus.PENDING,
+                            )
+                        )
+                        await asyncio.wait_for(receiver.flush(), timeout=1)
+                        await receiver.rollback()
+            finally:
+                await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):

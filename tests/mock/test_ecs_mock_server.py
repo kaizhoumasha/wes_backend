@@ -120,50 +120,41 @@ def test_ecs_mock_acknowledges_known_device_and_callbacks_success(monkeypatch) -
     assert callback["headers"]["X-App-ID"]
 
 
-def test_ecs_mock_supports_rough_sorter_placement_command(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("device_code", "task_type"),
+    [
+        ("STATION_SCAN1", "MOVE_FORWARD"),
+        ("STATION_SCAN9", "MOVE_FORWARD"),
+        ("STATION_SCAN9", "MOVE_RIGHT"),
+        ("STATION_SCAN10", "MOVE_FORWARD"),
+        ("STATION_SCAN11", "MOVE_FORWARD"),
+        ("STATION_SCAN11", "MOVE_LEFT"),
+        ("STATION_SCAN12", "MOVE_FORWARD"),
+    ],
+)
+def test_ecs_mock_supports_scanner_command(monkeypatch, device_code, task_type) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
 
     with TestClient(ecs_mock_server.app) as client:
-        response = client.post(
-            "/api/v1/device/command",
-            json=_command_payload(
-                "CMD-RS-PLACEMENT-001",
-                task_type="PICK_AND_PUT",
-                device_code="RS-MOCK-PLACEMENT-01",
-                params={"target_code": "OUTLET-1"},
-            ),
-        )
-
-    assert response.status_code == 200
-    assert response.json()["message"] == "ACK"
-    callback = CapturingAsyncClient.requests[0]["json"]
-    assert callback["result"] == "SUCCESS"
-    assert callback["device_code"] == "RS-MOCK-PLACEMENT-01"
-    assert callback["data"]["accepted_params"] == {"target_code": "OUTLET-1"}
-
-
-@pytest.mark.parametrize("device_code", ["STATION_SCAN1", "STATION_SCAN12"])
-def test_ecs_mock_supports_scanner_command(monkeypatch, device_code) -> None:
-    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
-    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
-
-    with TestClient(ecs_mock_server.app) as client:
+        status = client.get("/api/v1/device/status", params={"device_code": device_code})
         response = client.post(
             "/api/v1/device/command",
             json=_command_payload(
                 "CMD-STATION-SCAN1-001",
-                task_type="MOVE_FORWARD",
+                task_type=task_type,
                 device_code=device_code,
                 params={
                     "source": {
-                        "location_id": "STATION_SCAN1",
+                        "location_id": device_code,
                         "location_type": "SCAN_PLATFORM",
                     }
                 },
             ),
         )
 
+    assert status.status_code == 200
+    assert task_type in status.json()["devices"][0]["device"]["supported_commands"]
     assert response.status_code == 200
     callback = CapturingAsyncClient.requests[0]["json"]
     assert callback["device_code"] == device_code
@@ -518,7 +509,7 @@ def test_ecs_mock_event_openapi_keeps_business_data_opaque() -> None:
     assert content["examples"]["scan_completed"]["value"] == {
         "device_code": "CAMERA-CONVEYOR-01",
         "event_type": "SCAN_COMPLETED",
-        "data": {"barcode": "BIN_104"},
+        "data": {"bin_code": "BIN_104"},
     }
 
 

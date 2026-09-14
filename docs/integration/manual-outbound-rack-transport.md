@@ -38,10 +38,10 @@
 
 ## 第 6–7 步：整批料箱投料
 
-- 第 6 步 `outbound.bin.inbound_batch@v1` 的 `max_bin_count` 默认为 4，接受 WMS 返回 1–4 箱。
-- 第 7 步从当前 Run 保存的 `inbound_bins` 引用整个批次。页面列出每箱箱号、来源货架、面向和精确储位，目标为配置的投料口（当前 `CNV0301`）。
+- 第 6 步 `outbound.bin.inbound_batch@v1` 一次取得当前货架面完整且最终的料箱清单；空面返回 `RACK_FACE_DONE`。
+- 第 7 步从当前 Run 保存的 `inbound_bins` 按顺序每次引用最多 4 箱。页面列出每箱箱号、来源货架、面向和精确储位，目标为配置的投料口（当前 `CNV0301`）。
 - 联调动作使用 `MOVE_BINS`，`source={kind:RACK, location_code:来源货架号}` 引用批次，不填写单箱 `bin_code`。
-  后端将每个 WMS `source_locator` 映射为 `RACK_BIN_SLOT`，生成一个 `BIN_MOVE` TransportTask 的全部 `moves`，每项目标均为 `HANDOFF_POSITION`。
+  后端将当前分段的每个 WMS `source_locator` 映射为 `RACK_BIN_SLOT`，生成一个 `BIN_MOVE` TransportTask 的 `moves`，每项目标均为 `HANDOFF_POSITION`。
   联调入口的 `RACK` 仅用于选择已冻结批次；发给 RCS 的每项来源始终是精确货架储位，不是货架搬运。
 - 批次完整内容随动作摘要冻结；相同身份的内容漂移拒绝，不允许换身份重复搬运。
   必须等整条 TransportTask 的 `SUCCEEDED` 终态后，才能确认本步骤；创建或接收 ACK 不代表整批已完成。

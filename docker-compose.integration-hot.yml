@@ -17,7 +17,7 @@ services:
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
 
   celery:
@@ -29,7 +29,7 @@ services:
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
@@ -43,7 +43,7 @@ services:
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
@@ -57,7 +57,7 @@ services:
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/beat_healthcheck.py"]

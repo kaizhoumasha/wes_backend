@@ -55,16 +55,15 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
 | WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES、OpenAPI 和行为测试已对齐 0.3.0；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree；WMS 实现和真实联调仍为 `NOT RUN` |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
-| 粗分自动入库 | `Approved` | `FINAL_VALIDATION_PENDING` | `OLD_OUT/NEW_IN` 生产调用链和当前联调镜像已交付；历史 `f2129982` 镜像 E2E 已通过，但尚未对当前镜像重新执行完整粗分业务 E2E；真实联调与业务验收均为 `NOT RUN` |
+| 粗分自动入库 | 仓库已移除 | `DEPLOYMENT_UNCHANGED` | 历史合同与验收资料已移出项目归档；本次不操作运行环境 |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`。容器中间位置事件
+公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果的合同生命周期为 `Approved`；粗分插件已从代码库移除，运行环境未变更。容器中间位置事件
 一般只在供应商能够提供权威逐容器中间事实时启用；但当前现场 CTU/RCS 对每个完成的料箱回架会提供一条到位事实，WMS 必须转发该
 `TARGET_PLACED` 事件，作为成功回架聚合结果接纳前的逐箱前置条件；
-Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
-但当前镜像仍缺完整粗分业务 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
+Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分插件已从代码库移除，本次未重新部署。基础通信或 Transport 验收不能证明
 自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -88,8 +87,7 @@ Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调
 公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
 样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
 
-当前 WMS **不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts`，也不要求为粗分入库新增专用 endpoint 或 operation。
-粗分 `OLD_OUT/NEW_IN` 业务合同已批准并由 WES 生产调用链消费，但 WMS 侧只需实现上表共享的 Transport submit/result 接口。
+当前 WMS **不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts`，也不要求为仓库已移除的粗分业务新增专用 endpoint 或 operation。
 自动出库、自动上架等未批准场景仍为 `ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
 
 ### 0.3 WMS C# 技术基线
@@ -131,7 +129,7 @@ Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调
 2. WMS/RCS 团队实现搬运时阅读第 3 节的搬运提交、搬运最终结果；只有供应商能提供权威逐容器中间事实时才实施容器中间位置事件。
 3. 按第 4～7 节确认实现边界、交付物、不提供的接口和文档治理规则。
 4. WMS 出库团队按附录 A 的自动出库场景顺序参加联合评审；转为 `Approved` 后才实现。
-5. WMS 入库团队按附录 B 的粗分入库场景及其链接的获批粗分合同实施与联调。
+5. 附录 B 的粗分入库场景已从仓库实施范围移除，不作为本次 WMS/WES 联调任务。
 6. WMS 上架团队按附录 C 的自动上架场景顺序参加联合评审；转为 `Approved` 后才实现。
 
 ### 0.6 外发文档完整性
@@ -1130,7 +1128,7 @@ static string CreateUuidV7()
 
 | 协议 Schema 族 | `kind` | 固定字段 |
 | --- | --- | --- |
-| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target`；`target_face` 除 `CTU03` 可省略外均必填 |
+| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target`；`RACK_MOVE.target_face` 对所有模板可选，`RACK_ROTATE.target_face` 必填 |
 | `BinTransportData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + moves[]`；成员固定为 `container_id + source + target` |
 
 搬运最终结果同样只需要两个 `data` Schema 族：
@@ -1221,12 +1219,12 @@ operation = transport.task.submit@v1
 
 | DTO 族 | `kind` | 其余必填字段 | 关键规则 |
 | --- | --- | --- | --- |
-| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target`；CTU03 的 `target_face` 可选 | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；已提供的 `target_face` 是不透明 string token |
+| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target`；所有模板的 `target_face` 可选 | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；已提供的 `target_face` 是不透明 string token |
 | 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置均为相同的 `RACK` 或相同的精确 `RACK_POSITION`；`RACK.location_code` 等于外层 `rack_id`；`target_face` 是不透明 string token 且不同于可信当前面 |
 | 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
 | 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
-CTU03 未提供 `target_face` 时，Wire 省略该字段并由 RCS 决定回库朝向；回调的 `arrival_face` 可省略或为 `null`，WES 保存空朝向而不沿用旧值。提供 `target_face` 时，
+`RACK_MOVE` 未提供 `target_face` 时，Wire 省略该字段并由 RCS 采用默认朝向；回调的 `arrival_face` 可省略或为 `null`，WES 保存空朝向而不沿用旧值，实际非空面则原样记录。提供 `target_face` 时，
 WMS 原样传给 RCS，成功回调 `arrival_face` 必须与其精确相等。WMS 可以把 `RACK_MOVE`
 分解为多个 RCS 子任务，但必须保存 WES `transport_task_id` 与全部厂商 `taskCode` 的关联。`RACK_POSITION` 目标要求最终地码相等；
 `RACK` 目标要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。回调统一返回精确
@@ -1759,7 +1757,7 @@ operation = transport.task.resulted@v1
 | `outcome_revision` | WMS 对同一 `transport_task_id` 的完整搬运最终结果从 `1` 开始连续递增；同一版本技术重试保持不变 |
 | 货架 `rack_id/status` | `RACK_MOVE/RACK_ROTATE` 直接在 `data` 顶层表达唯一货架及结果，不使用 `results[]` |
 | 货架 `final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
-| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；提交已指定 `target_face` 时必须与其精确相等，CTU03 未指定时允许省略或 `null`，实际非空值原样记录 |
+| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；提交已指定 `target_face` 时必须与其精确相等，`RACK_MOVE` 未指定时允许省略或 `null`，实际非空值原样记录 |
 | 料箱 `results[]` | 完整覆盖搬运提交全部 `container_id`，按 `container_id` 升序输出，不能多、少或重复 |
 | `results[].status` | RCS 最终结果归一化为 `SUCCEEDED` 或 `FAILED` |
 | `results[].final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
@@ -1771,9 +1769,9 @@ operation = transport.task.resulted@v1
 - `SUCCEEDED` 必须携带 `final_position`，禁止携带 `failure_code` 和 `position_unknown`；
 - `FAILED` 必须携带 `failure_code`，并在 `final_position` 与字面量 `position_unknown=true` 之间严格二选一；
 - `position_unknown=false`、同时携带最终位置和未知标记、或两者都缺少，均为非法 DTO；
-- 货架位置明确时 `final_position.kind=RACK_POSITION`；未指定 `target_face` 的 CTU03 允许省略 `arrival_face` 或传 `null`，其它情况要求非空 string；位置未知时禁止 `arrival_face`；
+- 货架位置明确时 `final_position.kind=RACK_POSITION`；未指定 `target_face` 的 `RACK_MOVE` 允许省略 `arrival_face` 或传 `null`，其它情况要求非空 string；位置未知时禁止 `arrival_face`；
 - 料箱位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`；
-- `RACK_MOVE/RACK_ROTATE` 已指定 `target_face` 时，成功实际到达面必须等于冻结值；CTU03 未指定时接受空朝向，或原样记录 RCS 返回的实际非空面。
+- `RACK_MOVE/RACK_ROTATE` 已指定 `target_face` 时，成功实际到达面必须等于冻结值；`RACK_MOVE` 未指定时接受空朝向，或原样记录 RCS 返回的实际非空面。
   `RACK_POSITION` 目标还要求最终地码相等；`RACK` 目标
   要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。结果必须返回精确 `RACK_POSITION`；
 - `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员搬运提交 `target`；
@@ -2375,8 +2373,8 @@ WMS 建议将 WES 到 RCS 的转换集中为货架、料箱两个明确映射职
 | `ZONE.location_code` | 作为区域编号交给 RCS 选址 |
 | `RACK_POSITION.location_code` | 作为精确地码映射为 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
-| `target_face` | CTU03 可省略并由 RCS 决定回库朝向；已提供的非空 string 由 WMS 原样传给 RCS |
-| `arrival_face` | RCS 回传的实际非空 string token；CTU03 未指定目标面时可省略或 `null`，已冻结 `target_face` 时成功结果必须与其精确相等 |
+| `target_face` | 所有 `RACK_MOVE` 模板可省略并由 RCS 采用默认朝向；已提供的非空 string 由 WMS 原样传给 RCS；`RACK_ROTATE` 必填 |
+| `arrival_face` | RCS 回传的实际非空 string token；`RACK_MOVE` 未指定目标面时可省略或 `null`，已冻结 `target_face` 时成功结果必须与其精确相等 |
 | `rcs_template_id` | 直接调用同名 RCS 模板；只允许 `CTU01 | CTU02 | CTU03 | F01` |
 
 厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器
@@ -2440,13 +2438,13 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 ### 5.1 WMS 团队必须交付
 
-当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景；是否已经进入具体实现迭代以实施计划为准。当前 Transport 实施范围包括
+当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果；粗分入库插件已从代码库移除，运行环境未变更。当前 Transport 实施范围包括
 搬运提交、搬运最终结果，以及每个成功 BIN 回架到冻结 `RACK_BIN_SLOT` 所需的逐箱精确目标 `TARGET_PLACED` 转发；其它容器中间位置事件仍待供应商提供对应权威事实后条件启用。
 自动出库和自动上架场景只进入待评审清单，不提交实现、OpenAPI 或占位 JSON 样例。
 
 | 交付物 | 最低要求 |
 | --- | --- |
-| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景标明负责人、路径、operation 和实现状态；标明成功 BIN 回架的逐箱 `TARGET_PLACED` 当前必须转发，其它容器中间位置事件按权威事实条件启用；自动出库和自动上架场景只列为 `ReviewRequired` |
+| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件和搬运最终结果标明负责人、路径、operation 和实现状态；标明成功 BIN 回架的逐箱 `TARGET_PLACED` 当前必须转发，其它容器中间位置事件按权威事实条件启用；仓库已移除的粗分与待评审的自动出库、自动上架须明确标注状态 |
 | 搬运提交 OpenAPI | WMS 提供其服务端 `POST {{TRANSPORT_SUBMIT_PATH}}` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
 | 容器中间位置事件/搬运最终结果 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 当前必须实现搬运最终结果和成功 BIN 回架的逐箱 `TARGET_PLACED`，其它容器中间位置事件条件启用且仍使用该权威定义，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
@@ -2532,9 +2530,10 @@ WES 选中工作线后，以 `task_id + workline_code` 调用 `outbound.picking_
 判断计划顺序，不增加 `execution_id`、`prepare_operation_id` 或其他版本字段。更高版本只能追加当前任务尚未发布的正常来源，不能撤销或
 修改已经接收的来源和 Bin，也不能替换空取、NG 或 Transport 确定失败的任务明细。没有满足的需求由新的 PickingTask 处理。
 
-计划中可以有多个五层来源货架面，`added_bin_source_racks[]` 的每一项只表示一个 `rack_id + rack_face`。同一货架的 A、B 面都有当前
-任务需要取出的 Bin 时，WMS 必须返回两项；只用于承接退箱的货架面不进入来源计划。CTU 工作位一次只能有一个货架，WES 只选择一个
-当前来源面并创建货架搬运任务。同一货架切换到另一面时使用 `RACK_ROTATE`；更换货架时先移出旧架，再移入新架。
+计划中可以有多个五层来源货架，`added_bin_source_racks[]` 的每一项表示一个 `rack_id`，并以非空 `rack_face[]` 返回本次新增的来源面。
+同一货架的两个面都有当前任务需要取出的 Bin 时，WMS 在同一项中返回两个面，例如 `["90", "270"]`；只用于承接退箱的货架面不进入
+来源计划。WES 按面展开为独立计划成员。CTU 工作位一次只能有一个货架，WES 只选择一个当前来源面并创建货架搬运任务。同一货架
+切换到另一面时使用 `RACK_ROTATE`；更换货架时先移出旧架，再移入新架。
 
 ### CTU 循环供箱，Bin 到位后返回 Cell 计划
 
@@ -2547,20 +2546,20 @@ WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为
 五层来源货架到位后，WES 检查当前面能否为 `RETURN_BUFFER` FIFO 队首形成可执行批次：
 
 - 有可执行批次：先调用 `outbound.bin.return_batch@v1`；
-- 没有可执行批次：取 CTU 空闲背篓数和入料缓存空闲数的较小值，作为 `max_bin_count` 调用
-  `outbound.bin.inbound_batch@v1`。
+- 没有可执行批次：当前来源面尚未分配时，一次调用 `outbound.bin.inbound_batch@v1`；已分配时由 WES 从冻结清单继续拆批。
 
 `return_batch.return_candidates[]` 是本 WorkLine 的跨任务 FIFO，每个候选增加本次请求内从 1 连续递增的 `sequence_no`。WMS 只为连续前缀分配目标，
 并在 `moves[]` 中原样返回 `sequence_no + bin_code`。每个目标必须位于请求中的当前 `rack_id + rack_face`，但不要求原货架、原面或原储位。顺序号只在当前
 `operation_id` 内有效；新请求根据当时的队首候选重新从 1 编号。
 
-WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本地入料位置，组成 Transport `BIN_MOVE`。WMS 返回 `READY` 只表示
-本批 Bin 已经选定；对应 Transport 确定成功并保存完整位置后，本批才完成。WES 随后重新判断下一动作。
+WMS 一次返回该面完整且最终的 Bin 清单及精确来源。WES 选择本地入料位置，按每条最多 4 箱拆成顺序 Transport `BIN_MOVE`；
+前一分段最终成功、可靠发布且实扫身份匹配后才安排下一分段。WMS `READY` 只表示分配已冻结，不表示物理搬运完成。
 
-入站 `NO_BATCH` 表示当前来源面暂时没有可取 Bin，货架面保持开放。`RACK_FACE_DONE` 表示不会再从当前面选择新 Bin，但不表示货架可以
-立即离场，也不表示以前选中的 Bin 已经退回。WES 需要切换来源时，只能从已经接收的 `added_bin_source_racks[]` 中选择下一面；同架换面
-使用 `RACK_ROTATE`，不同货架先移出旧架、再移入新架。CTU 不携带 Bin、没有未结束搬运或位置未知、没有以当前面为冻结目标的退箱决定后即可切换；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待。`inbound_batch` 不返回新的
-来源货架方案。入站 `NO_BATCH` 到期前，WES 不重复请求，也不据此换面；期间当前面有可执行批次时仍优先处理退箱。
+入站 `RACK_FACE_DONE` 是该面首次分配的最终空清单；非空清单的全部分段完成并实扫匹配后，当前面才关闭。
+它不表示货架可以立即离场，也不表示以前选中的 Bin 已经退回。WES 需要切换来源时，只能从已接收的
+`added_bin_source_racks[]` 选择另一个真实来源面；同架换面使用 `RACK_ROTATE`，不同货架先移出旧架、再移入新架。
+CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定后即可切换；已可靠进入
+`RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待。`inbound_batch` 不返回新的来源货架方案，也不对同一面再次请求。
 
 `return_batch` 不返回换面或换架方案。WMS 暂时不能分配当前面合格空位，包括当前面已没有合格空位时，均返回 `NO_BATCH`。这是正常等待，不转 NG 或 `STATE_CONFLICT`；新入站需求可以驱动换面或换架。
 只要 Bin 仍位于入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或已经以当前面为冻结目标，相关货架面就必须保持在工作位；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不再锁定原来源面。
@@ -2612,10 +2611,9 @@ WMS 不能把同一个正在搬运的货架或 Bin 同时分配给两个未结�
 PickingTask 不设置 `FAILED` 状态。`COMPLETED` 只表示当前任务的明细都已处理完，不表示订单需求全部满足。空取、NG 和 Transport
 确定失败造成的未满足需求，都由新的 PickingTask 处理。任务完成后的退箱和货架离场继续按各自流程执行。
 
-## 附录 B. 粗分自动入库场景（Approved）
+## 附录 B. 粗分自动入库历史场景（仓库已移除，运行环境未变更）
 
-> 本附录面向联调人员说明场景顺序；严格字段、结果联合和失败门禁以
-> [`wms-rough-sorter-inbound-integration-requirements.md`](../contracts/wms-rough-sorter-inbound-integration-requirements.md) 为唯一真源。
+> 本附录保留历史场景，不构成当前实施或联调授权；严格合同已移出项目归档。
 
 ### 料盘扫码和测量完成后请求 GRN 准入
 

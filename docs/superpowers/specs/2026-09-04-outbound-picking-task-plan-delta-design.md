@@ -42,7 +42,7 @@ WES 在已经可靠接收 PickingTask、冻结匹配的 WorkLine，并取得 WMS
 | P1：`AGENTS.md` 将 WMS→WES 业务一律写成接收提交后异步应用，与 issued/plan_delta 的合同原子提交边界冲突 | R1 两类 ACK 提交模式 | 法规定义“业务事实构成接收成功”和“Evidence 接收后异步应用”两类模式；每个 operation 合同显式归类 | 所有生产代码前置门禁 |
 | P1：issued 重复解析 raw body，且可识别的非法 data 在 Evidence 前返回 422 | T0-A 公共信封结构收敛 + T0-B issued 拒绝留证 | T0-A 保持现有可观察行为；T0-B 明确旧断言到新断言并验证拒绝 Evidence | plan_delta typed handler 前置 |
 | P1：prepare 只有暗构建，且宿主硬编码人工插件、flow mode 和任务领取 | R2 prepare 所有权收敛 | 宿主保留可靠事务 Coordinator、锁、PickingTask/WmsConfirmation 和提交后唤醒；插件只提供无副作用 typed Policy | 所有权收敛不阻塞 plan_delta 暗构建；插件消费激活前必须完成 |
-| P1：Operation 生产能力与 `manual_bin_processing` 原子绑定，无法支持零/一/多插件消费者 | R2-B1/R2-B2 分离激活 | typed Operation 能力独立装配；插件缺席只阻止新业务触发，不切断既有可靠义务或迟到回调 | 替换原联合激活模型 |
+| P1：Operation 生产能力与 `manual-picking` 原子绑定，无法支持零/一/多插件消费者 | R2-B1/R2-B2 分离激活 | typed Operation 能力独立装配；插件缺席只阻止新业务触发，不切断既有可靠义务或迟到回调 | 替换原联合激活模型 |
 | P1：插件通过 `CreateWmsConfirmation(operation, dict)` 和 `WmsInboundAdapter.dispatch(operation, dict)` 暴露 generic escape hatch | R3 typed Operation 全生命周期迁移 | 单一 `wms_operations` facade 暴露固定 typed methods；request intent 与 response outcome 全程 typed；generic 公开入口和字符串分派清零 | prepare 插件 Policy 和所有既有 WES→WMS operation 的基础门禁 |
 | P1：`plan_blocked_evidence_id` 可永久阻塞任务，但生产激活没有受控解除路径 | R4 计划冲突对账 | 匹配证据、管理授权和任务锁内完成获批动作；无对账能力不得生产激活 | 不阻塞暗构建，阻塞 Operation 生产激活 |
 | P2：generic Adapter 测试同时承载共享可靠性行为，缺少精确承接与清理顺序 | R3 测试 owner 迁移 | 每项测试标记 `MIGRATE / KEEP / DELETE`；typed 承接先绿，再删过期 generic 断言 | 防止误删共享 WmsConfirmation 可靠性覆盖 |
@@ -56,7 +56,7 @@ WES 在已经可靠接收 PickingTask、冻结匹配的 WorkLine，并取得 WMS
 
 T1-A 是不可绕过的 WMS 联合合同门禁，未通过时不得开始 T1-B 或任何模型、migration、Service 实施。R1 完成后，不重叠的
 plan_delta、typed Operation 和 prepare Policy 切片可以按第 13.1 节同步推进；R2-B1 只激活基础 Operation，R2-B2 才启用
-`manual_bin_processing` 的新业务触发。R2-0 与 R2-A 已完成；当前 Coordinator/Policy 边界与实施状态见第 17 节。
+`manual-picking` 的新业务触发。R2-0 与 R2-A 已完成；当前 Coordinator/Policy 边界与实施状态见第 17 节。
 每条链在首个写操作前分别冻结文件与测试 owner；出现交叉文件时，
 由 owner 清单指定唯一写入方并串行合入，禁止两个切片同时改同一文件或共享执行路径。
 `src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py` 是跨链只读不变量：R2-A 不修改
@@ -87,7 +87,7 @@ R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字�
 - 计划持久化对 `MANUAL | AUTO` 保持中立；`task_type` 只参与前序任务领取与 WorkLine 准入，不分叉同一个
   operation 的 revision、幂等或来源模型。
 - `plan_delta` 只读取 PickingTask 已冻结的 WorkLine/prepare 关联，不读取当前插件、不按 plugin key 选择 owner，也不复制
-  `manual_bin_processing`、flow mode 或人工任务领取判断。prepare 的业务准入与任务领取由对应插件拥有，共享宿主只提供
+  `manual-picking`、flow mode 或人工任务领取判断。prepare 的业务准入与任务领取由对应插件拥有，共享宿主只提供
   PickingTask、WmsConfirmation、事务、锁和严格 operation 合同。
 - WMS 拥有任务、版本和资源计划；WES 拥有本地持久化、顺序校验和执行准入；ECS/PLC 不参与本 operation。
 
@@ -127,8 +127,8 @@ R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字�
 
 - 每个 `added_direct_picks` 建立一条 `DirectPickExecution`，业务身份为
   `picking_task_id + source_locator`；初始记录只表达计划来源，不触发设备动作。
-- 每个 `added_bin_source_racks` 建立一条 PickingTask 来源货架面记录，业务身份为
-  `picking_task_id + rack_id + rack_face`；它不预选 Bin。
+- 每个 `added_bin_source_racks` 表示一个来源货架，其 `rack_face` 为非空面数组；WES 对每个数组元素建立一条 PickingTask 来源货架面记录，
+  业务身份为 `picking_task_id + rack_id + rack_face`；它不预选 Bin。
 - 每条新增成员保存首次引入它的 `plan_revision` 和 `source_evidence_id`，已接收成员不可被更高 revision 改写或重新创建。
 - 本切片不建立第二套 inbox、outbox、计划 JSON 副本或通用工作流实体；完整请求的 JSON 语义载荷继续由 `InboundEvidence` 保存。
   不承诺保留原始 HTTP 字节、空白和对象键顺序；这些不是现有 Evidence 存储能力。
@@ -326,9 +326,9 @@ plan_delta 暗构建不注册：
 生产激活分成两个边界：
 
 1. **R2-B1 基础 Operation 激活**：在 T5、R3-B、R4 和 WMS 联合 fixture 完成后，装配 prepare typed Adapter、
-   PickingTask confirmation owner、plan_delta 静态 Event route/OpenAPI 及共享 worker。它不要求 `manual_bin_processing` 当前启用，
+   PickingTask confirmation owner、plan_delta 静态 Event route/OpenAPI 及共享 worker。它不要求 `manual-picking` 当前启用，
    也不从插件清单动态注册或注销 operation。已有可靠义务和迟到回调始终可接收、保存和对账。
-2. **R2-B2 插件消费激活**：在 R2-A 与 R2-B1 之后，才让 `manual_bin_processing` WorkLine START/业务节点创建新的 prepare intent，
+2. **R2-B2 插件消费激活**：在 R2-A 与 R2-B1 之后，才让 `manual-picking` WorkLine START/业务节点创建新的 prepare intent，
    并装配 PickingTask STOP/插件切换 blocker 和后继执行。未来其它插件通过同一 typed method 接入，不修改 operation route 或可靠内核。
 
 R2-B1/R2-B2 的新动作准入、完成和资源释放只检查当前有效业务计划及真实同任务依赖；历史计划冲突 Evidence 不形成统一 blocker。
@@ -343,7 +343,7 @@ R2-B1/R2-B2 的新动作准入、完成和资源释放只检查当前有效业�
 task_type = MANUAL
 plan_revision = 1
 target_rack = 一个接料货架面
-added_bin_source_racks = 一个五层来源货架面
+added_bin_source_racks = 一个五层来源货架及其非空 rack_face 数组
 added_direct_picks = 省略
 ```
 
@@ -400,7 +400,7 @@ added_direct_picks = 省略
 - 货架、Bin、CTU、滚筒线及人工工作位物理执行；
 - point2 人工准入、PDA 完成、释放与应用结果报告；
 - RETURN_BUFFER、退箱回库、NG、换面换架、任务完成确认；
-- 部署、真实 WMS 联调和现场业务验收；其中 prepare/plan_delta 接口装配由 R2-B1、`manual_bin_processing` 新业务消费由 R2-B2 承接，
+- 部署、真实 WMS 联调和现场业务验收；其中 prepare/plan_delta 接口装配由 R2-B1、`manual-picking` 新业务消费由 R2-B2 承接，
   现场物理和业务验收仍不在本计划内。
 
 上述项目各自涉及尚未闭合的执行或供应商合同，不为 T1-B–T5 计划持久化暗构建预埋兼容层、业务空实现或通用恢复框架。
@@ -534,7 +534,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 
     两类模式均在提交后才启动 Transport、DeviceCommand 或其它外部副作用，ACK 均不代表物理完成。
   - 文件：`AGENTS.md` 保留法规；在 `docs/contracts/wms-async-callback-envelope-contract.md` 规定分类字段，并在当前所有含 WMS→WES
-    operation 的所属合同就地标注模式：`transport-fulfillment-contract.md`、`wms-rough-sorter-inbound-integration-requirements.md`、
+    operation 的所属合同就地标注模式：`transport-fulfillment-contract.md`、
     `wms-outbound-picking-task-integration-requirements.md`、`wms-manual-outbound-picking-integration-requirements.md`、
     `wms-inbound-putaway-integration-requirements.md`。不在 `AGENTS.md` 建重复中央清单，不 grandfather 存量，不新增运行时 enum/registry，
     不借分类改变既有 wire 或 ACK。
@@ -581,7 +581,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   - 验证：G04–G15、G17；先失败用例再实现；G07 使用 `normalize_payload(..., EXACT)` 分别计算当前与首次 `data` 的内存摘要，
     验证对象键序变化仍为业务重复、数组换序不是业务重复，且无新增持久化摘要字段。G17 明确覆盖 `claim_decision_batch()` 的状态与工作线关联门禁、合法 MaterialExecution
     正向领取及 FactBuilder 对非 recovery `WMS_EVENT` 的防御性拒绝，不改共享 dispatcher/扫描器；不得读取当前插件或硬编码
-    `manual_bin_processing`/flow mode，prepare 业务准入迁移由其独立所有权切片负责。真实 PostgreSQL 用例还须证明
+    `manual-picking`/flow mode，prepare 业务准入迁移由其独立所有权切片负责。真实 PostgreSQL 用例还须证明
     `EXECUTION_COMPLETED` 迟到消息留 `RECONCILING` Evidence/返回 `STATE_CONFLICT`，任务阻塞指针仍为空。
 - [ ] **T4（P1，人工约 1h / Agent 约 20min）— 暗构建与回归门禁**：补实际进程根隔离、公开接口缺席和既有消费者回归。
   - 来源：D7、D13；文件：第 12 节测试所有者目录，`docs/architecture/heavy-test-impact.toml`。
@@ -602,7 +602,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
     未通过不得开始 R2-A。
 - [x] **R2-A（P1）— prepare 业务所有权收敛**：仅在 R2-0 通过后，按第 17 节保留宿主 `PickingTaskPrepareCoordinator`：统一拥有事务、锁顺序、
   PickingTask 绑定、`WmsConfirmationLifecycleService`、typed prepare intent 落库和提交后唤醒；将人工插件键、flow mode、WorkLine 准入、
-  候选任务选择规则迁入 `workline_plugins/manual_bin_processing/` 的无副作用 Policy。
+  候选任务选择规则迁入 `workline_plugins/manual-picking/` 的无副作用 Policy。
   - 文件：第 17 节限定的宿主、插件、deployment 和测试 owner；Policy 只接收 Coordinator 提供的事实快照并返回 typed 选择结果，
     不访问 Repository、数据库、HTTP 或队列；不得扩大为 WMS 全域搬迁或通用任务调度器。
     `picking_task_confirmation_owner.py` 及其锁/响应证据合同为只读边界，不属于 R2-A 修改范围。
@@ -619,7 +619,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 - [x] **R3-B（P1）— 迁移既有 WES→WMS operation 并关闭 generic 入口**：消费 `TODOS.md` 中已有迁移项，将五个
   `inbound.material/source_rack.*` operation 及 prepare 按域接入 `wms_operations.<fixed_typed_method>`，请求和结果全生命周期 typed；删除公开
   `CreateWmsConfirmation(operation, dict)`、`WmsInboundAdapter.dispatch(operation, dict)`、插件字符串分派、旧平铺 import 和所有兼容路径。
-  - 文件：SDK、`wms_adapter/inbound_material/`、`wms_adapter/outbound_picking/`、rough_sorter/manual_bin_processing 调用点、deployment、镜像合同、
+  - 文件：SDK、`wms_adapter/inbound_material/`、`wms_adapter/outbound_picking/`、rough_sorter/manual-picking 调用点、deployment、镜像合同、
     直接测试和 HEAVY mapping。修改两个 Inbound 合同时保留 R1 已标注的 ACK 模式。
   - 测试清理：修改前列出逐测试 `MIGRATE / KEEP / DELETE`；先让 typed domain/SDK/plugin 测试承接，再删除过期 generic 断言。
     `tests/contracts/wms_adapter/test_inbound_adapter.py` 中共享 WmsConfirmation 可靠性用例必须保留或精确迁至共享 owner，禁止整文件盲删。
@@ -633,7 +633,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   PickingTask confirmation owner、plan_delta 静态 Event route/OpenAPI 和真实 Worker；不要求任何具体插件当前启用，也不动态注册/注销 route。
   - 验证：ASGI 合同、真实 worker 派发/恢复、prepare→plan_delta 联合 fixture、零消费者启动、进程重启及插件缺失时在途响应可靠保存；
     结果只证明接口与运行机制，不能替代现场物理或业务验收。
-- [ ] **R2-B2（P1）— 激活 `manual_bin_processing` 消费能力**：仅在 R2-A 和 R2-B1 完成后，让该插件 WorkLine START/业务节点创建新的 typed prepare intent，
+- [ ] **R2-B2（P1）— 激活 `manual-picking` 消费能力**：仅在 R2-A 和 R2-B1 完成后，让该插件 WorkLine START/业务节点创建新的 typed prepare intent，
   并装配 PickingTask STOP/插件切换 blocker 与后继执行；未来其它插件复用同一 operation 时只增加静态消费装配，不修改 route/core。
   - 验证：真实 worker、START/STOP/插件切换、一个节点组合多个 operation、计划阻塞对新动作/完成/释放的门禁，以及已有动作结果仍可闭合；
     插件停用只禁止新触发，不切断已存在可靠义务和迟到回调。
@@ -663,10 +663,10 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 | R1 | `AGENTS.md`、`docs/contracts/` | — |
 | T0-A–T5 | `src/app/wms_adapter/v1/`、`wms_adapter/outbound_picking/`、`wms_integration/outbound_picking/`、对应测试 | R1；T1-B 另依赖 T1-A |
 | R3-A–R3-B | `src/wes_plugin_sdk/`、`src/app/execution/`、`wms_adapter/inbound_material/`、插件调用点、对应测试 | R1 |
-| R2-0–R2-A | `docs/superpowers/plans/`、`wms_integration/outbound_picking/`、`workline_plugins/manual_bin_processing/` | R1；R2-A 另依赖 R3-A |
+| R2-0–R2-A | `docs/superpowers/plans/`、`wms_integration/outbound_picking/`、`workline_plugins/manual-picking/` | R1；R2-A 另依赖 R3-A |
 | R4 | outbound picking 对账 Service/API、授权与对应测试 | T3 |
 | R2-B1 | route/OpenAPI、worker、deployment | T5、R3-B、R4、WMS 联合 fixture |
-| R2-B2 | `workline_plugins/manual_bin_processing/`、WorkLine START/STOP/插件切换 | R2-A、R2-B1 |
+| R2-B2 | `workline_plugins/manual-picking/`、WorkLine START/STOP/插件切换 | R2-A、R2-B1 |
 
 - Lane A：R1。
 - Lane B：T0-A → T0-B → T1-A → T1-B → T2 → T3 → T4 → T5。
@@ -681,20 +681,20 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 本节汇总当前 develop 复审新增的可执行任务；第 13 节保留完整依赖和门禁。
 
 - [ ] **IT1（P1，人工约 0.5 天 / Agent 约 1h）— prepare ownership — 保留宿主 Coordinator 并提取插件 typed Policy**
-  - 来源：架构 D37；文件：`src/app/wms_integration/outbound_picking/`、`workline_plugins/manual_bin_processing/`、`deployment/`。
+  - 来源：架构 D37；文件：`src/app/wms_integration/outbound_picking/`、`workline_plugins/manual-picking/`、`deployment/`。
   - 验证：插件纯 Policy 测试 + 核心 Coordinator 事务/锁/typed intent/提交后唤醒测试。
 - [ ] **IT2（P1，人工约 1 天 / Agent 约 2h）— plan reconciliation — 在生产激活前交付 PickingTask 计划冲突对账**
   - 来源：架构 D38、D47；文件：outbound picking Service/API、授权、审计与 PostgreSQL 测试。
   - 行为：新 identity 的严格下一 revision 先保存为 `RECONCILING` 修正 Evidence；管理入口引用原始 blocker + 修正 Evidence，在任务锁内原子应用计划并清 blocker。
   - 验证：G27–G30，覆盖授权、Evidence/版本/阶段匹配、任务锁、并发/replay、事务失败、零消费者和插件缺失门禁。
 - [ ] **IT3（P1，人工约 0.5 天 / Agent 约 1h）— activation — 拆分基础 Operation 与插件消费激活**
-  - 来源：架构 D39–D40；文件：`src/app/wms_adapter/`、`deployment/`、`workline_plugins/manual_bin_processing/`。
+  - 来源：架构 D39–D40；文件：`src/app/wms_adapter/`、`deployment/`、`workline_plugins/manual-picking/`。
   - 验证：零消费者启动、插件启停、在途响应恢复和静态 route 不变。
 - [ ] **IT4（P1，人工约 1–2 天 / Agent 约 2–3h）— typed operations — 建立 intent/outcome 全生命周期**
   - 来源：架构 D41–D44；文件：`src/wes_plugin_sdk/`、`src/app/execution/`、各 domain Adapter 与 deployment。
   - 验证：G19–G24，固定 typed methods、多 Operation 组合、多插件复用及封闭 outcome。
 - [ ] **IT5（P1，人工约 1 天 / Agent 约 2h）— generic migration — 迁移既有调用并删除 generic 公开入口**
-  - 来源：架构 D42；文件：SDK、Inbound/outbound picking Adapter、rough_sorter/manual_bin_processing 调用点。
+  - 来源：架构 D42；文件：SDK、Inbound/outbound picking Adapter、rough_sorter/manual-picking 调用点。
   - 验证：G25 与精确残留扫描；不保留 shim、双路径、字符串分派或插件原始 JSON 解析。
 - [ ] **IT6（P2，人工约 2–3h / Agent 约 30–45min）— test ownership — 精确迁移并清理过期测试**
   - 来源：测试 D45–D46；文件：WMS Adapter、execution、architecture 与插件测试 owner。
@@ -736,7 +736,7 @@ D37–D46；独立 Codex 子 Agent 对当前文件和实现只读复核，4 个 
 | D14 | 性能 | 原计划未约束逐项查询和输入规模；正文上界、O(n) 去重、有界批次，无缓存或全局锁 |
 | D15 | 架构 | 公共 ingress 只做一次有界读取、严格 JSON/公共信封解析和静态分派；plan_delta handler 只校验 data，不复制 raw-body 接收机制 |
 | D16 | 合同 | WMS→WES 明确两类 ACK 提交模式；issued/plan_delta 的 Evidence 与构成接收成功的业务事实同事务提交，异步事实类可在 Evidence 提交后 ACK；外部物理副作用始终在提交后启动 |
-| D17 | 所有权 | plan_delta 只读 PickingTask 已冻结关联，不读取当前插件或复制 `manual_bin_processing`/flow mode/人工领取判断 |
+| D17 | 所有权 | plan_delta 只读 PickingTask 已冻结关联，不读取当前插件或复制 `manual-picking`/flow mode/人工领取判断 |
 | D18 | 测试 | 公共信封、正文限制、严格 JSON 和 identity 竞争归共享 owner；operation 只验证接入差异与 revision/状态/prepare/原子应用业务规则 |
 | D19 | 架构 | 可识别但 data 非法的请求保存为 `WMS_EVENT + IGNORED`；原样重放维持首次 422/timestamp，同 ID 改正文冲突，修正请求换新 ID；不新增状态、字段或实体 |
 | D20 | 合同 | `PENDING + 503` 与主合同公共 ACK 规则冲突；设 T1-A 为 WMS 书面确认、主合同修订和联合 fixture 三项齐全的硬退出门禁，未通过不得实施 |
@@ -759,7 +759,7 @@ D37–D46；独立 Codex 子 Agent 对当前文件和实现只读复核，4 个 
 | D37 | 所有权 | prepare 使用宿主可靠事务 Coordinator + 插件无副作用 typed Policy；取代“整个 Service 迁入插件”的旧方案 |
 | D38 | 恢复 | `plan_blocked_evidence_id` 的受控对账入口成为生产激活硬前置；不允许直接改库解锁 |
 | D39 | 架构 | Operation 是与消费者解耦的基础能力，支持零/一/多插件消费者；插件可组合多个 operation |
-| D40 | 激活 | 基础 Operation 能力与 `manual_bin_processing` 消费能力分离激活；插件缺席不切断在途可靠义务 |
+| D40 | 激活 | 基础 Operation 能力与 `manual-picking` 消费能力分离激活；插件缺席不切断在途可靠义务 |
 | D41 | API | 插件通过单一 `wms_operations` facade 的固定 typed methods 声明意图，不传 operation 字符串或裸 dict |
 | D42 | 收敛 | 删除公开 generic `CreateWmsConfirmation`/`WmsInboundAdapter.dispatch` 入口，不保留 shim、双路径或逃生口 |
 | D43 | SDK | SDK 可定义无副作用 typed Operation intent/outcome；wire、DB、HTTP、重试和恢复继续归宿主 |
@@ -848,7 +848,7 @@ D1–D47 与测试 G01–G30 均已转为本设计的实施要求。没有新增
   此调整只解决写入顺序，不解除 T1-A、R4 或生产激活门禁。
 - 测试所有权：typed 承接先通过，再迁移旧 generic 断言；原共享 WmsConfirmation 测试保留。
   补齐多 Operation 组合、双插件复用、零消费者装配和冻结插件缺失围栏测试；插件测试不进入核心 selector。
-  无新增 schema/migration、prepare route/OpenAPI 激活、Celery 注册或 manual_bin_processing 消费启动。
+  无新增 schema/migration、prepare route/OpenAPI 激活、Celery 注册或 manual-picking 消费启动。
 - 聚焦验证：组合核心集合 632 passed，rough_sorter FAST 167 passed，manual Policy 20 passed；插件 basedpyright 无错误。
   最终独立只读代码评审 CLEAR，新增双插件/零消费者覆盖闭合评审意见。
 - 最终 QUALITY：`./scripts/git-quality-gate.sh --profile quality` 通过，FAST 2641 passed、5 skipped；跳过项为既有四个外部

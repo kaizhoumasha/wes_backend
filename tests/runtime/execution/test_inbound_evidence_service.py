@@ -178,7 +178,7 @@ async def test_device_observation_reuses_stable_identity_without_faking_result()
         "received_at": datetime(2026, 8, 16, 0, 0, 1),
         "workline_id": 11,
         "material_execution_id": 21,
-        "contract_key": "rough-sorter-device",
+        "contract_key": "example-device",
         "contract_version": "1.1",
     }
 
@@ -212,7 +212,7 @@ async def test_device_observation_rejects_same_identity_payload_drift() -> None:
         "received_at": datetime(2026, 8, 16, 0, 0, 1),
         "workline_id": 11,
         "material_execution_id": 21,
-        "contract_key": "rough-sorter-device",
+        "contract_key": "example-device",
         "contract_version": "1.1",
     }
     await service.record_device_observation(object(), reason_code="DELIVERY_UNKNOWN", **values)  # type: ignore[arg-type]

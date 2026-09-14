@@ -12,9 +12,6 @@ from wes_plugin_sdk import (
     CreateTransportTask,
     FactReference,
     PauseForReconciliation,
-    TransportRackPosition,
-    TransportRackReference,
-    TransportZonePosition,
     Wait,
 )
 from wes_plugin_sdk.wms_types import (
@@ -28,20 +25,10 @@ from wes_plugin_sdk.wms_types import (
 
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.execution.config import WMS_CONFIRMATION_DISPATCH_WINDOW
-from src.app.execution.models import InboundEvidence, MaterialExecution, TransportDecisionBinding
 from src.app.execution.models.material_execution import MaterialExecutionStatus
-from src.app.execution.repositories import transport_decision_binding_repository
+from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator, TransportServicePort
 from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationIdentityConflictResult,
-)
-from src.app.transport.contracts import (
-    RackMovePosition,
-    RackPosition,
-    RackReference,
-    RcsTemplateId,
-    TransportCaller,
-    TransportExecutionAuthority,
-    ZonePosition,
 )
 from src.app.wms_adapter.inbound_material.typed import encode_request
 from src.app.workline.repositories.workline_repository import WorkLineRepository
@@ -52,6 +39,8 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.execution.models import InboundEvidence, MaterialExecution
+    from src.app.execution.services.reliable_rack_transport import TransportBindingRepositoryPort
     from src.app.workline.activation import WorkLineDeviceBinding
 
 
@@ -83,50 +72,6 @@ class WmsConfirmationServicePort(Protocol):
         request_payload: dict[str, Any],
         deadline_at: datetime,
         created_at: datetime,
-    ) -> object: ...
-
-
-class TransportBindingRepositoryPort(Protocol):
-    async def lock_resource_fence(self, db: AsyncSession, *, workline_id: int, resource_fence_id: str) -> None: ...
-
-    async def lock_decision_identity(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        correlation_id: str,
-        step: str,
-    ) -> None: ...
-
-    async def get_by_decision_identity_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        correlation_id: str,
-        step: str,
-    ) -> TransportDecisionBinding | None: ...
-
-    async def add(
-        self,
-        db: AsyncSession,
-        binding: TransportDecisionBinding,
-    ) -> TransportDecisionBinding: ...
-
-
-class TransportServicePort(Protocol):
-    async def move_rack_in_session(
-        self,
-        db: AsyncSession,
-        client_request_id: str,
-        caller: TransportCaller,
-        rack_id: str,
-        source: RackMovePosition,
-        target: RackMovePosition,
-        target_face: str | None = None,
-        rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
-        *,
-        execution_authority: TransportExecutionAuthority,
     ) -> object: ...
 
 
@@ -192,13 +137,13 @@ class DecisionApplier:
         self._worklines: WorkLineRepositoryPort = workline_repository or WorkLineRepository()
         self._device_commands = device_command_service
         self._wms_confirmations = wms_confirmation_service
-        self._transport_bindings: TransportBindingRepositoryPort = (
-            transport_binding_repository or transport_decision_binding_repository
+        self._rack_transports = ReliableRackTransportCreator(
+            transport_service,
+            binding_repository=transport_binding_repository,
+            uuid_factory=uuid_factory,
         )
-        self._transport = transport_service
         self._executions = material_execution_service
         self._clock = clock
-        self._uuid_factory = uuid_factory
 
     async def apply(
         self,
@@ -336,70 +281,14 @@ class DecisionApplier:
         execution: MaterialExecution,
         decision: CreateTransportTask,
     ) -> None:
-        step = decision.step
-        await self._transport_bindings.lock_resource_fence(
+        _ = await self._rack_transports.create(
             db,
             workline_id=execution.workline_id,
+            source_evidence_id=cast("int", evidence.id),
+            correlation_id=decision.correlation_id,
+            step=decision.step,
             resource_fence_id=decision.resource_fence_id,
-        )
-        await self._transport_bindings.lock_decision_identity(
-            db,
-            workline_id=execution.workline_id,
-            correlation_id=decision.correlation_id,
-            step=step,
-        )
-        binding = await self._transport_bindings.get_by_decision_identity_for_update(
-            db,
-            workline_id=execution.workline_id,
-            correlation_id=decision.correlation_id,
-            step=step,
-        )
-        if binding is None:
-            binding = await self._transport_bindings.add(
-                db,
-                TransportDecisionBinding(
-                    correlation_id=decision.correlation_id,
-                    step=step,
-                    workline_id=execution.workline_id,
-                    resource_fence_id=decision.resource_fence_id,
-                    client_request_id=self._uuid_factory(),
-                    source_evidence_id=cast("int", evidence.id),
-                ),
-            )
-        elif (
-            binding.workline_id != execution.workline_id
-            or binding.resource_fence_id != decision.resource_fence_id
-            or binding.source_evidence_id != evidence.id
-        ):
-            raise ValueError("existing transport decision binding conflict")
-        if type(decision.source) is TransportRackReference:
-            source = RackReference(decision.source.location_code)
-        elif type(decision.source) is TransportZonePosition:
-            source = ZonePosition(decision.source.location_code)
-        elif type(decision.source) is TransportRackPosition:
-            source = RackPosition(decision.source.location_code)
-        else:
-            raise TypeError("unsupported Transport rack source")
-        if type(decision.target) is TransportRackReference:
-            target = RackReference(decision.target.location_code)
-        elif type(decision.target) is TransportZonePosition:
-            target = ZonePosition(decision.target.location_code)
-        elif type(decision.target) is TransportRackPosition:
-            target = RackPosition(decision.target.location_code)
-        else:
-            raise TypeError("unsupported Transport rack target")
-        _ = await self._transport.move_rack_in_session(
-            db,
-            client_request_id=binding.client_request_id,
-            caller=TransportCaller(workline_id=str(execution.workline_id)),
-            rack_id=decision.rack_id,
-            source=source,
-            target=target,
-            target_face=decision.target_face,
-            rcs_template_id=RcsTemplateId(decision.rcs_template_id.value),
-            execution_authority=TransportExecutionAuthority(
-                workline_id=execution.workline_id,
-            ),
+            intent=decision,
         )
 
     async def _transition(

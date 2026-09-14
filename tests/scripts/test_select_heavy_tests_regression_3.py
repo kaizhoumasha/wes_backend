@@ -1,4 +1,4 @@
-"""核心 workspace 配置变化必须选择 concrete rough sorter PostgreSQL owner。"""
+"""核心 workspace 配置变化必须选择具体的执行 PostgreSQL owner。"""
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAPPING_PATH = REPO_ROOT / "docs" / "architecture" / "heavy-test-impact.toml"
 
 
-def test_pyproject_workspace_change_selects_concrete_rough_sorter_owner() -> None:
+def test_pyproject_workspace_change_selects_concrete_execution_owner() -> None:
     """workspace/plugin 依赖拓扑不能只靠 FAST/QUALITY 收集证明。"""
 
     assert select_heavy_tests(["pyproject.toml"], load_config(MAPPING_PATH)) == [

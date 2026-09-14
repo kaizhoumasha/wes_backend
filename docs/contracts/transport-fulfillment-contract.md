@@ -123,8 +123,8 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 
 一次只搬一个确定货架。来源和目标均使用 `kind + location_code`，`kind` 只能为 `RACK | ZONE | RACK_POSITION`，且两个位置不能
 完全相同。`RACK` 的 `location_code` 表示货架编号，必须等于外层 `rack_id`；`ZONE` 表示区域编号，`RACK_POSITION` 表示精确地码。
-`CTU03` 回库的 `target_face` 可选且默认为 `None`；值为 `None` 时线上请求省略该字段（不是发送 `null`），由 RCS 决定回库朝向；
-提供具体值时仍按不透明 string 原样冻结并发送。其它模板的 `target_face` 是调用方冻结的必填不透明 string。所有已提供的值都拒绝空字符串和 NUL，
+所有 `RACK_MOVE` 模板的 `target_face` 均可选且默认为 `None`；值为 `None` 时线上请求省略该字段（不是发送 `null`），由 RCS 采用默认朝向；
+提供具体值时仍按不透明 string 原样冻结并发送。所有已提供的值都拒绝空字符串和 NUL，
 不限制其它字符内容或长度。
 
 `RACK_POSITION` 目标要求最终地码等于冻结目标。`RACK` 目标由 WMS/RCS 按冻结的货架编号和 `rcs_template_id` 解析位置；`ZONE`
@@ -196,7 +196,7 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 | 方法 | 失败关闭条件 |
 | --- | --- |
 | 全部方法 | 标识为空、位置类型或必填字段不符合闭集 |
-| `move_rack()` | 来源与目标相同、来源/目标不属于 `RACK \| ZONE \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、非 CTU03 的 `target_face` 不是非空 string，或模板不在闭集 |
+| `move_rack()` | 来源与目标相同、来源/目标不属于 `RACK \| ZONE \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、已提供的 `target_face` 不是非空 string，或模板不在闭集 |
 | `rotate_rack()` | 位置不是 `RACK \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、`target_face` 不是非空 string、精确当前位置或当前面未知、目标面等于当前面，或模板不在闭集 |
 | `move_bins()` | 成员数不在 `1..4`、重复 `bin_code`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用不同面 token |
 | `exchange_bins()` | 交换对数量不是 1～2、料箱或储位重复、位置不是 `RACK_BIN_SLOT`、涉及超过两个工作面组、同一货架混面，或不能展开为 1～2 个互不重叠的二元闭环 |
@@ -290,12 +290,12 @@ kind
 
 | DTO 族 | `kind` | 来源方法 | `data` 专属字段 |
 | --- | --- | --- | --- |
-| `RackTransportData` | `RACK_MOVE` | `move_rack()` | `rcs_template_id + rack_id + source + target`；CTU03 的 `target_face` 可选且 `None` 时省略，其它模板必填；`source != target` |
+| `RackTransportData` | `RACK_MOVE` | `move_rack()` | `rcs_template_id + rack_id + source + target`；所有模板的 `target_face` 可选且 `None` 时省略；`source != target` |
 | `RackTransportData` | `RACK_ROTATE` | `rotate_rack()` | `rcs_template_id + rack_id + source + target + target_face`；`target` 为准入确认的精确原点位；`source` 为货架引用或与目标相同的精确位置 |
 | `BinTransportData` | `BIN_MOVE` | `move_bins()` | `moves[1..4] { container_id + source + target }` |
 | `BinTransportData` | `BIN_EXCHANGE` | `exchange_bins()` | `moves[2\|4] { container_id + source + target }`，且为 1～2 个二元闭环 |
 
-`CTU03` 未提供 `target_face` 时由 WMS/RCS 决定回库朝向，回调的 `arrival_face` 可省略、为 `null` 或空字符串，WES 将朝向记录为空，不推定实际朝向；提供具体目标面时按其它模板规则处理。
+`RACK_MOVE` 未提供 `target_face` 时由 RCS 采用默认朝向，回调的 `arrival_face` 可省略、为 `null` 或空字符串，WES 将朝向记录为空，不推定实际朝向；提供实际非空面时原样记录。提供具体目标面时仍按冻结值校验。
 所有已提供的 `RackTransportData.target_face` 均由调用方冻结，WMS 原样传给 RCS；成功回调提供非空 `arrival_face` 且指定了 `target_face` 时，必须按大小写敏感的
 Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要求最终位置相等。对于 `RACK`
 目标，WMS/RCS 必须确认最终位置是按冻结

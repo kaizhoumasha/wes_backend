@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime
 
 import asyncpg
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device
 from src.app.workline.models.workline import LineType, WorkLine
 from tests.support.postgresql_catalog import assert_database_head
@@ -18,6 +20,8 @@ from tests.support.postgresql_heavy import migrated_database, run_alembic, tempo
 pytestmark = pytest.mark.integration
 BASE_REVISION = "93deacda8c9c"
 BIGINT_REVISION = "bebf575cca2b"
+COMMAND_BIGINT_BASE = "e5c5dfb4373f"
+COMMAND_BIGINT_REVISION = "70d00a14cbdf"
 
 
 @pytest.mark.asyncio
@@ -107,5 +111,85 @@ async def test_migration_preserves_topology_and_rejects_lossy_downgrade() -> Non
             await assert_database_head(connection, BIGINT_REVISION)
             assert await connection.fetch("SELECT * FROM wes_biz.devices ORDER BY id") == before
             assert await connection.fetchval(column_types_sql) == 6
+        finally:
+            await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_device_command_workline_migration_preserves_rows_and_rejects_lossy_downgrade() -> None:
+    now = datetime(2026, 9, 14)
+
+    def command(code: str, workline_id: int) -> DeviceCommand:
+        return DeviceCommand(
+            device_code="STATION_SCAN9",
+            workline_id=workline_id,
+            execution_ref_type="TEST_EXECUTION",
+            execution_ref_id=code,
+            contract_key="test.scan",
+            contract_version="1.0",
+            task_type="MOVE_FORWARD",
+            deadline_at=now,
+            endpoint_base_url="http://ecs-mock:8080",
+            command_timeout_ms=30000,
+            status_max_age_ms=1000,
+            command_code=code,
+            payload_digest="a" * 64,
+        )
+
+    async with temporary_database() as (_database, url):
+        run_alembic("upgrade", COMMAND_BIGINT_BASE, database_url=url)
+        engine = create_async_engine(url)
+        try:
+            async with async_sessionmaker(engine)() as db:
+                db.add(WorkLine(id=1, line_code="COMMAND-OLD", line_name="原工作线", line_type=LineType.AUTO))
+                await db.flush()
+                db.add(command("COMMAND-OLD", 1))
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+        run_alembic("upgrade", COMMAND_BIGINT_REVISION, database_url=url)
+        connection = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            assert (
+                await connection.fetchval(
+                    """SELECT data_type FROM information_schema.columns
+                WHERE table_schema = 'wes_biz' AND table_name = 'device_commands' AND column_name = 'workline_id'"""
+                )
+                == "bigint"
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT workline_id FROM wes_biz.device_commands WHERE command_code = 'COMMAND-OLD'"
+                )
+                == 1
+            )
+        finally:
+            await connection.close()
+
+        engine = create_async_engine(url)
+        snowflake = 348950323769920
+        try:
+            async with async_sessionmaker(engine)() as db:
+                db.add(WorkLine(id=snowflake, line_code="COMMAND-BIG", line_name="雪花工作线", line_type=LineType.AUTO))
+                await db.flush()
+                db.add(command("COMMAND-BIG", snowflake))
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+        with pytest.raises(subprocess.CalledProcessError) as rejected:
+            run_alembic("downgrade", COMMAND_BIGINT_BASE, database_url=url)
+        assert "integer out of range" in rejected.value.stderr
+        connection = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, COMMAND_BIGINT_REVISION)
+            rows = await connection.fetch(
+                "SELECT command_code, workline_id FROM wes_biz.device_commands ORDER BY command_code"
+            )
+            assert [(row["command_code"], row["workline_id"]) for row in rows] == [
+                ("COMMAND-BIG", snowflake),
+                ("COMMAND-OLD", 1),
+            ]
         finally:
             await connection.close()

@@ -73,6 +73,7 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
         default=None,
         foreign_key="wes_biz.material_executions.id",
         index=True,
+        sa_type=SQL_COMPAT_BIGINT,
     )
     picking_task_id: int | None = Field(
         default=None,

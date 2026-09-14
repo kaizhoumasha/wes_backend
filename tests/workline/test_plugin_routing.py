@@ -47,7 +47,13 @@ class _OutcomePublisher:
         self.outcomes.append(outcome)
 
 
-def _plugin(*, version: str, planner: object | None = None, publisher: object | None = None) -> InstalledWorkLinePlugin:
+def _plugin(
+    *,
+    version: str,
+    planner: object | None = None,
+    publisher: object | None = None,
+    plan_handler: object | None = None,
+) -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
         definition=PluginDefinition(
             plugin_key="example", plugin_version=version, display_name="Example", supported_line_types=(LineType.AUTO,)
@@ -61,6 +67,7 @@ def _plugin(*, version: str, planner: object | None = None, publisher: object | 
         start_plan_builder=object(),
         wms_confirmation_follow_up_planner=planner,
         transport_outcome_publisher=publisher,
+        picking_task_plan_applied_handler=plan_handler,  # type: ignore[arg-type]
     )
 
 
@@ -109,6 +116,40 @@ async def test_transport_outcome_uses_the_binding_epochs_exact_plugin() -> None:
     await router.publish(outcome)  # type: ignore[arg-type]
 
     assert publisher.outcomes == [outcome]
+
+
+@pytest.mark.asyncio
+async def test_plan_handler_without_transport_publisher_does_not_ack_or_wake() -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    tasks = AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(
+        transport_task_id="TASK-1", client_request_id="REQUEST-1", published_outcome_version=0
+    )
+    queue = SimpleNamespace(
+        enqueue_execution_facts=Mock(),
+        enqueue_picking_task_plans=Mock(),
+    )
+    router = InstalledPluginTransportOutcomePublisher(
+        _Sessions(),
+        (_plugin(version="1.0", plan_handler=object()),),
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=31)),  # type: ignore[arg-type]
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
+        queue_gateway=queue,
+    )
+    outcome = SimpleNamespace(
+        client_request_id="REQUEST-1",
+        transport_task_id="TASK-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="31"),
+    )
+
+    with pytest.raises(LookupError, match="Transport outcome publisher"):
+        await router.publish(outcome)  # type: ignore[arg-type]
+
+    queue.enqueue_picking_task_plans.assert_not_called()
+    queue.enqueue_execution_facts.assert_not_called()
 
 
 @pytest.mark.asyncio

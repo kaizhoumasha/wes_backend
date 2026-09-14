@@ -180,7 +180,7 @@ class IntegrationRunResponse(_StrictModel):
     workline_id: int
     workline_code: str
     scenario_key: Literal["manual_outbound_picking@v1"]
-    expected_plugin_key: Literal["manual_bin_processing"]
+    expected_plugin_key: Literal["manual-picking"]
     profile: IntegrationDebugProfile
     environment_label: str
     operator_user_id: int
@@ -816,7 +816,7 @@ async def export_run(request: Request, run_id: Annotated[_RUN_ID, Path()]) -> Re
                     "method": "POST",
                     "path": "/api/v1/wes/decisions",
                     "operation": "outbound.bin.inbound_batch@v1",
-                    "wms_action": "只对 plan_delta 中已到位的五层料箱架返回 READY bins、NO_BATCH 或 RACK_FACE_DONE。",
+                    "wms_action": "五层料箱架面到位后一次返回完整最终的 READY bins，空面返回 RACK_FACE_DONE。",
                 },
                 {
                     "direction": "WES_TO_WMS",

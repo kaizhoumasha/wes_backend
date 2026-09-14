@@ -57,7 +57,7 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     if event.timestamp < not_before_ms:
         return _ignore(evidence_id, "BEFORE_NOT_BEFORE", source_event_id=event.source_event_id)
 
-    barcode = event.data.get("barcode")
+    barcode = event.data.get("bin_code")
     if not isinstance(barcode, str) or not barcode:
         return _attention(evidence_id, "INVALID_BARCODE", source_event_id=event.source_event_id)
     bin_code = _match_selected_bin_code(barcode, selected_bins)

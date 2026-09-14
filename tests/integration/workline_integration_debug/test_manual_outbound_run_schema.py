@@ -73,7 +73,7 @@ async def test_completion_report_retirement_preserves_unresolved_state(blocker: 
                             workline_id=42,
                             workline_code="RETIRE",
                             scenario_key="manual_outbound_picking@v1",
-                            expected_plugin_key="manual_bin_processing",
+                            expected_plugin_key="manual-picking",
                             profile="CONTRACT_SIMULATION",
                             environment_label="test",
                             operator_user_id=1,

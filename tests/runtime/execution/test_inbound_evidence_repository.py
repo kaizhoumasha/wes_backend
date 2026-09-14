@@ -42,7 +42,7 @@ class _RecordingDb:
 
 
 @pytest.mark.asyncio
-async def test_decision_claim_and_partial_index_exclude_foundation_device_results() -> None:
+async def test_decision_claim_admits_only_command_owned_workline_business_results() -> None:
     now = datetime(2026, 8, 17, 12)
     db = _RecordingDb()
 
@@ -61,9 +61,10 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
             compile_kwargs={"literal_binds": True},
         )
     )
-    exclusion = "NOT (wes_biz.inbound_evidences.kind = 'DEVICE_RESULT' AND "
-    assert exclusion in sql
     assert "wes_biz.inbound_evidences.material_execution_id IS NULL" in sql
+    assert "wes_biz.device_commands.execution_ref_type = 'WORKLINE_BUSINESS'" in sql
+    assert "wes_biz.device_commands.command_code = wes_biz.inbound_evidences.command_code" in sql
+    assert "wes_biz.device_commands.workline_id = wes_biz.inbound_evidences.workline_id" in sql
     assert "wes_biz.work_lines.is_active IS true" in sql
     assert "inbound_evidences.decision_next_attempt_at IS NULL" in sql
     assert "FOR UPDATE OF inbound_evidences SKIP LOCKED" in sql
@@ -91,7 +92,29 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
         item for item in InboundEvidence.__table__.indexes if item.name == "ix_inbound_evidences_decision_eligible"
     )
     predicate = str(index.dialect_options["postgresql"]["where"])
-    assert "NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)" in predicate
+    assert predicate == "apply_status = 'APPLIED' AND published_at IS NULL"
+
+
+@pytest.mark.asyncio
+async def test_workline_wms_evidence_is_claimed_only_for_frozen_plugin_operation() -> None:
+    now = datetime(2026, 8, 17, 12)
+    db = _RecordingDb()
+
+    await InboundEvidenceRepository().claim_decision_batch(
+        db,  # type: ignore[arg-type]
+        now=now,
+        claim_token="claim",
+        claim_expires_at=now + timedelta(seconds=30),
+        limit=100,
+        business_wms_routes=(("manual-picking", "1.0.0", "outbound.manual_bin.work_completed@v1"),),
+    )
+
+    sql = str(db.statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "work_lines.plugin_key = 'manual-picking'" in sql
+    assert "work_lines.plugin_version = '1.0.0'" in sql
+    assert "inbound_evidences.operation = 'outbound.manual_bin.work_completed@v1'" in sql
+    assert "inbound_evidences.material_execution_id IS NOT NULL" in sql
+    assert "inbound_evidences.processed_at IS NULL" in sql
 
 
 @pytest.mark.asyncio

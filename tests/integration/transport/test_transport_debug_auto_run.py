@@ -186,7 +186,7 @@ async def _persist_scan12(
                     "timestamp": timestamp_ms,
                     "source_event_id": source_event_id,
                     "is_debug": True,
-                    "data": {"barcode": bin_code},
+                    "data": {"bin_code": bin_code},
                 },
                 received_at=timezone.now_for_db(),
                 device_code=device_code,
@@ -657,7 +657,7 @@ async def test_conflicting_scan12_evidence_stops_before_bin_return(
                     source_identity=first.source_identity,
                     first_evidence_id=first.id,
                     conflicting_digest="b" * 64,
-                    normalized_payload={**first.normalized_payload, "data": {"barcode": "OTHER-BIN"}},
+                    normalized_payload={**first.normalized_payload, "data": {"bin_code": "OTHER-BIN"}},
                     reason_code="SOURCE_IDENTITY_PAYLOAD_CONFLICT",
                     received_at=timezone.now_for_db(),
                 )
@@ -709,7 +709,7 @@ async def test_late_scan12_conflict_stops_after_bin_return_task_is_bound(
                     source_identity=first.source_identity,
                     first_evidence_id=first.id,
                     conflicting_digest="b" * 64,
-                    normalized_payload={**first.normalized_payload, "data": {"barcode": "OTHER-BIN"}},
+                    normalized_payload={**first.normalized_payload, "data": {"bin_code": "OTHER-BIN"}},
                     reason_code="SOURCE_IDENTITY_PAYLOAD_CONFLICT",
                     received_at=timezone.now_for_db(),
                 )

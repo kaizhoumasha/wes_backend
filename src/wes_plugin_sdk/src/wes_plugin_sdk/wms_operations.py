@@ -193,14 +193,12 @@ def outbound_bin_inbound_batch(
     task_id: str,
     rack_id: str,
     rack_face: str,
-    max_bin_count: int,
 ) -> BinInboundBatchIntent:
     return BinInboundBatchIntent(
         operation_id=operation_id,
         task_id=task_id,
         rack_id=rack_id,
         rack_face=rack_face,
-        max_bin_count=max_bin_count,
     )
 
 

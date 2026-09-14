@@ -439,12 +439,7 @@ def test_backend_build_installs_locked_hatchling_before_disabling_local_package_
     assert "uv sync --frozen --only-group build --no-install-project --active" in dockerfile_text
     assert "--no-build-isolation-package wes-plugin-sdk" in dockerfile_text
     assert '--no-build-isolation-package "$package"' in dockerfile_text
-    for package in (
-        "wes-rough-sorter-plugin",
-        "wes-manual-bin-processing-plugin",
-        "wes-manual-picking-plugin",
-    ):
-        assert f"package={package}" in dockerfile_text
+    assert "package=wes-manual-picking-plugin" in dockerfile_text
 
 
 def test_non_publishing_builds_still_validate_the_production_target() -> None:

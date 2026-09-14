@@ -59,7 +59,7 @@ def event(revision=1, **data):
                 **(
                     {"target_rack": {"rack_id": "R", "rack_face": " A "}}
                     if revision == 1
-                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_face": "A"}]}
+                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_face": ["A"]}]}
                 ),
                 **data,
             },
@@ -67,7 +67,13 @@ def event(revision=1, **data):
     )
 
 
-def setup_service(status=Status.PENDING):
+def setup_service(
+    status=Status.PENDING,
+    *,
+    plan_activation_plugin_identities=(),
+    task_queue_gateway=None,
+    workline_repository=None,
+):
     task = PickingTask(
         id=1,
         task_id="T",
@@ -124,7 +130,13 @@ def setup_service(status=Status.PENDING):
     )
     return (
         PickingTaskPlanDeltaService(
-            Sessions(), evidence_service=evidences, task_repository=tasks, plan_repository=plans
+            Sessions(),
+            evidence_service=evidences,
+            task_repository=tasks,
+            plan_repository=plans,
+            plan_activation_plugin_identities=plan_activation_plugin_identities,
+            task_queue_gateway=task_queue_gateway,
+            workline_repository=workline_repository,
         ),
         task,
         evidence,
@@ -144,6 +156,37 @@ async def test_revision_one_commits_plan_and_evidence_together():
     ) == ("EXECUTING", 1, 10, 10)
     assert task.target_rack_face == " A "
     assert evidence.apply_status == Status.APPLIED
+
+
+async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_capability(monkeypatch):
+    queue = SimpleNamespace(enqueue_picking_task_plans=Mock())
+    worklines = SimpleNamespace(
+        get_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                is_active=True,
+                is_deleted=False,
+                plugin_key="sample_plugin",
+                plugin_version="0.1.0",
+            )
+        )
+    )
+    deferred = Mock()
+    monkeypatch.setattr(
+        "src.app.wms_integration.outbound_picking.services.picking_task_plan_delta.defer_wakeup",
+        deferred,
+    )
+    service, _, _, _ = setup_service(
+        plan_activation_plugin_identities=(("sample_plugin", "0.1.0"),),
+        task_queue_gateway=queue,
+        workline_repository=worklines,
+    )
+
+    assert (await service.record(event(), received_at=NOW)).code == "RECEIVED"
+    deferred.assert_called_once_with(deferred.call_args.args[0], queue.enqueue_picking_task_plans)
+
+    service, _, _, _ = setup_service(task_queue_gateway=queue, workline_repository=worklines)
+    assert (await service.record(event(), received_at=NOW)).code == "RECEIVED"
+    assert deferred.call_count == 1
 
 
 async def test_pending_prepare_is_rechecked_by_same_identity():
@@ -297,10 +340,13 @@ async def test_invalid_correction_preserves_blocker_and_independent_task_can_app
     if invalid == "owner":
         confirmation.request_payload["data"]["task_id"] = "OTHER"
     elif invalid == "source":
-        service._plans.source_identities.return_value = (set(), {("B", "A")})
+        receipt = event(revision, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["A", "C"]}])
+        service._plans.source_identities.return_value = (set(), {("B", "C")})
     elif invalid == "inactive":
         service._plans.prepare_context.return_value[1].is_active = False
     result = await service.record(receipt, received_at=NOW)
+    if invalid == "source":
+        assert service._plans.source_identities.await_args.kwargs["bin_racks"] == [("B", "A"), ("B", "C")]
     assert result.reason_code == (
         "REVISION_CONFLICT"
         if invalid.endswith("revision")
@@ -371,7 +417,7 @@ async def test_business_duplicate_uses_full_data_and_preserves_array_order():
     task.status = "EXECUTING"
     task.last_applied_plan_revision = 2
     task.last_plan_evidence_id = 30
-    racks = [{"rack_id": "A", "rack_face": "1"}, {"rack_id": "B", "rack_face": "2"}]
+    racks = [{"rack_id": "A", "rack_face": ["1", "2"]}, {"rack_id": "B", "rack_face": ["3"]}]
     previous = event(2, added_bin_source_racks=racks)
     service._plans.get_evidence.return_value = SimpleNamespace(
         normalized_payload=previous.model_dump(mode="json", exclude_none=True)
@@ -379,6 +425,11 @@ async def test_business_duplicate_uses_full_data_and_preserves_array_order():
     assert await service.validate_plan(object(), task, previous.data, received_at=NOW) == "DUPLICATE"
     changed = event(2, added_bin_source_racks=list(reversed(racks)))
     assert await service.validate_plan(object(), task, changed.data, received_at=NOW) == "REVISION_CONFLICT"
+    changed_faces = event(
+        2,
+        added_bin_source_racks=[{"rack_id": "A", "rack_face": ["2", "1"]}, {"rack_id": "B", "rack_face": ["3"]}],
+    )
+    assert await service.validate_plan(object(), task, changed_faces.data, received_at=NOW) == "REVISION_CONFLICT"
     task.plan_blocked_evidence_id = 99
     assert await service.validate_plan(object(), task, previous.data, received_at=NOW) == "DUPLICATE"
     assert task.plan_blocked_evidence_id == 99
@@ -422,17 +473,46 @@ async def test_source_lookup_and_insert_use_bounded_candidate_batches():
     db.execute.reset_mock()
     assert await repository.source_identities(db, 1, direct_picks=[], bin_racks=[]) == (set(), set())
     db.execute.assert_not_awaited()
-    data = event(added_bin_source_racks=[{"rack_id": rack, "rack_face": face} for rack, face in racks]).data
+    data = event(
+        added_bin_source_racks=[{"rack_id": "B0", "rack_face": ["A", "B"]}]
+        + [{"rack_id": f"B{i}", "rack_face": ["A"]} for i in range(1, MEMBER_BATCH_SIZE + 1)]
+    ).data
     batch_sizes = []
+    saved = []
 
     async def flush():
         batch_sizes.append(db.add.call_count)
+        saved.extend(call.args[0] for call in db.add.call_args_list)
         db.add.reset_mock()
 
     db.flush.side_effect = flush
     await repository.add_members(db, 1, data, 10)
-    assert sum(batch_sizes) == len(racks)
+    assert sum(batch_sizes) == MEMBER_BATCH_SIZE + 2
     assert max(batch_sizes) <= MEMBER_BATCH_SIZE
+    assert {(row.rack_id, row.rack_face) for row in saved if row.rack_id == "B0"} == {("B0", "A"), ("B0", "B")}
+
+
+async def test_multi_face_bin_rack_expands_to_independent_source_identities_and_members():
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    service, task, _, _ = setup_service()
+    receipt = event(added_bin_source_racks=[{"rack_id": "B", "rack_face": ["90", "270"]}])
+
+    assert await service.validate_plan(object(), task, receipt.data, received_at=NOW) is None
+    assert service._plans.source_identities.await_args.kwargs["bin_racks"] == [("B", "90"), ("B", "270")]
+
+    duplicated = event(added_bin_source_racks=[{"rack_id": "B", "rack_face": ["90", "90"]}])
+    assert await service.validate_plan(object(), task, duplicated.data, received_at=NOW) == "REFERENCE_CONFLICT"
+
+    repository = PickingTaskPlanDeltaRepository()
+    db = SimpleNamespace(flush=AsyncMock(), add=Mock())
+    await repository.add_members(db, 1, receipt.data, 10)
+    assert [(call.args[0].rack_id, call.args[0].rack_face) for call in db.add.call_args_list] == [
+        ("B", "90"),
+        ("B", "270"),
+    ]
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])

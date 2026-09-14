@@ -683,7 +683,9 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
     )
     plugin_file.write_text("from src.app.device.service import DeviceService\n", encoding="utf-8")
     plugin_application_file.write_text(
-        "from src.app.execution.services import InboundEvidenceService\n",
+        "from src.app.execution.services import InboundEvidenceService\n"
+        "from sqlalchemy import select\n"
+        "from sqlmodel import SQLModel\n",
         encoding="utf-8",
     )
     plugin_dynamic_file.write_text(

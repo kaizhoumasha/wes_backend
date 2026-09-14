@@ -79,5 +79,5 @@ async def freeze_return_allocation(service, run_id, *, max_count=4):
         task_queue_gateway=gateway,
     )
     assert await dispatcher.dispatch_batch(limit=1) == 1
-    gateway.enqueue_execution_facts.assert_not_called()
+    gateway.enqueue_execution_facts.assert_called_once_with()
     assert await service.advance_run(run_id)

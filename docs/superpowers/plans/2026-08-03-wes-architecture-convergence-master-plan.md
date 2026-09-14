@@ -48,7 +48,7 @@ Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合�
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 
-**Phase 8 rough-sorter contract baseline:** `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`（`Approved`）
+**Phase 8 historical baseline:** 粗分插件已从代码库移除，运行环境未变更；原合同位于项目外 `../archive_docs/wes_backend/docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`，不作为当前实施入口。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
@@ -125,7 +125,7 @@ SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于未来�
 | Phase 6 | 分拣执行插件组优化 | Phase 9 | 最小执行基础闭合 | 只交付 Phase 10 必需的核心对象和 successor，不交付人工/自动业务插件 |
 | Phase 7 | 旧平台代码最终闭环清理 | Phase 10 | 旧平台代码最终闭环清理 | 只处理 Phase 5–9 跨阶段残留 |
 | Phase 8 | 旧数据模型与迁移链清理 | Phase 11 | 旧数据模型与迁移链清理 | 依赖 Phase 10 零旧路径 |
-| Phase 9 | 最终基线与系统验收 | Phase 12 | `manual_bin_processing` 教学式开发 | 用户主导完成真实人工 Bin 纵向切片 |
+| Phase 9 | 最终基线与系统验收 | Phase 12 | `manual-picking` 教学式开发 | 用户主导完成真实人工 Bin 纵向切片 |
 | 无 | 无 | Phase 13 | 自动插件开发 | 分别交付 `automatic_putaway` 与 `automatic_picking` |
 | 无 | 无 | Phase 14 | 当前交付范围系统验收 | 验收基础能力、Adapter、设备统一接口和实际交付插件 |
 
@@ -206,7 +206,7 @@ Phase 10 Task 7 联调环境 Deploy/Cutover（已完成；不代表供应商、�
    ↓
 Phase 11 旧数据模型与迁移链
    ↓
-Phase 12 manual_bin_processing 教学式开发
+Phase 12 manual-picking 教学式开发
    ↓
 Phase 13 automatic_putaway / automatic_picking
    ↓
@@ -569,7 +569,7 @@ Transport；WorkLine 管理当前插件与资源绑定，命令冻结自身合�
 **Objective:** 在独立 Device/ECS 基础能力已批准、实施并切换为唯一生产路径后，以粗分机交付首个真实执行插件、
 设备合同附录、endpoint/device 绑定，并以分层测试、本机 Mock 验收和 GitLab PUSH 生成可追溯后端镜像关闭后端 RC。
 
-**Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`、
+**历史输入:** 顶层 SPEC §7/§11.1、已归档的粗分业务合同、
 第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、粗分机真实拓扑、供应商原始资料和 Phase 6 Transport 基线。
 
 **Entry conditions:** Phase 7 Device/ECS 退出门禁通过；入库合同已由 WMS、WES、RCS 和 ECS 联合批准；粗分机供应商资料
@@ -619,8 +619,7 @@ absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从�
 前端进度和现场验证均不得参与或替代该门禁。
 
 **需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；WorkLine 配置/前端增量以
-`docs/contracts/device-annexes/rough-sorter-device-contract.md` 为真源；当前 RC 与外部验收状态以
-`docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
+已归档的粗分设备合同为历史真源；原 RC 与外部验收资料已移出项目。历史后端功能与 Mock 曾完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
@@ -640,7 +639,7 @@ ECS 急停/复位/恢复执行与 WES 对 `ESTOP_PRESSED` 的入站拒绝边界�
 位置投影和可靠对象是基础能力；料箱只使用实际 `bin_code` 及插件必要的工位/业务关联，不建立全程料箱执行实体。必须交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。
 
-**Explicit out-of-scope:** `manual_bin_processing`、RETURN_BUFFER、人工 Task、PDA/WMS 人工业务 wire、自动上架、自动拣货、
+**Explicit out-of-scope:** `manual-picking`、RETURN_BUFFER、人工 Task、PDA/WMS 人工业务 wire、自动上架、自动拣货、
 动态 registry、DSL、兼容层和供应商私有协议。
 
 **Deliverables:** Phase 10 可验证的最小 successor、当前 operation consumer/`DELETE → NONE` 裁决表，以及每个基础对象的测试和
@@ -719,7 +718,7 @@ Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 t
 
 **风险及防止阶段越权的约束:** 禁止在模型未稳定前生成基线；禁止因保留开发数据引入兼容迁移。
 
-## 17. Phase 12：`manual_bin_processing` 教学式开发
+## 17. Phase 12：`manual-picking` 教学式开发
 
 **Objective:** 由用户亲自完成一个真实人工 Bin 纵向切片，掌握后续插件和二次开发的完整路径。
 
@@ -732,7 +731,7 @@ Bootstrap 准入不等于生产实现、部署、设备物理或业务验收准�
 **Scope:** 用户实现生产代码、测试、migration、静态 Composition、命令和验证；Agent 只提供现有调用链说明、任务拆解、只读影响分析、
 Review 与根因诊断。只有用户对具体切片另行授权时，Agent 才直接修改生产代码。
 
-**实施子计划:** `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md`。旧 Phase 9 人工合同、设备附录和
+**实施子计划已退役并移至项目外归档。** 旧 Phase 9 人工合同、设备附录和
 OpenAPI 仅作为归档输入；Task 2 生产实现开始前必须按真实教学范围重新联合评审，不能沿用旧批准状态。
 
 **Exit gate:** 用户能说明 owner、数据流、失败语义、事务边界和测试归属；人工 Bin 业务合同、插件独立测试和部署激活通过，

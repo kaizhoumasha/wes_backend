@@ -12,6 +12,44 @@ from src.app.workline_integration_debug.contracts import (
     require_transition,
     wms_team_guidance,
 )
+from src.app.workline_integration_debug.models import IntegrationRun, IntegrationRunStep
+from src.app.workline_integration_debug.service import IntegrationDebugService
+
+
+def test_work_required_freezes_wms_returned_task() -> None:
+    run = IntegrationRun(
+        run_id="run-decision",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual-picking",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="WORK_ADMISSION",
+        task_id="PICK-ORIGINAL",
+        bin_code="BIN-001",
+        device_code="SIM-ECS-01",
+    )
+    admission = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=1,
+        phase="WORK_ADMISSION",
+        status="WAITING",
+        operation="outbound.manual_bin.work_admission_decide@v1",
+    )
+
+    IntegrationDebugService._advance_completed_wms_action(
+        run,
+        admission,
+        response_result="WORK_REQUIRED",
+        response_data={"task_id": "PICK-ACTUAL"},
+    )
+
+    assert run.configuration_json["admission_task_id"] == "PICK-ACTUAL"
+    assert run.configuration_json["manual_bin_admission_result"] == "WORK_REQUIRED"
 
 
 def test_manual_outbound_debug_contract_is_a_closed_vocabulary() -> None:

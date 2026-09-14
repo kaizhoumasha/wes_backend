@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0.0] - 2026-09-14
+
+### Added
+
+- 人工拣料工作线可从 WMS 准备并接收拣选计划，可靠调度货架搬运，按扫码点处理料箱入站、拣料和退箱批次，并接收任务完成结果。
+- 手工出库联调台支持按当前 WMS、ECS 合同验证货架与料箱流程。
+
+### Changed
+
+- 插件业务流程统一在 manual-picking 内装配，基础执行能力与插件业务决策保持分离；更新相应业务合同和开发指引。
+- 退役粗分拣和旧 manual_bin_processing 插件及其项目内资源，集中维护 manual-picking。
+- 五层来源货架面到位后每面只请求一次 WMS `inbound_batch`；WES 按冻结的完整料箱清单分段搬运，并在上一段搬运及 SCAN1 扫码闭合后推进下一段。
+- 设备命令、Evidence、WMS 义务和运行会话的雪花主键关联统一为 BIGINT，保留既有数据并拒绝溢出降级。
+- `RACK_MOVE` 可省略目标面；`RACK_ROTATE` 仍要求指定目标面。
+
+### Fixed
+
+- SCAN2 按现场合同接收 `-A` 后缀；保留来源货架多面展开、跨批与落库回归。
+- Registry 认证预检正确保留认证头 realm 的双引号，避免发布误报。
+- 扫码和 WMS 完成通知按冻结的料箱身份、FIFO 队头及原始证据处理；无法确认的早到结果进入对账，不提前下发物理命令。
+- SCAN3 未关联料箱的 `MOVE_LEFT` 结果按原命令成功事实闭合；SCAN4 前序围栏与退箱 FIFO 统一按接收时间和证据 ID 排序。
+- CI 增加基础设施预检和发布重试，改善外部依赖暂时不可用时的失败诊断。
+- 人工拣料四点扫码与 Transport 调试统一从设备 `data.bin_code` 读取条码；WMS 已返回 `READY` 的货架面未搬扫完成时，不允许按旧货架搬运失败路径提前确认任务完成。
+
 ## [0.43.1.0] - 2026-09-12
 
 ### Fixed

@@ -750,17 +750,25 @@ def _port_methods(port: FakeTransportPort) -> tuple[AsyncMock, ...]:
 
 
 @pytest.mark.asyncio
-async def test_debug_ctu03_accepts_omitted_target_face() -> None:
+@pytest.mark.parametrize("template", list(RcsTemplateId))
+async def test_debug_rack_move_accepts_omitted_target_face(template: RcsTemplateId) -> None:
     runtime = _runtime()
     payload = _valid_payload("RACK_MOVE")
+    payload["station_id"] = "STATION-DEBUG"
     payload["data"].update(
-        {"source": _rack_reference("RACK-01"), "target": _zone_position("WH05"), "rcs_template_id": "CTU03"}
+        {
+            "rack_id": "610007",
+            "source": _rack_reference("610007"),
+            "target": _zone_position("T_OUT"),
+            "rcs_template_id": template.value,
+        }
     )
     payload["data"].pop("target_face")
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
         response = await client.post("/api/v1/transport/debug-tasks", json=payload)
     assert response.status_code == 202
     assert runtime.port.move_rack.await_args.args[5] is None
+    assert runtime.port.move_rack.await_args.args[6] is template
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@
 > 负责把这些需求收敛为当前目标架构；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口合同。
-> `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 粗分逐盘入库的 `Approved` 业务合同；
+> Phase 8 粗分逐盘入库插件已从代码库移除，其历史合同移出项目归档；运行环境未变更。以下粗分场景仅是产品范围，不代表当前启用。
 > `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是后续满箱交换和自动上架的 `ReviewRequired` 合同，
 > 不构成 Phase 13 自动上架实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
@@ -437,10 +437,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.1 SMT 智能装箱协调 (Smart Kitting Coordination)
 
-粗分逐盘入库的 operation、严格 DTO、幂等、物理门禁与失败边界由已获批的
-`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 定义；后续满箱交换和自动上架由
+粗分逐盘入库插件已从代码库移除，历史合同已归档；后续满箱交换和自动上架由
 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义并保持 `ReviewRequired`。本节与 §3.3.2 只保留产品级
-场景和职责边界，不得复制或把 Phase 8 授权扩大到 Phase 13 自动上架。
+场景和职责边界，不构成粗分重新启用或 Phase 13 自动上架的实施授权。
 
 * **场景**: 工人把标准整盘物料放入粗分机入口，设备自动输送、扫码、测量并放入单层货架目标 Bin/Cell。
 * **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN 并返回稳定料盘身份，但不分配目标 Cell。
@@ -504,9 +503,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    重新判断一个下一动作；Transport 基础能力不理解这个业务循环。
    当前面能为 `RETURN_BUFFER` FIFO 队首形成可执行批次时，优先调用 `outbound.bin.return_batch@v1`。候选按本次请求从 1 设置 `sequence_no`；WMS 为连续前缀
    分配当前 `rack_id + rack_face` 的任意合格精确空位，并原样返回 `sequence_no + bin_code`。当前面无合格空位时返回 `NO_BATCH`，候选留在 FIFO，不转 NG 或 `STATE_CONFLICT`；无资源冲突的新入站需求可以推动换面或换架。
-   没有可执行退箱批次时，WES 计算 CTU 空闲背篓数和入料缓存空闲数的较小值，再通过 `outbound.bin.inbound_batch@v1` 请求 WMS 选择
-   `bin_code + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 最终成功、实扫身份匹配并创建
-   当前工位关联后才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
+   没有可执行退箱批次时，WES 在来源面权威到位后为该面一次请求 `outbound.bin.inbound_batch@v1`；WMS 原子冻结完整最终的
+   `bin_code + source_locator` 清单。WES 补充本地目标，按最多 4 箱拆成顺序 `BIN_MOVE`。只有前一分段 Transport 最终成功、可靠发布且实扫身份匹配后才推进下一分段；不再请求同一面。
+   `RACK_FACE_DONE` 表示首次分配的最终空清单；所有分段完成后当前面才关闭。CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
    计划中选择下一来源面，同架下一面使用
    `RACK_ROTATE`，不同货架严格按
    旧架移出、新架移入的顺序切换。CTU 非空、搬运未完成、位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待，不再锁定原来源面。
@@ -543,7 +542,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **人工发料：**
 
-1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual_bin_processing` 的人工 WorkLine 中选线。
+1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual-picking` 的人工 WorkLine 中选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 依据 CTU、缓存和当前工作位货架状态执行 Transport；入站 Bin 需求是正常运行时换面或换架的唯一触发。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
 4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。

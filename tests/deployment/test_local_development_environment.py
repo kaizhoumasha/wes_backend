@@ -144,7 +144,7 @@ def test_backend_development_services_mount_all_runtime_source_roots() -> None:
         "${SOURCE_MOUNT:-./src}:/app/src:rw",
         "./main.py:/app/main.py:ro",
         "./deployment:/app/deployment:rw",
-        "./workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:rw",
+        "./workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:rw",
     }
 
     for service_name in ("api", "celery", "celery_beat"):
@@ -174,7 +174,7 @@ def test_celery_development_reload_watches_core_sdk_and_plugin_sources() -> None
     expected_paths = (
         "/app/src",
         "/app/deployment",
-        "/app/workline_plugins/rough_sorter/src",
+        "/app/workline_plugins/manual-picking/src",
     )
 
     for relative_path in (
@@ -208,7 +208,7 @@ def test_development_compose_uses_target_wms_mock_without_profile_mounts() -> No
         assert "environment" not in service or "WMS_PROVIDER_PROFILE_FILE" not in service["environment"]
     compose = _compose("docker-compose.yml")
     assert compose["x-wms-target-config"] == {
-        "ENABLED_WORKLINE_PLUGINS": '["rough_sorter", "manual-picking"]',
+        "ENABLED_WORKLINE_PLUGINS": '["manual-picking"]',
         "WMS_BASE_URL": "${WMS_BASE_URL}",
         "TRANSPORT_SUBMIT_PATH": "${TRANSPORT_SUBMIT_PATH}",
     }

@@ -32,7 +32,7 @@ def _run(*, phase: str = "BIN_INBOUND_BATCH", rack_count: int = 2) -> Integratio
         workline_id=3,
         workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
-        expected_plugin_key="manual_bin_processing",
+        expected_plugin_key="manual-picking",
         profile="CONTRACT_SIMULATION",
         environment_label="integration",
         operator_user_id=42,
@@ -99,34 +99,64 @@ def test_rack_face_done_rotates_same_rack_then_departure_releases_next_rack() ->
     assert run.configuration_json["current_source_rack"] == {"rack_id": "RACK-02", "rack_face": "180"}
 
 
+def test_rack_face_done_requires_operator_coordination_and_close() -> None:
+    run = IntegrationRun(
+        run_id="run-rack-face-done",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual-picking",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="BIN_INBOUND_BATCH",
+    )
+
+    IntegrationDebugService._advance_inbound_batch(run, "RACK_FACE_DONE", {})
+
+    assert run.status == "NEEDS_ATTENTION"
+    assert run.attention_code == "RACK_FACE_DONE"
+    assert "关闭本 run" in (run.attention_detail or "")
+
+
 @pytest.mark.parametrize(
     ("pending", "expected_phase"),
     [
         (["BIN-01", "BIN-02"], IntegrationDebugPhase.POINT1_ARRIVAL),
-        (["BIN-01"], IntegrationDebugPhase.BIN_INBOUND_BATCH),
+        (["BIN-01"], IntegrationDebugPhase.RACK_TRANSPORT),
     ],
 )
-def test_completed_bin_continues_current_batch_or_requests_next_batch(
+def test_completed_bin_continues_frozen_face_or_closes_it(
     pending: list[str], expected_phase: IntegrationDebugPhase
 ) -> None:
     run = _run()
     run.bin_code = "BIN-01"
-    run.configuration_json = {**run.configuration_json, "pending_inbound_bin_codes": pending, "source_cycle_no": 0}
+    run.configuration_json = {
+        **run.configuration_json,
+        "inbound_bins": [{"bin_code": code} for code in pending],
+        "pending_inbound_bin_codes": pending,
+        "inbound_transport_offset": len(pending),
+        "source_cycle_no": 0,
+    }
 
     assert IntegrationDebugService._finish_current_bin(run) == expected_phase
     assert run.bin_code is None
-    assert run.configuration_json["pending_inbound_bin_codes"] == pending[1:]
+    if len(pending) > 1:
+        assert run.configuration_json["pending_inbound_bin_codes"] == pending[1:]
+    else:
+        assert "pending_inbound_bin_codes" not in run.configuration_json
     assert run.configuration_json["source_cycle_no"] == 1
 
 
-def test_existing_return_batch_without_inbound_history_recovers_from_current_bin() -> None:
+def test_return_batch_without_frozen_face_requires_reconciliation() -> None:
     run = _run(phase="BIN_RETURN_BATCH")
     run.bin_code = "BIN-LEGACY-01"
 
-    assert IntegrationDebugService._finish_current_bin(run) == IntegrationDebugPhase.BIN_INBOUND_BATCH
-    assert run.bin_code is None
-    assert run.configuration_json["pending_inbound_bin_codes"] == []
-    assert run.configuration_json["source_cycle_no"] == 1
+    with pytest.raises(IntegrationDebugConflict, match="面级冻结清单"):
+        IntegrationDebugService._finish_current_bin(run)
+    assert run.bin_code == "BIN-LEGACY-01"
 
 
 @pytest.mark.asyncio
@@ -162,13 +192,8 @@ async def test_historical_return_transport_confirmation_restores_source_from_per
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    result = await service.confirm_current_phase(run.run_id, note="回库完成", expected_version=0, actor_id=42)
-
-    assert result["current_phase"] == "BIN_INBOUND_BATCH"
-    assert result["operation_context"]["current_source_rack"] == {"rack_id": "RACK-02", "rack_face": "180"}
-    assert result["operation_context"]["pending_source_racks"] == [{"rack_id": "RACK-01", "faces": ["90", "270"]}]
-    assert result["operation_context"]["pending_inbound_bin_codes"] == []
-    assert result["operation_context"]["source_cycle_no"] == 1
+    with pytest.raises(IntegrationDebugConflict, match="面级冻结清单"):
+        await service.confirm_current_phase(run.run_id, note="回库完成", expected_version=0, actor_id=42)
 
 
 def test_historical_run_without_source_evidence_does_not_assume_the_first_planned_rack() -> None:
@@ -237,6 +262,7 @@ def test_completed_bin_rejects_out_of_order_batch_member_without_mutating_progre
     run.bin_code = "BIN-02"
     run.configuration_json = {
         **run.configuration_json,
+        "inbound_bins": [{"bin_code": "BIN-01"}, {"bin_code": "BIN-02"}],
         "pending_inbound_bin_codes": ["BIN-01", "BIN-02"],
         "source_cycle_no": 7,
     }
@@ -722,4 +748,34 @@ async def test_rack_phase_cannot_advance_before_current_source_arrives() -> None
     )
 
     with pytest.raises(IntegrationDebugConflict, match="当前来源货架"):
+        await service.confirm_current_phase(run.run_id, note="已到位", expected_version=0, actor_id=42)
+
+
+@pytest.mark.asyncio
+async def test_initial_rack_phase_cannot_advance_before_target_rack_arrives() -> None:
+    run = _run(phase="RACK_TRANSPORT")
+    steps = [
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=0,
+            phase="RACK_TRANSPORT",
+            status="SUCCEEDED",
+            request_summary_json={
+                "kind": "MOVE_RACK",
+                "rack_id": "RACK-01",
+                "target_face": "90",
+                "source_cycle_no": 0,
+            },
+        )
+    ]
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=_Repository(run, steps),  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="目标转运货架"):
         await service.confirm_current_phase(run.run_id, note="已到位", expected_version=0, actor_id=42)

@@ -86,14 +86,8 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "decision_claim_expires_at",
             "received_at",
             "id",
-            postgresql_where=text(
-                "apply_status = 'APPLIED' AND published_at IS NULL "
-                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
-            ),
-            sqlite_where=text(
-                "apply_status = 'APPLIED' AND published_at IS NULL "
-                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
-            ),
+            postgresql_where=text("apply_status = 'APPLIED' AND published_at IS NULL"),
+            sqlite_where=text("apply_status = 'APPLIED' AND published_at IS NULL"),
         ),
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
         Index("ix_inbound_evidences_transport_task", "transport_task_id", "kind"),
@@ -126,7 +120,9 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     workline_id: int | None = Field(
         default=None, foreign_key="wes_biz.work_lines.id", index=True, sa_type=SQL_COMPAT_BIGINT
     )
-    material_execution_id: int | None = Field(default=None, foreign_key="wes_biz.material_executions.id", index=True)
+    material_execution_id: int | None = Field(
+        default=None, foreign_key="wes_biz.material_executions.id", index=True, sa_type=SQL_COMPAT_BIGINT
+    )
     transport_task_id: str | None = Field(default=None, max_length=120, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
     command_code: str | None = Field(default=None, max_length=160, index=True)

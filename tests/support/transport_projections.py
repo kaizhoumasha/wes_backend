@@ -73,7 +73,7 @@ async def ensure_projection_authority(db: AsyncSession) -> int:
             line_name="Transport projection test authority",
             line_type=LineType.AUTO,
             is_active=True,
-            plugin_key="rough_sorter",
+            plugin_key="sample_plugin",
             plugin_version="1.0.0",
             flow_mode="TRANSPORT_TEST",
         )

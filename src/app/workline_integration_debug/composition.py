@@ -5,15 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from src.app.wms_integration.outbound_picking.services import PickingTaskPrepareCoordinator
 from src.app.workline_integration_debug.service import IntegrationDebugService, IntegrationRunWorkLineOwner
 from src.core.task_queue_gateway import task_queue_gateway
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.device.services import DeviceCommandService
@@ -56,10 +54,6 @@ class ManualIntegrationPreparePolicy:
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType | None:
         del context
         return PrepareTaskType.MANUAL
-
-    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        del facts, now
-        return True
 
 
 @dataclass(frozen=True, slots=True)

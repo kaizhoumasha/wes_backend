@@ -4,22 +4,22 @@ from collections.abc import Callable
 from dataclasses import dataclass, is_dataclass
 from typing import TypeVar
 
-from .facts import FactReference
+from .facts import HandlerFact
 
 THandler = TypeVar("THandler")
 
 
 @dataclass(frozen=True, slots=True)
 class HandlerMetadata:
-    fact_type: type[FactReference]
+    fact_type: type[HandlerFact]
     name: str
     supported_versions: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.fact_type, type):
             raise TypeError("fact_type must be a type")
-        if not issubclass(self.fact_type, FactReference):
-            raise TypeError("fact_type must inherit FactReference")
+        if not issubclass(self.fact_type, HandlerFact):
+            raise TypeError("fact_type must inherit HandlerFact")
         params = self.fact_type.__dict__.get("__dataclass_params__")
         fields = self.fact_type.__dict__.get("__dataclass_fields__")
         slots = self.fact_type.__dict__.get("__slots__")
@@ -50,7 +50,7 @@ class HandlerMetadata:
 
 
 def handler(
-    *, fact_type: type[FactReference], name: str, supported_versions: tuple[str, ...]
+    *, fact_type: type[HandlerFact], name: str, supported_versions: tuple[str, ...]
 ) -> Callable[[THandler], THandler]:
     metadata = HandlerMetadata(fact_type=fact_type, name=name, supported_versions=supported_versions)
 

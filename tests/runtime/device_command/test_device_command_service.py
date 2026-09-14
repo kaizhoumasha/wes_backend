@@ -191,8 +191,8 @@ class FakeAdapter:
     async def fetch_statuses(self) -> tuple[EcsDeviceStatus, ...]:
         self.fetch_statuses_calls += 1
         return self.statuses or (
-            _ecs_status("RS-MOCK-PLACEMENT-01"),
-            _ecs_status("RS-MOCK-OFFLINE-01", is_online=False),
+            _ecs_status("MOCK-PLACEMENT-01"),
+            _ecs_status("MOCK-OFFLINE-01", is_online=False),
         )
 
     async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
@@ -403,8 +403,8 @@ async def test_manual_debug_command_freezes_endpoint_without_epoch_or_device_mas
     handle = await service.create_manual_debug_command(
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
         endpoint_base_url="http://ECS-MOCK:8080/",
-        device_code="RS-MOCK-PLACEMENT-01",
-        contract_key="rough_sorter.placement_device",
+        device_code="MOCK-PLACEMENT-01",
+        contract_key="example.placement_device",
         contract_version="1.0",
         command_timeout_ms=30_000,
         task_type="PICK_AND_PUT",
@@ -443,8 +443,8 @@ async def test_manual_debug_idempotency_includes_endpoint_and_command_contract()
     request = {
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
         "endpoint_base_url": "http://ecs-mock:8080",
-        "device_code": "RS-MOCK-PLACEMENT-01",
-        "contract_key": "rough_sorter.placement_device",
+        "device_code": "MOCK-PLACEMENT-01",
+        "contract_key": "example.placement_device",
         "contract_version": "1.0",
         "command_timeout_ms": 30_000,
         "task_type": "PICK_AND_PUT",
@@ -482,8 +482,8 @@ async def test_manual_debug_rejects_non_lan_endpoint_before_persistence() -> Non
         await service.create_manual_debug_command(
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
             endpoint_base_url="https://public.example.com/api",
-            device_code="RS-MOCK-PLACEMENT-01",
-            contract_key="rough_sorter.placement_device",
+            device_code="MOCK-PLACEMENT-01",
+            contract_key="example.placement_device",
             contract_version="1.0",
             command_timeout_ms=30_000,
             task_type="PICK_AND_PUT",
@@ -506,8 +506,8 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
         payload_digest="b" * 64,
         normalized_payload={
             "command_code": "CMD-MANUAL-001",
-            "device_code": "RS-MOCK-PLACEMENT-01",
-            "contract_key": "rough_sorter.placement_device",
+            "device_code": "MOCK-PLACEMENT-01",
+            "contract_key": "example.placement_device",
             "contract_version": "1.0",
             "result": "SUCCESS",
             "finish_time": 1_787_475_602_000,
@@ -516,9 +516,9 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
             "error_detail": None,
         },
         received_at=datetime(2026, 8, 23, 10, 0, 2),
-        device_code="RS-MOCK-PLACEMENT-01",
+        device_code="MOCK-PLACEMENT-01",
         command_code="CMD-MANUAL-001",
-        contract_key="rough_sorter.placement_device",
+        contract_key="example.placement_device",
         contract_version="1.0",
         apply_status=InboundEvidenceApplyStatus.APPLIED,
     )
@@ -533,8 +533,8 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
     await service.create_manual_debug_command(
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
         endpoint_base_url="http://ecs-mock:8080",
-        device_code="RS-MOCK-PLACEMENT-01",
-        contract_key="rough_sorter.placement_device",
+        device_code="MOCK-PLACEMENT-01",
+        contract_key="example.placement_device",
         contract_version="1.0",
         command_timeout_ms=30_000,
         task_type="PICK_AND_PUT",
@@ -613,7 +613,7 @@ async def test_event_debug_command_uses_configured_endpoint_and_event_data_witho
             "timestamp": 1_787_589_900_163,
             "source_event_id": source_identity,
             "is_debug": True,
-            "data": {"event_id": "EVT-1", "location": "STATION_SCAN11", "barcode": "NHW002069-B"},
+            "data": {"event_id": "EVT-1", "location": "STATION_SCAN11", "bin_code": "NHW002069-B"},
         },
         received_at=datetime(2026, 8, 25),
         device_code="STATION_SCAN11",

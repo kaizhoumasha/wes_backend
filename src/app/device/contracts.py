@@ -87,6 +87,7 @@ class ManualDebugDeviceCommandSnapshot:
 
 DEVICE_INTEGRATION_CONTRACT_KEY = "third_party_integration"
 DEVICE_INTEGRATION_CONTRACT_VERSION = "1.1"
+WORKLINE_BUSINESS_REF_TYPE = "WORKLINE_BUSINESS"
 
 
 class EcsDeviceMode(str, Enum):

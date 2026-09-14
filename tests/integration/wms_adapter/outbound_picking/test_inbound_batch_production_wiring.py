@@ -31,19 +31,36 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 _DISPATCH = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 
 
-@pytest.mark.parametrize("result", ["NO_BATCH", "RACK_FACE_DONE"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"result": "RACK_FACE_DONE"},
+        {
+            "result": "READY",
+            "bins": [
+                {
+                    "bin_code": f"BIN-{index}",
+                    "source_locator": {
+                        "type": "RACK_BIN_SLOT",
+                        "rack_id": "SOURCE-RACK-01",
+                        "rack_face": "A",
+                        "slot_id": f"S-{index}",
+                    },
+                }
+                for index in range(5)
+            ],
+        },
+    ],
+    ids=["empty-face", "complete-five-bin-face"],
+)
 async def test_existing_inbound_batch_dispatches_without_plugins_and_replays_without_duplicate_http(
     confirmation_database,
     monkeypatch: pytest.MonkeyPatch,
-    result: str,
+    data: dict[str, object],
 ) -> None:
     monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", "[]")
     _, integration_session_factory = confirmation_database
-    server = ConfirmationServer(
-        status_code=200,
-        code="DECIDED",
-        data={"result": result, **({"retry_after_ms": 1000} if result == "NO_BATCH" else {})},
-    )
+    server = ConfirmationServer(status_code=200, code="DECIDED", data=data)
     async with picking_confirmation_worker(
         confirmation_database, server=server, status=PickingTaskStatus.EXECUTING
     ) as (worker, task, _workline, operation_id, now):
@@ -54,7 +71,6 @@ async def test_existing_inbound_batch_dispatches_without_plugins_and_replays_wit
                     task_id=task.task_id,
                     rack_id="SOURCE-RACK-01",
                     rack_face="A",
-                    max_bin_count=2,
                 ),
                 timestamp=int(timezone.to_utc(now).timestamp() * 1000),
             )
@@ -72,12 +88,12 @@ async def test_existing_inbound_batch_dispatches_without_plugins_and_replays_wit
         async with integration_session_factory() as db:
             confirmation = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == operation_id))
             assert confirmation.status == WmsConfirmationStatus.COMPLETED
-            assert confirmation.response_result == result
+            assert confirmation.response_result == data["result"]
             assert confirmation.request_payload == request
             evidence = await db.get(InboundEvidence, confirmation.response_evidence_id)
             assert evidence.kind == InboundEvidenceKind.WMS_RESULT
             assert evidence.operation_id == operation_id
-            assert evidence.normalized_payload["data"]["result"] == result
+            assert evidence.normalized_payload["data"] == data
             persisted = await db.get(PickingTask, task.id)
             assert persisted.status == PickingTaskStatus.EXECUTING
         assert len(server.requests) == 1

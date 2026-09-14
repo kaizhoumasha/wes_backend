@@ -570,7 +570,9 @@ if plugin_root.exists():
         own_modules = {path.name for path in source_root.iterdir() if path.is_dir()} if source_root.exists() else set()
         for path in python_files(source_root):
             application_layer = "application" in path.relative_to(source_root).parts
-            allowed = stdlib | own_modules | {"wes_plugin_sdk"} | ({"src"} if application_layer else set())
+            allowed = stdlib | own_modules | {"wes_plugin_sdk"} | (
+                {"src", "sqlalchemy", "sqlmodel"} if application_layer else set()
+            )
             tree = parse(path)
             if isinstance(tree, SyntaxError):
                 emit(
@@ -591,7 +593,7 @@ if plugin_root.exists():
                         path,
                         line,
                         f"具体插件 import SDK/自身/标准库之外的实现: {module}",
-                        "插件纯 Decision 层只依赖 SDK/自身/标准库；application 层可依赖 src 基础能力",
+                        "插件纯 Decision 层只依赖 SDK/自身/标准库；application 层可依赖 src 基础能力和 ORM",
                     )
             for canonical, target, line, at_import_time in dynamic_import_targets(tree, aliases, constants):
                 target_root = target.split(".", maxsplit=1)[0] if target else None
@@ -601,7 +603,7 @@ if plugin_root.exists():
                         path,
                         line,
                         f"具体插件动态加载禁用或不可判定模块: {canonical}({target})",
-                        "插件纯 Decision 层只静态依赖 SDK/自身/标准库；application 层可依赖 src 基础能力",
+                        "插件纯 Decision 层只静态依赖 SDK/自身/标准库；application 层可依赖 src 基础能力和 ORM",
                     )
 PY
 )"

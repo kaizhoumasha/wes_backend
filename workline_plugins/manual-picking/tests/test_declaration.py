@@ -6,7 +6,7 @@ from deployment.plugin_composition import build_deployment_runtime
 from src.app.workline.models.workline import LineType
 
 
-def test_manual_picking_can_be_selected_without_business_implementation():
+def test_manual_picking_deployment_assembles_prepare_policy_without_device_handlers():
     runtime = build_deployment_runtime(
         enabled_plugin_keys=("manual-picking",),
         session_factory=object(),
@@ -28,7 +28,21 @@ def test_manual_picking_can_be_selected_without_business_implementation():
         "INLET",
         "OUTLET",
     ]
-    assert runtime.plugins[0].runtime_binding is None
+    assert runtime.plugins[0].runtime_binding is not None
+    assert runtime.plugins[0].runtime_binding.business_evidence_consumer is not None
+    assert runtime.execution.fact_processor._plugins.has_business_evidence_consumer(
+        "manual-picking", "0.1.0", operation="outbound.manual_bin.work_admission_decide@v1"
+    )
+    assert runtime.plugins[0].business_blocker is not None
+    assert runtime.plugins[0].picking_task_prepare_policy is not None
+    assert runtime.plugins[0].picking_task_batch_driver is not None
+    assert runtime.plugins[0].picking_task_completion_driver is not None
+    assert runtime.execution.fact_processor._plugins.has_business_evidence_consumer(
+        "manual-picking", "0.1.0", operation="outbound.bin.inbound_batch@v1"
+    )
+    assert runtime.execution.fact_processor._plugins.has_business_evidence_consumer(
+        "manual-picking", "0.1.0", operation="outbound.bin.return_batch@v1"
+    )
     assert runtime.wms_recovery_event_handler is None
 
 
@@ -53,3 +67,15 @@ assert not any(name == "src.app" or name.startswith(("src.app.", "sqlalchemy", "
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_disabled_manual_plugin_has_no_business_consumer() -> None:
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=(),
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        device_command_service=object(),
+    )
+
+    assert runtime.plugins == ()
+    assert runtime.execution.fact_processor._plugins.business_wms_routes == ()

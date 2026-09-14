@@ -36,6 +36,8 @@ celery_app = Celery(
         "src.celery_app.tasks.transport",  # Transport 可靠对象后台驱动
         "src.celery_app.tasks.execution",  # Execution Fact 持久处理
         "src.celery_app.tasks.wms_confirmation",  # WMS confirmation 独立派发
+        "src.celery_app.tasks.picking_task_prepare",  # 插件条件化 PickingTask prepare
+        "src.celery_app.tasks.picking_task_plan",  # 插件条件化 PickingTask 计划激活
     ],
 )
 

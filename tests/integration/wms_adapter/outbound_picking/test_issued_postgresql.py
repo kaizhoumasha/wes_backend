@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +27,50 @@ from src.app.wms_integration.outbound_picking.services import PickingTaskIssuedS
 from src.core.uuid7 import new_uuid7
 
 pytest_plugins = ("tests.integration.conftest",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [False, True])
+async def test_new_task_defers_prepare_only_when_a_capable_workline_is_active(
+    integration_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    active: bool,
+) -> None:
+    task_id = f"PICK-{new_uuid7()}"
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    queue = SimpleNamespace(enqueue_picking_task_prepare=Mock())
+    worklines = AsyncMock()
+    worklines.has_active_plugin_identity.return_value = active
+    defer = Mock()
+    monkeypatch.setattr(
+        "src.app.wms_integration.outbound_picking.services.picking_task_issued.defer_wakeup",
+        defer,
+    )
+    service = PickingTaskIssuedService(
+        integration_session_factory,
+        prepare_plugin_identities=(("manual-picking", "0.1.0"),),
+        task_queue_gateway=queue,
+        workline_repository=worklines,
+    )
+
+    try:
+        result = await service.record(
+            _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence()),
+            received_at=datetime(2026, 9, 12, 10),
+        )
+
+        assert result.code == "RECEIVED"
+        worklines.has_active_plugin_identity.assert_awaited_once()
+        if active:
+            defer.assert_called_once()
+            assert defer.call_args.args[1] == queue.enqueue_picking_task_prepare
+        else:
+            defer.assert_not_called()
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
 
 
 @pytest.mark.asyncio

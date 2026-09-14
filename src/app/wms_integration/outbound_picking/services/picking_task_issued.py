@@ -10,6 +10,9 @@ from src.app.wms_adapter.outbound_picking.event_handler import PickingTaskIssued
 from src.app.wms_adapter.outbound_picking.wire import PickingTaskIssuedInvalidData
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
+from src.app.workline.repositories import WorkLineRepository
+from src.app.workline.repositories import workline_repository as default_workline_repository
+from src.core.transaction_wakeup import defer_wakeup
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -18,6 +21,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.wms_adapter.outbound_picking.wire import PickingTaskIssuedEvent
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 
 class PickingTaskIssuedService:
@@ -27,10 +31,16 @@ class PickingTaskIssuedService:
         *,
         evidence_service: InboundEvidenceService | None = None,
         task_repository: PickingTaskRepository | None = None,
+        prepare_plugin_identities: tuple[tuple[str, str], ...] = (),
+        task_queue_gateway: TaskQueueGateway | None = None,
+        workline_repository: WorkLineRepository | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = task_repository or picking_task_repository
+        self._prepare_plugin_identities = prepare_plugin_identities
+        self._task_queue = task_queue_gateway
+        self._worklines = workline_repository or default_workline_repository
 
     async def record(
         self,
@@ -116,6 +126,12 @@ class PickingTaskIssuedService:
                 ),
             )
             evidence.processed_at = received_at
+            if (
+                self._task_queue is not None
+                and self._prepare_plugin_identities
+                and await self._worklines.has_active_plugin_identity(db, self._prepare_plugin_identities)
+            ):
+                defer_wakeup(db, self._task_queue.enqueue_picking_task_prepare)
             return PickingTaskIssuedPersistenceResult(
                 code="RECEIVED",
                 timestamp_ms=_timestamp_ms(evidence.received_at),

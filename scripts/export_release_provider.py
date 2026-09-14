@@ -23,7 +23,7 @@ _DEPENDENCY_PATHS = (
     "src/wes_plugin_sdk/pyproject.toml",
     "pyproject.toml",
     "uv.lock",
-    "workline_plugins/rough_sorter/pyproject.toml",
+    "workline_plugins/manual-picking/pyproject.toml",
 )
 _RECIPE_PATHS = ("Dockerfile", "main.py")
 _ARTIFACT_NAMES = (

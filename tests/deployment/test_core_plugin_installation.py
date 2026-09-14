@@ -22,6 +22,22 @@ def test_empty_composition_builds_core_without_a_business_handler() -> None:
     assert runtime.execution.fact_processor is not None
 
 
+def test_manual_picking_composition_installs_prepare_and_plan_activation_without_plugin_celery() -> None:
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=("manual-picking",),
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        device_command_service=object(),
+    )
+
+    assert len(runtime.plugins) == 1
+    plugin = runtime.plugins[0]
+    assert plugin.picking_task_prepare_policy is not None
+    assert plugin.picking_task_plan_applied_handler is not None
+    assert plugin.transport_outcome_publisher is not None
+    assert runtime.picking_task_plan_activation_service.plugin_identities == (("manual-picking", "0.1.0"),)
+
+
 @pytest.mark.asyncio
 async def test_zero_plugins_keep_the_wms_adapter_available_for_existing_confirmations() -> None:
     transport = _Transport(
@@ -59,7 +75,7 @@ async def test_zero_plugins_keep_the_wms_adapter_available_for_existing_confirma
     assert transport.requests[0].path == "/api/v1/wes/decisions"
 
 
-@pytest.mark.parametrize("keys", [("unknown-plugin",), ("rough_sorter", "rough_sorter")])
+@pytest.mark.parametrize("keys", [("unknown-plugin",), ("manual-picking", "manual-picking")])
 def test_invalid_plugin_selection_fails_before_constructing_resources(keys: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
         build_deployment_runtime(

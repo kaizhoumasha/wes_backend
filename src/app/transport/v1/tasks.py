@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 if TYPE_CHECKING:
     from fastapi.openapi.models import Example
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictStr, StringConstraints
 
 from src.app.transport.contracts import (
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
@@ -105,12 +105,6 @@ class _RackMoveData(_StrictApiModel):
     target: _RackMovePosition
     target_face: _FACE | None = None
     rcs_template_id: RcsTemplateId | None = None
-
-    @model_validator(mode="after")
-    def require_target_face_except_ctu03(self) -> Self:
-        if self.rcs_template_id is not RcsTemplateId.CTU03 and self.target_face is None:
-            raise ValueError("target_face is required unless rcs_template_id is CTU03")
-        return self
 
 
 class _RackRotateData(_StrictApiModel):

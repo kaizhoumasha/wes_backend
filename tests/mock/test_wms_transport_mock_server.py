@@ -329,6 +329,21 @@ def test_decision_route_accepts_picking_task_prepare() -> None:
     assert response.json()["operation_id"] == request["operation_id"]
 
 
+def test_decision_route_returns_scannable_bin_code_for_inbound_batch() -> None:
+    request = {
+        "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4475",
+        "operation": "outbound.bin.inbound_batch@v1",
+        "timestamp": 1786060800000,
+        "data": {"task_id": "PICK-20260811-001", "rack_id": "RACK-01", "rack_face": "90"},
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/decisions", json=request)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["bins"][0]["bin_code"] == "A000000001"
+
+
 @pytest.mark.parametrize(
     ("operation_id", "operation"),
     [
@@ -399,6 +414,8 @@ def test_transport_submit_accepts_the_other_frozen_transport_shapes(envelope: di
         ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU03"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU03"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU03"),
+        ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "RACK_POSITION", "location_code": "work"}, "F01"),
+        ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "ZONE", "location_code": "zone-1"}, "F01"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "F01"),
     ],
 )
@@ -1412,6 +1429,25 @@ def test_return_batch_requires_explicit_infeed_to_return_handoff_arrival():
         assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "NO_BATCH"
         request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4515"
         assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "READY"
+
+
+def test_inbound_batch_freezes_one_face_before_transport_and_replays_original_result():
+    inbound = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4531",
+        "operation": "outbound.bin.inbound_batch@v1",
+        "timestamp": 1700000000000,
+        "data": {"task_id": "PICK-ONE", "rack_id": "rack-1", "rack_face": "90"},
+    }
+    another = deepcopy(inbound)
+    another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4532"
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post("/api/v1/wes/decisions", json=inbound)
+        second = client.post("/api/v1/wes/decisions", json=another)
+        replay = client.post("/api/v1/wes/decisions", json=inbound)
+
+    assert first.json()["data"]["result"] == "READY"
+    assert second.json()["data"] == {"result": "RACK_FACE_DONE"}
+    assert replay.json() == first.json()
 
 
 @pytest.mark.parametrize(

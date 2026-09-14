@@ -66,6 +66,10 @@ __all__ = [
 # 计划增量保持独立 schema，公开 Event route 负责静态接入。
 _RACK_FACE = {"type": "string", "minLength": 1, "maxLength": 10, "pattern": r"^[^\u0000\uD800-\uDFFF]+$"}
 _PLAN_RACK = _closed(["rack_id", "rack_face"], {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": _RACK_FACE})
+_PLAN_BIN_SOURCE_RACK = _closed(
+    ["rack_id", "rack_face"],
+    {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": {"type": "array", "minItems": 1, "items": _RACK_FACE}},
+)
 _PLAN_SLOT = _closed(
     ["type", "rack_id", "rack_face", "slot_id"],
     {
@@ -81,7 +85,7 @@ _PLAN_DELTA_DATA = _closed(
         "task_id": _BUSINESS_IDENTIFIER,
         "plan_revision": _POSITIVE_INTEGER,
         "target_rack": _PLAN_RACK,
-        "added_bin_source_racks": {"type": "array", "minItems": 1, "items": _PLAN_RACK},
+        "added_bin_source_racks": {"type": "array", "minItems": 1, "items": _PLAN_BIN_SOURCE_RACK},
         "added_direct_picks": {
             "type": "array",
             "minItems": 1,
@@ -231,7 +235,7 @@ WMS 工程师应在自己的服务中准备响应，并与 WES 联调人员观�
 | --- | --- | --- |
 | `outbound.picking_task.prepare@v1` | POST `/api/v1/wes/decisions` | `202 / PREPARE_ACCEPTED`；随后 WMS 发布 plan_delta |
 | `outbound.return_rack.arrival_report@v1` | POST `/api/v1/wes/facts` | 退料架确定到位后 `200 / RECORDED` |
-| `outbound.bin.inbound_batch@v1` | POST `/api/v1/wes/decisions` | `200 / DECIDED`：READY / NO_BATCH / RACK_FACE_DONE |
+| `outbound.bin.inbound_batch@v1` | POST `/api/v1/wes/decisions` | `200 / DECIDED`：READY / RACK_FACE_DONE |
 | `outbound.bin.work_plan@v1` | POST `/api/v1/wes/decisions` | Bin 工作位扫码后 READY / NO_WORK / WAIT |
 | `outbound.material.decide@v1` | POST `/api/v1/wes/decisions` | 料盘完整扫码后 ACCEPT / REJECT / WAIT |
 | `outbound.source.empty_decide@v1` | POST `/api/v1/wes/decisions` | 确定空取后 RETRY / WAIT / SOURCE_DONE |
@@ -279,7 +283,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
                 "task_id": "PICK-SWAGGER-001",
                 "plan_revision": 1,
                 "target_rack": {"rack_id": "TARGET-RACK-01", "rack_face": "A"},
-                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": "A"}],
+                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["90", "270"]}],
             },
         },
     },
@@ -342,7 +346,6 @@ PICKING_TASK_WMS_RESPONSE_DATA = {
                 ],
             },
         ),
-        (200, "DECIDED", {"result": "NO_BATCH", "retry_after_ms": 1000}),
         (200, "DECIDED", {"result": "RACK_FACE_DONE"}),
     ],
     "outbound.bin.work_plan@v1": [
@@ -483,7 +486,7 @@ PICKING_TASK_TEST_GUIDE += """
 
 - decisions 原样重放应返回首次完整业务响应，不能以空 data 或 DUPLICATE 替代决定。
   facts 首次 RECORDED、重放 DUPLICATE；prepare 的 PREPARE_ACCEPTED 和 facts 的 data 按合同为空。
-- inbound_batch 的 READY 返回 1–4 个唯一 Bin 和来源槽位，不能超过请求 max_bin_count，rack_id/rack_face 必须匹配请求。
+- inbound_batch 在货架面到位后一次冻结该面完整且最终的唯一 Bin 与来源槽位清单；rack_id/rack_face 必须匹配请求，空面返回 RACK_FACE_DONE。
   return_batch 的 READY 返回请求候选的 FIFO 前缀，sequence_no 从 1 连续，目标架面匹配请求且槽位唯一。
 - work_plan 的 cell_ids 非空且不重复。departure 的目的地必须不同于当前货架位置。
 - material ACCEPT 无准备动作时省略 target_preparation；ROTATE 使用目标架面，REPLACE 另带旧架离场目的地。

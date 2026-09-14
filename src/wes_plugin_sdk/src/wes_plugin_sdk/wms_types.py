@@ -196,7 +196,6 @@ class BinInboundBatchIntent:
     task_id: str
     rack_id: str
     rack_face: str
-    max_bin_count: int
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
@@ -204,7 +203,6 @@ class BinInboundBatchIntent:
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
         validate_opaque_face(self.rack_face, "rack_face")
-        _positive(self.max_bin_count, "max_bin_count", 4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,8 +237,8 @@ class BinInboundBatchReady:
     def __post_init__(self) -> None:
         if type(self.bins) is not tuple or any(type(member) is not BinInboundBatchMember for member in self.bins):
             raise TypeError("bins must be an immutable tuple of BinInboundBatchMember")
-        if not 1 <= len(self.bins) <= 4 or len({member.bin_code for member in self.bins}) != len(self.bins):
-            raise ValueError("bins must contain 1..4 unique members")
+        if not self.bins or len({member.bin_code for member in self.bins}) != len(self.bins):
+            raise ValueError("bins must contain unique members")
         if len({member.source_locator for member in self.bins}) != len(self.bins):
             raise ValueError("bins must use distinct source slots")
 
@@ -598,6 +596,45 @@ class ManualBinAdmissionIntent:
         _positive(self.scanned_at, "scanned_at", 2**63 - 1)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ManualBinAdmissionOutcome:
+    operation_id: str
+    result: Literal["WORK_REQUIRED", "NO_WORK", "WAIT"]
+    task_id: str | None = None
+    retry_after_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        _ = _required(self.operation_id, "operation_id")
+        if self.result == "WORK_REQUIRED":
+            _ = _required(self.task_id, "task_id")
+            if self.retry_after_ms is not None:
+                raise ValueError("WORK_REQUIRED does not carry retry_after_ms")
+        elif self.result == "NO_WORK":
+            if self.task_id is not None or self.retry_after_ms is not None:
+                raise ValueError("NO_WORK has no additional fields")
+        elif self.result == "WAIT":
+            if self.task_id is not None:
+                raise ValueError("WAIT does not carry task_id")
+            _positive(self.retry_after_ms, "retry_after_ms", 60000)  # type: ignore[arg-type]
+        else:
+            raise ValueError("unknown manual bin admission result")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ManualBinCompletedFact:
+    task_id: str
+    bin_code: str
+    result: Literal["NORMAL", "NG"]
+    completed_at: int
+
+    def __post_init__(self) -> None:
+        _ = _required(self.task_id, "task_id")
+        _ = _required(self.bin_code, "bin_code")
+        if self.result not in {"NORMAL", "NG"}:
+            raise ValueError("unknown manual bin completion result")
+        _positive(self.completed_at, "completed_at", 2**63 - 1)
+
+
 @dataclass(frozen=True, slots=True)
 class PickingTaskCompleted:
     pass
@@ -909,7 +946,6 @@ class MaterialMovementReportOutcome:
 class BinInboundBatchOutcome:
     result: (
         BinInboundBatchReady
-        | BinBatchNoBatch
         | BinInboundBatchRackFaceDone
         | OperationRejected
         | OperationConflict
@@ -919,7 +955,6 @@ class BinInboundBatchOutcome:
     def __post_init__(self) -> None:
         if type(self.result) not in (
             BinInboundBatchReady,
-            BinBatchNoBatch,
             BinInboundBatchRackFaceDone,
             OperationRejected,
             OperationConflict,
@@ -1087,4 +1122,5 @@ WmsOperationOutcome = (
     | CompletionConfirmOutcome
     | SourceEmptyOutcome
     | MaterialMovementReportOutcome
+    | ManualBinAdmissionOutcome
 )

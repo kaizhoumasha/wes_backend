@@ -70,7 +70,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
-reviewed_content_sha256 = "14c8c360b05839c8644b64e86a8cb42d9b877ec05de5a029075f12de9dd57893"
+reviewed_content_sha256 = "e75996c786fb8ed0728703c8a3d3099073c14098acd50c348e3d7f6999bf2659"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
 
@@ -319,7 +319,12 @@ heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
 heavy_tests = []
-reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa35126a8eb4c"
+reviewed_content_sha256 = "09621142cc6b8620b91beab6bbac36591058d3f1d05673830d4c77271fd93497"
+
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/picking_task_plan.py"
+heavy_tests = []
+reviewed_content_sha256 = "8bb06b4bc0a0e9151539a64dbb34a7c3f70d0a61b026a2864fb168c47b5c1cfc"
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
@@ -685,12 +690,16 @@ source_glob = "src/app/runtime/orchestration/enums.py"
 heavy_tests = []
 reviewed_content_sha256 = "877085114f511f955b8999affcb37f3fab98575764cb9de935cab09f38baf1ff"
 
-# WorklineSession 由真实 PostgreSQL 持久化与会话租约闭环承接。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/session.py"
+heavy_tests = [
+    "tests/integration/test_snowflake_foreign_key_types_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/timeline.py"
-heavy_tests = []
-reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
+heavy_tests = ["tests/integration/test_snowflake_foreign_key_types_postgresql.py"]
 
 # Trace/Runtime 读模型收敛 DeviceCommand 状态后，由生产闭环承接。
 
@@ -837,7 +846,7 @@ heavy_tests = []
 source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
-# WMS Adapter 公共导出同时承载 Transport 与粗分 ACL，由各自唯一 HEAVY owner 承接。
+# WMS Adapter 公共导出由对应 operation 的 HEAVY owner 承接。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/__init__.py"
@@ -857,7 +866,7 @@ heavy_tests = [
 source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
-# 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
+# 入库 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_material/{adapter.py,wire.py,typed.py,__init__.py}"
@@ -1161,7 +1170,7 @@ source_glob = "src/app/execution/plugin_binding.py"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py}"
+source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py,reliable_rack_transport.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
@@ -1228,31 +1237,11 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "deployment/{_rough_sorter_device_facts.py,_rough_sorter_factory.py,_rough_sorter_persistence.py,_rough_sorter_transport.py,_rough_sorter_transport_recovery_facts.py,_rough_sorter_types.py,_rough_sorter_values.py,_rough_sorter_wms_facts.py,_rough_sorter_wms_resolver.py}"
-heavy_tests = [
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-]
-
-# 公开 START 的粗分机部署组合同时由通用 PostgreSQL START owner 承接；插件业务 E2E 按插件边界显式运行。
-
-[[mapping]]
 source_glob = "deployment/plugin_composition.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "deployment/rough_sorter_composition.py"
-heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
@@ -1323,6 +1312,14 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "src/celery_app/tasks/picking_task_prepare.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/picking_task_plan.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
 source_glob = "src/app/resource/models/{__init__.py,resource.py}"
 heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
 
@@ -1371,11 +1368,11 @@ reviewed_content_sha256 = "bc33fe1079fce8a1f97e470edcbf743a5fa9bf4e68225a7b4eca7
 # Phase 5 只将已删除的业务能力标记为 NONE，不覆盖同目录存活的基础能力。
 
 [[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,rough_sorter_q19_admission_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
+source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
+source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
 heavy_tests = []
 
 # NG reason 枚举与 DTO 的退役插件身份缺席由专用 FAST 合同承接。
@@ -1400,6 +1397,13 @@ reviewed_content_sha256 = "541122761e87bcfc7fc8ffe3fa5e493dc02f1cc402c5d7ac1651f
 source_glob = "src/app/runtime/normalization/normalizers/event_mapper.py"
 heavy_tests = []
 reviewed_content_sha256 = "1d12d9ca08e7e463be7e48944c1a8d1e4e975f36ca351eae8feac89d440bebcd"
+
+# 设备扫码业务键的字段读取是纯函数；仓内无生产调用点，由对应 FAST 合同承接。
+
+[[mapping]]
+source_glob = "src/app/runtime/normalization/normalizers/input_normalizer.py"
+heavy_tests = []
+reviewed_content_sha256 = "d7b3a496e6f03dc2cd8b69be2cad08ce0fd8ce55f60be216b77caf1c864b2c46"
 
 # 平台事件分类只退役 WES 安全事件保留字；插件声明与规范化均由对应 FAST 合同承接。
 
@@ -1438,7 +1442,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
-reviewed_content_sha256 = "c4ad13e49214e78b5f025b5a1a4783bff08af5dea73c1b213fd8b03bf0b9f1b8"
+reviewed_content_sha256 = "86c7fb95ebb0d8d6eaad17b103c11f619d9d9c05c00685625ec2c757ff71bda2"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 
@@ -1491,7 +1495,7 @@ source_glob = "scripts/check_release_operational_readiness.py"
 heavy_tests = ["tests/integration/test_release_operational_readiness_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
+source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
 heavy_tests = [
 ]
 
@@ -1823,7 +1827,7 @@ heavy_tests = [
 source_glob = "src/app/wms_adapter/inbound_auth.py"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
-# 唯一 WMS event route 同时静态分派 Transport 与粗分对账；不建立第二入口。
+# 唯一 WMS event route 静态分派 Transport 和具体 operation；不建立第二入口。
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"
@@ -2858,6 +2862,32 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py"
+heavy_tests = ["tests/integration/test_snowflake_foreign_key_types_postgresql.py"]
+
+[[mapping]]
+source_glob = "deployment/plugin_models.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 # 已退役 blocker 集成资产由 T1 独立命令并发/幂等 owner 承接删除差异。
 [[mapping]]

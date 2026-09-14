@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from src.app.device.models import Device, DeviceStatusObservation
 from src.app.execution.models import (
@@ -23,6 +23,7 @@ from src.app.wms_adapter.dispatch import WmsDispatchCode
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services import (
     PickingTaskConfirmationOwnerService,
+    PickingTaskPrepareBatchService,
     PickingTaskPrepareCoordinator,
 )
 from src.app.workline.models import (
@@ -74,9 +75,9 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
         line_type=LineType.MANUAL,
         run_mode=WorkLineRunMode.AUTO,
         is_active=True,
-        plugin_key="manual_bin_processing",
+        plugin_key="manual-picking",
         plugin_version="0.1.0",
-        flow_mode="MANUAL_BIN_PROCESSING",
+        flow_mode=None,
     )
     db.add(workline)
     await db.flush()
@@ -156,6 +157,54 @@ async def _seed_task(
     db.add(task)
     await db.flush()
     return task
+
+
+@pytest.mark.asyncio
+async def test_prepare_batch_enumerates_active_exact_plugin_workline_and_creates_obligation(
+    integration_session_factory,
+) -> None:
+    now = timezone.now_for_db()
+    queue = _Queue()
+    async with integration_session_factory.begin() as db:
+        workline, device = await _seed_ready_workline(db, now=now)
+        task = await _seed_task(
+            db,
+            suffix="b",
+            task_type=PickingTaskType.MANUAL,
+            dispatch_sequence=9_100_000_001,
+            not_before_ms=None,
+        )
+        ids = (workline.id, device.id, task.id, task.issued_evidence_id)
+
+    plugin = SimpleNamespace(
+        plugin_key="manual-picking",
+        plugin_version="0.1.0",
+        picking_task_prepare_policy=_Policy(),
+    )
+    service = PickingTaskPrepareBatchService(
+        integration_session_factory,
+        plugins=(plugin,),  # type: ignore[arg-type]
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    assert await service.prepare_batch() == 1
+    async with integration_session_factory() as db:
+        persisted = await db.get(PickingTask, ids[2])
+        confirmation = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.picking_task_id == ids[2]))
+        assert persisted is not None and PickingTaskStatus(persisted.status) is PickingTaskStatus.PREPARING
+        assert persisted.workline_id == ids[0]
+        assert confirmation is not None
+    assert queue.calls == 1
+
+    async with integration_session_factory.begin() as db:
+        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == ids[2]))
+        await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
+        await db.execute(
+            delete(DeviceStatusObservation).where(DeviceStatusObservation.device_code == device.device_code)
+        )
+        await db.execute(delete(Device).where(Device.id == ids[1]))
+        await db.execute(delete(WorkLine).where(WorkLine.id == ids[0]))
 
 
 @pytest.mark.asyncio
@@ -419,6 +468,3 @@ class _Policy:
 
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType:
         return PrepareTaskType.MANUAL
-
-    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
-        return True

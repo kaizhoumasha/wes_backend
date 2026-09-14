@@ -82,6 +82,18 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": WMS_CONFIRMATION_BATCH_LIMIT},
         "options": {"expires": 10.0},
     },
+    "prepare-picking-tasks-batch": {
+        "task": "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
+    "activate-picking-task-plans-batch": {
+        "task": "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
 }
 
 # ============================================
@@ -89,6 +101,8 @@ beat_schedule: dict[str, dict[str, Any]] = {
 # ============================================
 
 task_routes = {
+    "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch": {"queue": "celery"},
+    "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch": {"queue": "celery"},
     "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.execution.process_execution_facts_batch": {"queue": "device-command"},
     "src.celery_app.tasks.device_command.dispatch_device_commands_batch": {"queue": "device-command"},

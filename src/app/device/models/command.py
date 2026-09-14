@@ -89,10 +89,12 @@ class DeviceCommandRequestData(BaseMixin):
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     device_code: str = Field(min_length=1, max_length=100)
-    workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
+    workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     execution_ref_type: str = Field(min_length=1, max_length=50)
     execution_ref_id: str = Field(min_length=1, max_length=120)
-    material_execution_id: int | None = Field(foreign_key="wes_biz.material_executions.id", index=True)
+    material_execution_id: int | None = Field(
+        foreign_key="wes_biz.material_executions.id", index=True, sa_type=SQL_COMPAT_BIGINT
+    )
     contract_key: str = Field(min_length=1, max_length=100)
     contract_version: str = Field(min_length=1, max_length=50)
     task_type: str = Field(min_length=1, max_length=100)

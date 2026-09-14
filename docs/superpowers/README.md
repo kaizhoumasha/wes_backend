@@ -16,26 +16,22 @@
 | `plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据、普通 TEST FULL 验收及既有备份计划接入 | APPROVED；承接旧发布静默计划剩余 Task 5，未部署 |
 | `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 核心退役与三类整线插件分开验收；具体实施、交付及未完成项以该 SPEC 和 S0 记录为准，不复用历史状态作当前部署证据 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
-| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；原 R4 人工 apply-correction 已被 2026-09-11 无阻塞设计取代，修正仅走正常 plan_delta record/replay |
+| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；prepare 所有权已收敛；原 R4 人工 apply-correction 已被 2026-09-11 无阻塞设计取代，修正仅走正常 plan_delta record/replay |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源；[第 7 章插件顶层设计](specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、系统关系、资源装配与验收 | Approved；插件边界于 2026-09-09 汇总，不代表业务插件交付或现场验收 |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、WorkLine 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
-| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，Phase 13 出库/上架仍待联合批准，Phase 12 人工 wire 尚未冻结 |
+| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成 | ReviewRequired；粗分插件已从代码库移除，运行环境未变更，其他业务按各自合同状态推进 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、严格 DTO、幂等与 WorkLine 级正常 Bin 回流；非预期 Bin 恢复和停线排空货架面决定 wire 均未冻结 | ReviewRequired |
-| `../contracts/wms-rough-sorter-inbound-integration-requirements.md` | WMS/WES Phase 8 粗分逐盘入库业务合同真源 | Approved |
 | `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES Phase 13 自动上架、满箱交换与执行级 Bin 回流业务合同评审真源；停线排空货架面决定 wire 未冻结 | ReviewRequired |
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–11 已完成并包含在当前 backend 联调部署中；Phase 12 Task 0–1 已具备 Bootstrap 启动条件，Task 2–7 在人工合同冻结且开发环境验证通过前不得开始；Phase 13–14 未开始；当前运行门禁为 `BLOCK`，不等于现场验收完成 |
-| `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
-| `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
-| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Task 0–1 Bootstrap admitted；Task 2–7 在人工业务合同冻结且开发环境验证通过前阻断 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
@@ -43,9 +39,18 @@
 
 ## 项目外历史归档
 
+- `../archive_docs/wes_backend/2026-08-27-phase12-manual-bin-processing-guided-development.md`
+
 - `../archive_docs/wes_backend/stability-recovery-20260909/2026-08-26-release-operational-readiness.md`：保留原文；已实现机制以 `docs/devops/prod-release-deploy.md` 为准，未完成普通 TEST FULL 验收由 `plans/2026-09-09-stability-recovery-operations.md` C2 完整承接。
 
 - `../archive_docs/wes_backend/2026-08-19-rough-sorter-workline-epoch-activation.md`
+- `../archive_docs/wes_backend/workline_plugins/rough_sorter/`：已从代码库移除的业务插件源码、测试与 fixture。
+- `../archive_docs/wes_backend/docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`
+- `../archive_docs/wes_backend/docs/contracts/device-annexes/rough-sorter-device-contract.md`
+- `../archive_docs/wes_backend/docs/integration/rough-sorter-joint-acceptance.md`
+- `../archive_docs/wes_backend/docs/integration/rough-sorter-supplier-conformance.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-06-bin-workline-retirement-s0.md`
 - `../archive_docs/wes_backend/docs/superpowers/specs/2026-09-04-workline-plugin-selection-and-switching-design.md`
 
 以下文档已完成或已由当前设计取代，仅在项目外保留完整

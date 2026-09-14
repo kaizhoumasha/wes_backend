@@ -9,7 +9,7 @@ DEVICE_ROOT = REPO_ROOT / "src/app/device"
 
 
 def test_device_core_has_no_business_or_supplier_coupling() -> None:
-    forbidden = ("PickingTask", "GRN", "ROUGH_SORT", "SMT", "FANUC", "KEYENCE")
+    forbidden = ("PickingTask", "GRN", "SMT", "FANUC", "KEYENCE")
     violations: list[str] = []
     for path in DEVICE_ROOT.rglob("*.py"):
         content = path.read_text(encoding="utf-8")

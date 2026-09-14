@@ -28,12 +28,6 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
             {"identity": f"transport-decision:{workline_id}:{correlation_id}:{step}"},
         )
 
-    async def lock_resource_fence(self, db: AsyncSession, *, workline_id: int, resource_fence_id: str) -> None:
-        _ = await db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
-            {"identity": f"transport-resource-fence:{workline_id}:{resource_fence_id}"},
-        )
-
     async def get_by_decision_identity_for_update(
         self,
         db: AsyncSession,
@@ -78,6 +72,24 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
             select(TransportDecisionBinding).where(columns.client_request_id == client_request_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_task_resource_fence_ids(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        picking_task_id: int,
+        steps: tuple[str, ...],
+    ) -> set[str]:
+        columns = cast("Any", TransportDecisionBinding).__table__.c
+        result = await db.scalars(
+            select(columns.resource_fence_id).where(
+                columns.workline_id == workline_id,
+                columns.step.in_(steps),
+                columns.correlation_id.startswith(f"pt:{picking_task_id}:", autoescape=True),
+            )
+        )
+        return {str(resource_id) for resource_id in result.all()}
 
     async def add(
         self,

@@ -7,7 +7,7 @@
 
 ## 工作方式
 
-- 后端只同步 `src/`、`deployment/`、`workline_plugins/rough_sorter/src/` 和 `main.py`；API 由 Uvicorn 自动重载，Celery Worker 与 Beat 使用开发重载入口。
+- 后端只同步 `src/`、`deployment/`、`workline_plugins/manual-picking/src/` 和 `main.py`；API 由 Uvicorn 自动重载，Celery Worker 与 Beat 使用开发重载入口。
 - 前端同步 Vite 运行源码和配置，使用服务器持久化 `node_modules`/pnpm store，通过 Vite HMR 更新页面。
 - `.env*`、`.git`、数据库、Redis、日志、报告、本机虚拟环境和前端 `node_modules` 不进入上传包。Vite 仅可写服务器侧热更新源码副本中的生成文件。
 - 后端 `pyproject.toml`、`uv.lock` 或 `migrations/` 与当前基础镜像不一致时停止，必须先完成正式后端发布和数据库迁移。

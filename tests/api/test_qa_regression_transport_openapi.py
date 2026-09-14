@@ -164,6 +164,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         for schema in _walk_schemas(request_schema)
         if "rack_face" in schema.get("properties", {})
     ]
+    face_value_schemas = [schema["items"] if schema.get("type") == "array" else schema for schema in face_schemas]
     constrained_strings = [
         schema
         for schema in _walk_schemas(request_schema)
@@ -171,7 +172,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     ]
     assert constrained_strings
     for schema in constrained_strings:
-        if schema in face_schemas:
+        if schema in face_value_schemas:
             assert schema["maxLength"] == 10
             assert not {"enum", "allOf"} & set(schema)
             assert re.search(schema["pattern"], "\x00") is None

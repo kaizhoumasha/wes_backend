@@ -18,6 +18,7 @@ from src.app.execution.models import (
     MaterialExecution,
 )
 from src.app.execution.models.material_execution import MaterialExecutionStatus
+from src.app.execution.plugin_binding import BusinessEvidenceApplication, BusinessEvidenceDisposition
 from src.app.execution.repositories import inbound_evidence_repository, material_execution_repository
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_builder import FactBuilder
@@ -26,7 +27,7 @@ from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncContextManager, Callable
+    from collections.abc import AsyncContextManager, Awaitable, Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,7 +45,14 @@ _MAX_BACKOFF_SECONDS = 300
 
 class EvidenceRepositoryPort(Protocol):
     async def claim_decision_batch(
-        self, db: AsyncSession, *, now: datetime, claim_token: str, claim_expires_at: datetime, limit: int
+        self,
+        db: AsyncSession,
+        *,
+        now: datetime,
+        claim_token: str,
+        claim_expires_at: datetime,
+        limit: int,
+        business_wms_routes: tuple[tuple[str, str, str], ...],
     ) -> list[InboundEvidence]: ...
 
     async def get_decision_claim_for_update(
@@ -124,6 +132,7 @@ class FactProcessor:
         clock: Callable[[], datetime] = timezone.now_for_db,
         token_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         task_queue_gateway: TaskQueueGateway | None = None,
+        workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
     ) -> None:
         self._sessions = session_factory
         self._plugins = plugin_binding
@@ -138,6 +147,7 @@ class FactProcessor:
         self._clock = clock
         self._token_factory = token_factory
         self._task_queue = task_queue_gateway
+        self._workline_reserved = workline_reserved
 
     async def process_batch(self, limit: int = _MAX_BATCH_SIZE) -> int:
         if not 1 <= limit <= _MAX_BATCH_SIZE:
@@ -151,6 +161,7 @@ class FactProcessor:
                 claim_token=token,
                 claim_expires_at=now + timedelta(seconds=_CLAIM_SECONDS),
                 limit=limit,
+                business_wms_routes=self._plugins.business_wms_routes,
             )
             evidence_ids = [cast("int", evidence.id) for evidence in claimed if evidence.id is not None]
 
@@ -158,10 +169,11 @@ class FactProcessor:
         for evidence_id in evidence_ids:
             try:
                 prepared = await self._prepare_fact(evidence_id, token)
-                if not prepared:
+                if prepared == ():
                     processed += 1
                     continue
-                _ = self._decision_groups(prepared)
+                if prepared is not None:
+                    _ = self._decision_groups(prepared)
                 if await self._apply_locked(evidence_id, token):
                     self._enqueue_wms_confirmations()
                 processed += 1
@@ -181,16 +193,31 @@ class FactProcessor:
         except Exception:
             logger.exception("execution.wms_confirmation_wake_failed", extra={"event": "wms_confirmation_wake_failed"})
 
-    async def _prepare_fact(self, evidence_id: int, token: str) -> tuple[_PreparedFact, ...]:
+    async def _prepare_fact(self, evidence_id: int, token: str) -> tuple[_PreparedFact, ...] | None:
         now = self._clock()
         async with self._sessions.begin() as db:
             evidence = await self._claimed(db, evidence_id, token, now)
+            if await self._business_consumer_identity(db, evidence) is not None:
+                return None
             return await self._prepare_facts_in_session(db, evidence, now)
 
     async def _apply_locked(self, evidence_id: int, token: str) -> bool:
         now = self._clock()
         async with self._sessions.begin() as db:
             evidence = await self._claimed(db, evidence_id, token, now)
+            if (
+                evidence.material_execution_id is None
+                and evidence.kind in {InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT}
+                and evidence.processed_at is not None
+            ):
+                evidence.decision_claim_token = None
+                evidence.decision_claim_expires_at = None
+                evidence.decision_next_attempt_at = None
+                await self._evidences.flush(db)
+                return False
+            identity = await self._business_consumer_identity(db, evidence)
+            if identity is not None:
+                return await self._apply_business_evidence(db, evidence, identity, now)
             prepared = await self._prepare_facts_in_session(db, evidence, now)
             if not prepared:
                 return False
@@ -220,6 +247,66 @@ class FactProcessor:
             evidence.decision_next_attempt_at = None
             await self._evidences.flush(db)
             return any(isinstance(decision, InboundWmsIntent) for decision in current_decisions)
+
+    async def _business_consumer_identity(
+        self, db: AsyncSession, evidence: InboundEvidence
+    ) -> tuple[str, str, int] | None:
+        if evidence.material_execution_id is not None or evidence.kind not in {
+            InboundEvidenceKind.DEVICE_EVENT,
+            InboundEvidenceKind.DEVICE_RESULT,
+            InboundEvidenceKind.TRANSPORT_RESULT,
+            InboundEvidenceKind.WMS_EVENT,
+            InboundEvidenceKind.WMS_RESULT,
+        }:
+            return None
+        workline = await self._load_workline(db, evidence)
+        key = cast("str", workline.plugin_key)
+        version = cast("str", workline.plugin_version)
+        if (
+            evidence.kind in {InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT}
+            and evidence.operation is None
+        ):
+            return None
+        operation = (
+            evidence.operation
+            if evidence.kind in {InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT}
+            else None
+        )
+        if not self._plugins.has_business_evidence_consumer(key, version, operation=operation):
+            return None
+        return key, version, cast("int", workline.id)
+
+    async def _apply_business_evidence(
+        self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
+        identity: tuple[str, str, int],
+        now: datetime,
+    ) -> bool:
+        key, version, workline_id = identity
+        if self._workline_reserved is not None and await self._workline_reserved(db, workline_id):
+            evidence.decision_next_attempt_at = now + timedelta(seconds=5)
+            evidence.decision_claim_token = None
+            evidence.decision_claim_expires_at = None
+            await self._evidences.flush(db)
+            return False
+        consumer = self._plugins.resolve_business_evidence_consumer(key, version)
+        result = await consumer.apply_in_session(db, cast("int", evidence.id), workline_id=workline_id)
+        if type(result) is not BusinessEvidenceApplication:
+            raise TypeError("business evidence consumer must return BusinessEvidenceApplication")
+        if result.disposition is BusinessEvidenceDisposition.DEFERRED:
+            evidence.decision_next_attempt_at = now + timedelta(milliseconds=cast("int", result.retry_after_ms))
+        elif result.disposition is BusinessEvidenceDisposition.APPLIED:
+            evidence.decision_digest = result.decision_digest
+            evidence.published_at = now
+        else:
+            evidence.apply_status = InboundEvidenceApplyStatus(result.disposition.value)
+        evidence.decision_claim_token = None
+        evidence.decision_claim_expires_at = None
+        if result.disposition is not BusinessEvidenceDisposition.DEFERRED:
+            evidence.decision_next_attempt_at = None
+        await self._evidences.flush(db)
+        return result.disposition is BusinessEvidenceDisposition.APPLIED
 
     async def _record_failure(self, evidence_id: int, token: str) -> None:
         now = self._clock()

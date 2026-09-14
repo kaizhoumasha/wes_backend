@@ -57,7 +57,7 @@ def test_secondary_package_import_scanner_covers_plugin_and_adapter_roots(tmp_pa
     source = tmp_path / "test_secondary_package_imports.py"
     source.write_text(
         "import workline_plugins.demo\n"
-        "import rough_sorter.handlers\n"
+        "import manual_picking.handlers\n"
         "import device_adapters.vendor\n"
         "from device_adapters.acme import Adapter\n",
         encoding="utf-8",
@@ -66,7 +66,7 @@ def test_secondary_package_import_scanner_covers_plugin_and_adapter_roots(tmp_pa
     assert _secondary_package_imports(source) == {
         "device_adapters.acme",
         "device_adapters.vendor",
-        "rough_sorter.handlers",
+        "manual_picking.handlers",
         "workline_plugins.demo",
     }
 
@@ -93,10 +93,6 @@ def test_core_tests_do_not_import_secondary_development_plugin_packages() -> Non
     assert offenders == {}
 
 
-def test_core_tests_do_not_own_rough_sorter_business_files() -> None:
-    assert list(CORE_TESTS_ROOT.rglob("test_*rough_sorter*.py")) == []
-
-
 def test_core_production_package_does_not_embed_or_import_workline_plugins() -> None:
     embedded_root = REPO_ROOT / "src/app/runtime/workline_plugins"
     assert list(embedded_root.rglob("*.py")) == []
@@ -107,12 +103,6 @@ def test_core_production_package_does_not_embed_or_import_workline_plugins() -> 
         if (found := _secondary_package_imports(path))
     }
     assert offenders == {}
-
-
-def test_deployment_does_not_own_rough_sorter_business_modules() -> None:
-    offenders = sorted(path.name for path in (REPO_ROOT / "deployment").glob("_rough_sorter_*.py"))
-
-    assert offenders == []
 
 
 def test_core_test_entrypoints_do_not_collect_or_map_secondary_plugin_packages() -> None:

@@ -885,6 +885,51 @@ async def test_move_success_checks_target_face_only_when_arrival_face_provided(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("arrival_face", ["270", None])
+async def test_move_without_target_face_accepts_rcs_arrival_face(
+    outcome_service: TransportService,
+    db_engine: object,
+    arrival_face: str | None,
+) -> None:
+    handle = await outcome_service.move_rack(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        "rack-default-face",
+        RackPosition("SOURCE"),
+        RackPosition("TARGET"),
+    )
+    operation_id = f"operation-default-face-{arrival_face}"
+    await record_valid_callback(
+        outcome_service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": "rack-default-face",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+            "arrival_face": arrival_face,
+        },
+    )
+
+    assert await outcome_service.process_pending_evidence(1) == 1
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+
+    assert evidence is not None and evidence.status == "APPLIED"
+    assert task is not None and task.status == "SUCCEEDED"
+    assert member is not None and member.arrival_face == arrival_face
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("arrival_face", ["90", None])
 async def test_rotate_success_requires_the_frozen_target_face(
     outcome_service: TransportService,

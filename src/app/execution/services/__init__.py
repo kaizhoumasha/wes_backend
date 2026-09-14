@@ -23,6 +23,7 @@ from .position_projection_service import (
     PositionProjectionService,
     position_projection_service,
 )
+from .reliable_rack_transport import ReliableRackTransportCreator
 from .wms_confirmation_service import (
     WmsConfirmationAcceptance,
     WmsConfirmationFollowUp,
@@ -51,6 +52,7 @@ __all__ = [
     "MaterialExecutionService",
     "PositionProjectionAuthorityError",
     "PositionProjectionService",
+    "ReliableRackTransportCreator",
     "WmsConfirmationAcceptance",
     "WmsConfirmationFollowUp",
     "WmsConfirmationFollowUpPlanner",

@@ -19,7 +19,6 @@ def encode_request(intent: sdk.BinInboundBatchIntent, *, timestamp: int) -> dict
                 "task_id": intent.task_id,
                 "rack_id": intent.rack_id,
                 "rack_face": intent.rack_face,
-                "max_bin_count": intent.max_bin_count,
             },
         }
     )
@@ -37,7 +36,6 @@ def decode_outcome(payload: object) -> sdk.BinInboundBatchOutcome:
     response = wire.parse_bin_inbound_batch_response(status, payload)
     result: (
         sdk.BinInboundBatchReady
-        | sdk.BinBatchNoBatch
         | sdk.BinInboundBatchRackFaceDone
         | sdk.OperationUnavailable
         | sdk.OperationConflict
@@ -59,8 +57,6 @@ def decode_outcome(payload: object) -> sdk.BinInboundBatchOutcome:
                     for member in data.bins
                 )
             )
-        elif isinstance(data, wire.BinBatchNoBatch):
-            result = sdk.BinBatchNoBatch(data.retry_after_ms)
         else:
             result = sdk.BinInboundBatchRackFaceDone()
     elif response.code == "UNAVAILABLE":

@@ -97,6 +97,7 @@ class WorklineSessionBase(BaseMixin):
     workline_id: int = Field(
         index=True,
         foreign_key="wes_biz.work_lines.id",
+        sa_type=SQL_COMPAT_BIGINT,
         description="作业线 ID（关联 WorkLine.id）",
     )
 

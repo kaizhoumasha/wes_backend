@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
@@ -63,6 +63,7 @@ def setup_start():
         ),
         business_blocker=None,
         start_plan_builder=builder,
+        picking_task_prepare_policy=None,
     )
     repository = AsyncMock()
     repository.get_for_update.return_value = line
@@ -86,6 +87,21 @@ def setup_start():
         repository,
         plugin,
     )
+
+
+@pytest.mark.asyncio
+async def test_start_defers_prepare_wakeup_only_for_prepare_capable_plugin(monkeypatch):
+    service, _line, _repository, plugin = setup_start()
+    queue = SimpleNamespace(enqueue_picking_task_prepare=Mock())
+    service._task_queue = queue
+    plugin.picking_task_prepare_policy = object()
+    defer = Mock()
+    monkeypatch.setattr("src.app.workline.services.workline_start_service.defer_wakeup", defer)
+
+    db = object()
+    await service.start(db, workline_id=7, version=3)
+
+    defer.assert_called_once_with(db, queue.enqueue_picking_task_prepare)
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASK_MODULES = ("core", "device_command", "execution", "transport", "wms_confirmation")
+TASK_MODULES = (
+    "core",
+    "device_command",
+    "execution",
+    "picking_task_plan",
+    "picking_task_prepare",
+    "transport",
+    "wms_confirmation",
+)
 ASYNC_TASKS = {
     "core": ("health_check", "clear_cache", "send_notification"),
     "device_command": (
@@ -22,6 +30,8 @@ ASYNC_TASKS = {
         "reconcile_device_commands_batch",
     ),
     "execution": ("process_execution_facts_batch",),
+    "picking_task_plan": ("activate_picking_task_plans_batch",),
+    "picking_task_prepare": ("prepare_picking_tasks_batch",),
     "transport": (
         "advance_transport_debug_runs_batch",
         "submit_transport_tasks_batch",

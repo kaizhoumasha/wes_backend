@@ -16,8 +16,14 @@ from .wms_types import (
 )
 
 
+class HandlerFact:
+    """所有可装饰 typed fact 的无状态标记。"""
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True, slots=True)
-class FactReference:
+class FactReference(HandlerFact):
     fact_id: str
     evidence_id: str
     fact_version: str

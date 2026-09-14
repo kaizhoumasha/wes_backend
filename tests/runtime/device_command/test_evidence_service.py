@@ -366,7 +366,7 @@ def _event(**overrides: object) -> EcsDeviceEventReport:
         "device_code": "ARM-01",
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1_786_579_204_000,
-        "data": {"event_id": "EVENT-001", "location": "STATION_SCAN1", "barcode": "PKG12345678"},
+        "data": {"event_id": "EVENT-001", "location": "STATION_SCAN1", "bin_code": "PKG12345678"},
     }
     payload.update(overrides)
     return EcsDeviceEventReport.model_validate(payload)
@@ -911,6 +911,23 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
     persisted_evidence = repository.evidences[receipt.source_event_id]
     assert persisted_evidence.material_execution_id == command.material_execution_id
     assert persisted_evidence.apply_status == "APPLIED"
+    assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_result_without_material_execution_wakes_workline_business_consumer() -> None:
+    command = _command()
+    command.material_execution_id = None
+    command.execution_ref_type = "WORKLINE_BUSINESS"
+    command.execution_ref_id = "SCAN4:31"
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+    assert command.status == CommandStatus.SUCCEEDED
+    assert repository.evidences[receipt.source_event_id].workline_id == 11
+    assert repository.evidences[receipt.source_event_id].material_execution_id is None
     assert queue.execution_wakes == 1
 
 

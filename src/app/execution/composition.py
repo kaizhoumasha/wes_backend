@@ -21,6 +21,8 @@ from src.app.execution.services import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.device.services import DeviceCommandService
@@ -56,6 +58,8 @@ def build_execution_runtime(
     task_queue_gateway: TaskQueueGateway,
     picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
     workline_owner: WorkLineConfirmationOwnerPort | None = None,
+    workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
+    direct_result_owner: Callable[[AsyncSession, int, str], Awaitable[bool]] | None = None,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
 
@@ -74,6 +78,7 @@ def build_execution_runtime(
         follow_up_planner=wms_confirmation_follow_up_planner,
         picking_task_owner=picking_task_owner,
         workline_owner=workline_owner,
+        direct_result_owner=direct_result_owner,
     )
     applier = DecisionApplier(
         device_command_service=device_command_service,
@@ -94,6 +99,7 @@ def build_execution_runtime(
             evidence_repository=evidence_repository,
             execution_repository=material_repository,
             material_execution_service=material_service,
+            workline_reserved=workline_reserved,
         ),
     )
 

@@ -51,7 +51,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         *,
         populate_existing: bool = False,
     ) -> WorkLine | None:
-        """根据 ID 查询并锁定 WorkLine，用于安全状态切换。"""
+        """锁定 WorkLine 非键状态，同时允许关联 Evidence 获取外键读锁。"""
 
         columns = cast("Any", WorkLine).__table__.c
         statement = (
@@ -60,7 +60,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 columns.id == workline_id,
                 columns.is_deleted.is_(False),
             )
-            .with_for_update()
+            .with_for_update(key_share=True)
         )
         if populate_existing:
             statement = statement.execution_options(populate_existing=True)
@@ -91,6 +91,43 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             .distinct()
         )
         return list(result.tuples())
+
+    async def list_active_for_plugin_identities(
+        self,
+        db: AsyncSession,
+        identities: tuple[tuple[str, str], ...],
+        *,
+        limit: int,
+    ) -> list[tuple[int, str, str]]:
+        """按部署能力列出活动工作线；插件缺席时调用方不进入数据库。"""
+
+        if not identities:
+            return []
+        columns = cast("Any", WorkLine).__table__.c
+        identity_predicate = or_(
+            *(
+                and_(columns.plugin_key == plugin_key, columns.plugin_version == plugin_version)
+                for plugin_key, plugin_version in identities
+            )
+        )
+        result = await db.execute(
+            select(columns.id, columns.plugin_key, columns.plugin_version)
+            .where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                identity_predicate,
+            )
+            .order_by(columns.id)
+            .limit(limit)
+        )
+        return [(int(row.id), str(row.plugin_key), str(row.plugin_version)) for row in result]
+
+    async def has_active_plugin_identity(
+        self,
+        db: AsyncSession,
+        identities: tuple[tuple[str, str], ...],
+    ) -> bool:
+        return bool(await self.list_active_for_plugin_identities(db, identities, limit=1))
 
     async def list_bindings(self, db: AsyncSession, workline_id: int) -> list[WorkLineDeviceBinding]:
         line = await self.get_for_update(db, workline_id)
@@ -208,6 +245,10 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                         evidence.material_execution_id.is_(None),
                         or_(
                             evidence.kind == InboundEvidenceKind.DEVICE_RESULT,
+                            and_(
+                                evidence.kind.in_((InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT)),
+                                evidence.processed_at.is_not(None),
+                            ),
                             and_(
                                 evidence.kind == InboundEvidenceKind.WMS_RESULT,
                                 evidence.id.in_(

@@ -43,9 +43,9 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
     )
     db.add(line)
     await db.flush()
-    line.plugin_key = "rough_sorter"
+    line.plugin_key = "sample_plugin"
     line.plugin_version = "1.0.0"
-    line.flow_mode = "ROUGH_SORT_INBOUND"
+    line.flow_mode = "EXAMPLE_INBOUND"
     line.is_active = True
     evidence = InboundEvidence(
         kind=InboundEvidenceKind.DEVICE_EVENT,

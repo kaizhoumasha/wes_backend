@@ -237,4 +237,47 @@ def test_backend_build_proxy_uses_the_current_lan_endpoint() -> None:
 
     assert "BUILD_PROXY = 'http://192.168.0.225:7890'" in jenkinsfile
     assert "192.168.30.111:7890" not in jenkinsfile
-    assert "Build proxy unavailable, continuing without proxy" in jenkinsfile
+    assert "stage('Infrastructure Preflight')" in jenkinsfile
+    assert "probe_via_proxy docker-hub https://registry-1.docker.io/v2/" in jenkinsfile
+    assert "probe_via_proxy pypi https://mirrors.aliyun.com/pypi/simple/hatchling/" in jenkinsfile
+    assert "INFRA_PROXY_UNAVAILABLE" in jenkinsfile
+    assert "Build proxy unavailable, continuing without proxy" not in jenkinsfile
+
+
+def test_backend_release_preflight_validates_registry_realm_with_ephemeral_credentials() -> None:
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
+    preflight_body = _stage_body(jenkinsfile, "Infrastructure Preflight", "Checkout Source")
+    build_body = _stage_body(jenkinsfile, "Build CI Image", "Classify Required HEAVY")
+    push_body = jenkinsfile.split("stage('Push Runtime Image')", maxsplit=1)[1].split("\n    post {", maxsplit=1)[0]
+
+    assert "REGISTRY_TOKEN_REALM = 'http://192.168.0.220:9080/jwt/auth'" in jenkinsfile
+    assert "probe_via_proxy docker-hub" in preflight_body
+    assert "env.CI_RELEASE_GATE_READY == 'true'" in build_body
+    assignment = next(line.strip() for line in build_body.splitlines() if "expected_challenge=" in line)
+    rendered = assignment.replace('\\"', '"')
+    bash = which("bash")
+    assert bash is not None
+    challenge = subprocess.check_output(
+        [bash, "-c", rendered + '\nprintf "%s" "$expected_challenge"'],
+        env={**os.environ, "REGISTRY_TOKEN_REALM": "http://registry.test/jwt/auth"},
+        text=True,
+    )
+    assert challenge == 'Www-Authenticate: Bearer realm="http://registry.test/jwt/auth"'
+    assert "INFRA_REGISTRY_REALM_MISMATCH" in build_body
+    assert "INFRA_REGISTRY_AUTH_FAILED" in build_body
+    for body in (build_body, push_body):
+        assert 'export DOCKER_CONFIG="$(mktemp -d)"' in body
+        assert "docker login" in body
+        assert "gitlab-http-creds" in body
+    assert "PUBLISH_REGISTRY_AUTH_RETRY" in push_body
+    assert "PUBLISH_PUSH_RETRY" in push_body
+    assert "timeout --kill-after=10s 120s docker push" in push_body
+    assert "disableRestartFromStage()" in jenkinsfile
+
+
+def test_backend_heavy_runner_uses_bounded_reference_resources() -> None:
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
+    heavy_body = _stage_body(jenkinsfile, "HEAVY Required", "Build Runtime Image")
+
+    assert "--cpus=2" in heavy_body
+    assert "--memory=4g" in heavy_body

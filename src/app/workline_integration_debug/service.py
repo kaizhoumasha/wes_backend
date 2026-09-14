@@ -114,10 +114,16 @@ class ManualDebugCommandFencePort(Protocol):
 
 
 class IntegrationRunWorkLineOwner:
-    """只允许已由联调 run 冻结的两个人工 WMS 请求继续收敛。"""
+    """识别联调 run 冻结的人工 WMS 请求与完成事实。"""
 
     def __init__(self, repository: IntegrationRunRepository | None = None) -> None:
         self._runs = repository or integration_run_repository
+
+    async def is_reserved(self, db: AsyncSession, workline_id: int) -> bool:
+        return await self._runs.get_active_for_workline(db, workline_id) is not None
+
+    async def owns_operation(self, db: AsyncSession, workline_id: int, operation_id: str) -> bool:
+        return await self._runs.owns_operation(db, workline_id=workline_id, operation_id=operation_id)
 
     async def validate_owner(
         self,
@@ -135,6 +141,10 @@ class IntegrationRunWorkLineOwner:
             workline_id=workline_id,
             operation_id=operation_id,
         )
+
+    async def owns_completion(self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str) -> bool:
+        run = await self._runs.get_active_for_workline(db, workline_id, for_update=True)
+        return run is not None and run.task_id == task_id and run.bin_code == bin_code
 
 
 class IntegrationDebugService:
@@ -184,7 +194,7 @@ class IntegrationDebugService:
                 workline_id=workline.id,
                 workline_code=workline.line_code,
                 scenario_key=IntegrationDebugScenario.MANUAL_OUTBOUND_PICKING_V1,
-                expected_plugin_key="manual_bin_processing",
+                expected_plugin_key="manual-picking",
                 profile=request.profile,
                 environment_label=request.environment_label.strip(),
                 operator_user_id=actor_id,
@@ -444,6 +454,9 @@ class IntegrationDebugService:
             if task.plan_blocked_evidence_id is not None:
                 raise IntegrationDebugConflict("plan_delta 处于冲突对账，不能启动资源搬运")
             resources = await self._runs.list_plan_resources(db, task.id)
+            source_racks = resources.get("bin_source_racks")
+            if not isinstance(source_racks, list) or not source_racks:
+                raise IntegrationDebugContractError("手工出库 plan_delta 必须至少包含一个五层来源货架")
             plan = {
                 "plan_revision": task.last_applied_plan_revision,
                 "target_rack": {"rack_id": task.target_rack_id, "rack_face": task.target_rack_face},
@@ -520,7 +533,6 @@ class IntegrationDebugService:
                 task_id=run.task_id,
                 rack_id=rack_id,
                 rack_face=rack_face,
-                max_bin_count=request_data.max_bin_count,
             )
             payload = encode_inbound_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
@@ -973,7 +985,11 @@ class IntegrationDebugService:
                 "source_cycle_no": run.configuration_json.get("source_cycle_no", 0),
             }
             if IntegrationDebugPhase(run.current_phase) is IntegrationDebugPhase.BIN_TRANSPORT:
-                expected_request["inbound_bins"] = deepcopy(run.configuration_json.get("inbound_bins"))
+                bins = run.configuration_json.get("inbound_bins")
+                offset = run.configuration_json.get("inbound_transport_offset", 0)
+                expected_request["inbound_bins"] = (
+                    deepcopy(bins[offset : offset + 4]) if isinstance(bins, list) else None
+                )
             real_transport = profile_uses_real_transport(IntegrationDebugProfile(run.profile))
             existing = await self._runs.get_step_by_client_request_id(db, action.client_request_id, for_update=True)
             if existing is not None:
@@ -1163,10 +1179,18 @@ class IntegrationDebugService:
                 should_advance = step.status != "SUCCEEDED" and updates_current_run
                 step.status = "SUCCEEDED"
                 response = (
-                    await self._runs.get_evidence(db, confirmation.response_evidence_id)
+                    await self._runs.get_evidence_by_operation(db, step.operation, step.operation_id, for_update=True)
                     if confirmation.response_evidence_id is not None
+                    and step.operation is not None
+                    and step.operation_id is not None
                     else None
                 )
+                if confirmation.response_evidence_id is not None:
+                    if response is None or response.id != confirmation.response_evidence_id:
+                        raise IntegrationDebugConflict("WMS 响应 Evidence 与联调动作身份不匹配")
+                    if response.apply_status != InboundEvidenceApplyStatus.APPLIED:
+                        raise IntegrationDebugConflict("WMS 响应 Evidence 尚未可靠应用")
+                    response.processed_at = timezone.now_for_db()
                 response_payload = response.normalized_payload if response is not None else {}
                 response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
                 result_summary = (
@@ -1478,24 +1502,13 @@ class IntegrationDebugService:
 
     @staticmethod
     def _finish_current_bin(run: IntegrationRun) -> IntegrationDebugPhase:
+        inbound_bins = run.configuration_json.get("inbound_bins")
+        if not isinstance(inbound_bins, list) or not inbound_bins:
+            raise IntegrationDebugConflict("当前 run 缺少 WMS 面级冻结清单，请先对账")
         pending = run.configuration_json.get("pending_inbound_bin_codes")
         if not isinstance(pending, list):
-            inbound_bins = run.configuration_json.get("inbound_bins")
-            if isinstance(inbound_bins, list):
-                pending = [
-                    item.get("bin_code")
-                    for item in inbound_bins
-                    if isinstance(item, dict) and isinstance(item.get("bin_code"), str)
-                ]
-        if (
-            not isinstance(pending, list)
-            and IntegrationDebugService._current_source_rack(run) is not None
-            and isinstance(run.bin_code, str)
-        ):
-            pending = [run.bin_code]
-        if not isinstance(pending, list):
-            return IntegrationDebugPhase.RACK_DEPARTURE
-        if not isinstance(pending, list) or not pending or pending[0] != run.bin_code:
+            raise IntegrationDebugConflict("当前 run 缺少 WMS 待处理料箱清单，请先对账")
+        if not pending or pending[0] != run.bin_code:
             raise IntegrationDebugConflict("当前料箱不属于 WMS 已冻结投料批次队头")
         remaining = pending[1:]
         configuration = {
@@ -1511,11 +1524,15 @@ class IntegrationDebugService:
         }
         configuration["pending_inbound_bin_codes"] = remaining
         configuration["source_cycle_no"] = int(configuration.get("source_cycle_no", 0)) + 1
-        if not remaining:
-            configuration.pop("inbound_bins", None)
         run.configuration_json = configuration
         run.bin_code = None
-        return IntegrationDebugPhase.POINT1_ARRIVAL if remaining else IntegrationDebugPhase.BIN_INBOUND_BATCH
+        if not remaining:
+            IntegrationDebugService._close_current_source_face(run)
+            return IntegrationDebugPhase(run.current_phase)
+        offset = configuration.get("inbound_transport_offset", 0)
+        if isinstance(inbound_bins, list) and len(inbound_bins) - len(remaining) == offset:
+            return IntegrationDebugPhase.BIN_TRANSPORT
+        return IntegrationDebugPhase.POINT1_ARRIVAL
 
     @staticmethod
     def _finish_current_source_departure(run: IntegrationRun, departed_rack_id: str | None) -> IntegrationDebugPhase:
@@ -1610,59 +1627,61 @@ class IntegrationDebugService:
             try:
                 batch = BinInboundBatchReady.model_validate({"result": "READY", "bins": response_data.get("bins")})
             except ValidationError as exc:
-                raise IntegrationDebugConflict("inbound_batch READY 必须包含 1–4 个有效且不重复的料箱") from exc
+                raise IntegrationDebugConflict("inbound_batch READY 必须包含完整且不重复的料箱清单") from exc
             run.configuration_json = {**run.configuration_json, "inbound_bins": batch.model_dump(mode="json")["bins"]}
             run.configuration_json = {
                 **run.configuration_json,
                 "pending_inbound_bin_codes": [member.bin_code for member in batch.bins],
+                "inbound_transport_offset": 0,
             }
             run.current_phase = IntegrationDebugPhase.BIN_TRANSPORT
             run.status = IntegrationDebugRunStatus.ACTIVE
-        elif response_result == "NO_BATCH":
-            run.status = IntegrationDebugRunStatus.ACTIVE
         elif response_result == "RACK_FACE_DONE":
-            current = IntegrationDebugService._current_source_rack(run)
-            progress = deepcopy(run.configuration_json.get("source_rack_progress"))
-            if current is None or not isinstance(progress, dict):
-                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-                run.attention_code = "RACK_FACE_DONE"
-                run.attention_detail = (
-                    "WMS 已关闭当前来源货架面，但该历史 run 缺少来源货架游标，请现场协调后关闭本 run。"
-                )
-                return
-            rack = progress["racks"][progress["current_rack_index"]]
-            if current["rack_face"] not in rack["completed_faces"]:
-                rack["completed_faces"].append(current["rack_face"])
-            configuration = dict(run.configuration_json)
-            configuration["source_rack_progress"] = progress
-            configuration.pop("inbound_bins", None)
-            configuration.pop("pending_inbound_bin_codes", None)
-            run.configuration_json = configuration
-            if progress["current_face_index"] + 1 < len(rack["faces"]):
-                progress["current_face_index"] += 1
-                run.configuration_json = {
-                    **run.configuration_json,
-                    "source_rack_progress": progress,
-                    "rack_transport_mode": "ROTATE_SOURCE_RACK",
-                }
-                IntegrationDebugService._refresh_source_rack_context(run)
-                run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
-            else:
-                run.configuration_json = {
-                    **run.configuration_json,
-                    "departure_candidate": {
-                        "rack_id": current["rack_id"],
-                        "rack_face": current["rack_face"],
-                        "current_location": progress["work_position"],
-                        "role": "SOURCE_RACK",
-                    },
-                }
-                run.current_phase = IntegrationDebugPhase.RACK_DEPARTURE
-            run.status = IntegrationDebugRunStatus.ACTIVE
-            run.attention_code = None
-            run.attention_detail = None
+            IntegrationDebugService._close_current_source_face(run)
         else:
             raise IntegrationDebugConflict("inbound_batch 响应结果不在固定联合内")
+
+    @staticmethod
+    def _close_current_source_face(run: IntegrationRun) -> None:
+        current = IntegrationDebugService._current_source_rack(run)
+        progress = deepcopy(run.configuration_json.get("source_rack_progress"))
+        if current is None or not isinstance(progress, dict):
+            run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+            run.attention_code = "RACK_FACE_DONE"
+            run.attention_detail = "WMS 已关闭当前来源货架面，但该历史 run 缺少来源货架游标，请现场协调后关闭本 run。"
+            return
+        rack = progress["racks"][progress["current_rack_index"]]
+        if current["rack_face"] not in rack["completed_faces"]:
+            rack["completed_faces"].append(current["rack_face"])
+        configuration = dict(run.configuration_json)
+        configuration["source_rack_progress"] = progress
+        configuration.pop("inbound_bins", None)
+        configuration.pop("pending_inbound_bin_codes", None)
+        configuration.pop("inbound_transport_offset", None)
+        run.configuration_json = configuration
+        if progress["current_face_index"] + 1 < len(rack["faces"]):
+            progress["current_face_index"] += 1
+            run.configuration_json = {
+                **run.configuration_json,
+                "source_rack_progress": progress,
+                "rack_transport_mode": "ROTATE_SOURCE_RACK",
+            }
+            IntegrationDebugService._refresh_source_rack_context(run)
+            run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
+        else:
+            run.configuration_json = {
+                **run.configuration_json,
+                "departure_candidate": {
+                    "rack_id": current["rack_id"],
+                    "rack_face": current["rack_face"],
+                    "current_location": progress["work_position"],
+                    "role": "SOURCE_RACK",
+                },
+            }
+            run.current_phase = IntegrationDebugPhase.RACK_DEPARTURE
+        run.status = IntegrationDebugRunStatus.ACTIVE
+        run.attention_code = None
+        run.attention_detail = None
 
     @staticmethod
     def _advance_return_batch(run: IntegrationRun, response_result: str | None, response_data: object) -> None:
@@ -2207,6 +2226,15 @@ class IntegrationDebugService:
                 )
             if current is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
                 target = self._finish_current_bin(run)
+            if current is IntegrationDebugPhase.BIN_TRANSPORT:
+                bins = run.configuration_json.get("inbound_bins")
+                offset = run.configuration_json.get("inbound_transport_offset", 0)
+                if not isinstance(bins, list) or not isinstance(offset, int) or not bins[offset : offset + 4]:
+                    raise IntegrationDebugConflict("当前投料分段缺少 WMS 冻结成员")
+                run.configuration_json = {
+                    **run.configuration_json,
+                    "inbound_transport_offset": offset + len(bins[offset : offset + 4]),
+                }
             if current is IntegrationDebugPhase.RACK_DEPARTURE:
                 target = self._finish_current_source_departure(
                     run,
@@ -2376,9 +2404,23 @@ class IntegrationDebugService:
             raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
         if phase is IntegrationDebugPhase.RACK_TRANSPORT:
             current_source = IntegrationDebugService._current_source_rack(run)
+            plan = run.configuration_json.get("plan_resources")
+            target_rack = plan.get("target_rack") if isinstance(plan, dict) else None
+            mode = run.configuration_json.get("rack_transport_mode")
+            if mode not in {"MOVE_SOURCE_RACK", "ROTATE_SOURCE_RACK"} and (
+                not isinstance(target_rack, dict)
+                or not any(
+                    step.status == "SUCCEEDED"
+                    and step.request_summary_json.get("kind") == IntegrationTransportActionKind.MOVE_RACK
+                    and step.request_summary_json.get("rack_id") == target_rack.get("rack_id")
+                    and step.request_summary_json.get("target_face") == target_rack.get("rack_face")
+                    for step in phase_steps
+                )
+            ):
+                raise IntegrationDebugConflict("目标转运货架尚未取得匹配货架、面和动作的 Transport SUCCEEDED")
             expected_kind = (
                 IntegrationTransportActionKind.ROTATE_RACK
-                if run.configuration_json.get("rack_transport_mode") == "ROTATE_SOURCE_RACK"
+                if mode == "ROTATE_SOURCE_RACK"
                 else IntegrationTransportActionKind.MOVE_RACK
             )
             if current_source is not None and not any(
@@ -2711,16 +2753,20 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("缺少有效的 WMS inbound_batch READY 完整批次") from exc
             site = configuration.get("site_configuration", MANUAL_OUTBOUND_SITE_CONFIGURATION)
             expected_target = {"kind": "HANDOFF_POSITION", "location_code": site["infeed_position"]}
+            offset = configuration.get("inbound_transport_offset", 0)
+            if not isinstance(offset, int) or isinstance(offset, bool) or not batch.bins[offset : offset + 4]:
+                raise IntegrationDebugContractError("当前投料分段不在 WMS 冻结清单内")
+            chunk = batch.bins[offset : offset + 4]
             if (
                 action.kind is not IntegrationTransportActionKind.MOVE_BINS
                 or action.bin_code is not None
                 or action.source != {"kind": "RACK", "location_code": action.rack_id}
                 or action.target != expected_target
-                or any(member.source_locator.rack_id != action.rack_id for member in batch.bins)
-                or len({member.source_locator.rack_face for member in batch.bins}) != 1
+                or any(member.source_locator.rack_id != action.rack_id for member in chunk)
+                or len({member.source_locator.rack_face for member in chunk}) != 1
             ):
                 raise IntegrationDebugContractError(
-                    "投料 Transport 必须引用 WMS inbound_batch READY 整批料箱并送至投料口"
+                    "投料 Transport 必须引用 WMS inbound_batch 当前分段料箱并送至投料口"
                 )
             return tuple(
                 BinMove(
@@ -2732,7 +2778,7 @@ class IntegrationDebugService:
                     ),
                     HandoffPosition(site["infeed_position"]),
                 )
-                for member in batch.bins
+                for member in chunk
             )
         if phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
             moves = configuration.get("return_moves")

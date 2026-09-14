@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 from sqlmodel.sql.sqltypes import AutoString
 
+from deployment.plugin_models import include_plugin_table, load_plugin_models
+
 # 导入所有模型以确保它们被 SQLModel.metadata 识别
 # 这样 Alembic 才能自动生成迁移
 from src.app.admin.models import Permission, Role, User  # noqa: F401
@@ -103,6 +105,18 @@ if config.config_file_name is not None:
 # 使用 SQLModel 的 metadata，它包含了所有 SQLModel 表定义
 # 如果同时使用了传统 SQLAlchemy 模型，需要合并 metadata
 target_metadata = SQLModel.metadata
+load_plugin_models(settings.ENABLED_WORKLINE_PLUGINS)
+
+
+def include_object(obj, name, type_, _reflected, _compare_to):
+    if type_ == "table" and not include_plugin_table(name, settings.ENABLED_WORKLINE_PLUGINS):
+        return False
+    return not (
+        hasattr(obj, "schema")
+        and obj.schema  # type: ignore[attr-defined]
+        in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
+    )
+
 
 # 如果有使用 Base 的传统 SQLAlchemy 模型，合并它们的 metadata
 # 注意：只有当 Base.metadata 和 SQLModel.metadata 是不同对象时才需要合并
@@ -205,14 +219,7 @@ def run_migrations_offline() -> None:
         compare_server_default=True,
         # 支持多 schema
         include_schemas=True,
-        # 忽略 TimescaleDB 内部 schema 和表
-        include_object=lambda obj, _name, _type_, _reflected, _compare_to: (  # noqa: ARG005
-            not (
-                hasattr(obj, "schema")
-                and obj.schema  # type: ignore[attr-defined]
-                in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
-            )
-        ),
+        include_object=include_object,
         # 支持 version_table_schema
         version_table_schema="wes_sys",
         # 自定义类型渲染
@@ -243,15 +250,7 @@ def do_run_migrations(connection: Connection) -> None:
         render_as_batch=False,
         # 支持多 schema
         include_schemas=True,
-        # 忽略 TimescaleDB 内部 schema 和表
-        include_object=lambda obj, _name, _type_, _reflected, _compare_to: (  # noqa: ARG005
-            # 忽略 TimescaleDB 内部 schema 的所有对象
-            not (
-                hasattr(obj, "schema")
-                and obj.schema  # type: ignore[attr-defined]
-                in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
-            )
-        ),
+        include_object=include_object,
         # 支持 version_table_schema（如果需要）
         version_table_schema="wes_sys",  # 将 alembic_version 表放在 wes_sys schema 下
         # 自定义类型渲染

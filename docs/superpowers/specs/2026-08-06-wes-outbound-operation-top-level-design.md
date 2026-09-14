@@ -179,10 +179,11 @@ WMS 通过 `outbound.picking_task.plan_delta@v1` 分批回调。每个回调使�
 
 - `target_rack`：仅 `plan_revision=1` 携带，表示初始接料货架和货架面。
 - `added_direct_picks`：用 `task_id + source_locator` 唯一识别一条直接取料明细，并指定退料货架、货架面和 SLOT。
-- `added_bin_source_racks`：用 `task_id + rack_id + rack_face` 唯一识别一个五层来源货架面，不提前携带 Bin。
+- `added_bin_source_racks`：每项携带一个五层来源货架及非空 `rack_face[]`；WES 展开后仍用
+  `task_id + rack_id + rack_face` 唯一识别一个来源货架面，不提前携带 Bin。
 
-`added_bin_source_racks[]` 按货架面记录。同一货架的 A、B 面都有当前任务需要取出的 Bin 时，必须记录两项；只用于承接退箱的货架面
-不属于来源计划。两个面可以在同一 `plan_revision` 中发布，也可以在计算完成后通过连续的更高版本追加。
+同一货架的两个面都有当前任务需要取出的 Bin 时，在同一项的 `rack_face[]` 中记录，例如 `["90", "270"]`；只用于承接退箱的货架面
+不属于来源计划。两个面可以在同一 `plan_revision` 中发布，后确定的面也可以通过连续的更高版本追加。
 
 `plan_revision=1` 是唯一初始增量，必须且只能定义一个初始接料货架面。后续 revision 都是普通增量并禁止
 `target_rack`；扫码后需要的新接料货架和货架面，只能由同一盘最终 `ACCEPT` 在同一业务决定中定义。首个增量可以只包含初始接料货架；
@@ -633,7 +634,7 @@ Transport 请求和结果继续遵循独立 Transport 合同。PickingTask opera
 | 工作线静态类型 | 允许激活的插件 |
 | --- | --- |
 | 自动线 | `automatic_putaway`、`automatic_picking` |
-| 人工线 | `manual_bin_processing` |
+| 人工线 | `manual-picking` |
 
 自动线不通过缺少机械臂角色或可空字段降级为人工线；人工线也不伪造机械臂角色运行自动插件。当前部署不使用 `HYBRID`。
 
@@ -642,7 +643,7 @@ Transport 请求和结果继续遵循独立 Transport 合同。PickingTask opera
 
 ### 20.2 身份与所有权
 
-`manual_bin_processing` 只处理货架、货架面、精确储位、Bin、本线缓存、CTU 和 Transport。它不创建机械臂 `DeviceCommand`，不接收 Cell、
+`manual-picking` 只处理货架、货架面、精确储位、Bin、本线缓存、CTU 和 Transport。它不创建机械臂 `DeviceCommand`，不接收 Cell、
 料盘、物料数量或人工子任务，也不判断当前人工动作是上架还是拣货。
 
 WMS 不为人工线增加 `manual_work_id` 或其他业务键。最小关联为：
@@ -661,7 +662,7 @@ WMS 拥有人工子任务、PDA 扫码、物料校验、库存事务、货架储
 #### 20.3.1 Task 驱动入站
 
 1. WMS 使用已有 `task_id`、业务优先序和时间条件发布人工任务，不携带人工子任务 ID。
-2. WES 只从已激活 `manual_bin_processing` 的就绪人工 WorkLine 中选线。
+2. WES 只从已激活 `manual-picking` 的就绪人工 WorkLine 中选线。
 3. WMS 按任务提供可用来源货架面；WES 只在 CTU 和入站缓存有容量时请求下一 Bin 批次。
 4. WMS 为本批返回确定 `bin_code[]`。WES 接收后不撤销、不替换、不用另一 Bin 补位。
 5. 新入站 Bin 所在的货架面决定 CTU 工作位当前货架和当前面。只有入站需求可在正常运行中触发换面或换架。

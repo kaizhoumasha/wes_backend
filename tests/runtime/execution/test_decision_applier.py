@@ -121,7 +121,7 @@ class _WorkLines:
             device_code="TRANSFER-1",
             device_role="TRANSFER_DEVICE",
             endpoint_base_url="http://ecs-decision:8080",
-            contract_key="rough_sorter.transfer",
+            contract_key="example.transfer",
             contract_version="1.0",
             status_max_age_ms=1000,
             command_timeout_ms=5000,
@@ -152,7 +152,6 @@ class _TransportBindings:
     def __init__(self) -> None:
         self.bindings: dict[tuple[int, str, str], object] = {}
         self.locked: list[tuple[int, str, str]] = []
-        self.resource_locks: list[tuple[int, str]] = []
 
     async def lock_decision_identity(self, db: object, **kwargs: object) -> None:
         del db
@@ -161,10 +160,6 @@ class _TransportBindings:
     async def get_by_decision_identity_for_update(self, db: object, **kwargs: object) -> object | None:
         del db
         return self.bindings.get((int(kwargs["workline_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
-
-    async def lock_resource_fence(self, db: object, *, workline_id: int, resource_fence_id: str) -> None:
-        del db
-        self.resource_locks.append((workline_id, resource_fence_id))
 
     async def add(self, db: object, binding: object) -> object:
         del db
@@ -325,7 +320,6 @@ async def test_create_transport_task_persists_scoped_decision_mapping_before_tra
     assert binding.workline_id == 7
     assert binding.resource_fence_id == "RACK-CURRENT"
     assert transport_bindings.locked == [(7, "REPLACE-1", "PRIMARY_MOVE")]
-    assert transport_bindings.resource_locks == [(7, "RACK-CURRENT")]
     assert transport.calls[0]["client_request_id"] == binding.client_request_id
     assert transport.calls[0]["rack_id"] == "RACK-CURRENT"
     assert transport.calls[0]["caller"].workline_id == "7"

@@ -478,9 +478,9 @@ def test_ignored_paths_select_nothing(tmp_path: Path, changed_path: str) -> None
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "workline_plugins/rough_sorter/src/rough_sorter/handler.py",
-        "workline_plugins/rough_sorter/tests/test_handler.py",
-        "workline_plugins/rough_sorter/tests/e2e/test_inbound_flow.py",
+        "workline_plugins/manual-picking/src/manual_picking/handler.py",
+        "workline_plugins/manual-picking/tests/test_handler.py",
+        "workline_plugins/manual-picking/tests/e2e/test_outbound_flow.py",
     ],
 )
 def test_plugin_package_assets_do_not_select_core_heavy_tests(changed_path: str) -> None:
@@ -841,7 +841,7 @@ def test_retired_outbound_picking_management_package_keeps_exact_heavy_tombstone
         ),
     ),
 )
-def test_rough_sorter_runtime_paths_independently_select_concrete_execution_owner(
+def test_execution_runtime_paths_independently_select_concrete_execution_owner(
     changed_path: str,
     expected: list[str],
 ) -> None:
@@ -1017,7 +1017,7 @@ def test_release_checker_tests_and_fixtures_are_explicitly_ignored_by_heavy_sele
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "tests/fixtures/workline_contract/rough_sorter/new.json",
+        "tests/fixtures/workline_contract/sample_plugin/new.json",
         "tests/fixtures/workline_contract/start_admission/new.json",
         "tests/support/smt_sorting_inbound_postgresql.py",
         "tests/support/wms_conveyor_batch_postgresql.py",
@@ -1393,6 +1393,10 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260912_1338_b0edce3425ef_index_exact_transport_position_facts.py",
         "migrations/versions/20260912_2047_db9bf1bdb493_退役工作线急停_incident.py",
         "migrations/versions/20260912_2328_6cf85c1760e4_retire_device_event_command_blocks.py",
+        "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py",
+        "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py",
+        "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py",
+        "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

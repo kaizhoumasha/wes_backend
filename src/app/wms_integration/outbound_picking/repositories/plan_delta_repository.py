@@ -17,6 +17,15 @@ MEMBER_BATCH_SIZE = 250
 
 
 class PickingTaskPlanDeltaRepository:
+    async def list_bin_source_racks(self, db: AsyncSession, task_id: int) -> list[PickingTaskBinSourceRack]:
+        columns = PickingTaskBinSourceRack.__table__.c
+        result = await db.scalars(
+            select(PickingTaskBinSourceRack)
+            .where(columns.picking_task_id == task_id)
+            .order_by(columns.plan_revision, columns.rack_id, columns.rack_face, columns.id)
+        )
+        return list(result.all())
+
     async def get_evidence(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
         return await db.get(InboundEvidence, evidence_id)
 
@@ -98,13 +107,16 @@ class PickingTaskPlanDeltaRepository:
                     )
                 )
             await db.flush()
-        for batch in batched(data.added_bin_source_racks or (), MEMBER_BATCH_SIZE, strict=False):
+        bin_racks = (
+            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
+        )
+        for batch in batched(bin_racks, MEMBER_BATCH_SIZE, strict=False):
             for rack in batch:
                 db.add(
                     PickingTaskBinSourceRack(
                         picking_task_id=task_id,
-                        rack_id=rack.rack_id,
-                        rack_face=rack.rack_face,
+                        rack_id=rack[0],
+                        rack_face=rack[1],
                         plan_revision=data.plan_revision,
                         source_evidence_id=evidence_id,
                     )

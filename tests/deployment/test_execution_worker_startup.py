@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import os
 import subprocess
 import time
@@ -13,7 +14,7 @@ from src.app.workline.services.workline_start_service import WorkLineStartConfig
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime
 from src.celery_app.config import beat_schedule, task_routes
-from src.celery_app.tasks import execution
+from src.celery_app.tasks import execution, picking_task_prepare
 from src.core.conf import Settings
 from tests.support import ecs_uniform_wire
 from tests.support.ecs_uniform_wire import (
@@ -147,6 +148,66 @@ def test_execution_fact_task_is_registered_and_routed_to_wes_worker() -> None:
         "kwargs": {"limit": 100},
         "options": {"expires": 10.0},
     }
+
+
+def test_picking_task_prepare_is_statically_registered_with_recovery_schedule() -> None:
+    task_name = "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch"
+
+    assert picking_task_prepare.prepare_picking_tasks_batch.name == task_name
+    assert task_name in celery_app.tasks
+    assert "src.celery_app.tasks.picking_task_prepare" in celery_app.conf.include
+    assert task_routes[task_name] == {"queue": "celery"}
+    assert beat_schedule["prepare-picking-tasks-batch"] == {
+        "task": task_name,
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    }
+
+
+def test_picking_task_prepare_calls_current_deployment_service(monkeypatch) -> None:
+    service = SimpleNamespace(prepare_batch=AsyncMock(return_value=2))
+    runtime = SimpleNamespace(picking_task_prepare_service=service)
+    monkeypatch.setattr(
+        picking_task_prepare,
+        "celery_async_runtime",
+        SimpleNamespace(execution_runtime=runtime),
+    )
+    monkeypatch.setattr(picking_task_prepare, "run_async", lambda factory: asyncio.run(factory()))
+
+    assert picking_task_prepare.prepare_picking_tasks_batch.run(limit=100) == 2
+    service.prepare_batch.assert_awaited_once_with(limit=100)
+
+
+def test_picking_task_plan_activation_is_statically_registered_with_recovery_schedule() -> None:
+    picking_task_plan = importlib.import_module("src.celery_app.tasks.picking_task_plan")
+    task_name = "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch"
+
+    assert picking_task_plan.activate_picking_task_plans_batch.name == task_name
+    assert task_name in celery_app.tasks
+    assert "src.celery_app.tasks.picking_task_plan" in celery_app.conf.include
+    assert task_routes[task_name] == {"queue": "celery"}
+    assert beat_schedule["activate-picking-task-plans-batch"] == {
+        "task": task_name,
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    }
+
+
+def test_picking_task_plan_activation_calls_current_deployment_service(monkeypatch) -> None:
+    picking_task_plan = importlib.import_module("src.celery_app.tasks.picking_task_plan")
+    service = SimpleNamespace(activate_batch=AsyncMock(return_value=2))
+    runtime = SimpleNamespace(picking_task_plan_activation_service=service)
+    monkeypatch.setattr(
+        picking_task_plan,
+        "celery_async_runtime",
+        SimpleNamespace(execution_runtime=runtime),
+    )
+    monkeypatch.setattr(picking_task_plan, "run_async", lambda factory: asyncio.run(factory()))
+
+    assert picking_task_plan.activate_picking_task_plans_batch.run(limit=100) == 2
+    service.activate_batch.assert_awaited_once_with(limit=100)
 
 
 @pytest.mark.parametrize("drift", ("missing-schedule", "missing-route", "wrong-route"))

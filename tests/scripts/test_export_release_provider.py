@@ -18,7 +18,7 @@ DEPENDENCY_PATHS = (
     "src/wes_plugin_sdk/pyproject.toml",
     "pyproject.toml",
     "uv.lock",
-    "workline_plugins/rough_sorter/pyproject.toml",
+    "workline_plugins/manual-picking/pyproject.toml",
 )
 MIGRATION_PATHS = (
     "alembic.ini",

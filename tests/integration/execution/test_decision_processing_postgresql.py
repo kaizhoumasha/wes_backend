@@ -26,6 +26,7 @@ from wes_plugin_sdk import (
     handler,
 )
 
+from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
 from src.app.device.models import CommandStatus, Device, DeviceCommand
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services import DeviceCommandService
@@ -166,9 +167,8 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
             )
         )
     assert decision_index_definition is not None
-    assert "DEVICE_RESULT" in decision_index_definition
-    assert "material_execution_id IS NULL" in decision_index_definition
-    assert "NOT" in decision_index_definition
+    assert "apply_status" in decision_index_definition
+    assert "published_at IS NULL" in decision_index_definition
 
     async with integration_session_factory() as db:
         nullable = await db.scalar(
@@ -577,7 +577,7 @@ async def _cleanup_claim_workline(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_correlated_result(
+async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_business_and_correlated_results(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
@@ -646,6 +646,39 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.APPLIED,
         )
+        business_command = DeviceCommand(
+            command_code=f"CLAIM-CMD-BUSINESS-{identity}",
+            device_code="CLAIM-DEVICE",
+            workline_id=workline.id,
+            execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
+            execution_ref_id=f"SCAN4:{identity}",
+            material_execution_id=None,
+            contract_key="third_party_integration",
+            contract_version="1.1",
+            task_type="MOVE_FORWARD",
+            params={},
+            payload_digest="4" * 64,
+            deadline_at=now + timedelta(seconds=30),
+            endpoint_base_url="http://localhost",
+            command_timeout_ms=30000,
+            status_max_age_ms=30000,
+            status=CommandStatus.SUCCEEDED,
+            created_at=now,
+            updated_at=now,
+        )
+        business = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_RESULT,
+            source_identity=f"CLAIM-BUSINESS-{identity}",
+            payload_digest="5" * 64,
+            normalized_payload={"data": {}},
+            received_at=now + timedelta(microseconds=2),
+            workline_id=workline.id,
+            material_execution_id=None,
+            device_code="CLAIM-DEVICE",
+            command_code=business_command.command_code,
+            contract_version="1.1",
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
         plan_evidences = [
             InboundEvidence(
                 kind=InboundEvidenceKind.WMS_EVENT,
@@ -661,7 +694,7 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             )
             for state in InboundEvidenceApplyStatus
         ]
-        db.add_all([foundation, correlated, *plan_evidences])
+        db.add_all([business_command, foundation, correlated, business, *plan_evidences])
         await db.flush()
         seed_id = seed.id
         execution_id = execution.id
@@ -675,14 +708,20 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             claim_expires_at=now + timedelta(seconds=30),
             limit=10,
         )
-        assert [item.source_identity for item in claimed] == [f"CLAIM-CORRELATED-{identity}"]
+        assert [item.source_identity for item in claimed] == [
+            f"CLAIM-CORRELATED-{identity}",
+            f"CLAIM-BUSINESS-{identity}",
+        ]
 
     async with integration_session_factory.begin() as db:
         await db.execute(
             delete(InboundEvidence).where(
-                InboundEvidence.source_identity.in_([f"CLAIM-FOUNDATION-{identity}", f"CLAIM-CORRELATED-{identity}"])
+                InboundEvidence.source_identity.in_(
+                    [f"CLAIM-FOUNDATION-{identity}", f"CLAIM-CORRELATED-{identity}", f"CLAIM-BUSINESS-{identity}"]
+                )
             )
         )
+        await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == business_command.command_code))
         await db.execute(
             delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"CLAIM-PLAN-{identity}-%"))
         )

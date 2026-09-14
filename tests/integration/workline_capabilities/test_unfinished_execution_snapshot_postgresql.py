@@ -526,3 +526,70 @@ async def test_picking_confirmation_snapshot_needs_no_material_owner_and_counts_
                     assert summary["sample"] is None
         finally:
             await transaction.rollback()
+
+
+@pytest.mark.asyncio
+async def test_processed_direct_wms_evidence_does_not_block_workline(integration_session_factory) -> None:
+    now = datetime(2026, 9, 14, 12)
+    identity = uuid4().hex
+    async with integration_session_factory() as db:
+        transaction = await db.begin()
+        try:
+            line = WorkLine(
+                line_code=f"DIRECT-WMS-{identity[:16]}",
+                line_name="Processed direct WMS evidence",
+                line_type=LineType.MANUAL,
+            )
+            db.add(line)
+            await db.flush()
+            evidence = InboundEvidence(
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"DIRECT-WMS-EVIDENCE-{identity}",
+                operation="outbound.picking_task.plan_delta@v1",
+                operation_id=identity,
+                payload_digest="a" * 64,
+                normalized_payload={"data": {}},
+                received_at=now,
+                workline_id=line.id,
+                apply_status=InboundEvidenceApplyStatus.APPLIED,
+                processed_at=now,
+            )
+            db.add(evidence)
+            await db.flush()
+
+            repository = WorkLineRepository()
+            for kind in (InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT):
+                evidence.kind = kind
+                await db.flush()
+                assert (await repository.get_unfinished_workload_summary(db, line.id))["count"] == 0
+
+            evidence.processed_at = None
+            await db.flush()
+            assert (await repository.get_unfinished_workload_summary(db, line.id))["by_type"]["inbound_evidences"] == 1
+
+            evidence.processed_at = now
+            for status in (InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING):
+                evidence.apply_status = status
+                await db.flush()
+                assert (await repository.get_unfinished_workload_summary(db, line.id))["by_type"][
+                    "inbound_evidences"
+                ] == 1
+
+            material = MaterialExecution(
+                execution_code=f"DIRECT-WMS-MATERIAL-{identity}",
+                material_trace_id=f"DIRECT-WMS-TRACE-{identity}",
+                workline_id=line.id,
+                admission_received_at=now,
+                admission_evidence_id=evidence.id,
+                last_transition_reason="INITIAL_EVIDENCE",
+                last_transition_evidence_id=evidence.id,
+                status_changed_at=now,
+            )
+            db.add(material)
+            await db.flush()
+            evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
+            evidence.material_execution_id = material.id
+            await db.flush()
+            assert (await repository.get_unfinished_workload_summary(db, line.id))["by_type"]["inbound_evidences"] == 1
+        finally:
+            await transaction.rollback()
