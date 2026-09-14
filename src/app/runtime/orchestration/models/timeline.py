@@ -19,6 +19,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -120,12 +121,14 @@ class WorklineTimelineBase(BaseMixin):
     session_id: int = Field(
         index=True,
         foreign_key="wes_biz.workline_sessions.id",
+        sa_type=SQL_COMPAT_BIGINT,
         description="会话 ID（关联 WorklineSession.id）",
     )
 
     workline_id: int = Field(
         index=True,
         foreign_key="wes_biz.work_lines.id",
+        sa_type=SQL_COMPAT_BIGINT,
         description="作业线 ID（关联 WorkLine.id）",
     )
 
@@ -252,6 +255,7 @@ class WorklineTimelineBase(BaseMixin):
     related_command_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.device_commands.id",
+        sa_type=SQL_COMPAT_BIGINT,
         description="关联的设备指令 ID",
     )
 

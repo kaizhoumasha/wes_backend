@@ -9,7 +9,7 @@
 ## 身份与现场配置
 
 - 6 合一编码属于物料，不作为料箱身份。料箱的业务身份是 `bin_code`，形如 `A00000xxxx`。本轮按 ECS `SCAN_COMPLETED.data.bin_code` 读取，实际扫码值带 `-A/-B/-C/-D` 后缀；插件保存原值和本次扫码 Evidence，按各点规则校验，传 WMS 时只传去后缀的正常箱码。没有 `barcode` 别名或兼容读取。
-- 设备角色只使用 `definition.py` 的 `SCAN1`～`SCAN4`；现场 `KT16` 当前绑定依次为 `STATION_SCAN9`～`STATION_SCAN12`。业务代码不写死设备编号，使用工作线冻结的角色绑定。点位规则分别定义：SCAN1 `-B`、SCAN2 `-C`、SCAN3 `-B`、SCAN4 `-B`；相同值也不合并成全局校验策略。
+- 设备角色只使用 `definition.py` 的 `SCAN1`～`SCAN4`；现场 `KT16` 当前绑定依次为 `STATION_SCAN9`～`STATION_SCAN12`。业务代码不写死设备编号，使用工作线冻结的角色绑定。点位规则分别定义：SCAN1 `-B`、SCAN2 `-A`、SCAN3 `-B`、SCAN4 `-B`；相同值也不合并成全局校验策略。
 - 料箱的 NG、正常准入与当前通过记录只属于本次经过，不写成条码的永久属性。每次经过以 SCAN1 Evidence 建立唯一身份；SCAN2 按点1→点2队首及实际扫码关联，SCAN3/4 仅用本次实际箱码匹配唯一未闭合经过及前序决定，歧义时不得授予正常放行。不可读码没有可伪造的正常 `bin_code`，但必须保留原事件、点位与命令因果身份。
 
 ## 逐点决定
@@ -18,8 +18,8 @@
 | --- | --- | --- |
 | SCAN1 入口 | 当前扫码符合本点 `-B` | 创建一次 `MOVE_FORWARD`，物理结果闭合后进入点1→点2单通道缓存；按实际可靠到达顺序冻结其 FIFO 身份。 |
 | SCAN1 入口 | 不可读、箱码无效或后缀不是 `-B` | 记录本次 NG，创建一次 `MOVE_RIGHT`，走 SCAN1→SCAN3；不向 WMS 报一个猜测的箱码。 |
-| SCAN2 工作位 | 当前扫码符合本点 `-C`，且与本次已进入缓存的料箱身份一致 | 用正常 `bin_code` 和当前 `task_id` 创建唯一 `outbound.manual_bin.work_admission_decide@v1` 义务。`WORK_REQUIRED` 保持等待 WMS `work_completed`；`NO_WORK` 正常 `MOVE_FORWARD`；`WAIT` 或结果未知不放行。完成事件必须匹配冻结的任务和本次等待，NG/正常结果均以 `MOVE_FORWARD` 释放到 SCAN3，并保留处置结果供 SCAN3 判断。 |
-| SCAN2 工作位 | 不可读、箱码无效、后缀不是 `-C`，或与当前缓存身份不符 | 保存本次异常及 NG 决定，不请求 WMS；创建一次 `MOVE_FORWARD` 到 SCAN3。不能用当前扫码覆盖已冻结的其他料箱身份。 |
+| SCAN2 工作位 | 当前扫码符合本点 `-A`，且与本次已进入缓存的料箱身份一致 | 用正常 `bin_code` 和当前 `task_id` 创建唯一 `outbound.manual_bin.work_admission_decide@v1` 义务。`WORK_REQUIRED` 保持等待 WMS `work_completed`；`NO_WORK` 正常 `MOVE_FORWARD`；`WAIT` 或结果未知不放行。完成事件必须匹配冻结的任务和本次等待，NG/正常结果均以 `MOVE_FORWARD` 释放到 SCAN3，并保留处置结果供 SCAN3 判断。 |
+| SCAN2 工作位 | 不可读、箱码无效、后缀不是 `-A`，或与当前缓存身份不符 | 保存本次异常及 NG 决定，不请求 WMS；创建一次 `MOVE_FORWARD` 到 SCAN3。不能用当前扫码覆盖已冻结的其他料箱身份。 |
 | SCAN3 退箱检验 | 当前扫码符合本点 `-B`，且能唯一关联本次经过的确定正常处置 | `MOVE_FORWARD` 到 SCAN4。此点不按点1→点2 FIFO 队首推断身份：它同时接收 SCAN1→SCAN3 和 SCAN2→SCAN3，两个来源可能交错。 |
 | SCAN3 退箱检验 | 已有本次 NG，或不可读、后缀无效、找不到唯一的正常授权 | `MOVE_LEFT` 到 NG 出口；保留无法关联等异常证据，不伪造 WMS NG。此点按现场约定不停箱。 |
 | SCAN4 退箱入队 | 当前扫码符合本点 `-B`，且能唯一关联 SCAN3 已放行的正常经过 | 创建一次 `MOVE_FORWARD`。该命令匹配的 ECS `SUCCESS` 结果是进入 `RETURN_BUFFER` 的权威闭合证据；收到前不入队，收到后按 SCAN4 到达事件的冻结顺序写入本线退箱 FIFO。 |

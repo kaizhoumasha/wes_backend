@@ -240,7 +240,7 @@ pipeline {
                                 set -eu
                                 registry_headers="$(curl --silent --show-error --head \
                                     --connect-timeout 3 --max-time 10 "http://${REGISTRY_URL}/v2/")"
-                                expected_challenge="Www-Authenticate: Bearer realm=\"${REGISTRY_TOKEN_REALM}\""
+                                expected_challenge='Www-Authenticate: Bearer realm="'"${REGISTRY_TOKEN_REALM}"'"'
                                 if ! printf '%s\n' "${registry_headers}" | tr -d '\r' | grep -Fi "${expected_challenge}" >/dev/null; then
                                     echo "INFRA_REGISTRY_REALM_MISMATCH: expected ${REGISTRY_TOKEN_REALM}" >&2
                                     exit 1

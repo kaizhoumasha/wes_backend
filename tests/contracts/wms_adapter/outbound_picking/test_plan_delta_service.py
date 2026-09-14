@@ -340,10 +340,13 @@ async def test_invalid_correction_preserves_blocker_and_independent_task_can_app
     if invalid == "owner":
         confirmation.request_payload["data"]["task_id"] = "OTHER"
     elif invalid == "source":
-        service._plans.source_identities.return_value = (set(), {("B", "A")})
+        receipt = event(revision, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["A", "C"]}])
+        service._plans.source_identities.return_value = (set(), {("B", "C")})
     elif invalid == "inactive":
         service._plans.prepare_context.return_value[1].is_active = False
     result = await service.record(receipt, received_at=NOW)
+    if invalid == "source":
+        assert service._plans.source_identities.await_args.kwargs["bin_racks"] == [("B", "A"), ("B", "C")]
     assert result.reason_code == (
         "REVISION_CONFLICT"
         if invalid.endswith("revision")
@@ -470,17 +473,23 @@ async def test_source_lookup_and_insert_use_bounded_candidate_batches():
     db.execute.reset_mock()
     assert await repository.source_identities(db, 1, direct_picks=[], bin_racks=[]) == (set(), set())
     db.execute.assert_not_awaited()
-    data = event(added_bin_source_racks=[{"rack_id": rack, "rack_face": [face]} for rack, face in racks]).data
+    data = event(
+        added_bin_source_racks=[{"rack_id": "B0", "rack_face": ["A", "B"]}]
+        + [{"rack_id": f"B{i}", "rack_face": ["A"]} for i in range(1, MEMBER_BATCH_SIZE + 1)]
+    ).data
     batch_sizes = []
+    saved = []
 
     async def flush():
         batch_sizes.append(db.add.call_count)
+        saved.extend(call.args[0] for call in db.add.call_args_list)
         db.add.reset_mock()
 
     db.flush.side_effect = flush
     await repository.add_members(db, 1, data, 10)
-    assert sum(batch_sizes) == len(racks)
+    assert sum(batch_sizes) == MEMBER_BATCH_SIZE + 2
     assert max(batch_sizes) <= MEMBER_BATCH_SIZE
+    assert {(row.rack_id, row.rack_face) for row in saved if row.rack_id == "B0"} == {("B0", "A"), ("B0", "B")}
 
 
 async def test_multi_face_bin_rack_expands_to_independent_source_identities_and_members():

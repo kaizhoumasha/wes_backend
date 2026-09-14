@@ -5,7 +5,9 @@ from __future__ import annotations
 from sqlalchemy.dialects import postgresql
 
 from src.app.device.models.command import DeviceCommand
+from src.app.execution.models.inbound_evidence import InboundEvidence
 from src.app.execution.models.transport_decision_binding import TransportDecisionBinding
+from src.app.execution.models.wms_confirmation import WmsConfirmation
 from src.app.resource.models import (
     BinContentSnapshot,
     BinMaterialMount,
@@ -13,12 +15,21 @@ from src.app.resource.models import (
     RackPlacement,
     ResourceStateEvent,
 )
+from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 
 
 def test_reference_and_evidence_ids_compile_to_postgresql_bigint() -> None:
     columns = (
         DeviceCommand.__table__.c.workline_id,
+        DeviceCommand.__table__.c.material_execution_id,
+        InboundEvidence.__table__.c.material_execution_id,
+        WmsConfirmation.__table__.c.material_execution_id,
+        WorklineSession.__table__.c.workline_id,
+        WorklineTimeline.__table__.c.session_id,
+        WorklineTimeline.__table__.c.workline_id,
+        WorklineTimeline.__table__.c.related_command_id,
         TransportDecisionBinding.__table__.c.workline_id,
         BinContentSnapshot.__table__.c.source_session_id,
         BinMaterialMount.__table__.c.writeback_evidence_id,

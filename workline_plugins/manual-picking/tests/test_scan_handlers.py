@@ -18,13 +18,13 @@ def test_scan1_only_accepts_its_b_suffix_and_routes_ng_right() -> None:
         assert decision.normal_bin_code == ("A000001234" if raw == "A000001234-C" else None)
 
 
-def test_scan2_only_accepts_c_and_same_passage_before_wms() -> None:
+def test_scan2_only_accepts_a_and_same_passage_before_wms() -> None:
     handler = Scan2Handler()
     passage = PassageSnapshot(bin_code="A000001234")
-    decision = handler.decide(_fact("SCAN2", "A000001234-C", passage))
+    decision = handler.decide(_fact("SCAN2", "A000001234-A", passage))
     assert decision.route == "REQUEST_WMS"
     assert decision.normal_bin_code == "A000001234"
-    for raw in (None, "A000001234-B", "A000009999-C"):
+    for raw in (None, "A000001234-B", "A000001234-C", "A000009999-A"):
         assert handler.decide(_fact("SCAN2", raw, passage)).route == "MOVE_FORWARD"
 
 

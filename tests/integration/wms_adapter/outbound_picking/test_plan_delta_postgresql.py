@@ -511,8 +511,13 @@ async def test_plan_member_constraints_are_enforced_by_postgresql(integration_se
     from sqlalchemy.exc import IntegrityError
 
     task_name, ids = prepared
-    first = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["A"]}])
+    first = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["A", "B"]}])
     await PickingTaskPlanDeltaService(integration_session_factory).record(first, received_at=NOW)
+    async with integration_session_factory() as db:
+        members = await db.scalars(
+            select(PickingTaskBinSourceRack.rack_face).where(PickingTaskBinSourceRack.picking_task_id == ids[0])
+        )
+        assert sorted(members.all()) == ["A", "B"]
     with pytest.raises(IntegrityError):
         async with integration_session_factory.begin() as db:
             task = await db.get(PickingTask, ids[0])

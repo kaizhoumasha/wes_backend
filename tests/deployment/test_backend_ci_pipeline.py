@@ -253,7 +253,16 @@ def test_backend_release_preflight_validates_registry_realm_with_ephemeral_crede
     assert "REGISTRY_TOKEN_REALM = 'http://192.168.0.220:9080/jwt/auth'" in jenkinsfile
     assert "probe_via_proxy docker-hub" in preflight_body
     assert "env.CI_RELEASE_GATE_READY == 'true'" in build_body
-    assert 'expected_challenge="Www-Authenticate: Bearer realm=' in build_body
+    assignment = next(line.strip() for line in build_body.splitlines() if "expected_challenge=" in line)
+    rendered = assignment.replace('\\"', '"')
+    bash = which("bash")
+    assert bash is not None
+    challenge = subprocess.check_output(
+        [bash, "-c", rendered + '\nprintf "%s" "$expected_challenge"'],
+        env={**os.environ, "REGISTRY_TOKEN_REALM": "http://registry.test/jwt/auth"},
+        text=True,
+    )
+    assert challenge == 'Www-Authenticate: Bearer realm="http://registry.test/jwt/auth"'
     assert "INFRA_REGISTRY_REALM_MISMATCH" in build_body
     assert "INFRA_REGISTRY_AUTH_FAILED" in build_body
     for body in (build_body, push_body):

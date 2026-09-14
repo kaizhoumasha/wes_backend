@@ -68,7 +68,7 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=A` | `READY`，`bin_code=A000000001` |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
-| 6A | 设备 → WES | 点2 SCAN | `A000000001-C` 到达工作位 | 校验本次经过并保存到位事实 |
+| 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
 | — | PDA（黑盒） | 人工按 WMS 指示拣料 | 具体拣了哪个 Cell，WES 不知道、不查询 | — |
 | 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `task_id + bin_code=A000000001`，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
@@ -142,7 +142,7 @@ flowchart TD
 flowchart LR
     P1["点1 SCAN<br/>-B 正常向前 / 异常向右"] --> BUF["点1→点2 FIFO"]
     P1 -->|NG 直达| P3["点3 SCAN<br/>-B 正常向前 / 未授权向左"]
-    BUF --> P2SCAN["点2 SCAN<br/>-C 到位与 WMS 准入"]
+    BUF --> P2SCAN["点2 SCAN<br/>-A 到位与 WMS 准入"]
     P2SCAN --> ASK["WES 请求 WMS<br/>当前 Bin 是否有任务"]
     ASK -->|WORK_REQUIRED| P2["点2 停留<br/>PDA 人工拣料<br/>(WMS 内部, 对 WES 黑盒)"]
     ASK -->|NO_WORK| P3
@@ -167,7 +167,7 @@ WES 对上游供箱只按已确认的缓存容量、FIFO 顺序和出库合同�
 
 ### 3\.2 点2：人工工作位（PDA，对 WES 黑盒） {#32-2pda-wes}
 
-FIFO 队首进入点2后，设备扫码并由 ECS 上报 WES。点2只接受本点 `-C` 后缀，去后缀的正常 `bin_code` 必须与点1冻结的本次经过一致。
+FIFO 队首进入点2后，设备扫码并由 ECS 上报 WES。点2只接受本点 `-A` 后缀，去后缀的正常 `bin_code` 必须与点1冻结的本次经过一致。
 该扫码是当前料箱到达人工工作位的事实；点1证据不能替代它。WES 不把实际料箱与计划预期料箱做错箱比较，使用冻结的 `task_id` 与实际正常 `bin_code` 请求 WMS 判断是否
 存在人工任务。PDA 的呼叫、Cell 分配、拣料确认等内部流程完全由 WMS 负责，WES 不集成、不查询、不持有其中任何字段（对照 §2.2）。
 

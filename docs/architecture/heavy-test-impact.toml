@@ -690,12 +690,16 @@ source_glob = "src/app/runtime/orchestration/enums.py"
 heavy_tests = []
 reviewed_content_sha256 = "877085114f511f955b8999affcb37f3fab98575764cb9de935cab09f38baf1ff"
 
-# WorklineSession 由真实 PostgreSQL 持久化与会话租约闭环承接。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/session.py"
+heavy_tests = [
+    "tests/integration/test_snowflake_foreign_key_types_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/timeline.py"
-heavy_tests = []
-reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
+heavy_tests = ["tests/integration/test_snowflake_foreign_key_types_postgresql.py"]
 
 # Trace/Runtime 读模型收敛 DeviceCommand 状态后，由生产闭环承接。
 
@@ -2876,6 +2880,10 @@ heavy_tests = [
     "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py"
+heavy_tests = ["tests/integration/test_snowflake_foreign_key_types_postgresql.py"]
 
 [[mapping]]
 source_glob = "deployment/plugin_models.py"

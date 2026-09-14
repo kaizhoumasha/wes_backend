@@ -281,7 +281,7 @@ class _WmsReader:
 def _setup(
     *, transport_reader=None, missing_projection=None, failed_transport=None, batch_reader=None, batch_result=None
 ):  # type: ignore[no-untyped-def]
-    evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-C"))
+    evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-A"))
     passages = _Passages(evidences)
     commands = _Commands()
     admissions = _Admissions()
@@ -576,8 +576,23 @@ async def test_scan1_then_scan2_freezes_passage_and_typed_wms_admission() -> Non
     assert passage.scan2_evidence_id == 2
     assert commands.requests[0].task_type == "MOVE_FORWARD"
     assert commands.requests[0].material_execution_id is None
+    assert len(commands.requests) == 1
     assert admissions.intents[0].bin_code == "A000000001"
     assert admissions.intents[0].task_id == "PICK-001"
+
+
+@pytest.mark.asyncio
+async def test_debug_scan2_does_not_request_wms_or_release_bin() -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    evidences.rows[2].normalized_payload["is_debug"] = True
+
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    result = await flow.apply_in_session(object(), 2, workline_id=7)
+
+    assert result.disposition is BusinessEvidenceDisposition.IGNORED
+    assert passages.rows[0].scan2_evidence_id is None
+    assert len(commands.requests) == 1
+    assert admissions.intents == []
 
 
 @pytest.mark.asyncio
@@ -776,7 +791,7 @@ async def test_scan1_wrong_suffix_keeps_bin_identity_for_direct_ng_at_scan3() ->
 @pytest.mark.asyncio
 async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
     flow, evidences, passages, commands, admissions = _setup()
-    evidences.rows[2] = _scan(2, "S2", "A000000099-C")
+    evidences.rows[2] = _scan(2, "S2", "A000000099-A")
     await flow.apply_in_session(object(), 1, workline_id=7)
 
     result = await flow.apply_in_session(object(), 2, workline_id=7)
@@ -788,7 +803,7 @@ async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
     assert passages.rows[0].scan2_fault_evidence_id == 2
     assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD", "MOVE_FORWARD"]
     assert admissions.intents == []
-    evidences.rows[3] = _scan(3, "S2", "A000000001-C")
+    evidences.rows[3] = _scan(3, "S2", "A000000001-A")
     assert (
         await flow.apply_in_session(object(), 3, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
@@ -809,7 +824,7 @@ async def test_scan2_without_fifo_head_never_releases_unknown_bin() -> None:
 @pytest.mark.asyncio
 async def test_scan2_abnormal_code_waits_for_head_physical_success() -> None:
     flow, evidences, passages, commands, _ = _setup()
-    evidences.rows[2] = _scan(2, "S2", "A000000099-C")
+    evidences.rows[2] = _scan(2, "S2", "A000000099-A")
     await flow.apply_in_session(object(), 1, workline_id=7)
     commands.statuses[passages.rows[0].scan1_command_code] = "ACKNOWLEDGED"
 
@@ -823,7 +838,7 @@ async def test_scan2_does_not_release_a_second_bin_while_first_waits_for_wms() -
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
     await flow.apply_in_session(object(), 2, workline_id=7)
-    evidences.rows[3] = _scan(3, "S2", "A000000099-C")
+    evidences.rows[3] = _scan(3, "S2", "A000000099-A")
 
     result = await flow.apply_in_session(object(), 3, workline_id=7)
 
@@ -838,7 +853,7 @@ async def test_scan2_rescan_of_same_bin_is_not_retried_as_a_new_passage() -> Non
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
     await flow.apply_in_session(object(), 2, workline_id=7)
-    evidences.rows[3] = _scan(3, "S2", "A000000001-C")
+    evidences.rows[3] = _scan(3, "S2", "A000000001-A")
 
     result = await flow.apply_in_session(object(), 3, workline_id=7)
 

@@ -34,6 +34,7 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py",
         "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py",
         "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py",
+        "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "2260238a90c79fc2c34fa706ed7f4375ec67540207d23b521e1e60a689212473"

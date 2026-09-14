@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - ECS 扫码只读 `SCAN_COMPLETED.data.bin_code`；6 合一是物料编码；不读 `barcode`，不做兼容路径。实际值含方向后缀，WMS 只接收去后缀的 `bin_code`。
-- SCAN1/3/4 接受 `-B`，SCAN2 接受 `-C`；四点规则各自拥有，不做全局策略表。
+- SCAN1/3/4 接受 `-B`，SCAN2 接受 `-A`；四点规则各自拥有，不做全局策略表。
 - SCAN1 NG `MOVE_RIGHT`；SCAN2 本地 NG `MOVE_FORWARD`；SCAN3 无确定正常授权则 `MOVE_LEFT` 且不停箱；SCAN4 不可读或身份不确定时零命令、零入队。
 - SCAN4 命令匹配 ECS `SUCCESS` 后才进入 `RETURN_BUFFER`；严格 FIFO 不越过未闭合队头。设备 ACK 与 WMS 接收确认都不是物理完成。
 - 宿主/SDK 不导入具体插件；插件测试只在 `workline_plugins/manual-picking/tests/`；核心测试只用 fake 插件。未获授权不 Push、Merge 或 Deploy。
@@ -61,7 +61,7 @@
 
 **Files:** 新建 `workline_plugins/manual-picking/src/manual_picking/application/scan_flow.py`；修改 `application/plugin.py`、`src/app/workline/plugin_routing.py`、`src/app/wms_integration/outbound_picking/services/manual_bin_completed.py`、`src/wes_plugin_sdk/src/wes_plugin_sdk/wms_types.py`、`src/app/wms_adapter/outbound_picking/manual_bin_typed.py`；新建插件 `tests/test_scan_flow.py`；优化 `tests/workline/test_plugin_routing.py` 与对应 WMS Adapter 合同测试。
 
-**Interfaces:** `ScanFlow.apply_in_session` 复用 Task 1 消费接缝。SCAN1 以原 Evidence 身份冻结唯一方向命令并建立本次经过；SCAN2 按当前点1→2队首与实际 `bin_code` 关联，合法 `-C` 用现有 `wms_operations.outbound_manual_bin_work_admission` 创建完整 typed intent；`WORK_REQUIRED` 等待 `work_completed`，`NO_WORK`/本地 NG 创建一次 `MOVE_FORWARD`，`WAIT` 与未知零命令。WMS Confirmation 以已有 `workline_id` 为 owner，现有 follow-up planner 增加此 owner 分支，固定 Adapter 构造 SDK `ManualBinAdmissionOutcome(operation_id, result, task_id, retry_after_ms)` 交插件，其中 `result` 只允许 `WORK_REQUIRED/NO_WORK/WAIT`，后两字段按固定 wire 联合可空，不把原始 JSON 给插件。`ManualBinCompletedService` 用当前 `PickingTask.task_id` 冻结 Evidence 的 WorkLine；无唯一任务则留证对账，并提供按 Evidence ID 重读严格 typed 完成事实的端口。`work_completed` 只应用到同任务、同箱、同一次等待，保存单终态后才释放。WMS 输入只传去后缀箱码。
+**Interfaces:** `ScanFlow.apply_in_session` 复用 Task 1 消费接缝。SCAN1 以原 Evidence 身份冻结唯一方向命令并建立本次经过；SCAN2 按当前点1→2队首与实际 `bin_code` 关联，合法 `-A` 用现有 `wms_operations.outbound_manual_bin_work_admission` 创建完整 typed intent；`WORK_REQUIRED` 等待 `work_completed`，`NO_WORK`/本地 NG 创建一次 `MOVE_FORWARD`，`WAIT` 与未知零命令。WMS Confirmation 以已有 `workline_id` 为 owner，现有 follow-up planner 增加此 owner 分支，固定 Adapter 构造 SDK `ManualBinAdmissionOutcome(operation_id, result, task_id, retry_after_ms)` 交插件，其中 `result` 只允许 `WORK_REQUIRED/NO_WORK/WAIT`，后两字段按固定 wire 联合可空，不把原始 JSON 给插件。`ManualBinCompletedService` 用当前 `PickingTask.task_id` 冻结 Evidence 的 WorkLine；无唯一任务则留证对账，并提供按 Evidence ID 重读严格 typed 完成事实的端口。`work_completed` 只应用到同任务、同箱、同一次等待，保存单终态后才释放。WMS 输入只传去后缀箱码。
 
 - [ ] RED：插件应用测试覆盖 SCAN1 正常/NG、SCAN2 正常准入/本地 NG/错箱、WMS `WORK_REQUIRED/NO_WORK/WAIT`、完成事件正常/NG/错任务/重复/冲突/迟到；断言 WMS 只收到正常箱码，NG 不发准入。
 - [ ] 运行 `uv run pytest workline_plugins/manual-picking/tests/test_scan_flow.py -q`，确认先失败。
