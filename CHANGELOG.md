@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0.0] - 2026-09-14
+
+### Added
+
+- 人工拣料工作线可从 WMS 准备并接收拣选计划，可靠调度货架搬运，按扫码点处理料箱入站、拣料和退箱批次，并接收任务完成结果。
+- 手工出库联调台支持按当前 WMS、ECS 合同验证货架与料箱流程。
+
+### Changed
+
+- 插件业务流程统一在 manual-picking 内装配，基础执行能力与插件业务决策保持分离；更新相应业务合同和开发指引。
+- 退役粗分拣和旧 manual_bin_processing 插件及其项目内资源，集中维护 manual-picking。
+
+### Fixed
+
+- 扫码和 WMS 完成通知按冻结的料箱身份、FIFO 队头及原始证据处理；无法确认的早到结果进入对账，不提前下发物理命令。
+- CI 增加基础设施预检和发布重试，改善外部依赖暂时不可用时的失败诊断。
+
 ## [0.43.1.0] - 2026-09-12
 
 ### Fixed
