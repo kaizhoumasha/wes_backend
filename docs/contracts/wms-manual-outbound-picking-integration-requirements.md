@@ -486,7 +486,7 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 | --- | --- |
 | `workline_plugins/manual-picking/tests/test_work_completed_decision.py` | 纯 Decision 只依赖 SDK 不可变 Fact/Snapshot；`NORMAL` 和 `NG` 各返回封闭决策，不读数据库、HTTP、Celery 或 Repository |
 | `workline_plugins/manual-picking/tests/test_external_wait_policy.py` | `WORK_REQUIRED` 保存后启动人工处理 SLA；阈值内保持 `WAITING_EXTERNAL`；超时只告警并停止新入线，不释放 point2、不改 NG、不改 FIFO、不换执行或命令身份 |
-| `workline_plugins/manual-picking/tests/test_scan_flow.py` | `task_id + bin_code` 唯一命中本次点2准入后，原子保存 `completed_at` 与结果；若完成回调先于准入响应到达，先冻结完成事实，待同一准入得到 `WORK_REQUIRED` 后再创建唯一 `MOVE_FORWARD`；`completed_at < scanned_at`、身份冲突或无唯一等待进入 `RECONCILING` 且零命令 |
+| `workline_plugins/manual-picking/tests/test_scan_flow.py` | `task_id + bin_code` 唯一命中本次点2 `WORK_REQUIRED` 准入后，原子保存 `completed_at` 与结果；完成回调先于准入响应、`completed_at < scanned_at`、身份冲突或无唯一等待均进入 `RECONCILING`，不得暂存后自动补绑或创建命令 |
 | `workline_plugins/manual-picking/tests/integration/test_work_completed_postgresql.py` | 真实 PostgreSQL 下按固定顺序锁定 WorkLine、点2待处理动作和当前位置；并发同结果最多一个 `MANUAL_BIN_POINT2_RELEASE` 命令；并发冲突结果 fail closed；任一写入失败时整个业务应用回滚 |
 
 核心 `tests/runtime/` 继续只证明 `InboundEvidence`、WorkLine 准入、`PositionProjection`、`DeviceCommand` 和静态绑定的中立不变量，
@@ -517,57 +517,6 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 
 ECS 在该 E2E 中使用 WES 公共 wire mock，不引入供应商私有协议。该绿灯只证明应用、队列和装配路径，不表示真实设备或现场业务验收通过。
 
-### 8.5 代码路径与现场流程覆盖图
-
-下图的 `[GAP]` 表示当前仅有合同和插件骨架，尚无 Phase 12 生产实现及对应绿灯；箭头后的章节是已指定的实施测试 owner。
-
-```text
-CODE PATHS                                              USER / ONSITE FLOWS
-[+] WMS work admission                                  [+] point2 任务判断
-  ├── [GAP→8.1] strict request / response union           ├── [GAP→8.1/8.4] WORK_REQUIRED -> 停留并开放 PDA
-  ├── [GAP→8.1] original identity retry                   ├── [GAP→8.1/8.4] NO_WORK -> 正常直通
-  ├── [GAP→8.1] WORK_REQUIRED / NO_WORK / WAIT            ├── [GAP→8.1/8.4] WAIT -> 停留后新 ID 重求值
-  └── [GAP→8.1] response conflict -> RECONCILING          └── [GAP→8.1/8.4] 响应未知 -> 原 ID 重试
-
-[+] Shared WMS ingress                                  [+] WMS 提交最终释放决定
-  ├── [GAP→8.1] NORMAL DTO                              ├── [GAP→8.1/8.4] NORMAL 首次发送
-  ├── [GAP→8.1] NG DTO                                  ├── [GAP→8.1/8.4] NG 首次发送
-  ├── [GAP→8.1] unknown / null / empty / type / enum     ├── [GAP→8.1/8.4] ACK 丢失后原 ID 重试
-  ├── [GAP→8.1] completed_at > timestamp                 └── [GAP→8.1]     同 ID 内容漂移被拒绝
-  ├── [GAP→8.1] static owner / owner missing
-  ├── [GAP→8.1] new ID -> 202
-  ├── [GAP→8.1] same ID + same body -> 200
-  ├── [GAP→8.1] same ID + different body -> 409
-  └── [GAP→8.1] persistence failure -> 503
-
-[+] WES 本地保存应用与释放证据                          [+] WMS 无二次上报接口
-  ├── [GAP→8.1] APPLIED / RECONCILING union               ├── [GAP→8.1/8.4] APPLIED 不冒充物理完成
-  ├── [GAP→8.1] closed reason_code                        ├── [GAP→8.1/8.4] RECONCILING 触发双方对账
-  ├── [GAP→8.1] monotonic apply_revision                  └── [GAP→8.1/8.4] ACK 丢失后原 ID 重试
-  └── [GAP→8.1] report response conflict
-
-[+] Plugin evidence application                          [+] point1→point2 自主 FIFO
-  ├── [GAP→8.2] bind point2 execution + NORMAL            ├── [GAP→8.3] point1 仅记录进入与顺序
-  ├── [GAP→8.2] bind point2 execution + NG                ├── [GAP→8.3] point2 实际 Bin 请求 WMS 判断
-  ├── [GAP→8.2] new ID + same result -> applied no-op      └── [GAP→8.3] point2 不可读进入 Bin NG
-  ├── [GAP→8.2] completed_at before scan -> RECONCILING
-  ├── [GAP→8.2] conflicting result -> RECONCILING
-  ├── [GAP→8.2] first early / late / no unique execution   [+] 点3到最终物理去向
-  ├── [GAP→8.2] wrong point / inactive WorkLine                  ├── [GAP→8.3/8.4] NORMAL -> 点4 -> RETURN FIFO
-  ├── [GAP→8.2] concurrent same result -> one command      ├── [GAP→8.3/8.4] NG -> 分流命令 -> 权威离位事实
-  └── [GAP→8.2] concurrent conflict -> fail closed          ├── [GAP→8.3] 当前处置关联无法证明时零命令
-                                                          ├── [GAP→8.3] 关联匹配但缺结果时停止推进
-                                                          ├── [GAP→8.2] 人工 SLA 超时只告警并停止新入线
-                                                          ├── [GAP→8.3] ACK 不代表物理分流完成
-[+] Runtime / composition                                └── [GAP→8.3] 权威离位/释放事实解除当前等待
-  ├── [GAP→8.4] public ingress -> broker -> real worker
-  ├── [GAP→8.4] installed static plugin -> DeviceCommand   [+] 故障与恢复
-  ├── [GAP→8.4] duplicate delivery -> no second command     ├── [GAP→8.4] worker 在 evidence 提交后重启
-  └── [GAP→8.4] worker restart -> same identity              └── [GAP→8.2/8.3] 异常时保留 identity/证据/管辖权
-```
-
-新功能当前实现覆盖为 0（尚未进入 Task 2～7）；第 8.1～8.4 已为图中每个分支指定测试 owner。既有核心测试的绿灯只能复用为基础不变量证据，不计为人工线业务分支已覆盖。
-
 ## 9. 性能与并发边界
 
 ### 9.1 Bin 级最终结果的有界查找
@@ -581,7 +530,7 @@ Task 2 必须在 `manual-picking` 业务所有权内建立一条窄的 per-Bin �
 - 首次成功应用的 `source_evidence_id`；
 - 当前 WorkLine 和首次到位 Evidence，以及原释放命令关联。
 
-数据库必须使用 `(task_id, bin_code)` 唯一约束直接保证单终态，并通过该唯一索引完成重复与冲突查找。不得扫描
+数据库必须在 `wms_result IS NOT NULL` 时使用 `(task_id, bin_code)` 部分唯一索引直接保证单终态，并通过该索引完成重复与冲突查找。不得扫描
 `InboundEvidence.normalized_payload` JSON 重建当前业务状态，人工任务字段只存于插件，也不为该单行索引查询增加缓存。
 
 该记录的 SQLModel、Repository 和业务查询位于 `workline_plugins/manual-picking/` 应用层。建表、唯一约束和索引仍通过根仓库
@@ -606,10 +555,10 @@ evidence 的业务应用事务只允许数据库操作：
 人工线的命令身份关联当前工位待处理动作和物理阶段。同一次到位的重复扫码、重复 WMS 完成消息均复用该动作已经关联的命令，
 不得为每个新扫码消息生成新动作，也不以 bin_code 作为跨多次经过的永久命令身份。
 
-| 物理义务 | `execution_ref_type` | 稳定关联 |
-| --- | --- | --- |
-| point2 释放当前料箱 | `MANUAL_BIN_POINT2_RELEASE` | 当前待处理动作的首次到位 Evidence |
-| point3 执行 NG/正常分流 | `MANUAL_BIN_POINT3_ROUTE` | 当前待处理动作的首次到位 Evidence |
+四点方向命令都使用宿主中立的 `WORKLINE_BUSINESS` 执行引用类型，`execution_ref_id` 固定为
+`manual-picking:{evidence_id}:{role}`；`evidence_id` 是创建该命令时冻结的原扫码 Evidence，`role` 为
+`SCAN1`～`SCAN4`。插件在本次经过中保存对应命令编码，点2的 WMS 结果也只使用原点2扫码 Evidence 创建释放命令，
+不为插件增加宿主命令引用类型。
 
 插件在当前工位记录中关联原 DeviceCommand。相同身份与相同载荷只取得原命令，载荷漂移是冲突；命令可能已送达或结果未知时保留
 原身份等待权威终态。只有匹配的物理离位/释放事实才结束本次动作，不新增全程料箱生命周期。

@@ -86,6 +86,14 @@ def upgrade() -> None:
         schema="wes_biz",
     )
     op.create_index(
+        "ux_manual_picking_passages_wms_terminal",
+        "manual_picking_passages",
+        ["task_id", "bin_code"],
+        unique=True,
+        schema="wes_biz",
+        postgresql_where=sa.text("wms_result IS NOT NULL"),
+    )
+    op.create_index(
         "ix_manual_picking_passages_scan2_fifo",
         "manual_picking_passages",
         ["workline_id", "scan1_received_at", "scan1_evidence_id"],
@@ -105,4 +113,5 @@ def downgrade() -> None:
     """Downgrade schema."""
     op.drop_index("ix_manual_picking_passages_return_fifo", table_name="manual_picking_passages", schema="wes_biz")
     op.drop_index("ix_manual_picking_passages_scan2_fifo", table_name="manual_picking_passages", schema="wes_biz")
+    op.drop_index("ux_manual_picking_passages_wms_terminal", table_name="manual_picking_passages", schema="wes_biz")
     op.drop_table("manual_picking_passages", schema="wes_biz")

@@ -1,11 +1,17 @@
 """人工料箱经过只属于插件，不占用物料执行身份。"""
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from manual_picking.application.passage_model import ManualPickingPassage
 from manual_picking.application.passage_repository import PassageRepository
-from sqlalchemy import BigInteger, UniqueConstraint
+from sqlalchemy import BigInteger, UniqueConstraint, event, insert, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from src.app.execution.models import InboundEvidence
+from src.app.workline.models import WorkLine
 
 
 def test_passage_identity_and_fifo_indexes() -> None:
@@ -38,6 +44,72 @@ def test_passage_identity_and_fifo_indexes() -> None:
         "scan4_received_at",
         "scan4_evidence_id",
     ]
+
+
+@pytest.mark.asyncio
+async def test_one_wms_terminal_per_task_and_bin() -> None:
+    _ = (InboundEvidence, WorkLine)  # 注册外键目标；本测试只创建插件表。
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+
+    table = ManualPickingPassage.__table__
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(table.create)
+            for evidence_id in (1, 2):
+                await db.execute(
+                    insert(table).values(
+                        workline_id=7,
+                        task_id="PICK-001",
+                        bin_code="A000000001",
+                        scan1_evidence_id=evidence_id,
+                        scan1_received_at=datetime(2026, 9, 13, 12),
+                        disposition="OPEN",
+                        return_state="NONE",
+                    )
+                )
+            await db.execute(update(table).where(table.c.scan1_evidence_id == 1).values(wms_result="NORMAL"))
+            with pytest.raises(IntegrityError):
+                await db.execute(update(table).where(table.c.scan1_evidence_id == 2).values(wms_result="NG"))
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unpublished_scan4_evidence_fences_later_scan() -> None:
+    _ = WorkLine
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+
+    table = InboundEvidence.__table__
+    now = datetime(2026, 9, 13, 12)
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(table.create)
+            for evidence_id, device_code in ((1, "S4"), (2, "S3"), (3, "S4")):
+                await db.execute(
+                    insert(table).values(
+                        id=evidence_id,
+                        kind="DEVICE_EVENT",
+                        source_identity=f"scan:{evidence_id}",
+                        payload_digest="a" * 64,
+                        normalized_payload={"event_type": "SCAN_COMPLETED"},
+                        received_at=now,
+                        workline_id=7,
+                        device_code=device_code,
+                        apply_status="RECONCILING" if evidence_id == 1 else "APPLIED",
+                    )
+                )
+            repository = PassageRepository()
+            assert await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence_id=3)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

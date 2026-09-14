@@ -7,9 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import func, or_
 from sqlmodel import select
 
+from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
+
 from .passage_model import ManualPickingPassage
 
 _COLUMNS = cast("Any", ManualPickingPassage).__table__.c
+_EVIDENCE_COLUMNS = cast("Any", InboundEvidence).__table__.c
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +23,23 @@ class PassageRepository:
         db.add(passage)
         await db.flush()
         return passage
+
+    async def has_prior_unpublished_scan(
+        self, db: AsyncSession, *, workline_id: int, device_code: str, evidence_id: int
+    ) -> bool:
+        statement = (
+            select(_EVIDENCE_COLUMNS.id)
+            .where(
+                _EVIDENCE_COLUMNS.id < evidence_id,
+                _EVIDENCE_COLUMNS.workline_id == workline_id,
+                _EVIDENCE_COLUMNS.device_code == device_code,
+                _EVIDENCE_COLUMNS.kind == InboundEvidenceKind.DEVICE_EVENT,
+                _EVIDENCE_COLUMNS.published_at.is_(None),
+                _EVIDENCE_COLUMNS.apply_status != InboundEvidenceApplyStatus.IGNORED,
+            )
+            .limit(1)
+        )
+        return (await db.execute(statement)).first() is not None
 
     async def scan2_head_for_update(self, db: AsyncSession, workline_id: int) -> ManualPickingPassage | None:
         statement = (

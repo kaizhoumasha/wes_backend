@@ -25,6 +25,14 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
         UniqueConstraint("wms_completed_evidence_id", name="ux_manual_picking_passages_wms_completed_evidence"),
         UniqueConstraint("admission_operation_id", name="ux_manual_picking_passages_admission_operation"),
         Index(
+            "ux_manual_picking_passages_wms_terminal",
+            "task_id",
+            "bin_code",
+            unique=True,
+            postgresql_where=text("wms_result IS NOT NULL"),
+            sqlite_where=text("wms_result IS NOT NULL"),
+        ),
+        Index(
             "ix_manual_picking_passages_scan2_fifo",
             "workline_id",
             "scan1_received_at",

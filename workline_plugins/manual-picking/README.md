@@ -3,8 +3,9 @@
 插件标识 `manual-picking`，显示名称“人工拣料”，仅支持 `MANUAL` 工作线。
 负责传送带料箱人工拣料和退料货架直接取料两条出库路径，不承担人工入库。
 
-当前交付声明、工作线装配、基础启用、事件观察、PickingTask prepare 纯业务策略、
-`PickingTaskPlanAppliedHandler` 的纯计划资源进场决策，以及原 Transport 结果的可靠接收。
+当前代码已包含声明与装配、PickingTask prepare 与计划资源进场决策、原 Transport 结果接收、
+四点扫码、WMS 料箱准入与完成、进箱/退箱批次及 PickingTask 完成推进。
+退料货架直接取料与现场物理验收仍未完成；本机 Mock 和单元测试不代表现场验收。
 `manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
 
 ## 声明与装配
@@ -45,7 +46,7 @@ Transport 结果按原 binding 和计划 Evidence 校验后，由插件适配器
 Transport 身份和成功终点；`UNKNOWN` 只留证，不推定货架到位或解除任务占用。
 SCAN1 正常箱码还须具备当前转运架、计划内五层来源架面和 Bin 入口的权威位置投影及对应
 `SUCCEEDED` Transport；结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
-自动 `inbound_batch`、`return_batch` 与换面/换架调度尚未实现，不能把当前局部代码测试当作完整出库验收。
+批次调度和扫码流程已有本地实现，但不能把代码测试当作完整出库或真实设备验收。
 
 部署通过 `InstalledWorkLinePlugin.picking_task_prepare_policy` 显式关联该能力。宿主静态注册通用 Celery 任务，只扫描精确版本匹配的
 活动工作线；插件未安装或没有活动工作线时不执行插件策略。新任务入站与工作线 START 在事务提交后主动唤醒，Beat 仅负责丢失唤醒恢复。

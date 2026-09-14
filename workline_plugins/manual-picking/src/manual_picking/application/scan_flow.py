@@ -326,10 +326,6 @@ class ManualPickingScanFlow:
                 created_at=now,
                 not_before=now + timedelta(milliseconds=outcome.retry_after_ms),
             )
-        elif passage.wms_result is not None:
-            passage.scan2_command_code = await self._move(
-                db, workline_id, bindings, "SCAN2", passage.scan2_evidence_id, "MOVE_FORWARD"
-            )
         return outcome.result
 
     async def _apply_scan3(
@@ -379,6 +375,10 @@ class ManualPickingScanFlow:
     async def _apply_scan4(
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
+        if await self._passages.has_prior_unpublished_scan(
+            db, workline_id=workline_id, device_code=bindings["SCAN4"], evidence_id=evidence.id
+        ):
+            return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN4"):
             return None
         code = normal_bin_code(raw_code, "-B")
@@ -465,20 +465,18 @@ class ManualPickingScanFlow:
             passage.scan2_evidence_id is None
             or passage.admission_scanned_at is None
             or completed.completed_at < passage.admission_scanned_at
+            or passage.admission_result != "WORK_REQUIRED"
         ):
             return None
-        if passage.admission_result == "WORK_REQUIRED" and await self._device_has_unclosed(
-            db, workline_id, bindings, "SCAN2"
-        ):
+        if await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
             return None
         passage.wms_result = completed.result
         passage.wms_completed_at = datetime.fromtimestamp(completed.completed_at / 1000, UTC).replace(tzinfo=None)
         passage.wms_completed_evidence_id = evidence.id
         passage.disposition = completed.result
-        if passage.admission_result == "WORK_REQUIRED":
-            passage.scan2_command_code = await self._move(
-                db, workline_id, bindings, "SCAN2", passage.scan2_evidence_id, "MOVE_FORWARD"
-            )
+        passage.scan2_command_code = await self._move(
+            db, workline_id, bindings, "SCAN2", passage.scan2_evidence_id, "MOVE_FORWARD"
+        )
         return completed.result
 
     async def _apply_scan1(
@@ -606,19 +604,17 @@ class ManualPickingScanFlow:
                     else None
                 )
         passage = await self._passages.scan2_head_for_update(db, workline_id)
-        if passage is not None and passage.scan2_fault_evidence_id is not None:
+        if passage is None or passage.scan2_fault_evidence_id is not None:
             return None
-        if passage is not None:
-            if passage.scan1_command_code is None:
-                return None
-            command = await self._command_reader.get_by_command_code(db, passage.scan1_command_code)
-            if command is None or command.status != CommandStatus.SUCCEEDED:
-                return _WAIT_FOR_RESULT if command is not None and command.status != CommandStatus.FAILED else None
-        if passage is None or identity is None or identity != passage.bin_code:
+        if passage.scan1_command_code is None:
+            return None
+        command = await self._command_reader.get_by_command_code(db, passage.scan1_command_code)
+        if command is None or command.status != CommandStatus.SUCCEEDED:
+            return _WAIT_FOR_RESULT if command is not None and command.status != CommandStatus.FAILED else None
+        if identity is None or identity != passage.bin_code:
             command_code = await self._move(db, workline_id, bindings, "SCAN2", evidence.id, "MOVE_FORWARD")
-            if passage is not None:
-                passage.scan2_fault_evidence_id = evidence.id
-                passage.scan2_fault_command_code = command_code
+            passage.scan2_fault_evidence_id = evidence.id
+            passage.scan2_fault_command_code = command_code
             return "NG_MOVE_FORWARD"
         decision = self._scan2.decide(
             ScanFact(

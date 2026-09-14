@@ -130,8 +130,9 @@ class _Transports:
 
 
 class _Passages:
-    def __init__(self) -> None:
+    def __init__(self, evidences: _Evidence) -> None:
         self.rows = []
+        self.evidences = evidences
 
     async def add(self, db, passage):  # type: ignore[no-untyped-def]
         self.rows.append(passage)
@@ -140,6 +141,17 @@ class _Passages:
 
     async def scan2_head_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return next((row for row in self.rows if row.scan2_evidence_id is None and row.disposition == "OPEN"), None)
+
+    async def has_prior_unpublished_scan(self, db, *, workline_id, device_code, evidence_id):  # type: ignore[no-untyped-def]
+        return any(
+            row.id < evidence_id
+            and row.workline_id == workline_id
+            and row.device_code == device_code
+            and row.kind == InboundEvidenceKind.DEVICE_EVENT
+            and row.published_at is None
+            and row.apply_status != InboundEvidenceApplyStatus.IGNORED
+            for row in self.evidences.rows.values()
+        )
 
     async def scan2_in_flight_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return tuple(
@@ -262,7 +274,7 @@ def _setup(
     *, transport_reader=None, missing_projection=None, failed_transport=None, batch_reader=None, batch_result=None
 ):  # type: ignore[no-untyped-def]
     evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-C"))
-    passages = _Passages()
+    passages = _Passages(evidences)
     commands = _Commands()
     admissions = _Admissions()
     flow = ManualPickingScanFlow(
@@ -602,7 +614,7 @@ async def test_work_required_waits_for_matching_wms_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wms_completion_arriving_before_admission_result_waits_for_required_decision() -> None:
+async def test_wms_completion_arriving_before_admission_result_never_autobinds() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
     await flow.apply_in_session(object(), 2, workline_id=7)
@@ -617,11 +629,13 @@ async def test_wms_completion_arriving_before_admission_result_waits_for_require
         4, InboundEvidenceKind.WMS_RESULT, operation_id, {"result": "WORK_REQUIRED", "task_id": "PICK-001"}
     )
 
-    assert (await flow.apply_in_session(object(), 3, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert (
+        await flow.apply_in_session(object(), 3, workline_id=7)
+    ).disposition is BusinessEvidenceDisposition.RECONCILING
     assert len(commands.requests) == 1
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passages.rows[0].wms_completed_evidence_id == 3
-    assert commands.requests[-1].task_type == "MOVE_FORWARD"
+    assert passages.rows[0].wms_completed_evidence_id is None
+    assert len(commands.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -704,6 +718,30 @@ async def test_scan3_unknown_goes_left_and_scan4_unreadable_holds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scan4_unreadable_first_scan_blocks_later_valid_scan() -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    evidences.rows[5] = _scan(5, "S4", "UNKNOWN")
+    evidences.rows[6] = _scan(6, "S4", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    await flow.apply_in_session(object(), 4, workline_id=7)
+
+    first = await flow.apply_in_session(object(), 5, workline_id=7)
+    before = len(commands.requests)
+    second = await flow.apply_in_session(object(), 6, workline_id=7)
+
+    assert first.disposition is BusinessEvidenceDisposition.RECONCILING
+    assert second.disposition is BusinessEvidenceDisposition.RECONCILING
+    assert len(commands.requests) == before
+    assert passages.rows[0].scan4_evidence_id is None
+
+
+@pytest.mark.asyncio
 async def test_scan1_wrong_suffix_keeps_bin_identity_for_direct_ng_at_scan3() -> None:
     flow, evidences, passages, commands, _ = _setup()
     evidences.rows[1] = _scan(1, "S1", "A000000001-C")
@@ -739,6 +777,17 @@ async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
         await flow.apply_in_session(object(), 3, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
     assert len(commands.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_scan2_without_fifo_head_never_releases_unknown_bin() -> None:
+    flow, _, _, commands, admissions = _setup()
+
+    result = await flow.apply_in_session(object(), 2, workline_id=7)
+
+    assert result.disposition is BusinessEvidenceDisposition.RECONCILING
+    assert commands.requests == []
+    assert admissions.intents == []
 
 
 @pytest.mark.asyncio
