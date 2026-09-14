@@ -606,8 +606,8 @@ def test_face_values_reject_unrepresentable_values_before_persistence(
         factory(invalid_face)
 
 
-@pytest.mark.parametrize("target_face", ["", 90, True, None])
-def test_required_face_values_reject_empty_or_non_string_values(target_face: object) -> None:
+@pytest.mark.parametrize("target_face", ["", 90, True])
+def test_provided_face_values_reject_empty_or_non_string_values(target_face: object) -> None:
     with pytest.raises(TransportContractError, match="target_face must be a non-empty string"):
         MoveRackRequest(
             _REQUEST_ID,
@@ -696,16 +696,20 @@ def test_rotate_rack_uses_ctu02_and_preserves_opaque_face() -> None:
         )
 
 
-def test_ctu03_does_not_require_target_face() -> None:
+@pytest.mark.parametrize("template", list(RcsTemplateId))
+def test_move_rack_does_not_require_target_face(template: RcsTemplateId) -> None:
+    from src.app.transport.submit_snapshot import build_submit_data
+
     request = MoveRackRequest(
         _REQUEST_ID,
         _caller(),
         "rack-1",
         RackReference("rack-1"),
         ZonePosition("WH05"),
-        rcs_template_id=RcsTemplateId.CTU03,
+        rcs_template_id=template,
     )
     assert request.target_face is None
+    assert "target_face" not in build_submit_data(request, "transport-rack-1")
 
     explicit_request = MoveRackRequest(
         _REQUEST_ID,
@@ -714,7 +718,7 @@ def test_ctu03_does_not_require_target_face() -> None:
         RackReference("rack-1"),
         ZonePosition("WH05"),
         "270",
-        RcsTemplateId.CTU03,
+        template,
     )
     assert explicit_request.target_face == "270"
 

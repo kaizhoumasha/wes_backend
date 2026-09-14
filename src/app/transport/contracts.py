@@ -250,7 +250,7 @@ class MoveRackRequest:
             raise TransportContractError("rack source and target must be rack move positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
-        if self.rcs_template_id is not RcsTemplateId.CTU03 or self.target_face is not None:
+        if self.target_face is not None:
             validate_opaque_face(self.target_face, "target_face", error_type=TransportContractError)
         if type(self.rcs_template_id) is not RcsTemplateId:
             raise TransportContractError("rcs_template_id must be a supported template")
