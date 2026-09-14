@@ -98,6 +98,28 @@ class _Creator:
         self.calls.append(kwargs)
 
 
+class _BatchDriver:
+    def __init__(self) -> None:
+        self.context = None
+
+    async def advance_in_session(self, _db, line, task):  # type: ignore[no-untyped-def]
+        self.context = (line.line_code, task.task_id)
+        return 1
+
+    async def advance_completed_in_session(self, _db, line):  # type: ignore[no-untyped-def]
+        self.context = (line.line_code, "COMPLETED_RETURN")
+        return 1
+
+
+class _CompletionDriver:
+    def __init__(self) -> None:
+        self.context = None
+
+    async def advance_in_session(self, _db, line, task):  # type: ignore[no-untyped-def]
+        self.context = (line.line_code, task.task_id)
+        return 1
+
+
 @pytest.mark.asyncio
 async def test_batch_does_not_read_business_state_without_plan_handler() -> None:
     sessions = _Sessions()
@@ -115,6 +137,68 @@ async def test_batch_does_not_read_business_state_without_plan_handler() -> None
 
     assert await service.activate_batch() == 0
     assert sessions.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reserved_workline_does_not_create_rack_transport() -> None:
+    creator = _Creator()
+    reserved = AsyncMock(return_value=True)
+    task_reader = AsyncMock()
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="sample_plugin",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=_Handler(),
+            ),
+        ),
+        transport_creator=creator,
+        workline_repository=_Worklines(
+            SimpleNamespace(is_active=True, is_deleted=False, plugin_key="sample_plugin", plugin_version="0.1.0")
+        ),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=task_reader),
+        workline_reserved=reserved,
+    )
+
+    assert await service.activate_batch() == 0
+    reserved.assert_awaited_once()
+    task_reader.assert_not_awaited()
+    assert creator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_completed_task_keeps_plugin_return_driver_running_without_new_plan_transport() -> None:
+    driver = _BatchDriver()
+    handler = _Handler()
+    creator = _Creator()
+    line = SimpleNamespace(
+        id=7,
+        line_code="L-1",
+        is_active=True,
+        is_deleted=False,
+        plugin_key="sample_plugin",
+        plugin_version="0.1.0",
+    )
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="sample_plugin",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=handler,
+                picking_task_batch_driver=driver,
+            ),
+        ),
+        transport_creator=creator,
+        workline_repository=_Worklines(line),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=None)),
+    )
+
+    assert await service.activate_batch() == 1
+    assert driver.context == ("L-1", "COMPLETED_RETURN")
+    assert handler.fact is None
+    assert creator.calls == []
 
 
 @pytest.mark.asyncio
@@ -150,6 +234,8 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
     ]
     handler = _Handler()
     creator = _Creator()
+    batch_driver = _BatchDriver()
+    completion_driver = _CompletionDriver()
     service = _service_type()(
         _Sessions(),
         plugins=(
@@ -157,6 +243,8 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
                 plugin_key="sample_plugin",
                 plugin_version="0.1.0",
                 picking_task_plan_applied_handler=handler,
+                picking_task_batch_driver=batch_driver,
+                picking_task_completion_driver=completion_driver,
             ),
         ),
         transport_creator=creator,
@@ -168,7 +256,9 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         ),
     )
 
-    assert await service.activate_batch() == 3
+    assert await service.activate_batch() == 5
+    assert batch_driver.context == ("L-1", "TASK-1")
+    assert completion_driver.context == ("L-1", "TASK-1")
     assert [(rack.rack_id, rack.rack_faces) for rack in handler.fact.pending_bin_source_racks] == [
         ("BIN-1", ("270", "90")),
         ("BIN-2", ("90",)),

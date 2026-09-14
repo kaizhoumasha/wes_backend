@@ -9,12 +9,26 @@ from deployment.plugin_definitions import load_plugin_definitions
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import StaticPluginBinding
-from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
+from src.app.execution.repositories.position_projection_repository import position_projection_repository
+from src.app.execution.services.reliable_rack_transport import ReliableBinTransportCreator, ReliableRackTransportCreator
+from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
+from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 
 # Web/worker 组合根注册共享外键目标；不依赖具体插件是否安装或启用。
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
+from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.app.wms_integration.outbound_picking.services.bin_batch import (
+    BinBatchResultReader,
+    BinBatchScheduler,
+    BinInboundBatchOwnerService,
+)
+from src.app.wms_integration.outbound_picking.services.manual_bin_admission import (
+    ManualBinAdmissionOwnerService,
+    ManualBinAdmissionScheduler,
+)
+from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionScheduler
 from src.app.wms_integration.outbound_picking.services.picking_task_confirmation_owner import (
     PickingTaskConfirmationOwnerService,
 )
@@ -29,7 +43,9 @@ from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePubli
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
 from src.app.workline_integration_debug.composition import CombinedWorkLineConfirmationOwner
+from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 from src.core.task_queue_gateway import task_queue_gateway
+from src.core.uuid7 import new_uuid7
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -64,11 +80,58 @@ def build_deployment_runtime(
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
+    debug_owner = IntegrationRunWorkLineOwner()
+    workline_reserved = debug_owner.is_reserved
+    workline_owner = CombinedWorkLineConfirmationOwner(
+        CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner())
+    )
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "manual-picking" in enabled_plugin_keys:
+        from manual_picking.application.batch_driver import ManualPickingBatchDriver
+        from manual_picking.application.batch_flow import ManualPickingBatchFlow
+        from manual_picking.application.batch_repository import BatchRepository
+        from manual_picking.application.batch_result import ManualPickingBatchResultFlow
+        from manual_picking.application.completion_flow import ManualPickingCompletionFlow
+        from manual_picking.application.completion_repository import ManualPickingCompletionRepository
+        from manual_picking.application.passage_repository import PassageRepository
         from manual_picking.application.plugin import build_plugin
+        from manual_picking.application.scan_flow import ManualPickingScanFlow
 
-        plugins = (build_plugin(),)
+        from src.app.wms_adapter.outbound_picking import manual_bin_typed
+
+        workline_owner = CombinedWorkLineConfirmationOwner(
+            CombinedWorkLineConfirmationOwner(workline_owner, ManualBinAdmissionOwnerService()),
+            BinInboundBatchOwnerService(),
+        )
+        passages = PassageRepository()
+        batch_reader = BinBatchResultReader()
+        batch_result = ManualPickingBatchResultFlow(
+            batch_reader, ReliableBinTransportCreator(transport_runtime.service), passages
+        )
+        batch_driver = ManualPickingBatchDriver(
+            ManualPickingBatchFlow(
+                BatchRepository(batch_reader),
+                passages,
+                BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+                uuid_factory=new_uuid7,
+            ),
+            plans=PickingTaskPlanDeltaRepository(),
+            positions=position_projection_repository,
+            transports=TransportRepository(),
+        )
+        scan_flow = ManualPickingScanFlow(
+            commands=device_command_service,
+            admissions=ManualBinAdmissionScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+            wms_reader=manual_bin_typed,
+            batch_reader=batch_reader,
+            batch_result=batch_result,
+        )
+        completion_driver = ManualPickingCompletionFlow(
+            ManualPickingCompletionRepository(history=batch_reader),
+            PickingTaskCompletionScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+            uuid_factory=new_uuid7,
+        )
+        plugins = (build_plugin(scan_flow=scan_flow, batch_driver=batch_driver, completion_driver=completion_driver),)
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,
@@ -83,9 +146,9 @@ def build_deployment_runtime(
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
         picking_task_owner=PickingTaskConfirmationOwnerService(),
-        workline_owner=CombinedWorkLineConfirmationOwner(
-            CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner())
-        ),
+        workline_owner=workline_owner,
+        workline_reserved=workline_reserved,
+        direct_result_owner=debug_owner.owns_operation,
     )
     return DeploymentRuntime(
         execution=execution,
@@ -108,11 +171,13 @@ def build_deployment_runtime(
             session_factory,
             plugins=plugins,
             task_queue_gateway=task_queue_gateway,
+            workline_reserved=workline_reserved,
         ),
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory,
             plugins=plugins,
             transport_creator=ReliableRackTransportCreator(transport_runtime.service),
+            workline_reserved=workline_reserved,
         ),
     )
 

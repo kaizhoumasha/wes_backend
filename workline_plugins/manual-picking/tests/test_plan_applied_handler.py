@@ -33,7 +33,7 @@ FACT = PickingTaskPlanAppliedFact(
 def test_plugin_assembles_plan_applied_handler() -> None:
     from manual_picking.application.plugin import build_plugin
 
-    plugin = build_plugin()
+    plugin = build_plugin(scan_flow=object(), batch_driver=object(), completion_driver=object())
 
     assert type(plugin.picking_task_plan_applied_handler) is PickingTaskPlanAppliedHandler
 

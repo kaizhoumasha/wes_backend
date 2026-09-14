@@ -9,6 +9,8 @@ from src.app.workline.repositories import WorkLineRepository
 from src.app.workline.repositories import workline_repository as default_workline_repository
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.workline.installed_plugin import InstalledWorkLinePlugin
@@ -27,12 +29,19 @@ class PickingTaskPrepareBatchService:
         plugins: tuple[InstalledWorkLinePlugin, ...],
         task_queue_gateway: TaskQueueGateway,
         workline_repository: WorkLineRepository | None = None,
+        workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
     ) -> None:
         self._sessions = session_factory
         self._task_queue = task_queue_gateway
         self._worklines = workline_repository or default_workline_repository
+        self._workline_reserved = workline_reserved
         self._policies = {
             (plugin.plugin_key, plugin.plugin_version): plugin.picking_task_prepare_policy
+            for plugin in plugins
+            if plugin.picking_task_prepare_policy is not None
+        }
+        self._business_blockers = {
+            (plugin.plugin_key, plugin.plugin_version): getattr(plugin, "business_blocker", None)
             for plugin in plugins
             if plugin.picking_task_prepare_policy is not None
         }
@@ -62,6 +71,8 @@ class PickingTaskPrepareBatchService:
                     policy=policy,
                     workline_repository=self._worklines,
                     task_queue_gateway=self._task_queue,
+                    workline_reserved=self._workline_reserved,
+                    business_blocker=self._business_blockers[identity],
                 )
                 coordinators[identity] = coordinator
             result = await coordinator.prepare_next_for_workline(workline_id)

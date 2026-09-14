@@ -1,5 +1,8 @@
 """WMS PickingTask Service 导出。"""
 
+from .bin_batch import BinBatchScheduler, BinInboundBatchOwnerService
+from .manual_bin_admission import ManualBinAdmissionOwnerService, ManualBinAdmissionScheduler
+from .picking_task_completion import PickingTaskCompletionResultReader, PickingTaskCompletionScheduler
 from .picking_task_confirmation_owner import PickingTaskConfirmationOwnerService
 from .picking_task_issued import PickingTaskIssuedService
 from .picking_task_plan_activation import PickingTaskPlanActivationService
@@ -9,6 +12,12 @@ from .picking_task_prepare_batch import PickingTaskPrepareBatchService
 from .picking_task_queue_changed import PickingTaskQueueChangedService
 
 __all__ = [
+    "BinBatchScheduler",
+    "BinInboundBatchOwnerService",
+    "ManualBinAdmissionOwnerService",
+    "ManualBinAdmissionScheduler",
+    "PickingTaskCompletionResultReader",
+    "PickingTaskCompletionScheduler",
     "PickingTaskConfirmationOwnerService",
     "PickingTaskIssuedService",
     "PickingTaskPlanActivationService",

@@ -90,6 +90,33 @@ def test_static_binding_resolves_exact_plugin_version_and_fact_type() -> None:
         binding.resolve_handler("sample_plugin", "1.0.0", _fact(version="2.0"))
 
 
+def test_business_evidence_wms_route_is_exact_and_not_a_default_consumer() -> None:
+    consumer = object()
+    binding = StaticPluginBinding(
+        (
+            PluginRuntimeBinding(
+                plugin_key="sample_plugin",
+                plugin_version="1.0.0",
+                handlers=(),
+                fact_factory=_IdentityFactFactory(),
+                business_evidence_consumer=consumer,
+                business_wms_operations=("outbound.manual_bin.work_completed@v1",),
+            ),
+        )
+    )
+
+    assert binding.has_business_evidence_consumer("sample_plugin", "1.0.0", operation=None)
+    assert binding.has_business_evidence_consumer(
+        "sample_plugin", "1.0.0", operation="outbound.manual_bin.work_completed@v1"
+    )
+    assert binding.business_wms_routes == (("sample_plugin", "1.0.0", "outbound.manual_bin.work_completed@v1"),)
+    assert not binding.has_business_evidence_consumer(
+        "sample_plugin", "1.0.0", operation="outbound.picking_task.plan_delta@v1"
+    )
+    with pytest.raises(LookupError):
+        binding.resolve_business_evidence_consumer("sample_plugin", "2.0.0")
+
+
 def test_two_static_plugins_reuse_one_typed_operation_without_a_default_consumer() -> None:
     def consumer(operation_id: str):
         @handler(fact_type=EvidenceReadyFact, name="request_plan", supported_versions=("1.0",))

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from src.app.device.contracts import (
     DEVICE_INTEGRATION_CONTRACT_KEY,
     DEVICE_INTEGRATION_CONTRACT_VERSION,
+    WORKLINE_BUSINESS_REF_TYPE,
     DeviceEvidenceReceipt,
     EcsCommandResult,
     EcsCommandResultReport,
@@ -420,7 +421,9 @@ class DeviceEvidenceService:
                     command.claimed_at = None
                     command.claim_expires_at = None
                     await self._processing.mark_applied(db, evidence, processed_at=now)
-                    wake_execution = evidence.material_execution_id is not None
+                    wake_execution = evidence.material_execution_id is not None or (
+                        command.execution_ref_type == WORKLINE_BUSINESS_REF_TYPE
+                    )
             update = build_device_evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         if wake_device_commands:
             self._enqueue_device_commands()

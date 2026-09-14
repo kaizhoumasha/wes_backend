@@ -366,6 +366,23 @@ class TransportService:
     ) -> TransportHandle:
         return await self._create_task(MoveBinsRequest(client_request_id, caller, moves), execution_authority)
 
+    async def move_bins_in_session(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+        caller: TransportCaller,
+        moves: tuple[BinMove, ...],
+        *,
+        execution_authority: TransportExecutionAuthority,
+    ) -> TransportHandle:
+        """在调用方事务中可靠创建 BIN_MOVE；不会提交或派发。"""
+
+        return await self._create_task_in_session(
+            db,
+            MoveBinsRequest(client_request_id, caller, moves),
+            execution_authority,
+        )
+
     async def move_bins_for_debug(
         self,
         client_request_id: str,

@@ -114,10 +114,16 @@ class ManualDebugCommandFencePort(Protocol):
 
 
 class IntegrationRunWorkLineOwner:
-    """只允许已由联调 run 冻结的两个人工 WMS 请求继续收敛。"""
+    """识别联调 run 冻结的人工 WMS 请求与完成事实。"""
 
     def __init__(self, repository: IntegrationRunRepository | None = None) -> None:
         self._runs = repository or integration_run_repository
+
+    async def is_reserved(self, db: AsyncSession, workline_id: int) -> bool:
+        return await self._runs.get_active_for_workline(db, workline_id) is not None
+
+    async def owns_operation(self, db: AsyncSession, workline_id: int, operation_id: str) -> bool:
+        return await self._runs.owns_operation(db, workline_id=workline_id, operation_id=operation_id)
 
     async def validate_owner(
         self,
@@ -135,6 +141,10 @@ class IntegrationRunWorkLineOwner:
             workline_id=workline_id,
             operation_id=operation_id,
         )
+
+    async def owns_completion(self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str) -> bool:
+        run = await self._runs.get_active_for_workline(db, workline_id, for_update=True)
+        return run is not None and run.task_id == task_id and run.bin_code == bin_code
 
 
 class IntegrationDebugService:
@@ -1166,10 +1176,18 @@ class IntegrationDebugService:
                 should_advance = step.status != "SUCCEEDED" and updates_current_run
                 step.status = "SUCCEEDED"
                 response = (
-                    await self._runs.get_evidence(db, confirmation.response_evidence_id)
+                    await self._runs.get_evidence_by_operation(db, step.operation, step.operation_id, for_update=True)
                     if confirmation.response_evidence_id is not None
+                    and step.operation is not None
+                    and step.operation_id is not None
                     else None
                 )
+                if confirmation.response_evidence_id is not None:
+                    if response is None or response.id != confirmation.response_evidence_id:
+                        raise IntegrationDebugConflict("WMS 响应 Evidence 与联调动作身份不匹配")
+                    if response.apply_status != InboundEvidenceApplyStatus.APPLIED:
+                        raise IntegrationDebugConflict("WMS 响应 Evidence 尚未可靠应用")
+                    response.processed_at = timezone.now_for_db()
                 response_payload = response.normalized_payload if response is not None else {}
                 response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
                 result_summary = (

@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-06
+**最后更新**：2026-09-13
 
 ## 1. 真源与入口
 
@@ -32,6 +32,7 @@
 | --- | --- |
 | `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端未提交 worktree 已实现并通过 QUALITY 与 selected HEAVY（395 passed）；前端同步、部署及供应商/现场验收未完成 |
 | `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，当前不是 merge ready |
+| `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
@@ -105,6 +106,8 @@ API → Service → Repository → Database
 | `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
 | `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata、typed WMS intent/outcome 与纯 facade 合同；不含宿主 I/O、OpenAPI/wire DTO 或具体工作线业务 |
 | `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
+| `workline_plugins/manual-picking/src/manual_picking/{handlers/,application/}` | 四点纯扫码决定、本次经过持久状态、退箱 FIFO 与插件显式装配；不使用 `MaterialExecution` 承载料箱业务 |
+| `deployment/plugin_models.py` | 按部署启用的插件加载私有模型，并让未启用插件时的 Alembic 校验保持基础独立 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
 `AGENTS.md` 为准。

@@ -55,12 +55,13 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
-    async def has_unclosed_for_workline_for_update(self, db: AsyncSession, workline_id: int) -> bool:
+    async def has_unclosed_for_device_for_update(self, db: AsyncSession, *, workline_id: int, device_code: str) -> bool:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(columns.id)
             .where(
                 columns.workline_id == workline_id,
+                columns.device_code == device_code,
                 columns.status.in_(_UNCLOSED_STATUSES),
             )
             .limit(1)

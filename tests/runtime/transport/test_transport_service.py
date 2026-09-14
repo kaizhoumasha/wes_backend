@@ -649,6 +649,32 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
 
 
 @pytest.mark.asyncio
+async def test_move_bins_can_join_a_caller_owned_transaction(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    await confirm_rack_faces(db_engine, {"rack-batch": "90"})
+    request_id = new_uuid7()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions.begin() as db:
+        workline_id = await ensure_projection_authority(db)
+        handle = await service.move_bins_in_session(
+            db,
+            request_id,
+            _caller(),
+            (BinMove("A000000001", RackBinSlot("rack-batch", "90", "1"), HandoffPosition("CNV0301")),),
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+        persisted = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == request_id))
+
+    assert persisted is not None
+    assert persisted.transport_task_id == handle.transport_task_id
+    assert persisted.authority_workline_id == workline_id
+    assert persisted.request_json["moves"][0]["bin_code"] == "A000000001"
+
+
+@pytest.mark.asyncio
 async def test_non_idempotency_integrity_error_is_preserved(
     service: TransportService,
     monkeypatch: pytest.MonkeyPatch,

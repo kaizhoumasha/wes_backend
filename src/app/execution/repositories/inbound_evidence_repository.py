@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import and_, exists, not_, select, text, update
+from sqlalchemy import and_, exists, false, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
+from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
+from src.app.device.models.command import DeviceCommand
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -178,11 +180,24 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         claim_token: str,
         claim_expires_at: datetime,
         limit: int,
+        business_wms_routes: tuple[tuple[str, str, str], ...] = (),
     ) -> list[InboundEvidence]:
         columns = cast("Any", InboundEvidence).__table__.c
         earlier_transport_outcomes = InboundEvidence.__table__.alias("earlier_transport_outcomes")
         earlier_columns = earlier_transport_outcomes.c
         workline_columns = cast("Any", WorkLine).__table__.c
+        command_columns = cast("Any", DeviceCommand).__table__.c
+        business_wms_route = or_(
+            false(),
+            *(
+                and_(
+                    workline_columns.plugin_key == key,
+                    workline_columns.plugin_version == version,
+                    columns.operation == operation,
+                )
+                for key, version, operation in business_wms_routes
+            ),
+        )
         result = await db.execute(
             select(InboundEvidence)
             .join(WorkLine, columns.workline_id == workline_columns.id)
@@ -190,10 +205,24 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
                 columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
                 columns.published_at.is_(None),
                 workline_columns.is_active.is_(True),
+                or_(
+                    columns.kind.not_in((InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT)),
+                    columns.material_execution_id.is_not(None),
+                    and_(business_wms_route, columns.processed_at.is_(None)),
+                ),
                 not_(
                     and_(
                         columns.kind == InboundEvidenceKind.DEVICE_RESULT,
                         columns.material_execution_id.is_(None),
+                        not_(
+                            exists(
+                                select(1).where(
+                                    command_columns.command_code == columns.command_code,
+                                    command_columns.workline_id == columns.workline_id,
+                                    command_columns.execution_ref_type == WORKLINE_BUSINESS_REF_TYPE,
+                                )
+                            )
+                        ),
                     )
                 ),
                 not_(

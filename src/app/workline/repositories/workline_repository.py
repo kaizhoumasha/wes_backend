@@ -51,7 +51,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         *,
         populate_existing: bool = False,
     ) -> WorkLine | None:
-        """根据 ID 查询并锁定 WorkLine，用于安全状态切换。"""
+        """锁定 WorkLine 非键状态，同时允许关联 Evidence 获取外键读锁。"""
 
         columns = cast("Any", WorkLine).__table__.c
         statement = (
@@ -60,7 +60,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 columns.id == workline_id,
                 columns.is_deleted.is_(False),
             )
-            .with_for_update()
+            .with_for_update(key_share=True)
         )
         if populate_existing:
             statement = statement.execution_options(populate_existing=True)
@@ -245,6 +245,10 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                         evidence.material_execution_id.is_(None),
                         or_(
                             evidence.kind == InboundEvidenceKind.DEVICE_RESULT,
+                            and_(
+                                evidence.kind.in_((InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT)),
+                                evidence.processed_at.is_not(None),
+                            ),
                             and_(
                                 evidence.kind == InboundEvidenceKind.WMS_RESULT,
                                 evidence.id.in_(

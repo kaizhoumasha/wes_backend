@@ -86,14 +86,8 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "decision_claim_expires_at",
             "received_at",
             "id",
-            postgresql_where=text(
-                "apply_status = 'APPLIED' AND published_at IS NULL "
-                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
-            ),
-            sqlite_where=text(
-                "apply_status = 'APPLIED' AND published_at IS NULL "
-                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
-            ),
+            postgresql_where=text("apply_status = 'APPLIED' AND published_at IS NULL"),
+            sqlite_where=text("apply_status = 'APPLIED' AND published_at IS NULL"),
         ),
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
         Index("ix_inbound_evidences_transport_task", "transport_task_id", "kind"),

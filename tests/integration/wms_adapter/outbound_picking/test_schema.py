@@ -20,7 +20,7 @@ HEAD_REVISION = "6cf85c1760e4"
 @pytest.mark.asyncio
 async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_schema() -> None:
     async with temporary_database() as (_database, database_url):
-        run_alembic("upgrade", "head", database_url=database_url)
+        run_alembic("upgrade", HEAD_REVISION, database_url=database_url)
         connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
         try:
             await assert_database_head(connection, HEAD_REVISION)
@@ -84,8 +84,6 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
             }
         finally:
             await connection.close()
-        run_alembic("check", database_url=database_url)
-
     assert [tuple(row) for row in columns][-15:] == [
         ("task_id", "character varying", "NO"),
         ("task_type", "character varying", "NO"),

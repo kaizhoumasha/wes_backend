@@ -31,6 +31,8 @@ class InstalledWorkLinePlugin:
     transport_outcome_publisher: Any | None = None
     picking_task_prepare_policy: PickingTaskPreparePolicy | None = None
     picking_task_plan_applied_handler: PickingTaskPlanAppliedHandler | None = None
+    picking_task_batch_driver: Any | None = None
+    picking_task_completion_driver: Any | None = None
 
     def __post_init__(self) -> None:
         if self.runtime_binding is not None and (

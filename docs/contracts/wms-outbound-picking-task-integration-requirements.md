@@ -251,7 +251,7 @@ WES 接收的合法消息先过滤冗余字段，再持久化业务模型并计�
 | `outbound.picking_task.prepare@v1` | WES 到 WMS | WES 选中任务和候选 WorkLine | `202 / PREPARE_ACCEPTED`，随后接收计划增量 | §7.2 |
 | `outbound.picking_task.plan_delta@v1` | WMS 到 WES | WMS 形成一批资源或追加来源 | `202 / RECEIVED` | §8 |
 | `outbound.return_rack.arrival_report@v1` | WES 到 WMS | 退料货架已确定到达当前任务的 WorkLine 固定工作位 | `200 / RECORDED` | §9.1.1 |
-| `outbound.bin.inbound_batch@v1` | WES 到 WMS | 当前来源货架面到位、当前面无法为退箱 FIFO 形成可执行批次，且 CTU 和入料缓存有容量 | `200 / DECIDED`：`READY \| NO_BATCH \| RACK_FACE_DONE` | §9.2.1 |
+| `outbound.bin.inbound_batch@v1` | WES 到 WMS | 当前来源货架面到位，且没有优先执行的退箱批次或未闭合 CTU 动作 | `200 / DECIDED`：`READY \| NO_BATCH \| RACK_FACE_DONE` | §9.2.1 |
 | `outbound.bin.return_batch@v1` | WES 到 WMS | `RETURN_BUFFER` 出现可退箱 Bin，且没有未结束 CTU 动作 | `200 / DECIDED`：`READY \| NO_BATCH` | §9.2.2 |
 | `workline.return_buffer.drain_rack_decide@v1`（候选，未获批） | WES 到 WMS | 停止或切换已请求，当前面持续 `NO_BATCH` 且需要为既有 FIFO 选择排空货架面 | 候选：`200 / DECIDED`：`READY \| WAIT` | 共同实施硬门禁 |
 | `outbound.bin.work_plan@v1` | WES 到 WMS | Bin 到达工作位并完成扫码 | `200 / DECIDED`：`READY \| NO_WORK \| WAIT` | §9.3 |
@@ -665,13 +665,15 @@ WmsConfirmation 派发。本地真实 worker／HTTP 验证通过；插件基于�
 
 每条 WorkLine 只有一台 CTU。入站和退箱共用一个串行通道，同一时刻最多有一个尚未结束的 WMS 批次请求或 CTU Transport。
 这条规则由自动出库业务模块负责；Transport 只执行完整的货架或 Bin 搬运，不判断下一步应该入站、退箱、换面还是换架。
+本阶段批次上限暂按 4 个 Bin。CTU 与滚筒线自行管控背篓和缓存位，WES 不读取或计算其空闲数量，也不预留物理缓存位；
+WES 只维护业务准入、退箱 FIFO、批次互斥及原 Transport 的权威结果。
 
 以下事件发生后，自动出库业务模块都要重新判断一次 CTU 下一动作：
 
 - `plan_delta` 已经保存并应用；
 - 货架 `RACK_MOVE` 或 `RACK_ROTATE` 得到确定结果；
 - 入站或退箱 `BIN_MOVE` 得到确定结果；
-- CTU 空闲背篓数或 `INGRESS_BUFFER`、`RETURN_BUFFER` 状态发生变化；
+- `RETURN_BUFFER` 出现新的已确认可退 Bin；
 - `NO_BATCH.retry_after_ms` 到期；
 - 原来为 `UNKNOWN` 的 Transport 得到新的确定结果。
 
@@ -683,7 +685,7 @@ WmsConfirmation 派发。本地真实 worker／HTTP 验证通过；插件基于�
 
 1. 已有 WMS 请求、Transport 或未知物理结果尚未结束时，继续完成或等待原动作，不开始另一条业务分支。
 2. `RETURN_BUFFER` 的 FIFO 队首能在当前面形成可执行批次时，优先调用 `return_batch`。
-3. 没有可执行退箱批次，且当前 CTU 工作位的货架面是计划中尚未结束的来源面时，按本地容量调用 `inbound_batch`。FIFO 有候选但
+3. 没有可执行退箱批次，且当前 CTU 工作位的货架面是计划中尚未结束的来源面时，调用 `inbound_batch`。FIFO 有候选但
    WMS 暂无法在当前面分配合格空位时，候选留在 `RETURN_BUFFER`，不阻止这个入站分支。
 4. 当前来源面已经返回 `RACK_FACE_DONE`，且 CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定时，选择下一个计划来源面并执行必要的货架换面或换架。
 5. 没有可执行来源面时，只能等待当前任务尚未送达的正常 `plan_delta`、退箱数据或任务清理条件。已经空取、NG 或因 Transport
@@ -715,13 +717,13 @@ WES 保留每个 `inbound_batch` Bin 的原来源，但该记录只用于审计�
 
 #### 9.2.1 入站批次
 
-五层来源货架确认到达 CTU 作业位后，WES 计算本批最多可取数量：
+五层来源货架确认到达 CTU 作业位，且没有未闭合的 CTU 批次或 Transport 时，WES 请求本阶段固定上限：
 
 ```text
-max_bin_count = min(CTU 当前空闲背篓数, INGRESS_BUFFER 当前空闲位置数)
+max_bin_count = 4
 ```
 
-结果为 `0` 时不调用 WMS。结果大于 `0` 时发送：
+WES 不推算 CTU 或滚筒线的空闲位；实际运动容量由 CTU 与滚筒线管控。WES 发送：
 
 ```json
 {
@@ -732,7 +734,7 @@ max_bin_count = min(CTU 当前空闲背篓数, INGRESS_BUFFER 当前空闲位置
     "task_id": "PICK-20260811-001",
     "rack_id": "RACK-5F-001",
     "rack_face": "A",
-    "max_bin_count": 2
+    "max_bin_count": 4
   }
 }
 ```
@@ -794,7 +796,7 @@ max_bin_count = min(CTU 当前空闲背篓数, INGRESS_BUFFER 当前空闲位置
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
 | `data.rack_id`、`data.rack_face` | 是 | string + code / WES 已确认位置 | 必须命中 `plan_delta.added_bin_source_racks[]` 中尚未结束的五层来源货架面 |
-| `data.max_bin_count` | 是 | integer[1..4] / WES | CTU 当前空闲背篓数与 `INGRESS_BUFFER` 当前空闲位置数的较小值 |
+| `data.max_bin_count` | 是 | integer[1..4] / WES | 本阶段固定为 `4`，仅表示 WES 请求上限，不表示物理空闲数 |
 | `data.result` | 响应必填 | enum / WMS | `READY \| NO_BATCH \| RACK_FACE_DONE` |
 | `data.bins[]` | `READY` 必填 | array[1..max_bin_count] / WMS | 本次选中的完整 Bin 列表；不能返回超过请求数量的成员 |
 | `data.bins[].bin_code` | `READY` 必填 | string / WMS | 当前任务首次选中的 Bin；同一任务不得再次返回 |
@@ -814,16 +816,17 @@ WMS 返回 `READY` 前，必须在同一事务中保存完整响应，并保证�
 收到入站 `NO_BATCH` 后，本次请求已经结束。WES 保存该来源面的下次重试时间，在到期前不重复请求同一货架面；期间出现退箱候选时，
 仍按退箱优先处理。`NO_BATCH` 不关闭来源面，也不授权换面或换架。
 
-收到 `READY` 后，WES 按 WorkLine 配置的固定顺序选择当前空闲的 `HANDOFF_POSITION`，将 `bins[]` 逐项映射到不同位置，再生成一个
-Transport `BIN_MOVE`。WMS 不需要在本接口中接收本地缓存位；完整来源和目标会进入 Transport 请求。
+收到 `READY` 后，WES 将 `bins[]` 送至 WorkLine 配置的入料 `HANDOFF_POSITION`，生成一个 Transport `BIN_MOVE`。
+同批成员可共用滚筒线入口位置码；实际缓存和运动顺序由 CTU 与滚筒线管控。WMS 不需要在本接口中接收交接位置；
+完整来源和目标进入 Transport 请求。
 
 WES为冻结成员创建 `BIN_MOVE` TransportTask。当前 CTU/RCS只返回 `transport.task.resulted@v1` 完整最终结果，不提供可靠的
 `transport.task.member_position_changed@v1` 逐容器中间位置事件；提交、接纳、失败、位置未知和资源围栏均由 TransportTask负责。
 只有最终结果确认 Bin成功到达冻结 `HANDOFF_POSITION`，且现场扫码身份匹配后才允许该冻结成员进入工作线业务。入线后不自动取消、
 返回原位或创建替代搬运，物理执行只能以正常回库或整线`NGZone`人工接管闭合。
 
-`READY` 返回后，本批 `bins[]` 已经选定。WMS 不能撤销或改选其中的 Bin；即使本地容量暂时发生变化，WES 也等待原 `bins[]` 具备
-执行条件，并只处理其中尚未完成的成员。若某个 Bin 到达 SCAN2 时已无取料需求，WMS 在 `work_plan` 中返回 `NO_WORK`，让该 Bin 按正常
+`READY` 返回后，本批 `bins[]` 已经选定。WMS 不能撤销或改选其中的 Bin；WES 保留原批次身份，只处理其中尚未完成的成员。
+若某个 Bin 到达 SCAN2 时已无取料需求，WMS 在 `work_plan` 中返回 `NO_WORK`，让该 Bin 按正常
 退箱路径离开，不再增加单独的取消接口。入站 `BIN_MOVE` 最终成功、实扫身份匹配后重新判断 CTU 下一动作；当前面能为 `RETURN_BUFFER` FIFO 队首
 形成可执行退箱批次时先退箱，否则可以再次请求入站。
 
@@ -841,7 +844,7 @@ WES为冻结成员创建 `BIN_MOVE` TransportTask。当前 CTU/RCS只返回 `tra
 当前没有其他 CTU 批次时，WES 从 `RETURN_BUFFER` 的可退队列头部取候选：
 
 ```text
-candidate_count = min(CTU 当前空闲背篓数, RETURN_BUFFER 当前可取 Bin 数量)
+candidate_count = min(4, RETURN_BUFFER 当前可取 Bin 数量)
 ```
 
 结果为 `0` 时不调用 WMS。结果大于 `0` 时，WES 按 FIFO 顺序发送前 `candidate_count` 个实际 Bin：
@@ -914,7 +917,7 @@ candidate_count = min(CTU 当前空闲背篓数, RETURN_BUFFER 当前可取 Bin 
 | --- | --- | --- | --- |
 | `data.workline_code` | 是 | code / WES 配置 | 当前 WorkLine；不是业务任务键 |
 | `data.rack_id`、`data.rack_face` | 是 | string + code / WES 已确认位置 | 当前已确认到达、准备承接退箱的五层货架和实际面 |
-| `data.return_candidates[]` | 是 | array[1..4] / WES | 当前已确认位于 `RETURN_BUFFER` 的本 WorkLine 正常 Bin，按跨任务 FIFO 从队首开始排列；数量不能超过 CTU 当前空闲背篓数 |
+| `data.return_candidates[]` | 是 | array[1..4] / WES | 当前已确认位于 `RETURN_BUFFER` 的本 WorkLine 正常 Bin，按跨任务 FIFO 从队首开始排列；本阶段最多 4 个，不表示 CTU 实时空闲数 |
 | `data.return_candidates[].sequence_no` | 是 | integer[1..return_candidates.length] / WES | 本次请求内的 FIFO 顺序号，从 1 连续递增，不得重复或跳号 |
 | `data.return_candidates[].bin_code` | 是 | string / 已可靠识别 | 本 WorkLine 已按正常业务路径进入退料 FIFO 的实际候选；可识别但非预期且尚未获恢复决定的 Bin 禁止发送 |
 | `data.return_candidates[].source` | 是 | `HANDOFF_POSITION` / WES 已确认位置 | 实际 `RETURN_BUFFER` 位置；在途、工作位、NG 或未知位置禁止发送 |

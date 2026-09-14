@@ -598,6 +598,45 @@ class ManualBinAdmissionIntent:
         _positive(self.scanned_at, "scanned_at", 2**63 - 1)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ManualBinAdmissionOutcome:
+    operation_id: str
+    result: Literal["WORK_REQUIRED", "NO_WORK", "WAIT"]
+    task_id: str | None = None
+    retry_after_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        _ = _required(self.operation_id, "operation_id")
+        if self.result == "WORK_REQUIRED":
+            _ = _required(self.task_id, "task_id")
+            if self.retry_after_ms is not None:
+                raise ValueError("WORK_REQUIRED does not carry retry_after_ms")
+        elif self.result == "NO_WORK":
+            if self.task_id is not None or self.retry_after_ms is not None:
+                raise ValueError("NO_WORK has no additional fields")
+        elif self.result == "WAIT":
+            if self.task_id is not None:
+                raise ValueError("WAIT does not carry task_id")
+            _positive(self.retry_after_ms, "retry_after_ms", 60000)  # type: ignore[arg-type]
+        else:
+            raise ValueError("unknown manual bin admission result")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ManualBinCompletedFact:
+    task_id: str
+    bin_code: str
+    result: Literal["NORMAL", "NG"]
+    completed_at: int
+
+    def __post_init__(self) -> None:
+        _ = _required(self.task_id, "task_id")
+        _ = _required(self.bin_code, "bin_code")
+        if self.result not in {"NORMAL", "NG"}:
+            raise ValueError("unknown manual bin completion result")
+        _positive(self.completed_at, "completed_at", 2**63 - 1)
+
+
 @dataclass(frozen=True, slots=True)
 class PickingTaskCompleted:
     pass
@@ -1087,4 +1126,5 @@ WmsOperationOutcome = (
     | CompletionConfirmOutcome
     | SourceEmptyOutcome
     | MaterialMovementReportOutcome
+    | ManualBinAdmissionOutcome
 )

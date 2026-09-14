@@ -915,6 +915,23 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
 
 
 @pytest.mark.asyncio
+async def test_result_without_material_execution_wakes_workline_business_consumer() -> None:
+    command = _command()
+    command.material_execution_id = None
+    command.execution_ref_type = "WORKLINE_BUSINESS"
+    command.execution_ref_id = "SCAN4:31"
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+    assert command.status == CommandStatus.SUCCEEDED
+    assert repository.evidences[receipt.source_event_id].workline_id == 11
+    assert repository.evidences[receipt.source_event_id].material_execution_id is None
+    assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
 async def test_applied_evidence_update_is_published_after_processing() -> None:
     command = _command()
     publisher = FakePublisher()

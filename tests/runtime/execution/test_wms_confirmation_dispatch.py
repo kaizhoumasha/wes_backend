@@ -117,11 +117,13 @@ class _EvidenceService:
     def __init__(self) -> None:
         self.calls = []
         self.dbs = []
+        self.accepted = None
 
     async def accept(self, db, **kwargs):  # type: ignore[no-untyped-def]
         self.dbs.append(db)
         self.calls.append(kwargs)
-        return InboundEvidenceAcceptance(SimpleNamespace(id=501, received_at=kwargs["received_at"]), duplicate=False)
+        self.accepted = SimpleNamespace(id=501, received_at=kwargs["received_at"], processed_at=None)
+        return InboundEvidenceAcceptance(self.accepted, duplicate=False)
 
 
 class _ConflictEvidenceService(_EvidenceService):
@@ -486,6 +488,55 @@ async def test_received_response_is_preserved_when_owner_changes_during_http(own
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_code", "expected_status"),
+    [
+        (WmsDispatchCode.DETERMINATE, WmsConfirmationStatus.COMPLETED),
+        (WmsDispatchCode.RECONCILING, WmsConfirmationStatus.RECONCILING),
+    ],
+)
+async def test_debug_owned_wms_response_is_not_replayed_to_plugin_after_run_closes(
+    response_code: WmsDispatchCode, expected_status: WmsConfirmationStatus
+) -> None:
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    confirmation.picking_task_id = None
+    confirmation.workline_id = 11
+    confirmation.operation = "outbound.bin.return_batch@v1"
+    confirmation.request_payload["operation"] = confirmation.operation
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    evidence = _EvidenceService()
+    debug_owner = AsyncMock(return_value=True)
+    queue = _TaskQueue()
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=response_code,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "DECIDED",
+                    "data": {"result": "NO_BATCH"},
+                },
+                response_result="NO_BATCH" if response_code is WmsDispatchCode.DETERMINATE else None,
+                retry_after_ms=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        workline_owner=SimpleNamespace(validate_owner=AsyncMock(return_value=True)),
+        direct_result_owner=debug_owner,
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == expected_status
+    debug_owner.assert_awaited_once()
+    assert evidence.accepted.processed_at == now
+    assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("owner_available", [False, True])
 @pytest.mark.parametrize(
     "operation", ["outbound.picking_task.prepare@v1", "outbound.rack.departure_decide@v1", "unknown@v1"]
@@ -730,6 +781,56 @@ async def test_return_batch_network_retry_preserves_identity_then_no_batch_close
     assert evidence.calls[0]["normalized_payload"] == response
     assert await restarted.dispatch_batch(now=now + timedelta(seconds=2)) == 0
     assert len(adapter.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_workline_owned_manual_bin_result_wakes_business_consumer() -> None:
+    now = datetime(2026, 9, 13, tzinfo=UTC)
+    operation_id = "019f3400-0e17-7d2a-b944-000000000091"
+    payload = {
+        "operation_id": operation_id,
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "timestamp": int(now.timestamp() * 1000),
+        "data": {"task_id": "PICK-1", "bin_code": "A000000001", "scanned_at": int(now.timestamp() * 1000)},
+    }
+    confirmation = WmsConfirmation(
+        id=91,
+        operation=payload["operation"],
+        operation_id=operation_id,
+        workline_id=11,
+        request_payload=payload,
+        request_digest=_digest(payload),
+        deadline_at=now + timedelta(minutes=5),
+        created_at=now,
+        updated_at=now,
+    )
+    queue = _TaskQueue()
+    evidence = _EvidenceService()
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=WmsDispatchCode.DETERMINATE,
+                normalized_response={
+                    "operation_id": operation_id,
+                    "code": "DECIDED",
+                    "timestamp": int(now.timestamp() * 1000),
+                    "data": {"result": "NO_WORK"},
+                },
+                response_result="NO_WORK",
+                retry_after_ms=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        workline_owner=SimpleNamespace(validate_owner=AsyncMock(return_value=True)),
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.COMPLETED
+    assert evidence.calls[0]["workline_id"] == 11
+    assert queue.execution_wakes == 1
 
 
 @pytest.mark.asyncio

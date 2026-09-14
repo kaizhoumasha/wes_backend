@@ -2852,6 +2852,21 @@ heavy_tests = [
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
+[[mapping]]
+source_glob = "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "deployment/plugin_models.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
 # 已退役 blocker 集成资产由 T1 独立命令并发/幂等 owner 承接删除差异。
 [[mapping]]
 source_glob = "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"

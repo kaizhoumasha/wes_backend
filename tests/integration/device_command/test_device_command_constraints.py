@@ -963,6 +963,20 @@ async def test_postgresql_unclosed_result_states_block_workline_close(
 
 
 @pytest.mark.asyncio
+async def test_unclosed_device_query_is_scoped_to_exact_workline_and_device(integration_session_factory) -> None:
+    async with integration_session_factory.begin() as db:
+        line, _, binding = await _seed_topology(db)
+        db.add(_command(binding, f"CMD-{uuid4().hex}", CommandStatus.ACKNOWLEDGED))
+        await db.flush()
+        assert await device_command_repository.has_unclosed_for_device_for_update(
+            db, workline_id=line.id, device_code=binding.device_code
+        )
+        assert not await device_command_repository.has_unclosed_for_device_for_update(
+            db, workline_id=line.id, device_code="OTHER-SCANNER"
+        )
+
+
+@pytest.mark.asyncio
 async def test_postgresql_stop_rejects_pending_terminal_result_then_allows_after_commit(integration_session_factory):
     async with integration_session_factory.begin() as db:
         line, _, binding = await _seed_topology(db)

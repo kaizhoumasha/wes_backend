@@ -114,6 +114,11 @@ class _Repository:
     async def get_evidence_by_operation(  # type: ignore[no-untyped-def]
         self, _db, _operation, _operation_id, *, for_update=False
     ):
+        if self.response_evidence is not None and (
+            self.response_evidence.operation,
+            self.response_evidence.operation_id,
+        ) == (_operation, _operation_id):
+            return self.response_evidence
         return self.evidence
 
     async def get_confirmation(self, _db, _confirmation_id, *, for_update=False):  # type: ignore[no-untyped-def]
@@ -541,13 +546,22 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
             status="SUCCEEDED",
             client_request_id="prepare-request",
             operation="outbound.picking_task.prepare@v1",
+            operation_id="prepare-op-1",
             wms_confirmation_id=9,
         )
     )
     repository.confirmation = SimpleNamespace(
         status=WmsConfirmationStatus.COMPLETED,
-        response_evidence_id=None,
+        response_evidence_id=123,
         response_result="PREPARE_ACCEPTED",
+    )
+    repository.response_evidence = SimpleNamespace(
+        id=123,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="prepare-op-1",
+        normalized_payload={"data": {"result": "PREPARE_ACCEPTED"}},
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+        processed_at=None,
     )
     service = IntegrationDebugService(
         _Sessions(),  # type: ignore[arg-type]
@@ -566,6 +580,7 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
     )
 
     assert run.current_phase == "POINT3_ROUTE"
+    assert repository.response_evidence.processed_at is not None
 
 
 @pytest.mark.asyncio

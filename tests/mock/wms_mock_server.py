@@ -32,6 +32,7 @@ from src.app.wms_adapter.outbound_picking.departure_wire import (
 )
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import (
     BIN_INBOUND_BATCH_OPERATION,
+    BinInboundBatchData,
     parse_bin_inbound_batch_request,
     parse_bin_inbound_batch_response,
 )
@@ -136,6 +137,7 @@ class TransportSubmissionStore:
         self._bin_origin_slots: dict[str, str] = {}
         self._known_slots: set[tuple[str, str, str]] = set()
         self._return_reservations: dict[str, dict[str, Any]] = {}
+        self._served_inbound_faces: set[tuple[str, str, str]] = set()
         self._prepared_manual_task_id: str | None = None
 
     def reset(self) -> None:
@@ -153,6 +155,7 @@ class TransportSubmissionStore:
             self._bin_origin_slots.clear()
             self._known_slots.clear()
             self._return_reservations.clear()
+            self._served_inbound_faces.clear()
             self._prepared_manual_task_id = None
 
     def remember_prepared_manual_task(self, task_id: str) -> None:
@@ -341,6 +344,41 @@ class TransportSubmissionStore:
                 **{k: v for k, v in target.items() if k != "type"},
             }
         return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
+
+    def inbound_batch_result(self, data: BinInboundBatchData) -> dict[str, Any]:
+        # 本机 Mock 只模拟一面一个箱；以搬运终态而非接纳/在途位置判定该面完成。
+        with self._lock:
+            face = (data.task_id, data.rack_id, data.rack_face)
+            if face not in self._served_inbound_faces:
+                self._served_inbound_faces.add(face)
+                return {
+                    "result": "READY",
+                    "bins": [
+                        {
+                            "bin_code": "A000000001",
+                            "source_locator": {
+                                "type": "RACK_BIN_SLOT",
+                                "rack_id": data.rack_id,
+                                "rack_face": data.rack_face,
+                                "slot_id": "SLOT-01",
+                            },
+                        }
+                    ],
+                }
+            reservation = self._return_reservations.get("A000000001")
+            if (
+                reservation
+                == {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": data.rack_id,
+                    "rack_face": data.rack_face,
+                    "slot_id": "SLOT-01",
+                }
+                and self._bin_positions.get("A000000001") == reservation
+                and ("BIN", "A000000001") not in self._resource_tasks
+            ):
+                return {"result": "RACK_FACE_DONE"}
+            return {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def _frozen_data(self, transport_task_id: str) -> dict[str, Any] | None:
         operation_id = self._task_operations.get(transport_task_id)
@@ -682,7 +720,11 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
             ("RACK_POSITION", "ZONE"),
             ("RACK_POSITION", "RACK_POSITION"),
         },
-        "F01": {("RACK_POSITION", "RACK_POSITION")},
+        "F01": {
+            ("RACK", "RACK_POSITION"),
+            ("RACK", "ZONE"),
+            ("RACK_POSITION", "RACK_POSITION"),
+        },
     }
     return source != target and (source[0], target[0]) in approved_edges.get(rack["rcs_template_id"], set())
 
@@ -972,20 +1014,7 @@ async def decide_return_batch(request: Request) -> Response:
         elif operation == BIN_INBOUND_BATCH_OPERATION:
             parsed = parse_bin_inbound_batch_request(envelope)
             status, response = 200, _ack(operation_id, "DECIDED", None)
-            response["data"] = {
-                "result": "READY",
-                "bins": [
-                    {
-                        "bin_code": "BIN-QA-001",
-                        "source_locator": {
-                            "type": "RACK_BIN_SLOT",
-                            "rack_id": parsed.data.rack_id,
-                            "rack_face": parsed.data.rack_face,
-                            "slot_id": "SLOT-01",
-                        },
-                    }
-                ],
-            }
+            response["data"] = transport_submission_store.inbound_batch_result(parsed.data)
             parse_bin_inbound_batch_response(status, response, request=parsed)
         elif operation == RACK_DEPARTURE_OPERATION:
             parsed = parse_rack_departure_request(envelope)

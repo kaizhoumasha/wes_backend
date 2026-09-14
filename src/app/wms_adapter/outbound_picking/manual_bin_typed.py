@@ -6,7 +6,14 @@ from typing import Any
 
 import wes_plugin_sdk as sdk
 
-from .manual_bin_admission_wire import MANUAL_BIN_ADMISSION_OPERATION, parse_manual_bin_admission_request
+from .manual_bin_admission_wire import (
+    MANUAL_BIN_ADMISSION_OPERATION,
+    ManualBinAdmissionDecidedResponse,
+    ManualBinWait,
+    ManualBinWorkRequired,
+    parse_manual_bin_admission_request,
+)
+from .manual_bin_completed_wire import ManualBinCompletedEvent
 
 
 def encode_admission(intent: sdk.ManualBinAdmissionIntent, *, timestamp: int) -> dict[str, Any]:
@@ -22,4 +29,28 @@ def encode_admission(intent: sdk.ManualBinAdmissionIntent, *, timestamp: int) ->
     ).model_dump(mode="json")
 
 
-__all__ = ["encode_admission"]
+def decode_admission_outcome(payload: object) -> sdk.ManualBinAdmissionOutcome:
+    response = ManualBinAdmissionDecidedResponse.model_validate(payload)
+    data = response.data
+    if isinstance(data, ManualBinWorkRequired):
+        return sdk.ManualBinAdmissionOutcome(
+            operation_id=response.operation_id, result="WORK_REQUIRED", task_id=data.task_id
+        )
+    if isinstance(data, ManualBinWait):
+        return sdk.ManualBinAdmissionOutcome(
+            operation_id=response.operation_id, result="WAIT", retry_after_ms=data.retry_after_ms
+        )
+    return sdk.ManualBinAdmissionOutcome(operation_id=response.operation_id, result="NO_WORK")
+
+
+def decode_completed_fact(payload: object) -> sdk.ManualBinCompletedFact:
+    event = ManualBinCompletedEvent.model_validate(payload)
+    return sdk.ManualBinCompletedFact(
+        task_id=event.data.task_id,
+        bin_code=event.data.bin_code,
+        result=event.data.result,
+        completed_at=event.data.completed_at,
+    )
+
+
+__all__ = ["decode_admission_outcome", "decode_completed_fact", "encode_admission"]

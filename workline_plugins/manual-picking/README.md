@@ -40,13 +40,16 @@
 `added_direct_picks` 对应的退料货架进场尚无已批准运输映射，本轮不猜测其模板或执行时机。
 宿主通过静态 Celery 任务只扫描精确匹配的活动工作线，调用该 handler 并在同一事务内创建可靠 TransportTask；插件未启用时不执行其业务决策。
 
-Transport 结果按原 binding 和计划 Evidence 校验后，由插件适配器保存为 `PENDING` 的
-`TRANSPORT_RESULT` Evidence；只有该事务提交成功，宿主才推进结果发布游标。重复结果沿用原身份，
-`UNKNOWN` 只留证，不推定货架到位或解除任务占用。到位判定及后续业务 handler 尚未实现。
+Transport 结果按原 binding 和计划 Evidence 校验后，由插件适配器保存为 `APPLIED` 的
+`TRANSPORT_RESULT` Evidence；只有该事务提交成功，宿主才推进结果发布游标。插件消费时再次核对原
+Transport 身份和成功终点；`UNKNOWN` 只留证，不推定货架到位或解除任务占用。
+SCAN1 正常箱码还须具备当前转运架、计划内五层来源架面和 Bin 入口的权威位置投影及对应
+`SUCCEEDED` Transport；结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
+自动 `inbound_batch`、`return_batch` 与换面/换架调度尚未实现，不能把当前局部代码测试当作完整出库验收。
 
 部署通过 `InstalledWorkLinePlugin.picking_task_prepare_policy` 显式关联该能力。宿主静态注册通用 Celery 任务，只扫描精确版本匹配的
 活动工作线；插件未安装或没有活动工作线时不执行插件策略。新任务入站与工作线 START 在事务提交后主动唤醒，Beat 仅负责丢失唤醒恢复。
-设备事件仍按声明态可靠留证并标记为 `IGNORED`，不会自动重放历史观察事件。SCAN1—SCAN4 设备 handler 均未实现。
+已接入的 SCAN1—SCAN4 设备事件按冻结插件消费；未接入事件仍按声明态留证，不自动重放历史观察事件。
 急停、已发命令和已关联业务执行的结果继续走已有可靠处理。
 
 在后端根目录运行 `uv run --extra manual-picking pytest workline_plugins/manual-picking/tests -q` 验证插件装配。

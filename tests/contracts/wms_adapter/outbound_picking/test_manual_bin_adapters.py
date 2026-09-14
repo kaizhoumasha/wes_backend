@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 
 import pytest
+import wes_plugin_sdk as sdk
 
 from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 from src.app.wms_adapter.dispatch import WmsDispatchCode
+from src.app.wms_adapter.outbound_picking.manual_bin_typed import decode_admission_outcome, decode_completed_fact
 from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpResult
 from src.utils.canonical_json import canonical_json_digest
 
@@ -98,3 +100,34 @@ async def test_admission_sends_task_and_reconciles_a_different_response_task(res
     assert result.response_result == ("WORK_REQUIRED" if response_task == "PICK-001" else None)
     assert len(transport.requests) == 1
     assert json.loads(transport.requests[0].body)["data"]["task_id"] == "PICK-001"
+
+
+def test_manual_bin_persisted_wire_becomes_strict_typed_plugin_facts() -> None:
+    admission = decode_admission_outcome(
+        {
+            "operation_id": OPERATION_ID,
+            "code": "DECIDED",
+            "timestamp": 1_788_389_900_001,
+            "data": {"result": "WAIT", "retry_after_ms": 1000},
+        }
+    )
+    completed = decode_completed_fact(
+        {
+            "operation_id": OPERATION_ID,
+            "operation": "outbound.manual_bin.work_completed@v1",
+            "timestamp": 1_788_390_000_000,
+            "data": {
+                "task_id": "PICK-001",
+                "bin_code": "A000000001",
+                "result": "NORMAL",
+                "completed_at": 1_788_389_999_000,
+            },
+        }
+    )
+
+    assert admission == sdk.ManualBinAdmissionOutcome(operation_id=OPERATION_ID, result="WAIT", retry_after_ms=1000)
+    assert completed == sdk.ManualBinCompletedFact(
+        task_id="PICK-001", bin_code="A000000001", result="NORMAL", completed_at=1_788_389_999_000
+    )
+    with pytest.raises(ValueError):
+        decode_admission_outcome({"operation_id": OPERATION_ID, "code": "DECIDED", "data": {"result": "NO_WORK"}})

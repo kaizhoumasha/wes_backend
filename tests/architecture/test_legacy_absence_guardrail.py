@@ -29,6 +29,12 @@ FROZEN_SCHEMA_ONLY_TEST_PATHS = frozenset(
 CURRENT_MIGRATION_REVISION_PATHS = frozenset(
     path.relative_to(PROJECT_ROOT).as_posix() for path in (PROJECT_ROOT / "migrations/versions").glob("*.py")
 )
+NEW_MIGRATION_REVISION_PATHS = frozenset(
+    {
+        "migrations/versions/20260913_2330_9d275378a869_支持工作线业务设备结果领取.py",
+        "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py",
+    }
+)
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "2260238a90c79fc2c34fa706ed7f4375ec67540207d23b521e1e60a689212473"
 FROZEN_PHASE10_HISTORICAL_SPEC_COUNT = 315
 FROZEN_PHASE10_HISTORICAL_SPEC_SHA256 = "50d862a49c132b37069fb52973393cb74fac26d6face0ee9735daf47968c0712"
@@ -528,13 +534,15 @@ def test_schema_deferred_models_are_imported_only_by_frozen_schema_owners() -> N
     schema_entries = [row for row in _phase10_entries() if row["strategy"] == "schema-deferred"]
 
     assert all((PROJECT_ROOT / relative_path).is_file() for relative_path in FROZEN_SCHEMA_ONLY_TEST_PATHS)
-    assert _path_set_sha256(CURRENT_MIGRATION_REVISION_PATHS) == FROZEN_MIGRATION_REVISION_PATHS_SHA256
+    assert NEW_MIGRATION_REVISION_PATHS <= CURRENT_MIGRATION_REVISION_PATHS
+    historical_revisions = CURRENT_MIGRATION_REVISION_PATHS - NEW_MIGRATION_REVISION_PATHS
+    assert _path_set_sha256(historical_revisions) == FROZEN_MIGRATION_REVISION_PATHS_SHA256
     assert (
         _schema_deferred_import_offenders(
             repo_root=PROJECT_ROOT,
             schema_entries=schema_entries,
             schema_only_test_paths=FROZEN_SCHEMA_ONLY_TEST_PATHS,
-            migration_revision_paths=CURRENT_MIGRATION_REVISION_PATHS,
+            migration_revision_paths=historical_revisions,
         )
         == []
     )

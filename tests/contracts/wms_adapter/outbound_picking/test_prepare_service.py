@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
@@ -113,6 +114,8 @@ def _service(
     workline: object | None = None,
     queue: _Queue | None = None,
     policy: _Policy | None = None,
+    workline_reserved: AsyncMock | None = None,
+    business_blocker: AsyncMock | None = None,
 ) -> tuple[PickingTaskPrepareCoordinator, _Worklines, _Tasks, _Confirmations, _Queue]:
     workline_value = (
         workline
@@ -140,12 +143,30 @@ def _service(
             task_repository=tasks,  # type: ignore[arg-type]
             confirmation_service=confirmations,  # type: ignore[arg-type]
             task_queue_gateway=queue_value,  # type: ignore[arg-type]
+            workline_reserved=workline_reserved,
+            business_blocker=business_blocker,
         ),
         worklines,
         tasks,
         confirmations,
         queue_value,
     )
+
+
+@pytest.mark.asyncio
+async def test_automatic_prepare_does_not_claim_task_while_workline_is_reserved() -> None:
+    reserved = AsyncMock(return_value=True)
+    service, worklines, tasks, confirmations, queue = _service(workline_reserved=reserved)
+
+    result = await service.prepare_next_for_workline(7)
+
+    assert result.prepared is False
+    assert result.reason is PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
+    assert worklines.calls == ["lock_workline"]
+    reserved.assert_awaited_once()
+    assert tasks.claimed_type is None
+    assert confirmations.kwargs is None
+    assert queue.calls == 0
 
 
 @pytest.mark.asyncio
@@ -200,6 +221,22 @@ async def test_prepare_active_business_task_still_blocks_independent_request() -
     assert result.reason == PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
     assert tasks.claimed_type is None
     assert tasks.task.status == PickingTaskStatus.QUEUED
+    assert confirmations.kwargs is None
+    assert queue.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_waits_for_own_plugin_fifo_without_blocking_unrelated_history() -> None:
+    blocker = AsyncMock()
+    blocker.get_unfinished_workload_summary.return_value = {"count": 1, "sample": "return FIFO"}
+    service, worklines, tasks, confirmations, queue = _service(business_blocker=blocker)
+    worklines.unfinished = {"count": 1, "sample": {"status": "RECONCILING"}, "by_type": {"transport_tasks": True}}
+
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+
+    assert result.reason == PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
+    blocker.get_unfinished_workload_summary.assert_awaited_once()
+    assert tasks.claimed_type is None
     assert confirmations.kwargs is None
     assert queue.calls == 0
 

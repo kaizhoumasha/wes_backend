@@ -19,6 +19,8 @@ from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository
 from src.app.workline.repositories import workline_repository
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
@@ -42,6 +44,7 @@ class PickingTaskPlanActivationService:
         task_repository: Any = picking_task_repository,
         plan_repository: Any = None,
         transport_binding_repository: Any = transport_decision_binding_repository,
+        workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
     ) -> None:
         self._sessions = session_factory
         self._worklines = workline_repository
@@ -49,10 +52,21 @@ class PickingTaskPlanActivationService:
         self._plans = plan_repository or PickingTaskPlanDeltaRepository()
         self._bindings = transport_binding_repository
         self._transport_creator = transport_creator
+        self._workline_reserved = workline_reserved
         self._handlers = {
             (plugin.plugin_key, plugin.plugin_version): plugin.picking_task_plan_applied_handler
             for plugin in plugins
             if plugin.picking_task_plan_applied_handler is not None
+        }
+        self._batch_drivers = {
+            (plugin.plugin_key, plugin.plugin_version): driver
+            for plugin in plugins
+            if (driver := getattr(plugin, "picking_task_batch_driver", None)) is not None
+        }
+        self._completion_drivers = {
+            (plugin.plugin_key, plugin.plugin_version): driver
+            for plugin in plugins
+            if (driver := getattr(plugin, "picking_task_completion_driver", None)) is not None
         }
 
     @property
@@ -86,10 +100,14 @@ class PickingTaskPlanActivationService:
                 or (line.plugin_key, line.plugin_version) != plugin_identity
             ):
                 return 0
+            if self._workline_reserved is not None and await self._workline_reserved(db, workline_id):
+                return 0
             task = await self._tasks.get_executing_for_workline_for_update(db, workline_id)
+            if task is None:
+                driver = self._batch_drivers.get(plugin_identity)
+                return await driver.advance_completed_in_session(db, line) if driver is not None else 0
             if (
-                task is None
-                or task.status != PickingTaskStatus.EXECUTING
+                task.status != PickingTaskStatus.EXECUTING
                 or task.plan_blocked_evidence_id is not None
                 or task.last_applied_plan_revision < 1
             ):
@@ -142,7 +160,11 @@ class PickingTaskPlanActivationService:
                     resource_fence_id=intent.rack_id,
                     intent=intent,
                 )
-            return len(result.transports)
+            driver = self._batch_drivers.get(plugin_identity)
+            completion = self._completion_drivers.get(plugin_identity)
+            batch_count = await driver.advance_in_session(db, line, task) if driver is not None else 0
+            completion_count = await completion.advance_in_session(db, line, task) if completion is not None else 0
+            return len(result.transports) + batch_count + completion_count
 
     async def _pending_bin_racks(self, db: Any, task: Any, decided_racks: set[str]) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_bin_source_racks(db, task.id)
