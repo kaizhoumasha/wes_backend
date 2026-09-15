@@ -44,9 +44,11 @@ from src.app.wms_integration.outbound_picking.services.rack_departure import (
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
+from src.app.workline.services.workline_archive_service import WorkLineArchiveService
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
 from src.app.workline_integration_debug.composition import CombinedWorkLineConfirmationOwner
+from src.app.workline_integration_debug.repository import integration_run_repository
 from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
@@ -67,6 +69,7 @@ class DeploymentRuntime:
     plugins: tuple[InstalledWorkLinePlugin, ...]
     workline_start_service: WorkLineStartService
     workline_configuration_service: WorkLineConfigurationService
+    workline_archive_service: WorkLineArchiveService
     transport_outcome_publisher: InstalledPluginTransportOutcomePublisher
     wms_recovery_event_handler: object | None
     picking_task_prepare_service: PickingTaskPrepareBatchService
@@ -175,6 +178,10 @@ def build_deployment_runtime(
                 plugin.plugin_key: plugin.business_blocker for plugin in plugins if plugin.business_blocker is not None
             },
             device_cache_invalidator=device_service,
+        ),
+        workline_archive_service=WorkLineArchiveService(
+            plugins=plugins,
+            reservation_archiver=integration_run_repository,
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),
         wms_recovery_event_handler=None,

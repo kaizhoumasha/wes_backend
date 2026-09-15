@@ -2272,8 +2272,8 @@ class IntegrationDebugService:
             run = await self._require_run(db, run_id, for_update=True)
             if run.version != expected_version:
                 raise IntegrationDebugConflict("run version 已变化，请刷新后重试")
-            if run.status == IntegrationDebugRunStatus.CLOSED_BY_OPERATOR:
-                raise IntegrationDebugConflict("联调 run 已关闭")
+            if run.status in {IntegrationDebugRunStatus.CLOSED_BY_OPERATOR, IntegrationDebugRunStatus.ARCHIVED}:
+                raise IntegrationDebugConflict("联调 run 已关闭或归档")
             run.operator_user_id = actor_id
             run.updated_by = actor_id
             run.increment_version()
@@ -2293,8 +2293,8 @@ class IntegrationDebugService:
             raise IntegrationDebugConflict("当前用户不是该 run 的操作员；请先接管")
         if run.version != expected_version:
             raise IntegrationDebugConflict("run version 已变化，请刷新后重试")
-        if run.status == IntegrationDebugRunStatus.CLOSED_BY_OPERATOR:
-            raise IntegrationDebugConflict("联调 run 已关闭")
+        if run.status in {IntegrationDebugRunStatus.CLOSED_BY_OPERATOR, IntegrationDebugRunStatus.ARCHIVED}:
+            raise IntegrationDebugConflict("联调 run 已关闭或归档")
 
     def _assert_action(
         self,

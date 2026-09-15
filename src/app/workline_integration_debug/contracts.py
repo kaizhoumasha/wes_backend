@@ -25,6 +25,7 @@ class IntegrationDebugRunStatus(StrEnum):
     COMPLETED = "COMPLETED"
     NEEDS_ATTENTION = "NEEDS_ATTENTION"
     CLOSED_BY_OPERATOR = "CLOSED_BY_OPERATOR"
+    ARCHIVED = "ARCHIVED"
 
 
 class IntegrationDebugPhase(StrEnum):
@@ -110,6 +111,7 @@ _ALLOWED_TRANSITIONS = {
     IntegrationDebugRunStatus.COMPLETED: {IntegrationDebugRunStatus.CLOSED_BY_OPERATOR},
     IntegrationDebugRunStatus.NEEDS_ATTENTION: {IntegrationDebugRunStatus.CLOSED_BY_OPERATOR},
     IntegrationDebugRunStatus.CLOSED_BY_OPERATOR: set(),
+    IntegrationDebugRunStatus.ARCHIVED: set(),
 }
 
 

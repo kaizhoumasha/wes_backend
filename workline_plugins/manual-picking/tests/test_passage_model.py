@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from manual_picking.application.passage_model import ManualPickingPassage
@@ -115,3 +116,26 @@ async def test_manual_line_business_blocker_counts_only_unclosed_passages() -> N
     db.count = 0
 
     assert await repository.get_unfinished_workload_summary(db, 7) == {"count": 0, "sample": None}
+
+
+@pytest.mark.asyncio
+async def test_archive_open_work_marks_every_unclosed_passage_as_archived() -> None:
+    archived_at = datetime(2026, 9, 15, 7, 30)
+    rows = [
+        SimpleNamespace(disposition="OPEN", archived_at=None),
+        SimpleNamespace(disposition="NORMAL", archived_at=None),
+    ]
+
+    class Db:
+        flush = AsyncMock()
+
+        async def execute(self, _statement):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+    count = await PassageRepository().archive_open_work(Db(), workline_id=7, archived_at=archived_at)
+
+    assert count == 2
+    assert [(row.disposition, row.archived_at) for row in rows] == [
+        ("CLOSED", archived_at),
+        ("CLOSED", archived_at),
+    ]

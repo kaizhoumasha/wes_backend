@@ -15,6 +15,7 @@ from .plane import (
 from .workline import (
     LineType,
     WorkLine,
+    WorkLineArchiveOpenWorkResponse,
     WorkLineBase,
     WorkLineBaseConfigurationResponse,
     WorkLineBaseConfigurationUpdate,
@@ -40,6 +41,7 @@ __all__ = [
     "PlaneSceneView",
     "PlaneSnapshot",
     "WorkLine",
+    "WorkLineArchiveOpenWorkResponse",
     "WorkLineBase",
     "WorkLineBaseConfigurationResponse",
     "WorkLineBaseConfigurationUpdate",

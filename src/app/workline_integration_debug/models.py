@@ -21,7 +21,7 @@ class IntegrationRun(EnterpriseMixin, DataTableMixin, table=True):
     __table_args__ = (
         CheckConstraint(
             "status IN ('CREATED','WAITING_TASK','ACTIVE','WAITING_EXTERNAL','COMPLETED',"
-            "'NEEDS_ATTENTION','CLOSED_BY_OPERATOR')",
+            "'NEEDS_ATTENTION','CLOSED_BY_OPERATOR','ARCHIVED')",
             name="workline_integration_run_status_valid",
         ),
         CheckConstraint(
@@ -40,8 +40,8 @@ class IntegrationRun(EnterpriseMixin, DataTableMixin, table=True):
             name="workline_integration_run_phase_valid",
         ),
         CheckConstraint(
-            "(status = 'CLOSED_BY_OPERATOR' AND active_scope IS NULL) OR "
-            "(status <> 'CLOSED_BY_OPERATOR' AND active_scope IS NOT NULL)",
+            "(status IN ('CLOSED_BY_OPERATOR','ARCHIVED') AND active_scope IS NULL) OR "
+            "(status NOT IN ('CLOSED_BY_OPERATOR','ARCHIVED') AND active_scope IS NOT NULL)",
             name="workline_integration_run_active_scope_consistent",
         ),
         UniqueConstraint("run_id", name="ux_workline_integration_runs_run_id"),

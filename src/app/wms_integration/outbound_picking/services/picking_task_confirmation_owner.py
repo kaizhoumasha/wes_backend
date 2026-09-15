@@ -67,6 +67,8 @@ class PickingTaskConfirmationOwnerService:
             allowed_states = {PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED}
         if operation == COMPLETION_CONFIRM_OPERATION:
             allowed_states = {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}
+        # 归档只结束新业务准入；归档前冻结的 WMS 可靠义务仍须闭合原 identity。
+        allowed_states.add(PickingTaskStatus.ARCHIVED)
         task = await self._tasks.get_by_id_for_update(db, picking_task_id)  # type: ignore[arg-type]
         return bool(
             task is not None

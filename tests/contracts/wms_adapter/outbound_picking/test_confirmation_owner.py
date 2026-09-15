@@ -12,6 +12,28 @@ from src.app.wms_integration.outbound_picking.services.picking_task_confirmation
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "operation",
+    [
+        "outbound.picking_task.prepare@v1",
+        "outbound.picking_task.completion_confirm@v1",
+        "outbound.return_rack.arrival_report@v1",
+        "outbound.bin.inbound_batch@v1",
+        "outbound.bin.work_plan@v1",
+        "outbound.rack.departure_decide@v1",
+    ],
+)
+async def test_archived_task_keeps_its_frozen_confirmation_owner(operation):
+    repository = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status="ARCHIVED", workline_id=1))
+    )
+
+    assert await PickingTaskConfirmationOwnerService(repository).validate_response_owner(
+        object(), picking_task_id=1, operation=operation
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "state,accepted", [("QUEUED", False), ("PREPARING", True), ("EXECUTING", True), ("EXECUTION_COMPLETED", True)]
 )
 async def test_arrival_obligation_survives_business_progress(state, accepted):

@@ -511,6 +511,7 @@ def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() 
         "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
         "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
         "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+        "tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
@@ -1397,6 +1398,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260913_2338_e5c5dfb4373f_添加人工拣料经过状态.py",
         "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py",
         "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py",
+        "migrations/versions/20260915_1440_2b1adb268fdc_增加作业线清线归档状态.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

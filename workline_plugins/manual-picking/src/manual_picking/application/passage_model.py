@@ -58,6 +58,10 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
             "(scan4_evidence_id IS NULL) = (scan4_received_at IS NULL)",
             name="manual_picking_scan4_order_complete",
         ),
+        CheckConstraint(
+            "archived_at IS NULL OR disposition = 'CLOSED'",
+            name="manual_picking_archive_closed",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -96,6 +100,7 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
     scan3_route: str | None = Field(default=None, max_length=20)
     scan4_command_code: str | None = Field(default=None, max_length=160)
     return_state: str = Field(default="NONE", max_length=20)
+    archived_at: datetime | None = Field(default=None, description="运维清线归档时间；不代表业务或设备完成")
 
 
 __all__ = ["ManualPickingPassage"]

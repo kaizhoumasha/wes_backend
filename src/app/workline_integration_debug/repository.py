@@ -9,9 +9,12 @@ from sqlalchemy import exists, select
 from src.app.execution.models import InboundEvidence, WmsConfirmation
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
+from src.app.workline_integration_debug.contracts import IntegrationDebugRunStatus
 from src.app.workline_integration_debug.models import IntegrationRun, IntegrationRunStep
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -47,6 +50,25 @@ class IntegrationRunRepository:
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)
+
+    async def archive_active_for_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        archived_at: datetime,
+    ) -> int:
+        """释放联调 run 对作业线的占用，保留所有可靠对象关联。"""
+
+        run = await self.get_active_for_workline(db, workline_id, for_update=True)
+        if run is None:
+            return 0
+        run.status = IntegrationDebugRunStatus.ARCHIVED
+        run.active_scope = None
+        run.closed_at = archived_at
+        run.increment_version()
+        await db.flush()
+        return 1
 
     async def get_active_for_device_code(self, db: AsyncSession, device_code: str) -> IntegrationRun | None:
         columns = cast("Any", IntegrationRun).__table__.c
