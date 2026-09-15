@@ -4,7 +4,7 @@
 负责传送带料箱人工拣料和退料货架直接取料两条出库路径，不承担人工入库。
 
 当前代码已包含声明与装配、PickingTask prepare 与计划资源进场决策、原 Transport 结果接收、
-四点扫码、WMS 料箱准入与完成、进箱/退箱批次及 PickingTask 完成推进。
+四点扫码、WMS 料箱准入与完成、进箱/退箱批次、五层来源架换面/离场及 PickingTask 完成推进。
 退料货架直接取料与现场物理验收仍未完成；本机 Mock 和单元测试不代表现场验收。
 `manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
 
@@ -44,8 +44,11 @@
 Transport 结果按原 binding 和计划 Evidence 校验后，由插件适配器保存为 `APPLIED` 的
 `TRANSPORT_RESULT` Evidence；只有该事务提交成功，宿主才推进结果发布游标。插件消费时再次核对原
 Transport 身份和成功终点；`UNKNOWN` 只留证，不推定货架到位或解除任务占用。
-SCAN1 正常箱码还须具备当前转运架、计划内五层来源架面和 Bin 入口的权威位置投影及对应
-`SUCCEEDED` Transport；结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
+当前面闭合且安全门禁满足后，同架下一面使用唯一 `CTU02` 并等待原 Transport 成功；换架或末架回库先取得
+`outbound.rack.departure_decide@v1` 的 `ZONE` 去向，再创建唯一 `CTU03 / RACK → ZONE`。旧架离场与新架进场
+分别按原 Transport 身份收敛，新架自己的进场 Transport `SUCCEEDED` 后即可推进，不等待旧架离场终态。
+SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
+`SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
 批次调度和扫码流程已有本地实现，但不能把代码测试当作完整出库或真实设备验收。
 
 部署通过 `InstalledWorkLinePlugin.picking_task_prepare_policy` 显式关联该能力。宿主静态注册通用 Celery 任务，只扫描精确版本匹配的
@@ -55,3 +58,5 @@ SCAN1 正常箱码还须具备当前转运架、计划内五层来源架面和 B
 
 在后端根目录运行 `uv run --extra manual-picking pytest workline_plugins/manual-picking/tests -q` 验证插件装配。
 基础声明校验与绑定规则由 SDK / 宿主测试承接，不复制到插件测试。
+完整业务顺序与联调边界见[人工出库拣料交互要求](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md)
+和[人工出库货架搬运规则](../../docs/integration/manual-outbound-rack-transport.md)。
