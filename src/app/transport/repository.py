@@ -8,7 +8,11 @@ from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlmodel import col
 
 from src.app.execution.locks import position_projection_lock_identity
-from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS, TRANSPORT_POSITION_OPERATION
+from src.app.transport.contracts import (
+    MAX_SUBMIT_ATTEMPTS,
+    TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
+    TRANSPORT_POSITION_OPERATION,
+)
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugPositionProjection,
@@ -62,11 +66,19 @@ class TransportRepository:
         ordered_authority_workline_id: int | None,
         current_caller_workline_id: str,
     ) -> bool:
-        competing_fact = (
-            col(TransportTask.status).notin_(("SUCCEEDED", "FAILED")),
-            col(TransportMember.updated_at) >= current_created_at,
-            col(TransportTask.authority_workline_id).is_distinct_from(ordered_authority_workline_id),
-            col(TransportTask.caller_json)["workline_id"].as_string().is_distinct_from(current_caller_workline_id),
+        # A closed fact predating the current ordered task is historical context,
+        # not a live conflict. Only an open or newer fact from another authority/
+        # caller can make the result indeterminate.
+        competing_fact = and_(
+            or_(
+                col(TransportTask.status).notin_(("SUCCEEDED", "FAILED")),
+                col(TransportMember.updated_at) >= current_created_at,
+            ),
+            or_(
+                col(TransportTask.authority_workline_id).is_distinct_from(ordered_authority_workline_id),
+                col(TransportTask.caller_json)["workline_id"].as_string().is_distinct_from(current_caller_workline_id),
+            ),
+            col(TransportTask.caller_json)["workline_id"].as_string() != TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
         )
         return bool(
             await db.scalar(
@@ -77,7 +89,7 @@ class TransportRepository:
                         col(TransportMember.transport_task_id) != transport_task_id,
                         col(TransportMember.last_operation_id).is_not(None),
                         col(TransportTask.transport_task_id) == col(TransportMember.transport_task_id),
-                        or_(*competing_fact) if ordered_authority_workline_id is not None else True,
+                        competing_fact if ordered_authority_workline_id is not None else True,
                     )
                 )
             )
