@@ -5,11 +5,13 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from sqlalchemy import delete
 
-from src.app.transport.models import TransportEvidence, TransportTask
+from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.support.transport_projections import ensure_projection_authority
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -220,6 +222,64 @@ async def test_task_with_latest_evidence_uses_one_coherent_postgres_snapshot(
             task = await repository.get_task(cleanup_db, task_id, for_update=True)
             if task is not None:
                 await cleanup_db.delete(task)
+
+
+async def test_closed_historical_debug_position_fact_does_not_block_ordered_transport(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    now = timezone.now_for_db()
+    current_task_id = f"transport-current-{suffix}"
+    debug_task_id = f"transport-debug-{suffix}"
+    object_id = f"rack-{suffix}"
+    repository = TransportRepository()
+
+    async with integration_session_factory.begin() as setup_db:
+        authority_id = await ensure_projection_authority(setup_db)
+        current_task = _task(current_task_id, f"request-current-{suffix}", "d" * 64, now)
+        current_task.authority_workline_id = authority_id
+        current_task.caller_json = {"workline_id": str(authority_id), "station_id": None}
+        debug_task = _task(debug_task_id, f"request-debug-{suffix}", "e" * 64, now - timedelta(hours=1))
+        debug_task.status = "SUCCEEDED"
+        debug_task.caller_json = {"workline_id": "TRANSPORT_DEBUG", "station_id": "STATION-DEBUG"}
+        setup_db.add_all([current_task, debug_task])
+        await setup_db.flush()
+        setup_db.add(
+            TransportMember(
+                transport_task_id=debug_task_id,
+                ordinal=0,
+                object_type="RACK",
+                object_id=object_id,
+                source_json={"location_code": "SOURCE"},
+                target_json={"location_code": "TARGET"},
+                status="SUCCEEDED",
+                position_unknown=False,
+                last_operation_id=new_uuid7(),
+                updated_at=now - timedelta(hours=1),
+            )
+        )
+
+    try:
+        async with integration_session_factory() as db:
+            assert (
+                await repository.has_other_position_facts(
+                    db,
+                    object_type="RACK",
+                    object_id=object_id,
+                    transport_task_id=current_task_id,
+                    current_created_at=now,
+                    ordered_authority_workline_id=authority_id,
+                    current_caller_workline_id=str(authority_id),
+                )
+                is False
+            )
+    finally:
+        async with integration_session_factory.begin() as cleanup_db:
+            await cleanup_db.execute(delete(TransportMember).where(TransportMember.transport_task_id == debug_task_id))
+            for task_id in (current_task_id, debug_task_id):
+                task = await repository.get_task(cleanup_db, task_id, for_update=True)
+                if task is not None:
+                    await cleanup_db.delete(task)
 
 
 async def test_recent_task_query_uses_stable_keyset_and_projects_latest_evidence(

@@ -121,7 +121,7 @@ async def test_position_fact_without_final_result_invalidates_other_task_aggrega
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("directions", [("normal", "debug"), ("debug", "normal"), ("normal", "no_owner")])
-async def test_cross_projection_domains_invalidate_existing_aggregate(reconciling_service, monkeypatch, directions):
+async def test_projection_domains_remain_isolated_for_debug_transport(reconciling_service, monkeypatch, directions):
     from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
 
     monkeypatch.setattr(PositionProjectionRepository, "lock_projection", AsyncMock())
@@ -159,11 +159,14 @@ async def test_cross_projection_domains_invalidate_existing_aggregate(reconcilin
             for model in (PositionProjection, TransportDebugPositionProjection):
                 projection = await db.scalar(select(model).where(model.object_id == "mixed-rack"))
                 if projection is not None:
-                    assert projection.position_unknown is (index == 1)
+                    expected_unknown = (model is PositionProjection and directions[1] == "no_owner" and index == 1) or (
+                        model is TransportDebugPositionProjection and directions == ("normal", "debug") and index == 1
+                    )
+                    assert projection.position_unknown is expected_unknown
                     source_index = 0 if (model is PositionProjection) == (directions[0] == "normal") else 1
                     assert projection.source_transport_task_id == handles[source_index].transport_task_id
                     assert projection.source_operation_id == f"mixed-{source_index}"
-            if index == 1 and "debug" in directions:
+            if index == 1 and directions == ("normal", "debug"):
                 with pytest.raises(TransportContractError):
                     await service.assert_debug_rack_position_in_session(db, "mixed-rack", RackPosition("B"), "90")
 

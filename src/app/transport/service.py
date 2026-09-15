@@ -1295,12 +1295,18 @@ class TransportService:
     async def _invalidate_other_task_positions(
         self, db: AsyncSession, task: TransportTask, member: TransportMember
     ) -> None:
-        # 调用方持有同一对象事务锁。两张诊断投影都不能将另一任务的事实继续视为确定位置。
+        # 调用方持有同一对象事务锁。联调事实只影响联调投影，不能污染业务投影。
+        is_debug = task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID
         projections = (
-            await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True),
-            await self._repository.get_debug_position_projection(
-                db, member.object_type, member.object_id, for_update=True
-            ),
+            (
+                await self._repository.get_debug_position_projection(
+                    db, member.object_type, member.object_id, for_update=True
+                ),
+            )
+            if is_debug
+            else (
+                await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True),
+            )
         )
         for projection in projections:
             if projection is not None and projection.source_transport_task_id != task.transport_task_id:
