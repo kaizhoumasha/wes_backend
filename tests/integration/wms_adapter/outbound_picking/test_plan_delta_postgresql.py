@@ -13,12 +13,15 @@ from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceConflict,
     InboundEvidenceKind,
+    PositionProjection,
+    TransportDecisionBinding,
     WmsConfirmation,
     WmsConfirmationStatus,
 )
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.services import InboundEvidenceService
 from src.app.sys.models.audit_log import AuditLog
+from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
@@ -26,6 +29,7 @@ from src.app.wms_integration.outbound_picking.models import DirectPickExecution,
 from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
+from src.utils.timezone import timezone
 
 pytest_plugins = ("tests.integration.conftest",)
 NOW = datetime(2026, 9, 6)
@@ -531,6 +535,107 @@ async def test_plan_member_constraints_are_enforced_by_postgresql(integration_se
                 )
             )
             await db.flush()
+
+
+async def test_source_member_ids_preserve_wire_rack_and_face_order(integration_session_factory, prepared):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    task_name, ids = prepared
+    event = _event(
+        task_name,
+        added_bin_source_racks=[
+            {"rack_id": "Z-RACK", "rack_face": ["270", "90"]},
+            {"rack_id": "A-RACK", "rack_face": ["90"]},
+        ],
+    )
+    assert (
+        await PickingTaskPlanDeltaService(integration_session_factory).record(event, received_at=NOW)
+    ).code == "RECEIVED"
+    async with integration_session_factory() as db:
+        rows = await PickingTaskPlanDeltaRepository().list_bin_source_racks(db, ids[0])
+    assert [(row.rack_id, row.rack_face) for row in rows] == [
+        ("Z-RACK", "270"),
+        ("Z-RACK", "90"),
+        ("A-RACK", "90"),
+    ]
+    assert [row.id for row in rows] == sorted(row.id for row in rows)
+
+
+async def test_completed_source_owner_uses_current_transport_and_plan_identity(integration_session_factory, prepared):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    task_name, ids = prepared
+    event = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["90"]}])
+    assert (
+        await PickingTaskPlanDeltaService(integration_session_factory).record(event, received_at=NOW)
+    ).code == "RECEIVED"
+    client_request_id = new_uuid7()
+    transport_task_id = new_uuid7()
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, ids[0])
+        task.status = "EXECUTION_COMPLETED"
+        source = (await PickingTaskPlanDeltaRepository().list_bin_source_racks(db, ids[0]))[0]
+        db.add(
+            TransportTask(
+                transport_task_id=transport_task_id,
+                client_request_id=client_request_id,
+                request_digest="a" * 64,
+                kind="RACK_MOVE",
+                caller_json={"workline_id": str(ids[1])},
+                request_json={"rack_id": "SOURCE"},
+                submit_operation_id=new_uuid7(),
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status="SUCCEEDED",
+                authority_workline_id=ids[1],
+                created_at=timezone.now_for_db(),
+                updated_at=timezone.now_for_db(),
+            )
+        )
+        db.add(
+            TransportDecisionBinding(
+                correlation_id=f"pt:{ids[0]}:e:{source.source_evidence_id}:rack:SOURCE",
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                workline_id=ids[1],
+                resource_fence_id="SOURCE",
+                client_request_id=client_request_id,
+                source_evidence_id=source.source_evidence_id,
+            )
+        )
+        db.add(
+            PositionProjection(
+                object_type="RACK",
+                object_id="SOURCE",
+                workline_id=ids[1],
+                position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
+                arrival_face="90",
+                source_operation_id=new_uuid7(),
+                source_transport_task_id=transport_task_id,
+            )
+        )
+    try:
+        async with integration_session_factory() as db:
+            repository = PickingTaskPlanDeltaRepository()
+            assert await repository.source_transport_matches(
+                db, ids[1], "SOURCE", source.source_evidence_id, transport_task_id
+            )
+            owner = await repository.first_completed_source_owner_at_position(db, ids[1], "FIVE-POS")
+            assert owner is not None and owner.id == ids[0]
+            assert await repository.first_completed_source_owner_at_position(db, ids[1], "OTHER-POS") is None
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(PositionProjection).where(PositionProjection.source_transport_task_id == transport_task_id)
+            )
+            await db.execute(
+                delete(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_request_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.client_request_id == client_request_id))
 
 
 async def test_source_queries_return_only_candidates_with_large_history(

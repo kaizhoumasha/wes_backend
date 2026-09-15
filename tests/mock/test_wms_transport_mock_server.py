@@ -371,7 +371,13 @@ def test_manual_console_decisions_reject_invalid_data_and_replay_exactly(operati
     assert replay.json() == first.json()
 
 
-def test_decision_route_returns_contract_valid_rack_departure_destination() -> None:
+@pytest.mark.parametrize(
+    ("current_location", "destination_type"),
+    [("KT16", "ZONE"), ("OUT65", "RACK_POSITION")],
+)
+def test_decision_route_returns_role_appropriate_rack_departure_destination(
+    current_location: str, destination_type: str
+) -> None:
     request = {
         "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
         "operation": "outbound.rack.departure_decide@v1",
@@ -379,7 +385,7 @@ def test_decision_route_returns_contract_valid_rack_departure_destination() -> N
         "data": {
             "task_id": "PICK-20260811-001",
             "rack_id": "RACK-01",
-            "current_location": {"type": "RACK_POSITION", "location_code": "sorting-3-rack-position"},
+            "current_location": {"type": "RACK_POSITION", "location_code": current_location},
             "current_face": "A",
         },
     }
@@ -390,7 +396,7 @@ def test_decision_route_returns_contract_valid_rack_departure_destination() -> N
     assert response.status_code == 200
     assert response.json()["data"] == {
         "result": "READY",
-        "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
+        "rack_destination": {"type": destination_type, "location_code": "WH05"},
     }
 
 

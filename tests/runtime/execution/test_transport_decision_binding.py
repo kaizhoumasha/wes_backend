@@ -1,6 +1,11 @@
 """插件 Transport Decision 只映射到稳定的 Transport client identity。"""
 
+import pytest
+import wes_plugin_sdk as sdk
+
 from src.app.execution import models as execution_models
+from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
+from src.app.transport.contracts import RackPosition, RackReference, RcsTemplateId, ZonePosition
 
 
 def test_execution_exports_neutral_transport_decision_binding() -> None:
@@ -49,3 +54,67 @@ def test_binding_metadata_scopes_decision_identity_without_business_cardinality(
 
 def test_batch_reconciliation_binding_is_not_exported() -> None:
     assert not hasattr(execution_models, "InboundEvidenceExecutionBinding")
+
+
+@pytest.mark.asyncio
+async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision() -> None:
+    class Bindings:
+        def __init__(self) -> None:
+            self.rows = {}
+
+        async def lock_decision_identity(self, _db, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        async def get_by_decision_identity_for_update(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+            return self.rows.get((kwargs["workline_id"], kwargs["correlation_id"], kwargs["step"]))
+
+        async def add(self, _db, binding):  # type: ignore[no-untyped-def]
+            self.rows[binding.decision_identity] = binding
+            return binding
+
+    class Transport:
+        def __init__(self) -> None:
+            self.rotates = []
+            self.moves = []
+
+        async def rotate_rack_in_session(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+            self.rotates.append(kwargs)
+
+        async def move_rack_in_session(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+            self.moves.append(kwargs)
+
+    binding_repo, transport = Bindings(), Transport()
+    ids = iter(("rotate-request", "depart-request"))
+    creator = ReliableRackTransportCreator(transport, binding_repository=binding_repo, uuid_factory=lambda: next(ids))
+    rotate = {
+        "workline_id": 7,
+        "source_evidence_id": 51,
+        "correlation_id": "pt:31:source-face:12",
+        "step": "MANUAL_PICKING_SOURCE_RACK_ROTATE",
+        "rack_id": "R1",
+        "position": sdk.TransportRackPosition("FIVE-POS"),
+        "target_face": "270",
+    }
+    await creator.create_rotate(object(), **rotate)
+    await creator.create_rotate(object(), **rotate)
+    assert [call["client_request_id"] for call in transport.rotates] == ["rotate-request", "rotate-request"]
+    assert all(call["position"] == RackPosition("FIVE-POS") for call in transport.rotates)
+    assert all(call["rcs_template_id"] == RcsTemplateId.CTU02 for call in transport.rotates)
+
+    depart = {
+        "workline_id": 7,
+        "source_evidence_id": 71,
+        "operation_id": "departure-op",
+        "step": "MANUAL_PICKING_SOURCE_RACK_OUT",
+        "rack_id": "R1",
+        "destination": sdk.TransportZonePosition("WH05"),
+    }
+    await creator.create_departure(object(), **depart)
+    await creator.create_departure(object(), **depart)
+    assert [call["client_request_id"] for call in transport.moves] == ["depart-request", "depart-request"]
+    assert all(
+        call["source"] == RackReference("R1") and call["target"] == ZonePosition("WH05") for call in transport.moves
+    )
+    assert all(
+        call["rcs_template_id"] == RcsTemplateId.CTU03 and call["target_face"] is None for call in transport.moves
+    )

@@ -297,6 +297,7 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
 async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_target() -> None:
     module = import_module("manual_picking.application.batch_driver")
     source = SimpleNamespace(
+        object_id="R1",
         workline_id=7,
         position_unknown=False,
         position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
@@ -327,7 +328,10 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
 
     class Plans:
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return [SimpleNamespace(rack_id="R1", rack_face="90")]
+            return [SimpleNamespace(id=1, rack_id="R1", rack_face="90", source_evidence_id=11)]
+
+        async def source_transport_matches(self, _db, *_args):  # type: ignore[no-untyped-def]
+            return True
 
     class Flow:
         def __init__(self):
@@ -338,7 +342,16 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
             return True
 
     flow = Flow()
-    driver = module.ManualPickingBatchDriver(flow, plans=Plans(), positions=Positions(), transports=TransportReader())
+    driver = module.ManualPickingBatchDriver(
+        flow,
+        plans=Plans(),
+        positions=Positions(),
+        transports=TransportReader(),
+        rack_creator=object(),
+        departure_scheduler=object(),
+        departure_reader=object(),
+        passages=object(),
+    )
     line = SimpleNamespace(
         id=7,
         line_code="LINE-1",
@@ -349,7 +362,9 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
             "OUTLET": {"location_id": "CNV0302"},
         },
     )
-    task = SimpleNamespace(id=31, task_id="PICK-1", target_rack_id="TARGET-1", target_rack_face="270")
+    task = SimpleNamespace(
+        id=31, task_id="PICK-1", status="EXECUTING", target_rack_id="TARGET-1", target_rack_face="270"
+    )
 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["rack_id"] == "R1"
@@ -385,13 +400,20 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
 
     class Plans:
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return [SimpleNamespace(rack_id="R1", rack_face="90")]
+            return [SimpleNamespace(id=1, rack_id="R1", rack_face="90", source_evidence_id=11)]
+
+        async def first_completed_source_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
+            return task
+
+        async def source_transport_matches(self, _db, *_args):  # type: ignore[no-untyped-def]
+            return True
 
     class Positions:
         async def get(self, _db, _kind, rack_id):  # type: ignore[no-untyped-def]
             if rack_id == "TARGET-1":
                 return None
             return SimpleNamespace(
+                object_id="R1",
                 workline_id=7,
                 position_unknown=False,
                 position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
@@ -417,8 +439,11 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         plans=Plans(),
         positions=Positions(),
         transports=TransportReader(),
-        passages=Passages(),
         tasks=Tasks(),
+        rack_creator=object(),
+        departure_scheduler=object(),
+        departure_reader=object(),
+        passages=object(),
     )
     line = SimpleNamespace(
         id=7,

@@ -29,9 +29,13 @@
 示例：`610007 / "90" → F01 / OUT65`；`510002 / "90" → CTU01 / KT16`；
 `510012 / "270" → CTU01 / KT17`。同一时刻能否执行仍由现有资源准入控制。
 
-本次代码落实第 4 步出库及其共享合同所需的 `F01 + RACK → RACK_POSITION`。
-表中转运货架回库、CK04 换面与统一换面 wire 位置规则已确认，后续对应入口仍需单独对齐；
-不能将规则记录视为这些入口已实现或供应商已验收。
+联调页面第 4 步仍只创建进场 Transport。`manual-picking` 工作线业务在面级结束后，按已应用计划与当前权威位置
+创建五层来源架 `CTU02` 换面或经 WMS `departure_decide READY` 后创建 `CTU03 / RACK → ZONE` 离场；
+转运货架回库与 `CK04` 换面仍属独立合同。代码接入不代表 WMS/ECS 已接收或现场货架已完成物理闭环。
+
+多个五层来源架的进场与前一架 `CTU03` 离场独立：`CTU03 ACCEPTED` 或 `DELIVERY_UNKNOWN` 后，WES 只将前一架在
+KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的原进场 Transport 一旦 `SUCCEEDED`，即可继续其当前面流程，
+无需等待前一架最终位置回调。前一架若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。
 

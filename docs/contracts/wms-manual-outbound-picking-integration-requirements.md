@@ -38,20 +38,22 @@ updated_at: 2026-09-04
 flowchart TD
     T1["WMS→WES<br/>picking_task.issued@v1"] --> T2["WES→WMS<br/>picking_task.prepare@v1"] --> T3["WMS→WES<br/>picking_task.plan_delta@v1"]
 
-    T3 --> A0
+    T3 --> A00
     T3 --> B0
 
     subgraph A["子流程 A：五层货架 Bin，点1～点4"]
-        A0["WES→WMS<br/>bin.inbound_batch@v1"] --> A1["点1 SCAN<br/>入 FIFO 缓存"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
-        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["WES→WMS<br/>bin.return_batch@v1"]
+        A00["来源架权威到位<br/>匹配原 Transport"] --> A0["当前面 bin.inbound_batch@v1"] --> A01["入站 BIN_MOVE<br/>等待权威成功"] --> A1["点1 SCAN<br/>实扫匹配并入 FIFO"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
+        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["WES→WMS<br/>bin.return_batch@v1"] --> A9["退箱 BIN_MOVE<br/>等待权威结果"] --> A10{"当前面已完成？"}
+        A10 -->|同架后续面| A11["CTU02 换面<br/>等待权威新面"] --> A0
+        A10 -->|换架或末架回库| A12["departure_decide READY<br/>CTU03 RACK→ZONE<br/>独立闭合当前架"]
     end
 
     subgraph B["子流程 B：退料货架直接取料，§3.5"]
         B0["WES→WMS<br/>return_rack.arrival_report@v1"] --> B1["PDA 黑盒直接取料"] --> B2["WMS→WES<br/>direct_pick_completed@v1"] --> B3["WES 本地判断<br/>该面已结清"] --> B4["WES→WMS<br/>rack.departure_decide@v1"]
     end
 
-    A8 --> DONE["WES→WMS<br/>picking_task.completion_confirm@v1"]
-    B4 --> DONE
+    A7 -. "本地任务完成条件" .-> DONE["WES→WMS<br/>picking_task.completion_confirm@v1"]
+    B3 -. "本地任务完成条件" .-> DONE
 ```
 
 **任务下发与计划**
@@ -66,7 +68,9 @@ flowchart TD
 
 | \# | 发起方 → 接收方 | Operation / 事件 | 关键字段 | 结果 |
 | --- | --- | --- | --- | --- |
-| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=A` | `READY`，`bin_code=A000000001` |
+| 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
+| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
+| 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
@@ -75,7 +79,13 @@ flowchart TD
 | 9A | WES 本地执行 | 应用完成事实并释放 point2 | 匹配原 completion evidence | 按稳定命令身份执行 `MOVE_FORWARD`，分别记录应用与物理结果 |
 | 10A | 设备 → WES | 点3 SCAN | `A000000001-B`，本次正常授权 | `MOVE_FORWARD`，放行 |
 | 11A | 设备 → WES | 点4 SCAN | `A000000001-B`，前序正常放行 | `MOVE_FORWARD` 匹配 ECS `SUCCESS` 后入队尾 |
-| 12A | WES → WMS | `outbound.bin.return_batch@v1` | `A000000001` 从队首取出 | `READY`，搬回五层货架 |
+| 12A | WES → WMS | `outbound.bin.return_batch@v1` | 工作线 `RETURN_BUFFER` FIFO 队首 `A000000001`；目标为当前在位 `RACK-5F-001/90` | `READY` 冻结目标；候选可来自不同 PickingTask |
+| 12A-1 | RCS/ECS → WES | 退箱 `BIN_MOVE` | 按原 `return_batch` 的目标储位 | 等待原 Transport 权威结果，完成后关闭对应 FIFO 成员 |
+| 12A-2 | WES/RCS/ECS | 当前面闭合后换面或换架 | 同架下一面 `270` 用 `CTU02`；当前货架经 `departure_decide READY` 后用 `CTU03` 从 `RACK` 到 WMS `ZONE` | 同架换面等待原 `CTU02 SUCCEEDED`；换架时当前架离场独立闭合，后续架只要自己的原进场 Transport `SUCCEEDED` 就回到 4A，不等待当前架 `CTU03` 终态 |
+
+`CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
+`position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。后续最终位置回调只补充该货架的诊断事实；回调缺失时
+该货架保持 unknown，不阻塞另一货架凭自身匹配的进场 `SUCCEEDED` 继续执行。
 
 **子流程 B：退料货架直接取料，与 A 并行（§3.5）**
 
@@ -91,7 +101,7 @@ flowchart TD
 
 | \# | 发起方 → 接收方 | Operation | 关键字段 | 结果 |
 | --- | --- | --- | --- | --- |
-| 13 | WES → WMS | `outbound.picking_task.completion_confirm@v1` | 子流程 A、B 及转运货架清点均满足本地完成前提 | `COMPLETED` |
+| 13 | WES → WMS | `outbound.picking_task.completion_confirm@v1` | 子流程 A、B 的本地任务明细满足 §13 完成前提 | `COMPLETED`；已完成任务的退箱与货架离场继续按原身份执行，不以全部回库作为确认前提 |
 
 **变体（NG）**：若人工在 point2 判定 `A000000001` 不合格，第 8A 步的 `work_completed@v1` 改为 `result=NG`；WES 应用后仍创建唯一 point2 释放命令，但第 10A 步 point3 按 §3.3 的表格走 `MOVE_LEFT`，该 Bin 不进入 `RETURN_BUFFER`（不影响子流程 B）。
 
@@ -562,6 +572,11 @@ evidence 的业务应用事务只允许数据库操作：
 
 插件在当前工位记录中关联原 DeviceCommand。相同身份与相同载荷只取得原命令，载荷漂移是冲突；命令可能已送达或结果未知时保留
 原身份等待权威终态。只有匹配的物理离位/释放事实才结束本次动作，不新增全程料箱生命周期。
+
+未关联任何当前 Passage 或 DeviceCommand 的历史扫码 Evidence 仅供诊断。无论其 `published_at` 是否为空，都不构成
+`SCAN1`～`SCAN4`、批次推进或任务完成门禁；当前 Passage、明确 FIFO 队首和已冻结未闭合命令仍按原顺序规则处理。
+同样，未被当前 `WmsConfirmation.response_evidence_id` 精确引用的历史 WMS batch Evidence 不构成批次门禁；匹配当前确认的
+未应用结果、当前确认义务和当前 Transport 仍必须闭合。
 
 ### 9.4 `WmsConfirmation` 中立业务 owner 关联
 

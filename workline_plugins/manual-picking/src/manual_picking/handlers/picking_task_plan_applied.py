@@ -47,9 +47,7 @@ class PickingTaskPlanAppliedHandler:
                 )
             )
 
-        ordered_bin_racks = tuple(
-            sorted(fact.pending_bin_source_racks, key=lambda rack: (rack.plan_revision, rack.rack_id))
-        )
+        ordered_bin_racks = fact.pending_bin_source_racks
         bin_source_target = (
             _required_rack_position(fact.position_bindings, position_role=FIVE_RACK.slot_key)
             if ordered_bin_racks
@@ -65,7 +63,7 @@ class PickingTaskPlanAppliedHandler:
                     rack_id=rack.rack_id,
                     source=TransportRackReference(rack.rack_id),
                     target=bin_source_target,
-                    target_face=min(rack.rack_faces),
+                    target_face=rack.rack_faces[0],
                     rcs_template_id=TransportRcsTemplateId.CTU01,
                 )
                 for rack in ordered_bin_racks

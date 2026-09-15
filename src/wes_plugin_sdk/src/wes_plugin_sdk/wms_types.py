@@ -10,7 +10,7 @@ from .validation import validate_opaque_face
 from .validation import validate_required_text as _required
 
 if TYPE_CHECKING:
-    from .decisions import DevicePosition, TransportRackMovePosition, TransportRackPosition
+    from .decisions import DevicePosition, TransportRackMovePosition, TransportRackPosition, TransportZonePosition
 
 
 def _positive(value: int, name: str, maximum: int | None = None) -> None:
@@ -388,13 +388,13 @@ class RackDepartureIntent:
 
 @dataclass(frozen=True, slots=True)
 class RackDepartureReady:
-    rack_destination: TransportRackPosition
+    rack_destination: TransportRackPosition | TransportZonePosition
 
     def __post_init__(self) -> None:
-        from .decisions import TransportRackPosition
+        from .decisions import TransportRackPosition, TransportZonePosition
 
-        if type(self.rack_destination) is not TransportRackPosition:
-            raise TypeError("departure destination requires TransportRackPosition")
+        if type(self.rack_destination) not in (TransportRackPosition, TransportZonePosition):
+            raise TypeError("departure destination requires TransportRackPosition or TransportZonePosition")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", self.rack_destination.location_code) is None:
             raise ValueError("rack_destination must use a business identifier")
 

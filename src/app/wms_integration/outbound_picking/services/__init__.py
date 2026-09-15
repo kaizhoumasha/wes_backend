@@ -10,6 +10,7 @@ from .picking_task_plan_delta import PickingTaskPlanDeltaService
 from .picking_task_prepare import PickingTaskPrepareCoordinator
 from .picking_task_prepare_batch import PickingTaskPrepareBatchService
 from .picking_task_queue_changed import PickingTaskQueueChangedService
+from .rack_departure import RackDepartureResultReader, RackDepartureScheduler
 
 __all__ = [
     "BinBatchScheduler",
@@ -25,6 +26,8 @@ __all__ = [
     "PickingTaskPrepareBatchService",
     "PickingTaskPrepareCoordinator",
     "PickingTaskQueueChangedService",
+    "RackDepartureResultReader",
+    "RackDepartureScheduler",
     "ReturnBatchOwnerService",
 ]
 

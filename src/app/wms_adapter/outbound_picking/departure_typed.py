@@ -36,8 +36,13 @@ def decode_outcome(payload: object) -> sdk.RackDepartureOutcome:
     response = wire.parse_rack_departure_response(status, payload)
     if isinstance(response, wire.RackDepartureDecidedResponse):
         if isinstance(response.data, wire.RackDepartureReady):
+            destination = response.data.rack_destination
             return sdk.RackDepartureOutcome(
-                sdk.RackDepartureReady(sdk.TransportRackPosition(response.data.rack_destination.location_code))
+                sdk.RackDepartureReady(
+                    sdk.TransportZonePosition(destination.location_code)
+                    if isinstance(destination, wire.ZonePosition)
+                    else sdk.TransportRackPosition(destination.location_code)
+                )
             )
         return sdk.RackDepartureOutcome(sdk.RackDepartureWait(response.data.retry_after_ms))
     if response.code == "UNAVAILABLE":

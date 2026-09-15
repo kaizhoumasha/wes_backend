@@ -1,12 +1,15 @@
 """货架离场决定的严格边界与共享可靠派发接入。"""
 
 from dataclasses import FrozenInstanceError
+from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
 from wes_plugin_sdk import wms_operations
 
+from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmationStatus
 from src.app.wms_adapter.client import WmsAccessResult
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 from src.app.wms_adapter.dispatch import WmsDispatchCode
@@ -37,6 +40,10 @@ def response(data, code="DECIDED"):
 
 def ready(location="STORE-1"):
     return {"result": "READY", "rack_destination": {"type": "RACK_POSITION", "location_code": location}}
+
+
+def ready_zone(location="WH05"):
+    return {"result": "READY", "rack_destination": {"type": "ZONE", "location_code": location}}
 
 
 def client_response(body, status=200):
@@ -113,6 +120,66 @@ def test_sdk_departure_result_is_closed_and_deeply_immutable():
     result = sdk.RackDepartureReady(sdk.TransportRackPosition("STORE-1"))
     with pytest.raises(FrozenInstanceError):
         result.rack_destination.location_code = "OTHER"
+
+
+def test_source_rack_ready_zone_decodes_as_typed_zone():
+    from src.app.wms_adapter.outbound_picking.departure_typed import decode_outcome
+    from src.app.wms_adapter.outbound_picking.departure_wire import parse_rack_departure_response
+
+    body = response(ready_zone())
+    parsed = parse_rack_departure_response(200, body, request=None)
+    assert parsed.data.rack_destination.type == "ZONE"
+    assert decode_outcome(body).result.rack_destination == sdk.TransportZonePosition("WH05")
+
+
+@pytest.mark.asyncio
+async def test_departure_reader_requires_original_confirmation_and_returns_zone() -> None:
+    from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
+
+    confirmation = SimpleNamespace(
+        request_payload=request(),
+        operation_id=OPERATION_ID,
+        status=WmsConfirmationStatus.COMPLETED,
+        response_evidence_id=31,
+        response_result="READY",
+        completed_at=datetime(2026, 9, 14, 12),
+    )
+    evidence = SimpleNamespace(
+        id=31,
+        kind=InboundEvidenceKind.WMS_RESULT,
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+        operation=OPERATION,
+        operation_id=OPERATION_ID,
+        normalized_payload=response(ready_zone()),
+    )
+    db = SimpleNamespace(scalar=AsyncMock(return_value=confirmation), get=AsyncMock(return_value=evidence))
+    snapshot = await RackDepartureResultReader().latest(db, 11, "RACK-1")
+    assert snapshot is not None
+    assert snapshot.intent.current_location == sdk.TransportRackPosition("WORK-1")
+    assert snapshot.outcome.result.rack_destination == sdk.TransportZonePosition("WH05")
+    assert snapshot.evidence_id == 31
+
+
+@pytest.mark.asyncio
+async def test_departure_scheduler_freezes_original_picking_task_identity() -> None:
+    from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureScheduler
+
+    intent = wms_operations.outbound_rack_departure_decide(
+        operation_id=OPERATION_ID,
+        task_id="TASK-1",
+        rack_id="RACK-1",
+        current_location=sdk.TransportRackPosition("WORK-1"),
+        current_face="面 A",
+    )
+    confirmations = SimpleNamespace(create_or_get=AsyncMock(return_value=SimpleNamespace(duplicate=False)))
+    await RackDepartureScheduler(confirmations).create_in_session(
+        object(), intent, picking_task_id=11, created_at=datetime(2026, 9, 14, 12)
+    )
+    kwargs = confirmations.create_or_get.await_args.kwargs
+    assert kwargs["operation"] == OPERATION
+    assert kwargs["operation_id"] == OPERATION_ID
+    assert kwargs["picking_task_id"] == 11
+    assert kwargs["request_payload"]["data"] == request()["data"]
 
 
 @pytest.mark.parametrize(

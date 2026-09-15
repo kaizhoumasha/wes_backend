@@ -210,6 +210,18 @@ class PositionProjectionPort(Protocol):
         updated_at: datetime,
     ) -> object | None: ...
 
+    async def invalidate_transport_member(
+        self,
+        db: AsyncSession,
+        *,
+        authority: TransportExecutionAuthority | None,
+        object_type: str,
+        object_id: str,
+        operation_id: str,
+        transport_task_id: str,
+        updated_at: datetime,
+    ) -> object | None: ...
+
 
 class TransportDebugRunGuardPort(Protocol):
     async def is_task_linked_to_active_run(self, db: AsyncSession, transport_task_id: str) -> bool: ...
@@ -301,6 +313,26 @@ class TransportService:
         execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
         return await self._create_task(
+            RotateRackRequest(client_request_id, caller, rack_id, position, target_face, rcs_template_id),
+            execution_authority,
+        )
+
+    async def rotate_rack_in_session(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        position: RackPosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
+        *,
+        execution_authority: TransportExecutionAuthority,
+    ) -> TransportHandle:
+        """在调用方事务中持久化 RACK_ROTATE；不会提交或派发。"""
+
+        return await self._create_task_in_session(
+            db,
             RotateRackRequest(client_request_id, caller, rack_id, position, target_face, rcs_template_id),
             execution_authority,
         )
@@ -761,6 +793,7 @@ class TransportService:
                     and current.submit_claim_until >= writeback_now
                 )
                 has_evidence = await self._repository.has_evidence(db, task_id)
+                previous_outcome = (current.status, current.reason_code)
                 self._apply_submit_result(
                     current,
                     result_code,
@@ -770,6 +803,21 @@ class TransportService:
                     has_evidence=has_evidence,
                     operation_id=operation_id,
                 )
+                may_have_started = current.status == TransportTaskStatus.ACCEPTED.value or (
+                    current.status == TransportTaskStatus.RECONCILING.value
+                    and current.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+                )
+                if may_have_started and (current.status, current.reason_code) != previous_outcome:
+                    for member in await self._repository.list_members(db, current.transport_task_id):
+                        _ = await self._position_projections.invalidate_transport_member(
+                            db,
+                            authority=_execution_authority_from_task(current),
+                            object_type=member.object_type,
+                            object_id=member.object_id,
+                            operation_id=operation_id,
+                            transport_task_id=current.transport_task_id,
+                            updated_at=writeback_now,
+                        )
                 if self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     if current.outcome_version > current.published_outcome_version:

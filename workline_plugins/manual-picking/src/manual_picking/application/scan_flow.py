@@ -18,6 +18,7 @@ from src.app.execution.plugin_binding import BusinessEvidenceApplication, Busine
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.transport.repository import TransportRepository
+from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
@@ -28,6 +29,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
+from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
@@ -97,6 +99,9 @@ class ManualPickingScanFlow:
             if evidence.operation in {BIN_INBOUND_BATCH_OPERATION, BIN_RETURN_BATCH_OPERATION}:
                 result = await self._apply_batch_result(db, evidence, workline)
                 role = "WMS_BATCH"
+            elif evidence.operation == RACK_DEPARTURE_OPERATION:
+                result = "DEPARTURE_RECEIVED"
+                role = "WMS_DEPARTURE"
             else:
                 result = await self._apply_admission_result(db, evidence, workline_id, bindings)
                 role = "WMS_ADMISSION"
@@ -127,29 +132,33 @@ class ManualPickingScanFlow:
     async def _apply_batch_result(self, db: Any, evidence: Any, workline: Any) -> str | None:  # noqa: PLR0911
         if self._batch_reader is None or self._batch_result is None:
             return None
+        positions = parse_position_bindings(workline.config, DEFINITION.position_slots)
+        if evidence.operation == BIN_RETURN_BATCH_OPERATION:
+            intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
+            if intent.workline_code != workline.line_code or not await self._source_racks.has_applied_source_face(
+                db, workline.id, intent.rack_id, intent.rack_face
+            ):
+                return None
+            source = await self._positions.get(db, "RACK", intent.rack_id)
+            readiness = await self._position_readiness(
+                db, source, workline.id, "RACK_POSITION", positions[FIVE_RACK.slot_key], intent.rack_face
+            )
+            if readiness != "READY":
+                return readiness
+            return await self._batch_result.apply_return_in_session(
+                db,
+                evidence,
+                workline_id=workline.id,
+                workline_code=workline.line_code,
+                confirmed_rack_id=intent.rack_id,
+                confirmed_face=intent.rack_face,
+                return_location=positions["OUTLET"],
+            )
         task = await self._tasks.get_executing_for_workline_for_update(db, workline.id)
-        if task is None and evidence.operation == BIN_RETURN_BATCH_OPERATION:
-            rows = await self._passages.unfinished_return_prefix_for_update(db, workline.id)
-            if rows:
-                candidate = await self._tasks.get_by_task_id_for_update(db, rows[0].task_id)
-                if (
-                    candidate is not None
-                    and candidate.workline_id == workline.id
-                    and candidate.status == "EXECUTION_COMPLETED"
-                ):
-                    task = candidate
         if task is None:
             return None
-        positions = parse_position_bindings(workline.config, DEFINITION.position_slots)
-        if evidence.operation == BIN_INBOUND_BATCH_OPERATION:
-            intent, _ = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
-            if intent.task_id != task.task_id:
-                return None
-        else:
-            intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
-            if intent.workline_code != workline.line_code:
-                return None
-        if not any(
+        intent, _ = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
+        if intent.task_id != task.task_id or not any(
             source.rack_id == intent.rack_id and source.rack_face == intent.rack_face
             for source in await self._source_racks.list_bin_source_racks(db, task.id)
         ):
@@ -160,30 +169,19 @@ class ManualPickingScanFlow:
         )
         if readiness != "READY":
             return readiness
-        if task.status != "EXECUTION_COMPLETED":
-            target = await self._positions.get(db, "RACK", task.target_rack_id)
-            readiness = await self._position_readiness(
-                db, target, workline.id, "RACK_POSITION", positions[TRANSFER_RACK.slot_key], task.target_rack_face
-            )
-            if readiness != "READY":
-                return readiness
-        if evidence.operation == BIN_INBOUND_BATCH_OPERATION:
-            return await self._batch_result.apply_inbound_in_session(
-                db,
-                evidence,
-                workline_id=workline.id,
-                confirmed_rack_id=intent.rack_id,
-                confirmed_face=intent.rack_face,
-                inlet_location=positions[INLET.slot_key],
-            )
-        return await self._batch_result.apply_return_in_session(
+        target = await self._positions.get(db, "RACK", task.target_rack_id)
+        readiness = await self._position_readiness(
+            db, target, workline.id, "RACK_POSITION", positions[TRANSFER_RACK.slot_key], task.target_rack_face
+        )
+        if readiness != "READY":
+            return readiness
+        return await self._batch_result.apply_inbound_in_session(
             db,
             evidence,
             workline_id=workline.id,
-            workline_code=workline.line_code,
             confirmed_rack_id=intent.rack_id,
             confirmed_face=intent.rack_face,
-            return_location=positions["OUTLET"],
+            inlet_location=positions[INLET.slot_key],
         )
 
     async def _apply_transport_result(self, db: Any, evidence: Any, workline_id: int) -> str | None:
@@ -193,7 +191,13 @@ class ManualPickingScanFlow:
         if (
             evidence.transport_task_id != payload.get("transport_task_id")
             or payload.get("caller", {}).get("workline_id") != str(workline_id)
-            or payload.get("step") not in {"PICKING_TASK_TARGET_RACK_IN", "PICKING_TASK_BIN_SOURCE_RACK_IN"}
+            or payload.get("step")
+            not in {
+                "PICKING_TASK_TARGET_RACK_IN",
+                "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                SOURCE_RACK_ROTATE_STEP,
+                SOURCE_RACK_OUT_STEP,
+            }
         ):
             return None
         task = await self._transport_reader.get_task(db, evidence.transport_task_id, for_update=True)
@@ -206,12 +210,20 @@ class ManualPickingScanFlow:
         status = payload.get("status")
         if status == "SUCCEEDED":
             members = payload.get("members")
+            expected_position = (
+                task.request_json.get("position")
+                if payload.get("step") == SOURCE_RACK_ROTATE_STEP
+                else task.request_json.get("target")
+            )
             if (
                 not isinstance(members, list)
                 or len(members) != 1
                 or members[0].get("object_id") != payload["rack_id"]
-                or members[0].get("final_position") != task.request_json.get("target")
-                or members[0].get("arrival_face") != task.request_json.get("target_face")
+                or members[0].get("final_position") != expected_position
+                or (
+                    payload.get("step") != SOURCE_RACK_OUT_STEP
+                    and members[0].get("arrival_face") != task.request_json.get("target_face")
+                )
             ):
                 return None
         elif status not in {"FAILED", "REJECTED", "UNKNOWN"}:
@@ -376,10 +388,6 @@ class ManualPickingScanFlow:
     async def _apply_scan4(
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
-        if await self._passages.has_prior_unpublished_scan(
-            db, workline_id=workline_id, device_code=bindings["SCAN4"], evidence=evidence
-        ):
-            return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN4"):
             return None
         code = normal_bin_code(raw_code, "-B")
@@ -558,22 +566,28 @@ class ManualPickingScanFlow:
         )
         if target_state != "READY":
             return target_state
-        current_sources = 0
-        for source in await self._source_racks.list_bin_source_racks(db, task.id):
-            projection = await self._positions.get(db, "RACK", source.rack_id)
-            state = await self._position_readiness(
-                db, projection, workline_id, "RACK_POSITION", positions[FIVE_RACK.slot_key], source.rack_face
-            )
-            if state is None:
-                return None
-            if state == "READY":
-                current_sources += 1
-        if current_sources != 1:
-            return _WAIT_FOR_RESULT
         bin_position = await self._positions.get(db, "BIN", bin_code)
-        return await self._position_readiness(
+        bin_state = await self._position_readiness(
             db, bin_position, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key]
         )
+        if bin_state != "READY":
+            return bin_state
+        transport = await self._transport_reader.get_task(db, bin_position.source_transport_task_id)
+        if transport is None or transport.kind != "BIN_MOVE":
+            return None
+        moves = transport.request_json.get("moves")
+        if not isinstance(moves, list):
+            return None
+        sources = [move.get("source") for move in moves if isinstance(move, dict) and move.get("bin_code") == bin_code]
+        if len(sources) != 1 or not isinstance(sources[0], dict):
+            return None
+        source = sources[0]
+        if not any(
+            planned.rack_id == source.get("rack_id") and planned.rack_face == source.get("rack_face")
+            for planned in await self._source_racks.list_bin_source_racks(db, task.id)
+        ):
+            return None
+        return "READY"
 
     async def _position_readiness(
         self,

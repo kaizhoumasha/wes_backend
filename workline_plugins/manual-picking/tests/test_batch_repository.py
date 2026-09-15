@@ -81,6 +81,22 @@ async def test_batch_gate_waits_for_wms_result_application_and_transport_publica
             await db.flush()
             assert not await repo.has_unclosed_action(db, 7)
 
+            db.add(
+                InboundEvidence(
+                    kind="WMS_RESULT",
+                    source_identity="wms:unassociated-history",
+                    payload_digest="1" * 64,
+                    normalized_payload={"code": "DECIDED", "data": {"result": "RACK_FACE_DONE"}},
+                    received_at=now,
+                    workline_id=7,
+                    operation="outbound.bin.inbound_batch@v1",
+                    operation_id="019f0000-0000-7000-8000-000000000099",
+                    apply_status="APPLIED",
+                )
+            )
+            await db.flush()
+            assert not await repo.has_unclosed_action(db, 7)
+
             old_rack_result = InboundEvidence(
                 kind="TRANSPORT_RESULT",
                 source_identity="transport:old-rack:outcome:1",

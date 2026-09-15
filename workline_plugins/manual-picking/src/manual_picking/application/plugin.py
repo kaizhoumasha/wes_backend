@@ -6,6 +6,7 @@ from manual_picking.definition import DEFINITION
 from manual_picking.handlers import PickingTaskPlanAppliedHandler
 from manual_picking.prepare_policy import ManualPickingPreparePolicy
 from src.app.execution.plugin_binding import BusinessEvidenceConsumer, PluginRuntimeBinding
+from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import MANUAL_BIN_ADMISSION_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
@@ -28,6 +29,7 @@ def build_plugin(
                 MANUAL_BIN_COMPLETED_OPERATION,
                 BIN_INBOUND_BATCH_OPERATION,
                 BIN_RETURN_BATCH_OPERATION,
+                RACK_DEPARTURE_OPERATION,
             ),
         ),
         picking_task_prepare_policy=ManualPickingPreparePolicy(),

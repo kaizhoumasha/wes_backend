@@ -67,8 +67,10 @@ class BatchRepository:
         evidences = cast("Any", InboundEvidence).__table__.c
         unpublished = await db.scalar(
             select(evidences.id)
+            .join(WmsConfirmation, confirmations.response_evidence_id == evidences.id)
             .where(
-                evidences.workline_id == workline_id,
+                confirmations.workline_id == workline_id,
+                confirmations.operation.in_(_BATCH_OPERATIONS),
                 evidences.published_at.is_(None),
                 evidences.kind == InboundEvidenceKind.WMS_RESULT,
                 evidences.operation.in_(_BATCH_OPERATIONS),

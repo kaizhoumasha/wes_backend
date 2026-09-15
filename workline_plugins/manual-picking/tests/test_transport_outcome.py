@@ -13,6 +13,7 @@ from src.app.transport.contracts import (
     TransportMemberOutcome,
     TransportOutcome,
     TransportOutcomeStatus,
+    ZonePosition,
 )
 
 
@@ -168,3 +169,61 @@ async def test_transport_result_rejects_rack_outside_original_binding() -> None:
     with pytest.raises(ValueError, match="rack"):
         await publisher.publish(object(), outcome)
     accept.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rotate_result_uses_original_plan_evidence_and_face() -> None:
+    publisher, accept = _publisher(step="MANUAL_PICKING_SOURCE_RACK_ROTATE")
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="31"),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(TransportMemberOutcome("RACK-1", RackPosition("FIVE-RACK-POSITION"), arrival_face="270"),),
+    )
+    assert await publisher.publish(object(), outcome)
+    assert accept.await_args.kwargs["normalized_payload"]["step"] == "MANUAL_PICKING_SOURCE_RACK_ROTATE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TransportOutcomeStatus.SUCCEEDED, TransportOutcomeStatus.UNKNOWN])
+async def test_departure_result_preserves_original_wms_decision(status: TransportOutcomeStatus) -> None:
+    from manual_picking.application.transport_outcome import ManualPickingTransportOutcomePublisher
+
+    binding = SimpleNamespace(
+        workline_id=31,
+        client_request_id="REQUEST-1",
+        step="MANUAL_PICKING_SOURCE_RACK_OUT",
+        resource_fence_id="RACK-1",
+        correlation_id="departure-op",
+        source_evidence_id=101,
+    )
+    source = SimpleNamespace(
+        id=101,
+        kind=InboundEvidenceKind.WMS_RESULT,
+        operation="outbound.rack.departure_decide@v1",
+        operation_id="departure-op",
+    )
+    accept = AsyncMock(return_value=SimpleNamespace(duplicate=False))
+    publisher = ManualPickingTransportOutcomePublisher(
+        binding_repository=SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding)),
+        evidence_repository=SimpleNamespace(get_by_id_without_lock=AsyncMock(return_value=source)),
+        evidence_service=SimpleNamespace(accept=accept),
+    )
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="31"),
+        status=status,
+        reason_code=None,
+        members=(TransportMemberOutcome("RACK-1", ZonePosition("WH05")),)
+        if status is TransportOutcomeStatus.SUCCEEDED
+        else (),
+    )
+    assert await publisher.publish(object(), outcome)
+    payload = accept.await_args.kwargs["normalized_payload"]
+    assert payload["step"] == "MANUAL_PICKING_SOURCE_RACK_OUT"
+    assert payload["source_evidence_id"] == 101
