@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0.0] - 2026-09-14
+
+### Added
+
+- 人工拣料工作线可按五层来源架逐面推进：当前面搬扫闭合后通过 CTU02 换面，整架完成后按 WMS 决定的 ZONE 通过 CTU03 离场，并继续处理后续已到位货架。
+- WMS 货架离场决定增加可靠持久化与稳定 Transport binding；来源架使用 `ZONE` 去向，转运架继续使用 `RACK_POSITION` 去向。
+
+### Changed
+
+- 后续来源架只依赖自身进场 Transport `SUCCEEDED` 即可执行，不再等待前一货架 CTU03 终态；CTU03 `ACCEPTED` 后立即使原 KT16 位置投影失效，最终位置回调仅补充该货架事实。
+- 退箱决定按工作线范围核对跨任务 FIFO 队首，并分别校验候选料箱与当前承接货架，不再把候选归属任务或原货架当作统一响应边界。
+
+### Fixed
+
+- SCAN1 至 SCAN4、批次推进和任务完成不再受无 Passage 或 DeviceCommand 归属的历史 Evidence 阻塞；当前执行仍保留自身 Passage、FIFO 和已接纳命令围栏。
+- SCAN1 在当前料箱原搬运已成功且到达 INLET 时继续推进，不再要求来源架随后保持原位置投影。
+
 ## [0.44.0.0] - 2026-09-14
 
 ### Added
