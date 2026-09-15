@@ -40,11 +40,6 @@ class PickingTaskPrepareBatchService:
             for plugin in plugins
             if plugin.picking_task_prepare_policy is not None
         }
-        self._business_blockers = {
-            (plugin.plugin_key, plugin.plugin_version): getattr(plugin, "business_blocker", None)
-            for plugin in plugins
-            if plugin.picking_task_prepare_policy is not None
-        }
 
     @property
     def plugin_identities(self) -> tuple[tuple[str, str], ...]:
@@ -72,7 +67,6 @@ class PickingTaskPrepareBatchService:
                     workline_repository=self._worklines,
                     task_queue_gateway=self._task_queue,
                     workline_reserved=self._workline_reserved,
-                    business_blocker=self._business_blockers[identity],
                 )
                 coordinators[identity] = coordinator
             result = await coordinator.prepare_next_for_workline(workline_id)

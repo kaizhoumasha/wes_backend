@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from wes_plugin_sdk import (
@@ -102,16 +101,17 @@ class PickingTaskPlanActivationService:
                 return 0
             if self._workline_reserved is not None and await self._workline_reserved(db, workline_id):
                 return 0
+            driver = self._batch_drivers.get(plugin_identity)
+            old_count = await driver.advance_completed_in_session(db, line) if driver is not None else 0
             task = await self._tasks.get_executing_for_workline_for_update(db, workline_id)
             if task is None:
-                driver = self._batch_drivers.get(plugin_identity)
-                return await driver.advance_completed_in_session(db, line) if driver is not None else 0
+                return old_count
             if (
                 task.status != PickingTaskStatus.EXECUTING
                 or task.plan_blocked_evidence_id is not None
                 or task.last_applied_plan_revision < 1
             ):
-                return 0
+                return old_count
             steps = (TARGET_RACK_IN_STEP, BIN_SOURCE_RACK_IN_STEP)
             decided_racks = await self._bindings.list_task_resource_fence_ids(
                 db,
@@ -160,29 +160,25 @@ class PickingTaskPlanActivationService:
                     resource_fence_id=intent.rack_id,
                     intent=intent,
                 )
-            driver = self._batch_drivers.get(plugin_identity)
             completion = self._completion_drivers.get(plugin_identity)
             batch_count = await driver.advance_in_session(db, line, task) if driver is not None else 0
             completion_count = await completion.advance_in_session(db, line, task) if completion is not None else 0
-            return len(result.transports) + batch_count + completion_count
+            return old_count + len(result.transports) + batch_count + completion_count
 
     async def _pending_bin_racks(self, db: Any, task: Any, decided_racks: set[str]) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_bin_source_racks(db, task.id)
-        grouped: dict[str, list[Any]] = defaultdict(list)
+        grouped: dict[str, list[Any]] = {}
         for row in rows:
             if row.rack_id not in decided_racks:
-                grouped[row.rack_id].append(row)
-        ordered = sorted(grouped.items(), key=lambda item: (min(row.plan_revision for row in item[1]), item[0]))
+                grouped.setdefault(row.rack_id, []).append(row)
         return tuple(
             PickingTaskPlanRack(
                 rack_id=rack_id,
-                rack_faces=tuple(sorted({row.rack_face for row in rack_rows})),
-                source_evidence_id=str(
-                    min(rack_rows, key=lambda row: (row.plan_revision, getattr(row, "id", 0) or 0)).source_evidence_id
-                ),
-                plan_revision=min(row.plan_revision for row in rack_rows),
+                rack_faces=tuple(dict.fromkeys(row.rack_face for row in rack_rows)),
+                source_evidence_id=str(rack_rows[0].source_evidence_id),
+                plan_revision=rack_rows[0].plan_revision,
             )
-            for rack_id, rack_rows in ordered
+            for rack_id, rack_rows in grouped.items()
         )
 
     @staticmethod

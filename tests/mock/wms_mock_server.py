@@ -1006,9 +1006,10 @@ async def decide_return_batch(request: Request) -> Response:
         elif operation == RACK_DEPARTURE_OPERATION:
             parsed = parse_rack_departure_request(envelope)
             status, response = 200, _ack(operation_id, "DECIDED", None)
+            destination_type = "RACK_POSITION" if parsed.data.current_location.location_code == "OUT65" else "ZONE"
             response["data"] = {
                 "result": "READY",
-                "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
+                "rack_destination": {"type": destination_type, "location_code": "WH05"},
             }
             parse_rack_departure_response(status, response, request=parsed)
         elif operation == COMPLETION_CONFIRM_OPERATION:

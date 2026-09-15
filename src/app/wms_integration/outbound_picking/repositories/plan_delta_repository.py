@@ -8,21 +8,114 @@ from typing import Any
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
-from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, WmsConfirmation
+from src.app.execution.models import (
+    InboundEvidence,
+    InboundEvidenceConflict,
+    PositionProjection,
+    TransportDecisionBinding,
+    WmsConfirmation,
+)
+from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import (
+    DirectPickExecution,
+    PickingTask,
+    PickingTaskBinSourceRack,
+    PickingTaskStatus,
+)
 from src.app.workline.models import WorkLine
 
 MEMBER_BATCH_SIZE = 250
 
 
 class PickingTaskPlanDeltaRepository:
+    async def source_transport_matches(
+        self, db: AsyncSession, workline_id: int, rack_id: str, source_evidence_id: int, transport_task_id: str
+    ) -> bool:
+        bindings = TransportDecisionBinding.__table__.c
+        transports = TransportTask.__table__.c
+        return (
+            await db.scalar(
+                select(bindings.id)
+                .join(TransportTask, transports.client_request_id == bindings.client_request_id)
+                .where(
+                    bindings.workline_id == workline_id,
+                    bindings.resource_fence_id == rack_id,
+                    bindings.source_evidence_id == source_evidence_id,
+                    bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
+                    transports.transport_task_id == transport_task_id,
+                    transports.status == "SUCCEEDED",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def first_completed_source_owner_at_position(
+        self, db: AsyncSession, workline_id: int, location_code: str
+    ) -> PickingTask | None:
+        members = PickingTaskBinSourceRack.__table__.c
+        tasks = PickingTask.__table__.c
+        bindings = TransportDecisionBinding.__table__.c
+        transports = TransportTask.__table__.c
+        projections = PositionProjection.__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .join(PickingTaskBinSourceRack, members.picking_task_id == tasks.id)
+            .join(
+                TransportDecisionBinding,
+                (bindings.source_evidence_id == members.source_evidence_id)
+                & (bindings.resource_fence_id == members.rack_id)
+                & (bindings.workline_id == tasks.workline_id),
+            )
+            .join(TransportTask, transports.client_request_id == bindings.client_request_id)
+            .join(
+                PositionProjection,
+                (projections.object_type == "RACK")
+                & (projections.object_id == members.rack_id)
+                & (projections.workline_id == tasks.workline_id)
+                & (projections.source_transport_task_id == transports.transport_task_id),
+            )
+            .where(
+                tasks.workline_id == workline_id,
+                tasks.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                members.rack_face == projections.arrival_face,
+                members.plan_revision <= tasks.last_applied_plan_revision,
+                bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
+                transports.status == "SUCCEEDED",
+                projections.position_unknown.is_(False),
+                projections.position_json["kind"].as_string() == "RACK_POSITION",
+                projections.position_json["location_code"].as_string() == location_code,
+            )
+            .order_by(projections.updated_at.desc(), tasks.id, members.id)
+            .limit(1)
+        )
+
+    async def has_applied_source_face(self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str) -> bool:
+        members = PickingTaskBinSourceRack.__table__.c
+        tasks = PickingTask.__table__.c
+        return (
+            await db.scalar(
+                select(members.id)
+                .join(PickingTask, tasks.id == members.picking_task_id)
+                .where(
+                    tasks.workline_id == workline_id,
+                    tasks.status.in_((PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED)),
+                    members.rack_id == rack_id,
+                    members.rack_face == rack_face,
+                    members.plan_revision <= tasks.last_applied_plan_revision,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     async def list_bin_source_racks(self, db: AsyncSession, task_id: int) -> list[PickingTaskBinSourceRack]:
         columns = PickingTaskBinSourceRack.__table__.c
         result = await db.scalars(
             select(PickingTaskBinSourceRack)
             .where(columns.picking_task_id == task_id)
-            .order_by(columns.plan_revision, columns.rack_id, columns.rack_face, columns.id)
+            .order_by(columns.plan_revision, columns.id)
         )
         return list(result.all())
 

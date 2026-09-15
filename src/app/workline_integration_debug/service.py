@@ -1706,9 +1706,13 @@ class IntegrationDebugService:
     ) -> None:
         if response_result == "READY" and isinstance(response_data, dict):
             destination = response_data.get("rack_destination")
+            candidate = run.configuration_json.get("departure_candidate")
+            role = candidate.get("role") if isinstance(candidate, dict) else None
+            expected_type = {"SOURCE_RACK": "ZONE", "TARGET_RACK": "RACK_POSITION"}.get(role)
             if (
-                not isinstance(destination, dict)
-                or destination.get("type") != "RACK_POSITION"
+                expected_type is None
+                or not isinstance(destination, dict)
+                or destination.get("type") != expected_type
                 or not isinstance(destination.get("location_code"), str)
             ):
                 raise IntegrationDebugConflict("departure_decide READY 缺少 rack_destination")
@@ -1722,7 +1726,6 @@ class IntegrationDebugService:
                 raise IntegrationDebugConflict("departure_decide READY 缺少原请求 rack_id")
             run.configuration_json = {
                 **run.configuration_json,
-                # KT16 现场约定 CTU03 目标使用库区代码；WMS 的业务位置类型只在本适配层转换。
                 "rack_destination": {"kind": "ZONE", "location_code": destination["location_code"]},
                 "departure_ready_rack_id": rack_id,
             }

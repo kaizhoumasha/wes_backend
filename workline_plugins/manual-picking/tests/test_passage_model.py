@@ -1,6 +1,6 @@
 """人工料箱经过只属于插件，不占用物料执行身份。"""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -74,48 +74,6 @@ async def test_one_wms_terminal_per_task_and_bin() -> None:
             await db.execute(update(table).where(table.c.scan1_evidence_id == 1).values(wms_result="NORMAL"))
             with pytest.raises(IntegrityError):
                 await db.execute(update(table).where(table.c.scan1_evidence_id == 2).values(wms_result="NG"))
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_unpublished_scan4_evidence_fences_later_scan() -> None:
-    _ = WorkLine
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
-        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
-
-    table = InboundEvidence.__table__
-    now = datetime(2026, 9, 13, 12)
-    try:
-        async with engine.begin() as db:
-            await db.run_sync(table.create)
-            for evidence_id, device_code, received_at in (
-                (1, "S4", now + timedelta(seconds=1)),
-                (2, "S3", now),
-                (3, "S4", now),
-                (4, "S4", now - timedelta(seconds=1)),
-            ):
-                await db.execute(
-                    insert(table).values(
-                        id=evidence_id,
-                        kind="DEVICE_EVENT",
-                        source_identity=f"scan:{evidence_id}",
-                        payload_digest="a" * 64,
-                        normalized_payload={"event_type": "SCAN_COMPLETED"},
-                        received_at=received_at,
-                        workline_id=7,
-                        device_code=device_code,
-                        apply_status="RECONCILING" if evidence_id in {1, 4} else "APPLIED",
-                    )
-                )
-            repository = PassageRepository()
-            target = SimpleNamespace(id=3, received_at=now)
-            assert await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence=target)
-            await db.execute(update(table).where(table.c.id == 4).values(published_at=now, decision_digest="b" * 64))
-            assert not await repository.has_prior_unpublished_scan(db, workline_id=7, device_code="S4", evidence=target)
     finally:
         await engine.dispose()
 

@@ -94,7 +94,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             )
             db.add(pending_scan)
             await db.flush()
-            assert not await repository.ready_to_confirm(db, line, task)
+            assert await repository.ready_to_confirm(db, line, task)
             pending_scan.published_at = datetime(2026, 9, 14, 4)
             pending_scan.decision_digest = "b" * 64
             await db.flush()

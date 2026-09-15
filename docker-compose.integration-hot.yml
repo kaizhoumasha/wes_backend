@@ -12,7 +12,7 @@ services:
       - --reload-dir
       - /app
     environment:
-      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
@@ -25,7 +25,7 @@ services:
       - /bin/sh
       - /app/src/celery_app/dev_worker_autoreload.sh
     environment:
-      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
@@ -39,7 +39,7 @@ services:
       - /bin/sh
       - /app/src/celery_app/dev_worker_autoreload.sh
     environment:
-      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
@@ -53,7 +53,7 @@ services:
       - /bin/sh
       - /app/src/celery_app/dev_beat_autoreload.sh
     environment:
-      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
     volumes:
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
       - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z

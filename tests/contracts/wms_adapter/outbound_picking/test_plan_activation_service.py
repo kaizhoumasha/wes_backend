@@ -99,8 +99,9 @@ class _Creator:
 
 
 class _BatchDriver:
-    def __init__(self) -> None:
+    def __init__(self, completed_count: int = 0) -> None:
         self.context = None
+        self.completed_count = completed_count
 
     async def advance_in_session(self, _db, line, task):  # type: ignore[no-untyped-def]
         self.context = (line.line_code, task.task_id)
@@ -108,7 +109,7 @@ class _BatchDriver:
 
     async def advance_completed_in_session(self, _db, line):  # type: ignore[no-untyped-def]
         self.context = (line.line_code, "COMPLETED_RETURN")
-        return 1
+        return self.completed_count
 
 
 class _CompletionDriver:
@@ -168,8 +169,8 @@ async def test_reserved_workline_does_not_create_rack_transport() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completed_task_keeps_plugin_return_driver_running_without_new_plan_transport() -> None:
-    driver = _BatchDriver()
+async def test_completed_task_source_obligation_does_not_block_new_executing_task() -> None:
+    driver = _BatchDriver(completed_count=1)
     handler = _Handler()
     creator = _Creator()
     line = SimpleNamespace(
@@ -179,7 +180,24 @@ async def test_completed_task_keeps_plugin_return_driver_running_without_new_pla
         is_deleted=False,
         plugin_key="sample_plugin",
         plugin_version="0.1.0",
+        position_bindings={
+            "SOURCE_SLOT": {"location_id": "SOURCE-POS", "location_type": "RACK_POSITION"},
+            "TARGET_SLOT": {"location_id": "TARGET-POS", "location_type": "RACK_POSITION"},
+        },
     )
+    task = SimpleNamespace(
+        id=1,
+        task_id="PICK-NEW",
+        status="EXECUTING",
+        workline_id=7,
+        last_applied_plan_revision=1,
+        target_rack_id="TARGET-1",
+        target_rack_face="90",
+        initial_plan_evidence_id=10,
+        last_plan_evidence_id=10,
+        plan_blocked_evidence_id=None,
+    )
+    task_reader = AsyncMock(return_value=task)
     service = _service_type()(
         _Sessions(),
         plugins=(
@@ -192,13 +210,16 @@ async def test_completed_task_keeps_plugin_return_driver_running_without_new_pla
         ),
         transport_creator=creator,
         workline_repository=_Worklines(line),
-        task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=None)),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=task_reader),
+        plan_repository=SimpleNamespace(list_bin_source_racks=AsyncMock(return_value=[])),
+        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
     )
 
-    assert await service.activate_batch() == 1
-    assert driver.context == ("L-1", "COMPLETED_RETURN")
-    assert handler.fact is None
-    assert creator.calls == []
+    assert await service.activate_batch() == 3
+    assert driver.context == ("L-1", "PICK-NEW")
+    task_reader.assert_awaited_once()
+    assert handler.fact is not None
+    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1"]
 
 
 @pytest.mark.asyncio
@@ -228,9 +249,9 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         plan_blocked_evidence_id=None,
     )
     rows = [
-        SimpleNamespace(rack_id="BIN-2", rack_face="90", plan_revision=2, source_evidence_id=12),
-        SimpleNamespace(rack_id="BIN-1", rack_face="270", plan_revision=1, source_evidence_id=11),
-        SimpleNamespace(rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11),
+        SimpleNamespace(id=1, rack_id="BIN-2", rack_face="90", plan_revision=1, source_evidence_id=12),
+        SimpleNamespace(id=2, rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11),
+        SimpleNamespace(id=3, rack_id="BIN-1", rack_face="270", plan_revision=1, source_evidence_id=11),
     ]
     handler = _Handler()
     creator = _Creator()
@@ -260,11 +281,11 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
     assert batch_driver.context == ("L-1", "TASK-1")
     assert completion_driver.context == ("L-1", "TASK-1")
     assert [(rack.rack_id, rack.rack_faces) for rack in handler.fact.pending_bin_source_racks] == [
-        ("BIN-1", ("270", "90")),
         ("BIN-2", ("90",)),
+        ("BIN-1", ("90", "270")),
     ]
-    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1", "BIN-2"]
-    assert [call["source_evidence_id"] for call in creator.calls] == [10, 11, 12]
+    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-2", "BIN-1"]
+    assert [call["source_evidence_id"] for call in creator.calls] == [10, 12, 11]
     assert [call["step"] for call in creator.calls] == [
         "PICKING_TASK_TARGET_RACK_IN",
         "PICKING_TASK_BIN_SOURCE_RACK_IN",
@@ -272,8 +293,8 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
     ]
     assert [call["correlation_id"] for call in creator.calls] == [
         "pt:1:e:10:rack:TARGET-1",
-        "pt:1:e:11:rack:BIN-1",
         "pt:1:e:12:rack:BIN-2",
+        "pt:1:e:11:rack:BIN-1",
     ]
 
 

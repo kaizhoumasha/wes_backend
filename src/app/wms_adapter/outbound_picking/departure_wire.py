@@ -29,9 +29,14 @@ class RackDepartureRequest(StrictWireModel):
     data: RackDepartureData
 
 
+class ZonePosition(StrictWireModel):
+    type: Literal["ZONE"]
+    location_code: Identifier
+
+
 class RackDepartureReady(StrictWireModel):
     result: Literal["READY"]
-    rack_destination: RackPosition
+    rack_destination: RackPosition | ZonePosition
 
 
 class RackDepartureWait(StrictWireModel):

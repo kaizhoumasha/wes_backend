@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from .batch_policy import choose_next_batch
 
@@ -79,6 +79,14 @@ class ManualPickingBatchFlow:
         self._inbound = inbound
         self._uuid_factory = uuid_factory
 
+    async def face_progress(
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ) -> InboundFaceProgress | None:
+        return await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face)
+
+    async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool:
+        return await self._repository.has_unclosed_action(db, workline_id)
+
     async def advance_in_session(
         self,
         db: AsyncSession,
@@ -91,6 +99,7 @@ class ManualPickingBatchFlow:
         return_location: str,
         inlet_location: str,
         now: datetime,
+        allow_inbound: bool = True,
     ) -> bool:
         if await self._repository.has_unclosed_action(db, workline_id):
             return False
@@ -110,7 +119,7 @@ class ManualPickingBatchFlow:
             return_bins=tuple(return_bins),
             return_location=return_location,
             return_retry_due=await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now),
-            allow_inbound=progress is None,
+            allow_inbound=allow_inbound and progress is None,
         )
         if intent is not None:
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
@@ -121,7 +130,7 @@ class ManualPickingBatchFlow:
             db,
             workline_id=workline_id,
             intent=progress.intent,
-            ready=progress.result,
+            ready=cast("BinInboundBatchReady", progress.result),
             evidence_id=progress.evidence_id,
             offset=progress.next_offset,
             inlet_location=inlet_location,

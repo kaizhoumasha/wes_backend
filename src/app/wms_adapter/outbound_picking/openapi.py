@@ -440,7 +440,7 @@ PICKING_TASK_WMS_RESPONSE_DATA = {
         (200, "DECIDED", {"result": "NO_BATCH", "retry_after_ms": 1000}),
     ],
     "outbound.rack.departure_decide@v1": [
-        (200, "DECIDED", {"result": "READY", "rack_destination": _RACK_DESTINATION}),
+        (200, "DECIDED", {"result": "READY", "rack_destination": {"type": "ZONE", "location_code": "WH05"}}),
         (200, "DECIDED", {"result": "WAIT", "retry_after_ms": 1000}),
     ],
 }

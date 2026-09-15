@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from wes_plugin_sdk import wms_operations
 from wes_plugin_sdk.prepare_policy import PickingTaskPreparePolicy, PrepareContext, PrepareTaskType
@@ -74,7 +74,6 @@ class PickingTaskPrepareCoordinator:
         confirmation_service: ConfirmationLifecyclePort | None = None,
         task_queue_gateway: TaskQueueGateway,
         workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
-        business_blocker: Any = None,
     ) -> None:
         self._policy = policy
         self._sessions = session_factory
@@ -83,7 +82,6 @@ class PickingTaskPrepareCoordinator:
         self._confirmations = confirmation_service or WmsConfirmationLifecycleService()
         self._task_queue = task_queue_gateway
         self._workline_reserved = workline_reserved
-        self._business_blocker = business_blocker
 
     async def prepare_next_for_workline(
         self,
@@ -120,10 +118,6 @@ class PickingTaskPrepareCoordinator:
                 raise TypeError("prepare Policy 必须返回 PrepareTaskType")
             if await self._tasks.has_active_for_workline(db, workline_id):
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
-            if self._business_blocker is not None:
-                unfinished = await self._business_blocker.get_unfinished_workload_summary(db, workline_id)
-                if unfinished["count"]:
-                    return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task = await self._tasks.claim_next_queued(
                 db, task_type=PickingTaskType(task_type.value), now_ms=_timestamp_ms(current)
             )

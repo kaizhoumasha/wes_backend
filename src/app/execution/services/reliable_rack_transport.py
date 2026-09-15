@@ -84,6 +84,19 @@ class TransportServicePort(Protocol):
         execution_authority: TransportExecutionAuthority,
     ) -> object: ...
 
+    async def rotate_rack_in_session(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        position: RackPosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
+        *,
+        execution_authority: TransportExecutionAuthority,
+    ) -> object: ...
+
 
 class BinTransportServicePort(Protocol):
     async def move_bins_in_session(
@@ -177,6 +190,72 @@ class ReliableRackTransportCreator:
             target=self._convert_position(intent.target),
             target_face=intent.target_face,
             rcs_template_id=RcsTemplateId(intent.rcs_template_id.value),
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+
+    async def create_rotate(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        source_evidence_id: int,
+        correlation_id: str,
+        step: str,
+        rack_id: str,
+        position: TransportRackPosition,
+        target_face: str,
+    ) -> object:
+        binding = await _binding_for(
+            db,
+            self._bindings,
+            self._uuid_factory,
+            workline_id=workline_id,
+            source_evidence_id=source_evidence_id,
+            correlation_id=correlation_id,
+            step=step,
+            resource_fence_id=rack_id,
+        )
+        return await self._transport.rotate_rack_in_session(
+            db,
+            client_request_id=binding.client_request_id,
+            caller=TransportCaller(workline_id=str(workline_id)),
+            rack_id=rack_id,
+            position=RackPosition(position.location_code),
+            target_face=target_face,
+            rcs_template_id=RcsTemplateId.CTU02,
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+
+    async def create_departure(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        source_evidence_id: int,
+        operation_id: str,
+        step: str,
+        rack_id: str,
+        destination: TransportZonePosition,
+    ) -> object:
+        binding = await _binding_for(
+            db,
+            self._bindings,
+            self._uuid_factory,
+            workline_id=workline_id,
+            source_evidence_id=source_evidence_id,
+            correlation_id=operation_id,
+            step=step,
+            resource_fence_id=rack_id,
+        )
+        return await self._transport.move_rack_in_session(
+            db,
+            client_request_id=binding.client_request_id,
+            caller=TransportCaller(workline_id=str(workline_id)),
+            rack_id=rack_id,
+            source=RackReference(rack_id),
+            target=ZonePosition(destination.location_code),
+            target_face=None,
+            rcs_template_id=RcsTemplateId.CTU03,
             execution_authority=TransportExecutionAuthority(workline_id=workline_id),
         )
 

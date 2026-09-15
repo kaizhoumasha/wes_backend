@@ -38,6 +38,10 @@ from src.app.wms_integration.outbound_picking.services.picking_task_plan_activat
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare_batch import (
     PickingTaskPrepareBatchService,
 )
+from src.app.wms_integration.outbound_picking.services.rack_departure import (
+    RackDepartureResultReader,
+    RackDepartureScheduler,
+)
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
@@ -105,12 +109,14 @@ def build_deployment_runtime(
         )
         passages = PassageRepository()
         batch_reader = BinBatchResultReader()
+        rack_creator = ReliableRackTransportCreator(transport_runtime.service)
+        batch_repository = BatchRepository(batch_reader)
         batch_result = ManualPickingBatchResultFlow(
             batch_reader, ReliableBinTransportCreator(transport_runtime.service), passages
         )
         batch_driver = ManualPickingBatchDriver(
             ManualPickingBatchFlow(
-                BatchRepository(batch_reader),
+                batch_repository,
                 passages,
                 BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
                 batch_result,
@@ -119,6 +125,10 @@ def build_deployment_runtime(
             plans=PickingTaskPlanDeltaRepository(),
             positions=position_projection_repository,
             transports=TransportRepository(),
+            rack_creator=rack_creator,
+            departure_scheduler=RackDepartureScheduler(WmsConfirmationLifecycleService()),
+            departure_reader=RackDepartureResultReader(),
+            passages=passages,
         )
         scan_flow = ManualPickingScanFlow(
             commands=device_command_service,

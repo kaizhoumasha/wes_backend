@@ -85,5 +85,29 @@ class PositionProjectionService:
         await self._repository.flush(db)
         return projection
 
+    async def invalidate_transport_member(
+        self,
+        db,
+        *,
+        authority: TransportExecutionAuthority | None,
+        object_type: str,
+        object_id: str,
+        operation_id: str,
+        transport_task_id: str,
+        updated_at: datetime,
+    ):
+        """动作已被接纳或送达状态未知时，撤销原位置的确定性。"""
+        if authority is None:
+            return None
+        projection = await self._lock_authorized_object(db, object_type, object_id)
+        if projection is None:
+            return None
+        projection.position_unknown = True
+        projection.source_operation_id = operation_id
+        projection.source_transport_task_id = transport_task_id
+        projection.updated_at = updated_at
+        await self._repository.flush(db)
+        return projection
+
 
 position_projection_service = PositionProjectionService()

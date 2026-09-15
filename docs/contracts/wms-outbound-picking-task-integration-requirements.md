@@ -601,6 +601,10 @@ WES 出库业务模块必须把计划增量 `operation_id`、执行阶段、完�
 Transport 的接收、结果和 `UNKNOWN/RECONCILING` 对账遵循 Transport 履约合同。计划增量返回成功只表示 WES 已保存计划，不表示货架已经到位；WES 也不能根据 WMS
 业务计划伪造位置结果。
 
+货架或 Bin 的 Transport 被接纳后可能已经开始移动。`ACCEPTED` 或 `DELIVERY_UNKNOWN` 必须立即使该对象原已知位置的
+`PositionProjection` 失效，但不得据此推定来源已腾空或目标已到达；最终位置回调若到达则收敛原对象投影，若缺失则保持 unknown。
+一个对象的 unknown 不参与其他对象的准入。后续来源架只按自己的已应用计划成员和原进场 Transport `SUCCEEDED` 推进。
+
 #### 9.1.1 退料货架到位事实
 
 WMS/RCS 发送的 `transport.task.resulted@v1` 只表达通用搬运结果，不要求其 Transport Handler 判断货架业务类型。WES 出库业务模块根据
@@ -692,17 +696,15 @@ WES 只维护业务准入、退箱 FIFO、批次互斥及原 Transport 的权威
    确定失败而结束的任务明细，不能再由当前任务的计划增量替换。
 
 `plan_delta` 可以一次提供多个来源货架面，WES 可以为不同货架提交多条指向同一 CTU 工作位的进场任务，
-但只能在 RCS 权威结果证明某一货架实际进入该工作位后开始该架的取料作业。来源面按下面的固定顺序选择：
-
-1. 当前已经在 CTU 工作位、并且尚未结束的计划来源面；
-2. 当前货架的另一个尚未结束的计划来源面；
-3. 按 `plan_revision` 和数组顺序选择最早接收的其他来源面。
+但只能在 RCS 权威结果证明某一货架实际进入该工作位后开始该架的取料作业。`plan_revision` 和数组顺序只用于稳定创建进场意图，
+不构成运行准入顺序；任一已应用计划货架的原进场 Transport `SUCCEEDED` 后，就按该货架的实际到位面推进。同一货架需要下一面时，
+仍在当前面闭合后创建一次 `RACK_ROTATE` 并等待其匹配成功结果。
 
 货架动作规则：
 
 - 当前货架和工作面已经正确时，不创建 Transport；
 - `rack_id` 相同但目标面不同，创建一个 `RACK_ROTATE`；
-- `rack_id` 不同，新架进场若已提交并由 RCS 排队，不得再建第二条进场 Transport；旧架离场与新架实际进位分别等待各自权威结果，不从计划或提交顺序推断新架已到位；
+- `rack_id` 不同，新架进场若已提交并由 RCS 排队，不得再建第二条进场 Transport；旧架离场与新架实际进位独立收敛，新架只按自身原进场 Transport 的匹配 `SUCCEEDED` 判定到位，不读取旧架离场终态；
 - `RACK_MOVE` 已经携带正确 `target_face` 时，到位后不再补一个 `RACK_ROTATE`；
 - CTU 仍携带 Bin、存在未完成 Bin 搬运、实际位置不明确，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架。
 
@@ -780,8 +782,8 @@ CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为
 已可靠进入 `RETURN_BUFFER` 的 Bin 可以跨面等待。WMS 不得追加或改写已冻结清单，也不得在后续
 `plan_delta` 重新添加同一 `task_id + rack_id + rack_face`；后续正常新增需求由另一个真实来源面及其
 计划增量承接。若实际仍是原面，必须使用明确的新任务或新轮次身份，不能伪造另一 `rack_face`。
-来源换面或换架仍由 WES 从已接收的 `added_bin_source_racks[]` 选择：同架另一面创建 `RACK_ROTATE`，
-不同货架按第 9.2 节先移出旧架、再移入新架；新面权威到位后才创建该面的分配请求。
+来源换面或换架仍由 WES 从已接收的 `added_bin_source_racks[]` 选择：同架另一面创建 `RACK_ROTATE`；不同货架的离场和进场
+分别保留原 Transport 身份，后续架自己的进场 `SUCCEEDED` 后即可创建该面的分配请求，不等待前一架离场 Transport 终态。
 
 #### 9.2.2 退箱批次
 
@@ -1032,6 +1034,10 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 }
 ```
 
+上例是转运货架去业务库位。五层来源货架的 `READY` 保持同一响应信封，
+`data.rack_destination` 改为 WMS 决定的 `{"type":"ZONE","location_code":"WH05"}`；
+WES 冻结该原值用于 `CTU03 / RACK → ZONE`，不能把 `WH05` 伪装为 `RACK_POSITION`。
+
 `WAIT` 响应示例：
 
 ```json
@@ -1055,13 +1061,15 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 | `data.current_location` | 是 | `RACK_POSITION` / WES 已确认位置 | 当前已确认物理位置，禁止使用计划目标代替 |
 | `data.current_face` | 是 | code / WES 已确认位置 | 当前已确认货架面 |
 | `data.result` | 响应必填 | enum / WMS | `READY \| WAIT` |
-| `data.rack_destination` | `READY` 必填 | `RACK_POSITION` / WMS | 当前货架离开工作位后的唯一去向；不得等于 `current_location` |
+| `data.rack_destination` | `READY` 必填 | `ZONE \| RACK_POSITION` / WMS | 五层来源货架必须是 `ZONE`，转运货架按自身合同为 `RACK_POSITION`；WES 按原任务已应用计划的货架角色校验，角色不符保留原证据且不派发；不得等于 `current_location` |
 | `data.retry_after_ms` | `WAIT` 必填 | positive integer / WMS | 无新业务数据时的兜底重试间隔 |
 
 WES 只有在没有未完成 PUT、未确认的位置结果上报、相关设备动作和继续使用该货架的本地明细时，才能发送离场请求。五层来源货架还必须
 满足：CTU 不携带 Bin、没有未结束搬运或未知位置，且没有以当前面为冻结目标的退箱决定；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不阻塞离场。
 `READY` 后以当前决定 `operation_id` 派生一个稳定 `client_request_id` 并创建一项
-货架 TransportTask；不得拆分。同一 `target_preparation.mode=REPLACE` 已给出当前架去向时，禁止为同一货架重复调用。
+货架 TransportTask；五层来源货架使用 `CTU03`，从货架号 `RACK` 到 WMS 返回的 `ZONE`，转运货架仍按自身回库合同处理；不得拆分。
+`WAIT` 到期或新事实出现后，以新 `operation_id` 和当前实际位置重新决定；`UNAVAILABLE` 或响应未知只重试原身份与原请求。
+离场 Transport 失败或结果未知时保留原 binding、位置证据和资源围栏，不换身份重发。同一 `target_preparation.mode=REPLACE` 已给出当前架去向时，禁止为同一货架重复调用。
 
 ## 10. 逐盘扫码后决定目标，以及两个机械臂并行工作
 
@@ -1693,6 +1701,8 @@ WMS 根据自己已经保存的逐盘结果和任务状态判断是否完成。W
 数据和相关占用，并继续接受既有 Bin 的 `outbound.bin.return_batch@v1` 和任务相关货架的
 `outbound.rack.departure_decide@v1`，直到这些物理对象完成退箱或离场。WMS 不得仅因 PickingTask 已完成返回
 `STATE_CONFLICT`；这些后续决定不得新增取料明细、重新打开任务或发布新的计划增量。
+前一任务 `COMPLETED` 后，后一 PickingTask 可以先行 `prepare` 和进入 `EXECUTING`；原退箱 FIFO、旧来源货架离场和新来源货架进场
+各自保留原身份并独立收敛。新来源货架取得自身匹配的权威进场 `SUCCEEDED` 后即可开始其入站批次，不等待旧架离场终态。
 
 `PLAN_REVISION_STALE | BUSINESS_IN_PROGRESS` 后重新确认使用新的 `operation_id` 和当前 `last_applied_plan_revision`。
 

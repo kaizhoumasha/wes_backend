@@ -115,7 +115,6 @@ def _service(
     queue: _Queue | None = None,
     policy: _Policy | None = None,
     workline_reserved: AsyncMock | None = None,
-    business_blocker: AsyncMock | None = None,
 ) -> tuple[PickingTaskPrepareCoordinator, _Worklines, _Tasks, _Confirmations, _Queue]:
     workline_value = (
         workline
@@ -144,7 +143,6 @@ def _service(
             confirmation_service=confirmations,  # type: ignore[arg-type]
             task_queue_gateway=queue_value,  # type: ignore[arg-type]
             workline_reserved=workline_reserved,
-            business_blocker=business_blocker,
         ),
         worklines,
         tasks,
@@ -226,19 +224,16 @@ async def test_prepare_active_business_task_still_blocks_independent_request() -
 
 
 @pytest.mark.asyncio
-async def test_prepare_waits_for_own_plugin_fifo_without_blocking_unrelated_history() -> None:
-    blocker = AsyncMock()
-    blocker.get_unfinished_workload_summary.return_value = {"count": 1, "sample": "return FIFO"}
-    service, worklines, tasks, confirmations, queue = _service(business_blocker=blocker)
-    worklines.unfinished = {"count": 1, "sample": {"status": "RECONCILING"}, "by_type": {"transport_tasks": True}}
+async def test_prepare_allows_next_task_while_prior_task_has_return_fifo() -> None:
+    service, worklines, tasks, confirmations, queue = _service()
+    worklines.unfinished = {"count": 1, "sample": "prior return FIFO", "by_type": {"manual_picking_passages": True}}
 
     result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
 
-    assert result.reason == PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
-    blocker.get_unfinished_workload_summary.assert_awaited_once()
-    assert tasks.claimed_type is None
-    assert confirmations.kwargs is None
-    assert queue.calls == 0
+    assert result.prepared
+    assert tasks.claimed_type is not None
+    assert confirmations.kwargs is not None
+    assert queue.calls == 1
 
 
 @pytest.mark.asyncio

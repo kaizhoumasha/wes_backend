@@ -51,7 +51,7 @@ def test_plan_rack_transport_intent_preserves_source_evidence_identity() -> None
     assert result.transports[0].source_evidence_id == "101"
 
 
-def test_plan_handler_owns_stable_revision_then_rack_scheduling_order() -> None:
+def test_plan_handler_preserves_applied_member_order() -> None:
     try:
         later = PickingTaskPlanRack("BIN-A", ("90",), "102", plan_revision=2)
         earlier = PickingTaskPlanRack("BIN-B", ("270",), "101", plan_revision=1)
@@ -65,10 +65,10 @@ def test_plan_handler_owns_stable_revision_then_rack_scheduling_order() -> None:
 
     result = PickingTaskPlanAppliedHandler()(fact)
 
-    assert [intent.rack_id for intent in result.transports] == ["BIN-B", "BIN-A"]
+    assert [intent.rack_id for intent in result.transports] == ["BIN-A", "BIN-B"]
 
 
-def test_plan_handler_owns_deterministic_face_order() -> None:
+def test_plan_handler_preserves_first_planned_face() -> None:
     fact = replace(
         FACT,
         target_rack=None,
@@ -77,7 +77,7 @@ def test_plan_handler_owns_deterministic_face_order() -> None:
 
     result = PickingTaskPlanAppliedHandler()(fact)
 
-    assert result.transports[0].target_face == "A"
+    assert result.transports[0].target_face == "Z"
 
 
 def test_plan_applied_maps_target_and_all_bin_racks_to_transport_intents() -> None:
@@ -97,7 +97,7 @@ def test_plan_applied_maps_target_and_all_bin_racks_to_transport_intents() -> No
     assert source.source_evidence_id == "101"
     assert source.source == TransportRackReference("FIVE-1")
     assert source.target == TransportRackPosition("FIVE-RACK-POSITION")
-    assert source.target_face == "270"
+    assert source.target_face == "90"
     assert source.rcs_template_id is TransportRcsTemplateId.CTU01
     assert queued_source.rack_id == "FIVE-2"
     assert queued_source.target == source.target

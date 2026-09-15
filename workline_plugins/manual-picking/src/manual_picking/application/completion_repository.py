@@ -6,13 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, or_, select
 
-from manual_picking.definition import DEFINITION
-from src.app.execution.models import (
-    InboundEvidence,
-    InboundEvidenceApplyStatus,
-    InboundEvidenceKind,
-    TransportDecisionBinding,
-)
+from src.app.execution.models import TransportDecisionBinding
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
@@ -20,7 +14,6 @@ from src.app.wms_integration.outbound_picking.models import DirectPickExecution
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionResultReader
-from src.app.workline.installed_plugin import parse_device_bindings
 
 from .batch_repository import BatchRepository
 from .passage_model import ManualPickingPassage
@@ -51,23 +44,6 @@ class ManualPickingCompletionRepository:
         return await self._completion_reader.latest(db, picking_task_id)
 
     async def ready_to_confirm(self, db: AsyncSession, line: Any, task: Any) -> bool:
-        bindings = parse_device_bindings(line.config, DEFINITION.device_roles)
-        evidence = cast("Any", InboundEvidence).__table__.c
-        if (
-            await db.scalar(
-                select(evidence.id)
-                .where(
-                    evidence.workline_id == line.id,
-                    evidence.kind == InboundEvidenceKind.DEVICE_EVENT,
-                    evidence.device_code.in_((bindings["SCAN1"], bindings["SCAN2"])),
-                    evidence.published_at.is_(None),
-                    evidence.apply_status != InboundEvidenceApplyStatus.IGNORED,
-                )
-                .limit(1)
-            )
-            is not None
-        ):
-            return False
         direct = cast("Any", DirectPickExecution).__table__.c
         if await db.scalar(select(direct.id).where(direct.picking_task_id == task.id).limit(1)) is not None:
             return False

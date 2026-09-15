@@ -11,6 +11,7 @@ from src.app.execution.services import WmsConfirmationService
 from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.departure_typed import encode_request
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
+from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
 from src.utils.timezone import timezone
 from tests.integration.wms_adapter.outbound_picking.confirmation_support import (
     ConfirmationServer,
@@ -27,7 +28,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
     [
         (
             PickingTaskStatus.EXECUTING,
-            {"result": "READY", "rack_destination": {"type": "RACK_POSITION", "location_code": "STORE-1"}},
+            {"result": "READY", "rack_destination": {"type": "ZONE", "location_code": "STORE-1"}},
         ),
         (
             PickingTaskStatus.EXECUTION_COMPLETED,
@@ -83,6 +84,10 @@ async def test_departure_persists_decision_without_reopening_task_or_starting_tr
             assert evidence.normalized_payload["data"] == data
             assert evidence.material_execution_id is None
             assert evidence.workline_id is None
+            snapshot = await RackDepartureResultReader().latest(db, task.id, "RACK-1")
+            assert snapshot is not None and snapshot.intent.operation_id == operation_id
+            assert snapshot.outcome is not None and snapshot.evidence_id == evidence.id
+            assert await RackDepartureResultReader().latest(db, task.id, "OTHER-RACK") is None
             assert (await db.get(PickingTask, task.id)).status == state
             assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 1
             assert await db.scalar(select(func.count()).select_from(TransportTask)) == 0

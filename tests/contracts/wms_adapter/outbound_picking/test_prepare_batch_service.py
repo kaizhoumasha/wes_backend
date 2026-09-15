@@ -65,14 +65,12 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manual_policy = object()
-    manual_blocker = object()
     ignored_policy = object()
     plugins = (
         SimpleNamespace(
             plugin_key="sample_plugin",
             plugin_version="0.1.0",
             picking_task_prepare_policy=manual_policy,
-            business_blocker=manual_blocker,
         ),
         SimpleNamespace(plugin_key="inactive", plugin_version="1.0", picking_task_prepare_policy=ignored_policy),
     )
@@ -80,11 +78,9 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     calls: list[tuple[object, int]] = []
     reserved = AsyncMock(return_value=False)
     reservations: list[object] = []
-    blockers: list[object] = []
 
     def coordinator_factory(_sessions, *, policy, **_kwargs):  # type: ignore[no-untyped-def]
         reservations.append(_kwargs["workline_reserved"])
-        blockers.append(_kwargs["business_blocker"])
         return _Coordinator(policy, calls)
 
     monkeypatch.setattr(module, "PickingTaskPrepareCoordinator", coordinator_factory)
@@ -100,7 +96,6 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     assert worklines.identities == (("inactive", "1.0"), ("sample_plugin", "0.1.0"))
     assert calls == [(manual_policy, 7), (manual_policy, 8)]
     assert reservations == [reserved]
-    assert blockers == [manual_blocker]
 
 
 @pytest.mark.asyncio

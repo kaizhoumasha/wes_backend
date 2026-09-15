@@ -820,6 +820,53 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
 
 
 @pytest.mark.asyncio
+async def test_rotate_in_session_keeps_transport_inside_workline_transaction(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    request_id = new_uuid7()
+    async with sessions.begin() as db:
+        workline_id = await ensure_projection_authority(db)
+        db.add(
+            PositionProjection(
+                object_type="RACK",
+                object_id="rack-rotate-session",
+                workline_id=workline_id,
+                position_json={"kind": "RACK_POSITION", "location_code": "ROTATE-SESSION"},
+                arrival_face="90",
+                source_operation_id="seed",
+                source_transport_task_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+    async with sessions.begin() as db:
+        first = await service.rotate_rack_in_session(
+            db,
+            request_id,
+            TransportCaller(workline_id=str(workline_id)),
+            "rack-rotate-session",
+            RackPosition("ROTATE-SESSION"),
+            "270",
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+        duplicate = await service.rotate_rack_in_session(
+            db,
+            request_id,
+            TransportCaller(workline_id=str(workline_id)),
+            "rack-rotate-session",
+            RackPosition("ROTATE-SESSION"),
+            "270",
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+        assert duplicate == first
+    async with sessions() as db:
+        rows = (await db.scalars(select(TransportTask).where(TransportTask.client_request_id == request_id))).all()
+    assert len(rows) == 1 and rows[0].kind == "RACK_ROTATE"
+    assert rows[0].request_json["position"] == {"kind": "RACK_POSITION", "location_code": "ROTATE-SESSION"}
+
+
+@pytest.mark.asyncio
 async def test_same_resource_independent_requests_are_submitted(
     service: TransportService,
     db_engine: object,
@@ -850,6 +897,56 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
     assert snapshot.status == "ACCEPTED"
     assert snapshot.submit_attempt_count == 1
     assert snapshot.result_deadline_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("submit_code", [TransportSubmitCode.RECEIVED, TransportSubmitCode.DELIVERY_UNKNOWN])
+async def test_submit_that_may_have_started_motion_invalidates_the_original_position(
+    service: TransportService,
+    db_engine: object,
+    submit_code: TransportSubmitCode,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        workline_id = await ensure_projection_authority(db)
+        db.add(
+            PositionProjection(
+                object_type="RACK",
+                object_id="rack-submit-position",
+                workline_id=workline_id,
+                position_json={"kind": "RACK_POSITION", "location_code": "KT16"},
+                arrival_face="90",
+                source_operation_id="arrival-operation",
+                source_transport_task_id="arrival-transport",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-submit-position",
+        RackPosition("KT16"),
+        RackPosition("ZONE-01"),
+        "90",
+        execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+    )
+    service.provider.code = submit_code
+
+    assert await service.submit_pending_tasks(1) == 1
+    task = await _load_task(db_engine, handle.transport_task_id)
+
+    async with sessions() as db:
+        projection = await db.scalar(
+            select(PositionProjection).where(
+                PositionProjection.object_type == "RACK",
+                PositionProjection.object_id == "rack-submit-position",
+            )
+        )
+    assert projection is not None
+    assert projection.position_unknown is True
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "KT16"}
+    assert projection.source_operation_id == task.submit_operation_id
+    assert projection.source_transport_task_id == handle.transport_task_id
 
 
 @pytest.mark.asyncio
