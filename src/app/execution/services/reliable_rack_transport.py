@@ -226,7 +226,29 @@ class ReliableRackTransportCreator:
             execution_authority=TransportExecutionAuthority(workline_id=workline_id),
         )
 
-    async def create_departure(
+    async def create_source_return(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        source_evidence_id: int,
+        correlation_id: str,
+        step: str,
+        rack_id: str,
+        destination: TransportZonePosition,
+    ) -> object:
+        return await self._create_rack_departure(
+            db,
+            workline_id=workline_id,
+            source_evidence_id=source_evidence_id,
+            correlation_id=correlation_id,
+            step=step,
+            rack_id=rack_id,
+            destination=destination,
+            template=RcsTemplateId.CTU03,
+        )
+
+    async def create_transfer_departure(
         self,
         db: AsyncSession,
         *,
@@ -235,7 +257,30 @@ class ReliableRackTransportCreator:
         operation_id: str,
         step: str,
         rack_id: str,
-        destination: TransportZonePosition,
+        destination: TransportZonePosition | TransportRackPosition,
+    ) -> object:
+        return await self._create_rack_departure(
+            db,
+            workline_id=workline_id,
+            source_evidence_id=source_evidence_id,
+            correlation_id=operation_id,
+            step=step,
+            rack_id=rack_id,
+            destination=destination,
+            template=RcsTemplateId.F01,
+        )
+
+    async def _create_rack_departure(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        source_evidence_id: int,
+        correlation_id: str,
+        step: str,
+        rack_id: str,
+        destination: TransportZonePosition | TransportRackPosition,
+        template: RcsTemplateId,
     ) -> object:
         binding = await _binding_for(
             db,
@@ -243,7 +288,7 @@ class ReliableRackTransportCreator:
             self._uuid_factory,
             workline_id=workline_id,
             source_evidence_id=source_evidence_id,
-            correlation_id=operation_id,
+            correlation_id=correlation_id,
             step=step,
             resource_fence_id=rack_id,
         )
@@ -253,9 +298,9 @@ class ReliableRackTransportCreator:
             caller=TransportCaller(workline_id=str(workline_id)),
             rack_id=rack_id,
             source=RackReference(rack_id),
-            target=ZonePosition(destination.location_code),
+            target=self._convert_position(destination),
             target_face=None,
-            rcs_template_id=RcsTemplateId.CTU03,
+            rcs_template_id=template,
             execution_authority=TransportExecutionAuthority(workline_id=workline_id),
         )
 

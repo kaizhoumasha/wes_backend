@@ -189,13 +189,13 @@ async def test_rotate_result_uses_original_plan_evidence_and_face() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [TransportOutcomeStatus.SUCCEEDED, TransportOutcomeStatus.UNKNOWN])
-async def test_departure_result_preserves_original_wms_decision(status: TransportOutcomeStatus) -> None:
+async def test_transfer_departure_result_preserves_original_wms_decision(status: TransportOutcomeStatus) -> None:
     from manual_picking.application.transport_outcome import ManualPickingTransportOutcomePublisher
 
     binding = SimpleNamespace(
         workline_id=31,
         client_request_id="REQUEST-1",
-        step="MANUAL_PICKING_SOURCE_RACK_OUT",
+        step="MANUAL_PICKING_TRANSFER_RACK_OUT",
         resource_fence_id="RACK-1",
         correlation_id="departure-op",
         source_evidence_id=101,
@@ -225,5 +225,23 @@ async def test_departure_result_preserves_original_wms_decision(status: Transpor
     )
     assert await publisher.publish(object(), outcome)
     payload = accept.await_args.kwargs["normalized_payload"]
-    assert payload["step"] == "MANUAL_PICKING_SOURCE_RACK_OUT"
+    assert payload["step"] == "MANUAL_PICKING_TRANSFER_RACK_OUT"
     assert payload["source_evidence_id"] == 101
+
+
+@pytest.mark.asyncio
+async def test_source_return_result_uses_original_plan_evidence() -> None:
+    publisher, accept = _publisher(step="MANUAL_PICKING_SOURCE_RACK_OUT")
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="31"),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(TransportMemberOutcome("RACK-1", ZonePosition("WH01")),),
+    )
+    assert await publisher.publish(object(), outcome)
+    payload = accept.await_args.kwargs["normalized_payload"]
+    assert payload["step"] == "MANUAL_PICKING_SOURCE_RACK_OUT"
+    assert payload["picking_task_id"] == "PICK-1" and payload["rack_id"] == "RACK-1"

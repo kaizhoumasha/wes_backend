@@ -284,7 +284,7 @@ class _WmsReader:
 def _setup(
     *, transport_reader=None, missing_projection=None, failed_transport=None, batch_reader=None, batch_result=None
 ):  # type: ignore[no-untyped-def]
-    evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-A"))
+    evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-C"))
     passages = _Passages(evidences)
     commands = _Commands()
     admissions = _Admissions()
@@ -534,18 +534,36 @@ async def test_transport_outcome_is_consumed_without_material_execution(status: 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "step,kind,position,face",
+    "step,kind,target_kind,target_code,final_kind,final_code,face",
     [
-        ("MANUAL_PICKING_SOURCE_RACK_ROTATE", "RACK_ROTATE", "FIVE-RACK-POSITION", "270"),
-        ("MANUAL_PICKING_SOURCE_RACK_OUT", "RACK_MOVE", "WH05", None),
+        (
+            "MANUAL_PICKING_SOURCE_RACK_ROTATE",
+            "RACK_ROTATE",
+            "RACK_POSITION",
+            "FIVE-RACK-POSITION",
+            "RACK_POSITION",
+            "FIVE-RACK-POSITION",
+            "270",
+        ),
+        ("MANUAL_PICKING_SOURCE_RACK_OUT", "RACK_MOVE", "ZONE", "WH01", "RACK_POSITION", "WHE0809", None),
+        ("MANUAL_PICKING_TRANSFER_RACK_OUT", "RACK_MOVE", "ZONE", "WH05", "RACK_POSITION", "WHE0406", None),
+        (
+            "MANUAL_PICKING_TRANSFER_RACK_OUT",
+            "RACK_MOVE",
+            "RACK_POSITION",
+            "STORE-POS",
+            "RACK_POSITION",
+            "STORE-POS",
+            None,
+        ),
     ],
 )
-async def test_source_rack_switch_result_requires_matching_frozen_transport(
-    step: str, kind: str, position: str, face: str | None
+async def test_rack_switch_result_requires_matching_frozen_transport(
+    step: str, kind: str, target_kind: str, target_code: str, final_kind: str, final_code: str, face: str | None
 ) -> None:
-    final = {"kind": "ZONE" if face is None else "RACK_POSITION", "location_code": position}
+    final = {"kind": final_kind, "location_code": final_code}
     request = {"rack_id": "RACK-1", "target_face": face}
-    request["target" if face is None else "position"] = dict(final)
+    request["target" if face is None else "position"] = {"kind": target_kind, "location_code": target_code}
     transport_task = SimpleNamespace(
         kind=kind, transport_task_id="TRANSPORT-1", client_request_id="REQUEST-1", request_json=request
     )
@@ -572,7 +590,10 @@ async def test_source_rack_switch_result_requires_matching_frozen_transport(
         apply_status=InboundEvidenceApplyStatus.APPLIED,
     )
     assert (await flow.apply_in_session(object(), 10, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    evidences.rows[10].normalized_payload["members"][0]["final_position"]["location_code"] = "WRONG"
+    if target_kind == "ZONE":
+        evidences.rows[10].normalized_payload["members"][0]["final_position"]["kind"] = "ZONE"
+    else:
+        evidences.rows[10].normalized_payload["members"][0]["final_position"]["location_code"] = "WRONG"
     assert (
         await flow.apply_in_session(object(), 10, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
@@ -878,7 +899,7 @@ async def test_scan1_wrong_suffix_keeps_bin_identity_for_direct_ng_at_scan3() ->
 @pytest.mark.asyncio
 async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
     flow, evidences, passages, commands, admissions = _setup()
-    evidences.rows[2] = _scan(2, "S2", "A000000099-A")
+    evidences.rows[2] = _scan(2, "S2", "A000000099-C")
     await flow.apply_in_session(object(), 1, workline_id=7)
 
     result = await flow.apply_in_session(object(), 2, workline_id=7)
@@ -890,7 +911,7 @@ async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
     assert passages.rows[0].scan2_fault_evidence_id == 2
     assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD", "MOVE_FORWARD"]
     assert admissions.intents == []
-    evidences.rows[3] = _scan(3, "S2", "A000000001-A")
+    evidences.rows[3] = _scan(3, "S2", "A000000001-C")
     assert (
         await flow.apply_in_session(object(), 3, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
@@ -911,7 +932,7 @@ async def test_scan2_without_fifo_head_never_releases_unknown_bin() -> None:
 @pytest.mark.asyncio
 async def test_scan2_abnormal_code_waits_for_head_physical_success() -> None:
     flow, evidences, passages, commands, _ = _setup()
-    evidences.rows[2] = _scan(2, "S2", "A000000099-A")
+    evidences.rows[2] = _scan(2, "S2", "A000000099-C")
     await flow.apply_in_session(object(), 1, workline_id=7)
     commands.statuses[passages.rows[0].scan1_command_code] = "ACKNOWLEDGED"
 
@@ -925,7 +946,7 @@ async def test_scan2_does_not_release_a_second_bin_while_first_waits_for_wms() -
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
     await flow.apply_in_session(object(), 2, workline_id=7)
-    evidences.rows[3] = _scan(3, "S2", "A000000099-A")
+    evidences.rows[3] = _scan(3, "S2", "A000000099-C")
 
     result = await flow.apply_in_session(object(), 3, workline_id=7)
 
@@ -940,7 +961,7 @@ async def test_scan2_rescan_of_same_bin_is_not_retried_as_a_new_passage() -> Non
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
     await flow.apply_in_session(object(), 2, workline_id=7)
-    evidences.rows[3] = _scan(3, "S2", "A000000001-A")
+    evidences.rows[3] = _scan(3, "S2", "A000000001-C")
 
     result = await flow.apply_in_session(object(), 3, workline_id=7)
 

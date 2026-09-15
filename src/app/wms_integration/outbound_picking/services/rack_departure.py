@@ -1,4 +1,4 @@
-"""来源货架离场的可靠 WMS 决定及原结果读取。"""
+"""货架离场的可靠 WMS 决定及原结果读取。"""
 
 from __future__ import annotations
 

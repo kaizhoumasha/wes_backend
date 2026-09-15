@@ -29,7 +29,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
-from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP
+from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
@@ -197,6 +197,7 @@ class ManualPickingScanFlow:
                 "PICKING_TASK_BIN_SOURCE_RACK_IN",
                 SOURCE_RACK_ROTATE_STEP,
                 SOURCE_RACK_OUT_STEP,
+                TRANSFER_RACK_OUT_STEP,
             }
         ):
             return None
@@ -215,13 +216,24 @@ class ManualPickingScanFlow:
                 if payload.get("step") == SOURCE_RACK_ROTATE_STEP
                 else task.request_json.get("target")
             )
+            actual_position = (
+                members[0].get("final_position") if isinstance(members, list) and len(members) == 1 else None
+            )
+            matching_position = (
+                isinstance(actual_position, dict)
+                and actual_position.get("kind") == "RACK_POSITION"
+                and isinstance(actual_position.get("location_code"), str)
+                and bool(actual_position["location_code"])
+                if isinstance(expected_position, dict) and expected_position.get("kind") == "ZONE"
+                else actual_position == expected_position
+            )
             if (
                 not isinstance(members, list)
                 or len(members) != 1
                 or members[0].get("object_id") != payload["rack_id"]
-                or members[0].get("final_position") != expected_position
+                or not matching_position
                 or (
-                    payload.get("step") != SOURCE_RACK_OUT_STEP
+                    payload.get("step") not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP}
                     and members[0].get("arrival_face") != task.request_json.get("target_face")
                 )
             ):

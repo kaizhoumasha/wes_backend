@@ -14,7 +14,7 @@ from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.utils.timezone import timezone
 
-from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP
+from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
 
 if TYPE_CHECKING:
     from src.app.execution.models import InboundEvidence, TransportDecisionBinding
@@ -54,7 +54,7 @@ class ManualPickingTransportOutcomePublisher:
             "MANUAL_PICKING_INBOUND_BATCH": BIN_INBOUND_BATCH_OPERATION,
             "MANUAL_PICKING_RETURN_BATCH": BIN_RETURN_BATCH_OPERATION,
         }
-        if binding.step not in rack_steps | {SOURCE_RACK_OUT_STEP} | batch_operations.keys():
+        if binding.step not in rack_steps | {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP} | batch_operations.keys():
             raise ValueError("manual-picking Transport binding step 非法")
         if outcome.caller.workline_id != str(binding.workline_id):
             raise ValueError("manual-picking Transport outcome WorkLine 不匹配")
@@ -68,16 +68,22 @@ class ManualPickingTransportOutcomePublisher:
             if not isinstance(task_id, str) or not task_id:
                 raise ValueError("manual-picking 原计划 Evidence 缺少 PickingTask identity")
             business_identity = {"picking_task_id": task_id, "rack_id": binding.resource_fence_id}
-        elif binding.step == SOURCE_RACK_OUT_STEP:
-            if (
-                source is None
-                or source.kind != InboundEvidenceKind.WMS_RESULT
-                or source.operation != RACK_DEPARTURE_OPERATION
-                or source.operation_id != binding.correlation_id
-                or any(member.object_id != binding.resource_fence_id for member in outcome.members)
-            ):
-                raise LookupError("manual-picking Transport outcome 缺少原离场决定")
-            business_identity = {"rack_id": binding.resource_fence_id}
+        elif binding.step in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP}:
+            if source is None or any(member.object_id != binding.resource_fence_id for member in outcome.members):
+                raise LookupError("manual-picking Transport outcome 缺少原货架离场依据")
+            if binding.step == SOURCE_RACK_OUT_STEP and source.operation == "outbound.picking_task.plan_delta@v1":
+                task_id = source.normalized_payload.get("data", {}).get("task_id")
+                if not isinstance(task_id, str) or not task_id:
+                    raise ValueError("manual-picking 原计划 Evidence 缺少 PickingTask identity")
+                business_identity = {"picking_task_id": task_id, "rack_id": binding.resource_fence_id}
+            else:
+                if (
+                    source.kind != InboundEvidenceKind.WMS_RESULT
+                    or source.operation != RACK_DEPARTURE_OPERATION
+                    or source.operation_id != binding.correlation_id
+                ):
+                    raise LookupError("manual-picking Transport outcome 缺少原离场决定")
+                business_identity = {"rack_id": binding.resource_fence_id}
         else:
             if (
                 source is None

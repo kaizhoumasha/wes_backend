@@ -91,6 +91,43 @@ class PickingTaskPlanDeltaRepository:
             .limit(1)
         )
 
+    async def first_completed_transfer_owner_at_position(
+        self, db: AsyncSession, workline_id: int, location_code: str
+    ) -> PickingTask | None:
+        tasks = PickingTask.__table__.c
+        bindings = TransportDecisionBinding.__table__.c
+        transports = TransportTask.__table__.c
+        projections = PositionProjection.__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .join(
+                TransportDecisionBinding,
+                (bindings.workline_id == tasks.workline_id)
+                & (bindings.resource_fence_id == tasks.target_rack_id)
+                & (bindings.source_evidence_id == tasks.initial_plan_evidence_id),
+            )
+            .join(TransportTask, transports.client_request_id == bindings.client_request_id)
+            .join(
+                PositionProjection,
+                (projections.object_type == "RACK")
+                & (projections.object_id == tasks.target_rack_id)
+                & (projections.workline_id == tasks.workline_id)
+                & (projections.source_transport_task_id == transports.transport_task_id),
+            )
+            .where(
+                tasks.workline_id == workline_id,
+                tasks.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                bindings.step == "PICKING_TASK_TARGET_RACK_IN",
+                transports.status == "SUCCEEDED",
+                projections.position_unknown.is_(False),
+                projections.arrival_face == tasks.target_rack_face,
+                projections.position_json["kind"].as_string() == "RACK_POSITION",
+                projections.position_json["location_code"].as_string() == location_code,
+            )
+            .order_by(tasks.id)
+            .limit(1)
+        )
+
     async def has_applied_source_face(self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str) -> bool:
         members = PickingTaskBinSourceRack.__table__.c
         tasks = PickingTask.__table__.c
