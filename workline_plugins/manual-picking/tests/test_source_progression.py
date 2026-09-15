@@ -43,6 +43,7 @@ class Plans:
         ]
         self.matches = True
         self.owner = None
+        self.transfer_owner = None
 
     async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.rows
@@ -52,6 +53,9 @@ class Plans:
 
     async def first_completed_source_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
         return self.owner
+
+    async def first_completed_transfer_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
+        return self.transfer_owner
 
 
 class Flow:
@@ -76,12 +80,16 @@ class Creator:
     def __init__(self):  # type: ignore[no-untyped-def]
         self.rotate = []
         self.depart = []
+        self.transfer_depart = []
 
     async def create_rotate(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.rotate.append(kwargs)
 
-    async def create_departure(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+    async def create_source_return(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.depart.append(kwargs)
+
+    async def create_transfer_departure(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.transfer_depart.append(kwargs)
 
 
 def setup_driver():  # type: ignore[no-untyped-def]
@@ -145,7 +153,7 @@ async def test_same_rack_rotates_once_after_closed_face_and_uses_planned_next_fa
 
 
 @pytest.mark.asyncio
-async def test_completed_task_with_no_return_rows_or_departure_binding_still_decides_out() -> None:
+async def test_completed_source_rack_returns_directly_to_wh01_without_wms_decision() -> None:
     driver, line, task, positions, plans, flow, creator, reader, scheduler = setup_driver()
     task.status = "EXECUTION_COMPLETED"
     plans.owner = task
@@ -154,35 +162,39 @@ async def test_completed_task_with_no_return_rows_or_departure_binding_still_dec
     flow.complete.add(("R1", "270"))
 
     assert await driver.advance_completed_in_session(object(), line) == 1
-    assert scheduler.create_in_session.await_args.kwargs["picking_task_id"] == 31
-    intent = scheduler.create_in_session.await_args.args[1]
-    assert intent.rack_id == "R1" and intent.current_face == "270"
-    assert creator.depart == []
-
-    reader.latest.return_value = SimpleNamespace(
-        status=WmsConfirmationStatus.COMPLETED,
-        intent=intent,
-        outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
-        evidence_id=71,
-        completed_at=timezone.now_for_db(),
-    )
-    assert await driver.advance_completed_in_session(object(), line) == 1
-    assert creator.depart[0]["source_evidence_id"] == 71
-    assert creator.depart[0]["operation_id"] == intent.operation_id
-    assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
+    scheduler.create_in_session.assert_not_awaited()
+    reader.latest.assert_not_awaited()
+    assert creator.depart[0]["source_evidence_id"] == 51
+    assert creator.depart[0]["rack_id"] == "R1"
+    assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH01")
 
 
 @pytest.mark.asyncio
-async def test_wait_uses_new_decision_identity_only_after_retry_due_and_wrong_role_stops() -> None:
-    driver, line, task, positions, _, flow, creator, reader, scheduler = setup_driver()
-    positions.source.arrival_face = "270"
-    flow.complete.add(("R1", "270"))
+async def test_transfer_decision_starts_after_wms_completion_while_source_return_is_still_open() -> None:
+    driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.owner = task
+    plans.transfer_owner = task
+    flow.busy = True
+    driver._passages.has_bin_before_return_buffer.return_value = True
+
+    assert await driver.advance_completed_in_session(object(), line) == 1
+    assert creator.depart == []
+    intent = scheduler.create_in_session.await_args.args[1]
+    assert intent.task_id == task.task_id and intent.rack_id == "TARGET"
+
+
+@pytest.mark.asyncio
+async def test_transfer_rack_wait_retries_and_ready_uses_f01_destination() -> None:
+    driver, line, task, _, plans, _, creator, reader, scheduler = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.transfer_owner = task
     intent = sdk.wms_operations.outbound_rack_departure_decide(
         operation_id="old-op",
         task_id="PICK-1",
-        rack_id="R1",
-        current_location=sdk.TransportRackPosition("FIVE-POS"),
-        current_face="270",
+        rack_id="TARGET",
+        current_location=sdk.TransportRackPosition("TRANSFER-POS"),
+        current_face="A",
     )
     reader.latest.return_value = SimpleNamespace(
         status=WmsConfirmationStatus.COMPLETED,
@@ -191,17 +203,24 @@ async def test_wait_uses_new_decision_identity_only_after_retry_due_and_wrong_ro
         evidence_id=71,
         completed_at=timezone.now_for_db(),
     )
-    assert await driver.advance_in_session(object(), line, task) == 0
+    assert await driver.advance_completed_in_session(object(), line) == 0
     scheduler.create_in_session.assert_not_awaited()
     reader.latest.return_value.completed_at -= timedelta(seconds=2)
-    assert await driver.advance_in_session(object(), line, task) == 1
+    assert await driver.advance_completed_in_session(object(), line) == 1
     assert scheduler.create_in_session.await_args.args[1].operation_id != "old-op"
+    reader.latest.return_value.outcome = sdk.RackDepartureOutcome(
+        sdk.RackDepartureReady(sdk.TransportRackPosition("TRANSFER-POS"))
+    )
+    with pytest.raises(ValueError, match="physical position"):
+        await driver.advance_completed_in_session(object(), line)
+    assert creator.transfer_depart == []
     reader.latest.return_value.outcome = sdk.RackDepartureOutcome(
         sdk.RackDepartureReady(sdk.TransportRackPosition("STORE-POS"))
     )
-    with pytest.raises(ValueError, match="role"):
-        await driver.advance_in_session(object(), line, task)
-    assert creator.depart == []
+    assert await driver.advance_completed_in_session(object(), line) == 1
+    assert creator.transfer_depart[0]["source_evidence_id"] == 71
+    assert creator.transfer_depart[0]["operation_id"] == intent.operation_id
+    assert creator.transfer_depart[0]["destination"] == sdk.TransportRackPosition("STORE-POS")
 
 
 @pytest.mark.asyncio

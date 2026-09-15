@@ -1231,14 +1231,41 @@ class TransportService:
         arrival_face: str | None,
         updated_at: datetime,
     ) -> None:
+        is_debug = task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID
         position_unknown = position_unknown or await self._repository.has_other_position_facts(
             db,
             object_type=member.object_type,
             object_id=member.object_id,
             transport_task_id=task.transport_task_id,
+            current_created_at=task.created_at,
+            ordered_authority_workline_id=None if is_debug else task.authority_workline_id,
+            current_caller_workline_id=task.caller_json.get("workline_id", ""),
         )
         await self._invalidate_other_task_positions(db, task, member)
-        if task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+        previous = (
+            await self._position_projections.get_current(db, member.object_type, member.object_id)
+            if not is_debug
+            else None
+        )
+        allow_replacement = bool(
+            not is_debug
+            and task.authority_workline_id is not None
+            and previous is not None
+            and previous.source_transport_task_id != task.transport_task_id
+            and previous.source_operation_id
+            and not position_unknown
+            and await self._repository.previous_position_fact_closed_before(
+                db,
+                object_type=member.object_type,
+                object_id=member.object_id,
+                previous_transport_task_id=previous.source_transport_task_id,
+                previous_operation_id=previous.source_operation_id,
+                current_created_at=task.created_at,
+                current_authority_workline_id=task.authority_workline_id,
+                current_caller_workline_id=task.caller_json.get("workline_id", ""),
+            )
+        )
+        if is_debug:
             _ = await self._repository.apply_debug_position_projection(
                 db,
                 object_type=member.object_type,
@@ -1262,6 +1289,7 @@ class TransportService:
             operation_id=evidence.operation_id,
             transport_task_id=task.transport_task_id,
             updated_at=updated_at,
+            allow_replacement=allow_replacement,
         )
 
     async def _invalidate_other_task_positions(

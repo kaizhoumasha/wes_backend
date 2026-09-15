@@ -67,6 +67,7 @@ def test_manual_outbound_debug_contract_is_a_closed_vocabulary() -> None:
         IntegrationDebugRunStatus.COMPLETED,
         IntegrationDebugRunStatus.NEEDS_ATTENTION,
         IntegrationDebugRunStatus.CLOSED_BY_OPERATOR,
+        IntegrationDebugRunStatus.ARCHIVED,
     )
     assert tuple(IntegrationDebugPhase) == (
         IntegrationDebugPhase.BIND_TASK,

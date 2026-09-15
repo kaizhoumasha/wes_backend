@@ -21,6 +21,7 @@ from src.app.transport.contracts import (
     TransportExecutionAuthority,
     TransportSubmitCode,
     TransportSubmitResult,
+    ZonePosition,
 )
 from src.app.transport.models import (
     TransportCallbackReceipt,
@@ -1028,6 +1029,99 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     assert post_process == ("SUCCEEDED", "APPLIED", None)
     assert projection is not None
     assert projection.source_transport_task_id == handle.transport_task_id
+
+
+async def test_later_ctu03_result_supersedes_completed_arrival_position_fact(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
+    )
+    rack_id = f"rack-ordered-return-{uuid.uuid4().hex}"
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
+    arrival = await service.move_rack(
+        new_uuid7(),
+        TransportCaller("INTEGRATION"),
+        rack_id,
+        RackPosition("SOURCE"),
+        RackPosition("KT16"),
+        "90",
+        execution_authority=authority,
+    )
+    handles = [arrival]
+    operations = [new_uuid7()]
+    try:
+        await record_valid_callback(
+            service,
+            operation_id=operations[0],
+            transport_task_id=arrival.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "transport_task_id": arrival.transport_task_id,
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": rack_id,
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "KT16"},
+                "arrival_face": "90",
+            },
+        )
+        assert await service.process_pending_evidence(1) == 1
+        departure = await service.move_rack(
+            new_uuid7(),
+            TransportCaller("INTEGRATION"),
+            rack_id,
+            RackPosition("KT16"),
+            ZonePosition("WH01"),
+            execution_authority=authority,
+        )
+        handles.append(departure)
+        operations.append(new_uuid7())
+        await record_valid_callback(
+            service,
+            operation_id=operations[1],
+            transport_task_id=departure.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=2,
+            payload={
+                "transport_task_id": departure.transport_task_id,
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": rack_id,
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0809"},
+            },
+        )
+        assert await service.process_pending_evidence(1) == 1
+        async with integration_session_factory() as db:
+            projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == rack_id))
+        assert projection is not None
+        assert projection.position_unknown is False
+        assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "WHE0809"}
+        assert projection.source_transport_task_id == departure.transport_task_id
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id.in_(operations))
+            )
+            await db.execute(
+                delete(TransportEvidence).where(
+                    TransportEvidence.transport_task_id.in_([h.transport_task_id for h in handles])
+                )
+            )
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack_id))
+            await db.execute(
+                delete(TransportMember).where(
+                    TransportMember.transport_task_id.in_([h.transport_task_id for h in handles])
+                )
+            )
+            await db.execute(
+                delete(TransportTask).where(TransportTask.transport_task_id.in_([h.transport_task_id for h in handles]))
+            )
 
 
 async def test_unordered_result_keeps_existing_projection_source_and_marks_it_unconfirmed(

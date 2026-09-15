@@ -1,4 +1,4 @@
-"""来源货架离场决定的原 Confirmation 与结果 Evidence 读取。"""
+"""货架离场决定的原 Confirmation 与结果 Evidence 读取。"""
 
 from __future__ import annotations
 

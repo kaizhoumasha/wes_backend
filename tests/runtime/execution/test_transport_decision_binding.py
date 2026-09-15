@@ -84,7 +84,7 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
             self.moves.append(kwargs)
 
     binding_repo, transport = Bindings(), Transport()
-    ids = iter(("rotate-request", "depart-request"))
+    ids = iter(("rotate-request", "source-return-request", "transfer-return-request", "transfer-position-request"))
     creator = ReliableRackTransportCreator(transport, binding_repository=binding_repo, uuid_factory=lambda: next(ids))
     rotate = {
         "workline_id": 7,
@@ -101,20 +101,51 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     assert all(call["position"] == RackPosition("FIVE-POS") for call in transport.rotates)
     assert all(call["rcs_template_id"] == RcsTemplateId.CTU02 for call in transport.rotates)
 
-    depart = {
+    source_return = {
+        "workline_id": 7,
+        "source_evidence_id": 51,
+        "correlation_id": "pt:31:source-out:R1",
+        "step": "MANUAL_PICKING_SOURCE_RACK_OUT",
+        "rack_id": "R1",
+        "destination": sdk.TransportZonePosition("WH01"),
+    }
+    await creator.create_source_return(object(), **source_return)
+    await creator.create_source_return(object(), **source_return)
+    transfer_return = {
         "workline_id": 7,
         "source_evidence_id": 71,
         "operation_id": "departure-op",
-        "step": "MANUAL_PICKING_SOURCE_RACK_OUT",
-        "rack_id": "R1",
+        "step": "MANUAL_PICKING_TRANSFER_RACK_OUT",
+        "rack_id": "TARGET",
         "destination": sdk.TransportZonePosition("WH05"),
     }
-    await creator.create_departure(object(), **depart)
-    await creator.create_departure(object(), **depart)
-    assert [call["client_request_id"] for call in transport.moves] == ["depart-request", "depart-request"]
+    await creator.create_transfer_departure(object(), **transfer_return)
+    await creator.create_transfer_departure(object(), **transfer_return)
+    await creator.create_transfer_departure(
+        object(),
+        **{
+            **transfer_return,
+            "source_evidence_id": 72,
+            "operation_id": "departure-position-op",
+            "destination": sdk.TransportRackPosition("STORE-POS"),
+        },
+    )
+    assert [call["client_request_id"] for call in transport.moves] == [
+        "source-return-request",
+        "source-return-request",
+        "transfer-return-request",
+        "transfer-return-request",
+        "transfer-position-request",
+    ]
     assert all(
-        call["source"] == RackReference("R1") and call["target"] == ZonePosition("WH05") for call in transport.moves
+        call["source"] == RackReference("R1") and call["target"] == ZonePosition("WH01") for call in transport.moves[:2]
     )
     assert all(
-        call["rcs_template_id"] == RcsTemplateId.CTU03 and call["target_face"] is None for call in transport.moves
+        call["rcs_template_id"] == RcsTemplateId.CTU03 and call["target_face"] is None for call in transport.moves[:2]
     )
+    assert all(
+        call["rcs_template_id"] == RcsTemplateId.F01 and call["target"] == ZonePosition("WH05")
+        for call in transport.moves[2:4]
+    )
+    assert transport.moves[-1]["rcs_template_id"] == RcsTemplateId.F01
+    assert transport.moves[-1]["target"] == RackPosition("STORE-POS")

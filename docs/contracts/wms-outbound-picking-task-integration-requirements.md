@@ -1034,9 +1034,9 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 }
 ```
 
-上例是转运货架去业务库位。五层来源货架的 `READY` 保持同一响应信封，
-`data.rack_destination` 改为 WMS 决定的 `{"type":"ZONE","location_code":"WH05"}`；
-WES 冻结该原值用于 `CTU03 / RACK → ZONE`，不能把 `WH05` 伪装为 `RACK_POSITION`。
+上例是转运货架去业务库位。人工拣料工作线的五层来源货架不调用本 operation：当前面闭合后，WES 使用已应用计划的原 Evidence
+稳定创建 `CTU03 / RACK → ZONE WH01`。转运货架在当前 PickingTask 获 WMS `completion_confirm.COMPLETED`、且原进场 Transport
+证明其仍在当前工作位时即可请求本 operation；不等待五层来源货架的 CTU03 返回终态。
 
 `WAIT` 响应示例：
 
@@ -1057,17 +1057,17 @@ WES 冻结该原值用于 `CTU03 / RACK → ZONE`，不能把 `WH05` 伪装为 `
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
-| `data.rack_id` | 是 | string / 已接收计划 | 来自来源明细或接料货架面；WMS 根据任务已保存数据识别货架角色，不接收 `rack_role` |
+| `data.rack_id` | 是 | string / 已接收计划 | 人工拣料工作线使用转运货架；其它工作线按所属货架合同，不接收 `rack_role` |
 | `data.current_location` | 是 | `RACK_POSITION` / WES 已确认位置 | 当前已确认物理位置，禁止使用计划目标代替 |
 | `data.current_face` | 是 | code / WES 已确认位置 | 当前已确认货架面 |
 | `data.result` | 响应必填 | enum / WMS | `READY \| WAIT` |
-| `data.rack_destination` | `READY` 必填 | `ZONE \| RACK_POSITION` / WMS | 五层来源货架必须是 `ZONE`，转运货架按自身合同为 `RACK_POSITION`；WES 按原任务已应用计划的货架角色校验，角色不符保留原证据且不派发；不得等于 `current_location` |
+| `data.rack_destination` | `READY` 必填 | `ZONE \| RACK_POSITION` / WMS | 人工拣料转运货架使用 WMS 返回的原 `ZONE` 或 `RACK_POSITION` 创建 `F01`，不得等于 `current_location` |
 | `data.retry_after_ms` | `WAIT` 必填 | positive integer / WMS | 无新业务数据时的兜底重试间隔 |
 
-WES 只有在没有未完成 PUT、未确认的位置结果上报、相关设备动作和继续使用该货架的本地明细时，才能发送离场请求。五层来源货架还必须
-满足：CTU 不携带 Bin、没有未结束搬运或未知位置，且没有以当前面为冻结目标的退箱决定；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不阻塞离场。
-`READY` 后以当前决定 `operation_id` 派生一个稳定 `client_request_id` 并创建一项
-货架 TransportTask；五层来源货架使用 `CTU03`，从货架号 `RACK` 到 WMS 返回的 `ZONE`，转运货架仍按自身回库合同处理；不得拆分。
+人工拣料工作线的五层来源货架在当前面已闭合、没有未闭合动作及工位前料箱后，直接创建唯一 `CTU03` 到固定 `WH01`；
+接纳后撤销原工作位的确定投影，直到匹配的最终回调补充终态。转运货架的离场请求以 WMS 对当前 PickingTask 的完成确认为业务准入，
+以原进场 Transport 的成功结果及当前工作位投影为物理身份；不以来源架 CTU03 的返回终态作为请求门槛。
+转运货架收到 `READY` 后以当前决定 `operation_id` 派生一个稳定 `client_request_id`，创建一项 `F01 / RACK → rack_destination` TransportTask；不得拆分。
 `WAIT` 到期或新事实出现后，以新 `operation_id` 和当前实际位置重新决定；`UNAVAILABLE` 或响应未知只重试原身份与原请求。
 离场 Transport 失败或结果未知时保留原 binding、位置证据和资源围栏，不换身份重发。同一 `target_preparation.mode=REPLACE` 已给出当前架去向时，禁止为同一货架重复调用。
 

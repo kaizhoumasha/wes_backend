@@ -51,12 +51,17 @@ class PositionProjectionService:
         operation_id: str,
         transport_task_id: str,
         updated_at: datetime,
+        allow_replacement: bool = False,
     ):
         if authority is None:
             return None
         projection = await self._lock_authorized_object(db, object_type, object_id)
-        if projection is not None and projection.source_transport_task_id != transport_task_id:
-            # 不同任务的 revision 和到达时间不可比较；各自事实留在任务，聚合仅标记未确认。
+        if (
+            projection is not None
+            and projection.source_transport_task_id != transport_task_id
+            and not allow_replacement
+        ):
+            # 未证明前一任务在本任务创建前闭合时，各自事实留在任务，聚合仅标记未确认。
             projection.position_unknown = True
             await self._repository.flush(db)
             return projection

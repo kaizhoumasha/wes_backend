@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .diagnosis_verdict_builder_service import diagnosis_verdict_builder as workline_diagnostic_service
     from .plane_service import WorkLinePlaneService as WorkLinePlaneService
     from .plane_service import workline_plane_service as workline_plane_service
+    from .workline_archive_service import WorkLineArchiveService as WorkLineArchiveService
     from .workline_configuration_service import WorkLineConfigurationService as WorkLineConfigurationService
     from .workline_position_service import WorkLinePositionService as WorkLinePositionService
     from .workline_position_service import workline_position_service as workline_position_service
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 
 
 _EXPORTS = {
+    "WorkLineArchiveService": ("workline_archive_service", "WorkLineArchiveService"),
     "WorkLinePlaneService": ("plane_service", "WorkLinePlaneService"),
     "workline_plane_service": ("plane_service", "workline_plane_service"),
     "WorkLineConfigurationService": ("workline_configuration_service", "WorkLineConfigurationService"),
@@ -36,6 +38,7 @@ _EXPORTS = {
 
 
 __all__ = [
+    "WorkLineArchiveService",
     "WorkLineConfigurationService",
     "WorkLinePlaneService",
     "WorkLinePositionService",

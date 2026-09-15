@@ -405,6 +405,9 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         async def first_completed_source_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
             return task
 
+        async def first_completed_transfer_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
+            return None
+
         async def source_transport_matches(self, _db, *_args):  # type: ignore[no-untyped-def]
             return True
 

@@ -83,6 +83,13 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         await db.flush()
         return workline
 
+    async def advance_version_for_archive(self, db: AsyncSession, workline: WorkLine) -> WorkLine:
+        """在清线事务内推进 WorkLine 乐观锁版本。"""
+
+        workline.increment_version()
+        await db.flush()
+        return workline
+
     async def list_active_plugin_identities(self, db: AsyncSession) -> list[tuple[str, str]]:
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
@@ -274,6 +281,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         # prepare 的确认完成不等于 PickingTask 闭合；计划阻塞也不能因任务阶段改变而解除围栏。
         unfinished_picking = and_(
             picking.workline_id == workline_id,
+            picking.status != PickingTaskStatus.ARCHIVED,
             or_(
                 picking.status.in_((PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING)),
                 picking.plan_blocked_evidence_id.is_not(None),

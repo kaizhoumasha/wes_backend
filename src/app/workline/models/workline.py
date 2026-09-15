@@ -212,3 +212,14 @@ class WorkLineStateTransitionRequest(BaseModel):
     """作业线启停请求。"""
 
     version: int = Field(description="WorkLine 乐观锁版本号")
+
+
+class WorkLineArchiveOpenWorkResponse(BaseModel):
+    """一次清线归档的可核对结果。"""
+
+    workline_id: int
+    version: int
+    archived_picking_tasks: int = Field(ge=0)
+    archived_plugin_tasks: int = Field(ge=0)
+    archived_integration_runs: int = Field(ge=0)
+    archived_total: int = Field(ge=0)

@@ -12,6 +12,8 @@ from .passage_model import ManualPickingPassage
 _COLUMNS = cast("Any", ManualPickingPassage).__table__.c
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -165,6 +167,26 @@ class PassageRepository:
             "count": count,
             "sample": "manual-picking passage" if count else None,
         }
+
+    async def archive_open_work(self, db: AsyncSession, *, workline_id: int, archived_at: datetime) -> int:
+        """归档本线全部未闭合 Passage，保留原始 Evidence 与命令关联。"""
+
+        statement = (
+            select(ManualPickingPassage)
+            .where(
+                _COLUMNS.workline_id == workline_id,
+                _COLUMNS.disposition != "CLOSED",
+            )
+            .order_by(_COLUMNS.id)
+            .with_for_update()
+        )
+        rows = list((await db.execute(statement)).scalars().all())
+        for passage in rows:
+            passage.disposition = "CLOSED"
+            passage.archived_at = archived_at
+        if rows:
+            await db.flush()
+        return len(rows)
 
 
 __all__ = ["PassageRepository"]

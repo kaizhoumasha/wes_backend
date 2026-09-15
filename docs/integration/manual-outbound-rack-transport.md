@@ -7,7 +7,7 @@
 | --- | --- | --- | --- | --- |
 | `target_rack` / 转运货架 | 出库搬运 | `F01` | `RACK`，货架号 | `RACK_POSITION` |
 | `target_rack` / 转运货架 | 换面 | `CK04` | `RACK`，货架号 | 当前实际所在的 `RACK_POSITION` |
-| `target_rack` / 转运货架 | 回库搬运 | `F01` | `RACK`，货架号 | `ZONE` |
+| `target_rack` / 转运货架 | 离场搬运 | `F01` | `RACK`，货架号 | WMS `departure_decide.READY` 的 `ZONE \| RACK_POSITION` |
 | `bin_source_racks` / 五层货架 | 出库搬运 | `CTU01` | `RACK`，货架号 | `RACK_POSITION` |
 | `bin_source_racks` / 五层货架 | 换面 | `CTU02` | `RACK`，货架号 | 当前实际所在的 `RACK_POSITION` |
 | `bin_source_racks` / 五层货架 | 回库搬运 | `CTU03` | `RACK`，货架号 | `ZONE` |
@@ -30,12 +30,15 @@
 `510012 / "270" → CTU01 / KT17`。同一时刻能否执行仍由现有资源准入控制。
 
 联调页面第 4 步仍只创建进场 Transport。`manual-picking` 工作线业务在面级结束后，按已应用计划与当前权威位置
-创建五层来源架 `CTU02` 换面或经 WMS `departure_decide READY` 后创建 `CTU03 / RACK → ZONE` 离场；
-转运货架回库与 `CK04` 换面仍属独立合同。代码接入不代表 WMS/ECS 已接收或现场货架已完成物理闭环。
+创建五层来源架 `CTU02` 换面；当前面闭合后直接创建 `CTU03 / RACK → ZONE WH01` 离场，使用原计划 Evidence
+冻结唯一 Transport 身份。当前 PickingTask 获 WMS 完成确认且转运架原进场成功、仍在当前工作位时，可请求转运架
+`departure_decide`；请求不等待五层架 CTU03 返回终态，`READY` 后创建 `F01` 到 WMS 决定的原目的地。
+转运货架 `CK04` 换面仍属独立合同。代码接入不代表 WMS/ECS 已接收或现场货架已完成物理闭环。
 
 多个五层来源架的进场与前一架 `CTU03` 离场独立：`CTU03 ACCEPTED` 或 `DELIVERY_UNKNOWN` 后，WES 只将前一架在
 KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的原进场 Transport 一旦 `SUCCEEDED`，即可继续其当前面流程，
-无需等待前一架最终位置回调。前一架若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
+无需等待前一架最终位置回调。前一架的原 CTU03 成功回调若给出指定区域内的实际 `RACK_POSITION`，该最终位置是其权威终态并更新投影；
+若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。
 

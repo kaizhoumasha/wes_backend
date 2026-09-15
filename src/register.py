@@ -50,6 +50,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_integration_debug_runtime = None
         _app.state.workline_start_service = None
         _app.state.workline_configuration_service = None
+        _app.state.workline_archive_service = None
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_recovery_event_handler = None
         _app.state.wms_picking_task_issued_handler = None
@@ -97,6 +98,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_recovery_event_handler = deployment_runtime.wms_recovery_event_handler
         _app.state.workline_start_service = deployment_runtime.workline_start_service
         _app.state.workline_configuration_service = deployment_runtime.workline_configuration_service
+        _app.state.workline_archive_service = deployment_runtime.workline_archive_service
         from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
         from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 
@@ -148,6 +150,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.deployment_runtime = None
         _app.state.workline_start_service = None
         _app.state.workline_configuration_service = None
+        _app.state.workline_archive_service = None
         _app.state.task_queue_gateway = None
         _app.state.wms_recovery_event_handler = None
         _app.state.workline_integration_debug_runtime = None

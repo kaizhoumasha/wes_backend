@@ -17,6 +17,7 @@ from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 def build_plugin(
     *, scan_flow: BusinessEvidenceConsumer, batch_driver: object, completion_driver: object
 ) -> InstalledWorkLinePlugin:
+    passages = PassageRepository()
     return InstalledWorkLinePlugin(
         definition=DEFINITION,
         runtime_binding=PluginRuntimeBinding(
@@ -37,7 +38,8 @@ def build_plugin(
         picking_task_batch_driver=batch_driver,
         picking_task_completion_driver=completion_driver,
         transport_outcome_publisher=ManualPickingTransportOutcomePublisher(),
-        business_blocker=PassageRepository(),
+        business_blocker=passages,
+        business_archiver=passages,
     )
 
 

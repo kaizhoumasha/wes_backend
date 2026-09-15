@@ -58,7 +58,16 @@ class TransportRepository:
         object_type: str,
         object_id: str,
         transport_task_id: str,
+        current_created_at: datetime,
+        ordered_authority_workline_id: int | None,
+        current_caller_workline_id: str,
     ) -> bool:
+        competing_fact = (
+            col(TransportTask.status).notin_(("SUCCEEDED", "FAILED")),
+            col(TransportMember.updated_at) >= current_created_at,
+            col(TransportTask.authority_workline_id).is_distinct_from(ordered_authority_workline_id),
+            col(TransportTask.caller_json)["workline_id"].as_string().is_distinct_from(current_caller_workline_id),
+        )
         return bool(
             await db.scalar(
                 select(
@@ -67,8 +76,42 @@ class TransportRepository:
                         col(TransportMember.object_id) == object_id,
                         col(TransportMember.transport_task_id) != transport_task_id,
                         col(TransportMember.last_operation_id).is_not(None),
+                        col(TransportTask.transport_task_id) == col(TransportMember.transport_task_id),
+                        or_(*competing_fact) if ordered_authority_workline_id is not None else True,
                     )
                 )
+            )
+        )
+
+    async def previous_position_fact_closed_before(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+        previous_transport_task_id: str,
+        previous_operation_id: str,
+        current_created_at: datetime,
+        current_authority_workline_id: int,
+        current_caller_workline_id: str,
+    ) -> bool:
+        return bool(
+            await db.scalar(
+                select(TransportMember.id)
+                .join(TransportTask, col(TransportTask.transport_task_id) == col(TransportMember.transport_task_id))
+                .where(
+                    col(TransportMember.object_type) == object_type,
+                    col(TransportMember.object_id) == object_id,
+                    col(TransportMember.transport_task_id) == previous_transport_task_id,
+                    col(TransportMember.last_operation_id) == previous_operation_id,
+                    col(TransportMember.status) == "SUCCEEDED",
+                    col(TransportMember.position_unknown).is_(False),
+                    col(TransportMember.updated_at) < current_created_at,
+                    col(TransportTask.status) == "SUCCEEDED",
+                    col(TransportTask.authority_workline_id) == current_authority_workline_id,
+                    col(TransportTask.caller_json)["workline_id"].as_string() == current_caller_workline_id,
+                )
+                .limit(1)
             )
         )
 

@@ -11,6 +11,8 @@ from src.app.wms_integration.outbound_picking.models import PickingTask, Picking
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -99,6 +101,44 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
             .limit(1)
         )
         return task_id is not None
+
+    async def archive_open_for_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        archived_at: datetime,
+    ) -> int:
+        """锁定并归档本线所有已绑定 PickingTask；保留原任务和可靠义务身份。"""
+
+        columns = cast("Any", PickingTask).__table__.c
+        rows = (
+            (
+                await db.execute(
+                    select(PickingTask)
+                    .where(
+                        columns.workline_id == workline_id,
+                        columns.status.in_(
+                            (
+                                PickingTaskStatus.PREPARING,
+                                PickingTaskStatus.EXECUTING,
+                                PickingTaskStatus.EXECUTION_COMPLETED,
+                            )
+                        ),
+                    )
+                    .order_by(columns.id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for task in rows:
+            task.status = PickingTaskStatus.ARCHIVED
+            task.archived_at = archived_at
+        if rows:
+            await db.flush()
+        return len(rows)
 
     async def get_executing_for_workline_for_update(
         self,

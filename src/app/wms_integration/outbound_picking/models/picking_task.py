@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 
@@ -19,6 +20,7 @@ class PickingTaskStatus(StrEnum):
     PREPARING = "PREPARING"
     EXECUTING = "EXECUTING"
     EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
+    ARCHIVED = "ARCHIVED"
 
 
 class PickingTaskType(StrEnum):
@@ -34,7 +36,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     __table_args__ = (
         CheckConstraint("target_rack_face IS NULL OR length(target_rack_face) >= 1", name="target_rack_face_nonempty"),
         CheckConstraint(
-            "status IN ('QUEUED', 'PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED')",
+            "status IN ('QUEUED', 'PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED', 'ARCHIVED')",
             name="picking_task_status_valid",
         ),
         CheckConstraint("task_type IN ('MANUAL', 'AUTO')", name="picking_task_type_valid"),
@@ -47,9 +49,13 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         ),
         CheckConstraint(
             "(status = 'QUEUED' AND workline_id IS NULL) OR "
-            "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED') "
+            "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED', 'ARCHIVED') "
             "AND workline_id IS NOT NULL)",
             name="picking_task_binding_matches_status",
+        ),
+        CheckConstraint(
+            "(status = 'ARCHIVED') = (archived_at IS NOT NULL)",
+            name="picking_task_archive_consistent",
         ),
         CheckConstraint("last_applied_plan_revision >= 0", name="picking_task_plan_revision_nonnegative"),
         CheckConstraint(
@@ -129,6 +135,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     plan_blocked_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
+    archived_at: datetime | None = Field(default=None, description="运维清线归档时间；不代表 WMS 或设备完成")
 
 
 __all__ = ["PickingTask", "PickingTaskStatus", "PickingTaskType"]

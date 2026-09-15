@@ -1,4 +1,4 @@
-"""工作线锁内按已应用来源成员与权威位置推进一个下一动作。"""
+"""工作线锁内按已应用货架成员与权威位置推进一个下一动作。"""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .rack_readiness import rack_ready, ready_rack_projection
 
 SOURCE_RACK_ROTATE_STEP = "MANUAL_PICKING_SOURCE_RACK_ROTATE"
 SOURCE_RACK_OUT_STEP = "MANUAL_PICKING_SOURCE_RACK_OUT"
+TRANSFER_RACK_OUT_STEP = "MANUAL_PICKING_TRANSFER_RACK_OUT"
 
 
 class ManualPickingBatchDriver:
@@ -58,12 +59,27 @@ class ManualPickingBatchDriver:
             line.id,
             line.position_bindings[FIVE_RACK.slot_key]["location_id"],
         )
+        source_count = 0
+        if owner is not None:
+            task = await self._tasks.get_by_task_id_for_update(db, owner.task_id)
+            if (
+                task is not None
+                and task.id == owner.id
+                and task.workline_id == line.id
+                and task.status == "EXECUTION_COMPLETED"
+            ):
+                source_count = await self.advance_in_session(db, line, task, require_target=False)
+        owner = await self._plans.first_completed_transfer_owner_at_position(
+            db,
+            line.id,
+            line.position_bindings[TRANSFER_RACK.slot_key]["location_id"],
+        )
         if owner is None:
-            return 0
+            return source_count
         task = await self._tasks.get_by_task_id_for_update(db, owner.task_id)
         if task is None or task.id != owner.id or task.workline_id != line.id or task.status != "EXECUTION_COMPLETED":
-            return 0
-        return await self.advance_in_session(db, line, task, require_target=False)
+            return source_count
+        return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
 
     async def advance_in_session(self, db: Any, line: Any, task: Any, *, require_target: bool = True) -> int:
         if not task.target_rack_id or not task.target_rack_face:
@@ -149,13 +165,33 @@ class ManualPickingBatchDriver:
                 target_face=next_face.rack_face,
             )
             return 1
-        return await self._advance_departure(db, line, task, current, projection, now)
+        await self._rack_creator.create_source_return(
+            db,
+            workline_id=line.id,
+            source_evidence_id=current.source_evidence_id,
+            correlation_id=f"pt:{task.id}:source-out:{current.rack_id}",
+            step=SOURCE_RACK_OUT_STEP,
+            rack_id=current.rack_id,
+            destination=TransportZonePosition("WH01"),
+        )
+        return 1
 
-    async def _advance_departure(self, db: Any, line: Any, task: Any, current: Any, projection: Any, now: Any) -> int:
-        snapshot = await self._departure_reader.latest(db, task.id, current.rack_id)
-        current_location = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
+    async def _advance_transfer_departure(self, db: Any, line: Any, task: Any, now: Any) -> int:
+        current_location = line.position_bindings[TRANSFER_RACK.slot_key]["location_id"]
+        projection = await ready_rack_projection(
+            db,
+            line,
+            task.target_rack_id,
+            task.target_rack_face,
+            current_location,
+            positions=self._positions,
+            transports=self._transports,
+        )
+        if projection is None:
+            return 0
+        snapshot = await self._departure_reader.latest(db, task.id, task.target_rack_id)
         if snapshot is not None:
-            if snapshot.intent.task_id != task.task_id or snapshot.intent.rack_id != current.rack_id:
+            if snapshot.intent.task_id != task.task_id or snapshot.intent.rack_id != task.target_rack_id:
                 raise ValueError("departure result differs from original task and rack")
             if snapshot.status != WmsConfirmationStatus.COMPLETED or snapshot.outcome is None:
                 return 0
@@ -174,17 +210,21 @@ class ManualPickingBatchDriver:
                 if (
                     snapshot.intent.current_location.location_code != current_location
                     or snapshot.intent.current_face != projection.arrival_face
-                    or type(result.rack_destination) is not TransportZonePosition
+                    or type(result.rack_destination) not in (TransportZonePosition, TransportRackPosition)
+                    or (
+                        type(result.rack_destination) is TransportRackPosition
+                        and result.rack_destination.location_code == current_location
+                    )
                     or snapshot.evidence_id is None
                 ):
-                    raise ValueError("source rack departure role or physical position conflicts with WMS decision")
-                await self._rack_creator.create_departure(
+                    raise ValueError("transfer rack departure role or physical position conflicts with WMS decision")
+                await self._rack_creator.create_transfer_departure(
                     db,
                     workline_id=line.id,
                     source_evidence_id=snapshot.evidence_id,
                     operation_id=snapshot.intent.operation_id,
-                    step=SOURCE_RACK_OUT_STEP,
-                    rack_id=current.rack_id,
+                    step=TRANSFER_RACK_OUT_STEP,
+                    rack_id=task.target_rack_id,
                     destination=result.rack_destination,
                 )
                 return 1
@@ -193,7 +233,7 @@ class ManualPickingBatchDriver:
         intent = wms_operations.outbound_rack_departure_decide(
             operation_id=self._uuid_factory(),
             task_id=task.task_id,
-            rack_id=current.rack_id,
+            rack_id=task.target_rack_id,
             current_location=TransportRackPosition(current_location),
             current_face=projection.arrival_face,
         )
@@ -201,4 +241,4 @@ class ManualPickingBatchDriver:
         return 1
 
 
-__all__ = ["SOURCE_RACK_OUT_STEP", "SOURCE_RACK_ROTATE_STEP", "ManualPickingBatchDriver"]
+__all__ = ["SOURCE_RACK_OUT_STEP", "SOURCE_RACK_ROTATE_STEP", "TRANSFER_RACK_OUT_STEP", "ManualPickingBatchDriver"]
