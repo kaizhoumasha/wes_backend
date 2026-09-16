@@ -24,6 +24,8 @@ from .wms_types import (
     PlacementIntent,
     RackDepartureIntent,
     ReplacementPlanIntent,
+    ReturnBufferDrainIntent,
+    ReturnBufferDrainReason,
     ReturnRackArrivalReportIntent,
     SixInOne,
     SourceEmptyIntent,
@@ -313,4 +315,23 @@ def outbound_manual_bin_work_admission(
 ) -> ManualBinAdmissionIntent:
     return ManualBinAdmissionIntent(
         operation_id=operation_id, task_id=task_id, bin_code=bin_code, scanned_at=scanned_at
+    )
+
+
+def workline_return_buffer_drain_rack_decide(
+    *,
+    operation_id: str,
+    workline_code: str,
+    plugin_key: str,
+    drain_reason: ReturnBufferDrainReason,
+    return_candidates: tuple[BinReturnCandidate, ...],
+    previous_operation_id: str | None = None,
+) -> ReturnBufferDrainIntent:
+    return ReturnBufferDrainIntent(
+        operation_id=operation_id,
+        workline_code=workline_code,
+        plugin_key=plugin_key,
+        drain_reason=drain_reason,
+        return_candidates=return_candidates,
+        previous_operation_id=previous_operation_id,
     )

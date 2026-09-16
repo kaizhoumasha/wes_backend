@@ -23,6 +23,19 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
             {"identity": identity},
         )
 
+    async def get_by_identity(
+        self,
+        db: AsyncSession,
+        operation: str,
+        operation_id: str,
+    ) -> WmsConfirmation | None:
+        """读取可靠事实快照，不参与 Confirmation/WorkLine 的写锁顺序。"""
+        columns = cast("Any", WmsConfirmation).__table__.c
+        result = await db.execute(
+            select(WmsConfirmation).where(columns.operation == operation, columns.operation_id == operation_id)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_identity_for_update(
         self,
         db: AsyncSession,

@@ -64,6 +64,12 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
             postgresql_where=text("status = 'PENDING'"),
             sqlite_where=text("status = 'PENDING'"),
         ),
+        Index(
+            "ix_wes_biz_wms_confirmations_workline_id_operation_operation_id",
+            "workline_id",
+            "operation",
+            "operation_id",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 

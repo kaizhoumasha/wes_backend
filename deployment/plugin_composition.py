@@ -43,6 +43,7 @@ from src.app.wms_integration.outbound_picking.services.rack_departure import (
     RackDepartureScheduler,
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
+from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainOwnerService
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_archive_service import WorkLineArchiveService
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
@@ -89,8 +90,12 @@ def build_deployment_runtime(
     definitions = load_plugin_definitions(enabled_plugin_keys)
     debug_owner = IntegrationRunWorkLineOwner()
     workline_reserved = debug_owner.is_reserved
+    prepare_workline_reserved = workline_reserved
     workline_owner = CombinedWorkLineConfirmationOwner(
-        CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner())
+        CombinedWorkLineConfirmationOwner(
+            CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
+            ReturnBufferDrainOwnerService(),
+        )
     )
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "manual-picking" in enabled_plugin_keys:
@@ -100,11 +105,19 @@ def build_deployment_runtime(
         from manual_picking.application.batch_result import ManualPickingBatchResultFlow
         from manual_picking.application.completion_flow import ManualPickingCompletionFlow
         from manual_picking.application.completion_repository import ManualPickingCompletionRepository
+        from manual_picking.application.drain_flow import ManualPickingDrainFlow
+        from manual_picking.application.drain_repository import DrainRepository
         from manual_picking.application.passage_repository import PassageRepository
         from manual_picking.application.plugin import build_plugin
         from manual_picking.application.scan_flow import ManualPickingScanFlow
+        from manual_picking.prepare_policy import ManualPickingPreparePolicy
 
         from src.app.wms_adapter.outbound_picking import manual_bin_typed
+        from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareCoordinator
+        from src.app.wms_integration.return_buffer_drain import (
+            ReturnBufferDrainResultReader,
+            ReturnBufferDrainScheduler,
+        )
 
         workline_owner = CombinedWorkLineConfirmationOwner(
             CombinedWorkLineConfirmationOwner(workline_owner, ManualBinAdmissionOwnerService()),
@@ -112,6 +125,13 @@ def build_deployment_runtime(
         )
         passages = PassageRepository()
         batch_reader = BinBatchResultReader()
+        drain_reader = ReturnBufferDrainResultReader()
+        drains = DrainRepository(drain_reader)
+
+        async def prepare_workline_reserved(db: AsyncSession, workline_id: int) -> bool:
+            return await workline_reserved(db, workline_id) or await drains.is_reserved(db, workline_id)
+
+        batch_scheduler = BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner))
         rack_creator = ReliableRackTransportCreator(transport_runtime.service)
         batch_repository = BatchRepository(batch_reader)
         batch_result = ManualPickingBatchResultFlow(
@@ -121,7 +141,7 @@ def build_deployment_runtime(
             ManualPickingBatchFlow(
                 batch_repository,
                 passages,
-                BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+                batch_scheduler,
                 batch_result,
                 uuid_factory=new_uuid7,
             ),
@@ -132,6 +152,19 @@ def build_deployment_runtime(
             departure_scheduler=RackDepartureScheduler(WmsConfirmationLifecycleService()),
             departure_reader=RackDepartureResultReader(),
             passages=passages,
+            drain=ManualPickingDrainFlow(
+                drains,
+                passages,
+                PickingTaskPrepareCoordinator(
+                    session_factory,
+                    policy=ManualPickingPreparePolicy(),
+                    task_queue_gateway=task_queue_gateway,
+                    workline_reserved=prepare_workline_reserved,
+                ),
+                ReturnBufferDrainScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+                batch_scheduler,
+                batch_reader,
+            ),
         )
         scan_flow = ManualPickingScanFlow(
             commands=device_command_service,
@@ -139,6 +172,8 @@ def build_deployment_runtime(
             wms_reader=manual_bin_typed,
             batch_reader=batch_reader,
             batch_result=batch_result,
+            drain_repository=drains,
+            drain_reader=drain_reader,
         )
         completion_driver = ManualPickingCompletionFlow(
             ManualPickingCompletionRepository(history=batch_reader),
@@ -189,7 +224,7 @@ def build_deployment_runtime(
             session_factory,
             plugins=plugins,
             task_queue_gateway=task_queue_gateway,
-            workline_reserved=workline_reserved,
+            workline_reserved=prepare_workline_reserved,
         ),
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory,

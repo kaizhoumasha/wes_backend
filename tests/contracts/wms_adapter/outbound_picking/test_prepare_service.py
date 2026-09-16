@@ -404,3 +404,28 @@ async def test_coordinator_uses_injected_policy_without_manual_context_rules() -
     result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
     assert result.prepared
     assert tasks.claimed_type is PickingTaskType.AUTO
+
+
+@pytest.mark.asyncio
+async def test_prepare_in_session_reuses_caller_lock_and_same_claim_confirmation() -> None:
+    service, worklines, tasks, confirmations, queue = _service()
+    db = object()
+    result = await service.prepare_next_in_session(db, worklines.workline, now=datetime(2026, 9, 4))
+    assert result.prepared
+    assert result.task is tasks.task
+    assert tasks.task.status == PickingTaskStatus.PREPARING
+    assert tasks.task.workline_id == 7
+    assert confirmations.kwargs["picking_task_id"] == tasks.task.id
+    assert not worklines.calls
+    assert queue.calls == 0  # 同事务接口不直接发队列消息，提交后由既有 WMS Beat 扫描。
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", [None, 0, -1, "7"])
+async def test_prepare_in_session_rejects_non_positive_workline_id(bad_id) -> None:
+    service, worklines, *_ = _service()
+    db = object()
+    bad_workline = SimpleNamespace(id=bad_id, line_code="LINE-1")
+    with pytest.raises(ValueError, match="workline_id"):
+        await service.prepare_next_in_session(db, bad_workline, now=datetime(2026, 9, 4))
+    assert not worklines.calls

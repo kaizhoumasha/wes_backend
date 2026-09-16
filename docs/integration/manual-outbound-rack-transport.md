@@ -29,16 +29,21 @@
 示例：`610007 / "90" → F01 / OUT65`；`510002 / "90" → CTU01 / KT16`；
 `510012 / "270" → CTU01 / KT17`。同一时刻能否执行仍由现有资源准入控制。
 
-联调页面第 4 步仍只创建进场 Transport。`manual-picking` 工作线业务在面级结束后，按已应用计划与当前权威位置
-创建五层来源架 `CTU02` 换面；当前面闭合后直接创建 `CTU03 / RACK → ZONE WH01` 离场，使用原计划 Evidence
+联调页面第 4 步仍只创建进场 Transport。`manual-picking` 工作线业务以全部 inbound 分段及成员权威成功、结果发布和交接位正确作为
+`feed_complete`，不等待扫码、业务完成或后续回架。已有相关义务闭合后，同架下一面立即创建 CTU02；所有面投料完成后
+直接创建 `CTU03 / RACK → ZONE WH01` 离场，使用原计划 Evidence
 冻结唯一 Transport 身份。当前 PickingTask 获 WMS 完成确认且转运架原进场成功、仍在当前工作位时，可请求转运架
 `departure_decide`；请求不等待五层架 CTU03 返回终态，`READY` 后创建 `F01` 到 WMS 决定的原目的地。
 转运货架 `CK04` 换面仍属独立合同。代码接入不代表 WMS/ECS 已接收或现场货架已完成物理闭环。
 
 多个五层来源架的进场与前一架 `CTU03` 离场独立：`CTU03 ACCEPTED` 或 `DELIVERY_UNKNOWN` 后，WES 只将前一架在
-KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的原进场 Transport 一旦 `SUCCEEDED`，即可继续其当前面流程，
-无需等待前一架最终位置回调。前一架的原 CTU03 成功回调若给出指定区域内的实际 `RACK_POSITION`，该最终位置是其权威终态并更新投影；
+KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的原进场 Transport `SUCCEEDED`，
+且成功成员与绑定工作位的精确 rack/face 投影匹配后，即可继续其当前面流程，无需等待前一架最终位置回调。前一架的原 CTU03 成功回调若给出指定区域内的实际 `RACK_POSITION`，该最终位置是其权威终态并更新投影；
 若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
+
+工作线自动 RackCycle 按绑定 FIVE_LAYER/FIVE_RACK 点位 `capacity` 补足 CTU01 窗口，物理当前架仍最多一个，由 RCS 排队和自主进位。
+CTU02 不释放窗口，匹配 CTU03 已接纳才释放；接纳前 DELIVERY_UNKNOWN/CONFLICT 继续占窗，后续 RECONCILING 以
+`result_deadline_at` 证明此前接纳。CTU02 成功表示旋转后已经回到工作位。上述工作线规则不将联调页面手动动作扩展为自动队列调度。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。
 

@@ -33,7 +33,6 @@
 | `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端未提交 worktree 已实现并通过 QUALITY 与 selected HEAVY（395 passed）；前端同步、部署及供应商/现场验收未完成 |
 | `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，当前不是 merge ready |
 | `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |
-| `docs/superpowers/plans/2026-09-14-manual-picking-source-rack-progression.md` | 人工拣料五层来源架按权威 Transport 结果推进、同架换面、旧架离场与新架进场独立收敛及历史无归属 Evidence 门禁移除的实施记录 |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
@@ -58,9 +57,9 @@
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
-| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；覆盖跨任务 `return_batch` FIFO、来源架按自身进场结果推进及五层来源架 `ZONE` 离场；停线排空货架面决定 wire 未获批 |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 出库交互合同；覆盖人工拣料 CTU01 窗口、transport-only feed_complete、跨任务 FIFO 与任务完成 drain 严格 wire；停线/切换触发未实现 |
 | `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；覆盖四点扫码、人工任务准入与释放、来源架换面/离场及历史无归属 Evidence 的诊断边界；PDA 归属 WMS |
-| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
+| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线/切换排空触发尚未实现，该场景仍为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand、设备统一接口与 WorkLine 插件边界 |

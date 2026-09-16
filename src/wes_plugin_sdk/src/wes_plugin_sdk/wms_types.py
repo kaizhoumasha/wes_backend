@@ -269,6 +269,15 @@ class BinReturnCandidate:
                 raise ValueError(f"{name} must be a business identifier")
 
 
+def _return_candidates(candidates: tuple[BinReturnCandidate, ...]) -> None:
+    if type(candidates) is not tuple or any(type(c) is not BinReturnCandidate for c in candidates):
+        raise TypeError("return_candidates must be an immutable tuple of BinReturnCandidate")
+    if not 1 <= len(candidates) <= 4 or [c.sequence_no for c in candidates] != list(range(1, len(candidates) + 1)):
+        raise ValueError("return_candidates require a bounded FIFO prefix")
+    if len({c.bin_code for c in candidates}) != len(candidates):
+        raise ValueError("duplicate candidate Bin")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BinReturnBatchIntent:
     operation_id: str
@@ -283,13 +292,7 @@ class BinReturnBatchIntent:
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
         validate_opaque_face(self.rack_face, "rack_face")
-        candidates = self.return_candidates
-        if type(candidates) is not tuple or any(type(c) is not BinReturnCandidate for c in candidates):
-            raise TypeError("return_candidates must be an immutable tuple of BinReturnCandidate")
-        if not 1 <= len(candidates) <= 4 or [c.sequence_no for c in candidates] != list(range(1, len(candidates) + 1)):
-            raise ValueError("return_candidates require a bounded FIFO prefix")
-        if len({c.bin_code for c in candidates}) != len(candidates):
-            raise ValueError("duplicate candidate Bin")
+        _return_candidates(self.return_candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,6 +691,54 @@ class MaterialMovementReportIntent:
             raise ValueError("occurred_at must be nonnegative int64 milliseconds")
 
 
+type ReturnBufferDrainReason = Literal["PICKING_TASK_COMPLETED", "WORKLINE_STOPPING", "PLUGIN_SWITCHING"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReturnBufferDrainIntent:
+    operation_id: str
+    workline_code: str
+    plugin_key: str
+    drain_reason: ReturnBufferDrainReason
+    return_candidates: tuple[BinReturnCandidate, ...]
+    previous_operation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _ = _required(self.operation_id, "operation_id")
+        for name in ("workline_code", "plugin_key"):
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
+                raise ValueError(f"{name} must be a business identifier")
+        if self.drain_reason not in ("PICKING_TASK_COMPLETED", "WORKLINE_STOPPING", "PLUGIN_SWITCHING"):
+            raise ValueError("unsupported drain reason")
+        if self.previous_operation_id is not None:
+            _ = _required(self.previous_operation_id, "previous_operation_id")
+            if self.previous_operation_id == self.operation_id:
+                raise ValueError("drain reevaluation requires a new identity")
+        _return_candidates(self.return_candidates)
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnBufferDrainReady:
+    rack_id: str
+    rack_face: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.rack_id, "rack_id")) is None:
+            raise ValueError("rack_id must be a business identifier")
+        validate_opaque_face(self.rack_face, "rack_face")
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnBufferDrainWait:
+    retry_after_ms: int
+    reason_code: Literal["NO_DRAIN_RACK_AVAILABLE"] = "NO_DRAIN_RACK_AVAILABLE"
+
+    def __post_init__(self) -> None:
+        _positive(self.retry_after_ms, "retry_after_ms", 60000)
+        if self.reason_code != "NO_DRAIN_RACK_AVAILABLE":
+            raise ValueError("unsupported drain WAIT reason")
+
+
 InboundWmsIntent = AdmissionIntent | TargetIntent | PlacementIntent | NgPlacementIntent | ReplacementPlanIntent
 WmsOperationIntent = (
     InboundWmsIntent
@@ -695,6 +746,7 @@ WmsOperationIntent = (
     | ReturnRackArrivalReportIntent
     | BinInboundBatchIntent
     | BinReturnBatchIntent
+    | ReturnBufferDrainIntent
     | BinWorkPlanIntent
     | RackDepartureIntent
     | PickingMaterialIntent
@@ -1106,6 +1158,26 @@ class CompletionConfirmOutcome:
         _picking_rejection_pointer(self.result)
 
 
+@dataclass(frozen=True, slots=True)
+class ReturnBufferDrainOutcome:
+    result: (
+        ReturnBufferDrainReady | ReturnBufferDrainWait | OperationRejected | OperationConflict | OperationUnavailable
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.result) not in (
+            ReturnBufferDrainReady,
+            ReturnBufferDrainWait,
+            OperationRejected,
+            OperationConflict,
+            OperationUnavailable,
+        ):
+            raise TypeError("drain requires an approved result")
+        if type(self.result) is OperationConflict and self.result.reason_code == "POSITION_CONFLICT":
+            raise ValueError("POSITION_CONFLICT is not approved for drain")
+        _picking_rejection_pointer(self.result)
+
+
 WmsOperationOutcome = (
     AdmissionOutcome
     | TargetOutcome
@@ -1116,6 +1188,7 @@ WmsOperationOutcome = (
     | ReturnRackArrivalReportOutcome
     | BinInboundBatchOutcome
     | BinReturnBatchOutcome
+    | ReturnBufferDrainOutcome
     | BinWorkPlanOutcome
     | RackDepartureOutcome
     | PickingMaterialOutcome

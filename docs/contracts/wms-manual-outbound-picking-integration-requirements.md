@@ -5,7 +5,7 @@ related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: Approved
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-09-04
+updated_at: 2026-09-16
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -43,9 +43,11 @@ flowchart TD
 
     subgraph A["子流程 A：五层货架 Bin，点1～点4"]
         A00["来源架权威到位<br/>匹配原 Transport"] --> A0["当前面 bin.inbound_batch@v1"] --> A01["入站 BIN_MOVE<br/>等待权威成功"] --> A1["点1 SCAN<br/>实扫匹配并入 FIFO"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
-        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["WES→WMS<br/>bin.return_batch@v1"] --> A9["退箱 BIN_MOVE<br/>等待权威结果"] --> A10{"当前面已完成？"}
-        A10 -->|同架后续面| A11["CTU02 换面<br/>等待权威新面"] --> A0
-        A10 -->|换架或末架回库| A12["CTU03 RACK→WH01<br/>独立闭合当前架"]
+        A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["当前架投料间隙或 drain<br/>bin.return_batch@v1"] --> A9["退箱 BIN_MOVE<br/>等待权威结果"]
+        A01 --> A10{"全部分段 feed_complete？"}
+        A10 -->|否，前段 SCAN1 清空入口| A01
+        A10 -->|是，同架后续面| A11["CTU02 换面<br/>等待权威新面"] --> A0
+        A10 -->|是，换架或末架回库| A12["CTU03 RACK→WH01<br/>独立闭合当前架"]
     end
 
     subgraph B["子流程 B：退料货架直接取料，§3.5"]
@@ -55,6 +57,9 @@ flowchart TD
     A7 -. "本地任务完成条件" .-> DONE["WES→WMS<br/>picking_task.completion_confirm@v1"]
     B3 -. "本地任务完成条件" .-> DONE
     DONE -->|COMPLETED，转运架原进场已成功| TOUT["转运架 departure_decide<br/>READY 后 F01"]
+    DONE -->|COMPLETED| NEXT{"原子准备下一任务"}
+    NEXT -->|已准备| INHERIT["下一任务当前架承接 FIFO"]
+    NEXT -->|无下一任务且 FIFO 非空| DRAIN["drain_rack_decide<br/>READY → CTU01 → return_batch → CTU03"]
 ```
 
 **任务下发与计划**
@@ -72,6 +77,7 @@ flowchart TD
 | 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
+| 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面用 `CTU03 / RACK → ZONE WH01` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
@@ -80,9 +86,14 @@ flowchart TD
 | 9A | WES 本地执行 | 应用完成事实并释放 point2 | 匹配原 completion evidence | 按稳定命令身份执行 `MOVE_FORWARD`，分别记录应用与物理结果 |
 | 10A | 设备 → WES | 点3 SCAN | `A000000001-B`，本次正常授权 | `MOVE_FORWARD`，放行 |
 | 11A | 设备 → WES | 点4 SCAN | `A000000001-B`，前序正常放行 | `MOVE_FORWARD` 匹配 ECS `SUCCESS` 后入队尾 |
-| 12A | WES → WMS | `outbound.bin.return_batch@v1` | 工作线 `RETURN_BUFFER` FIFO 队首 `A000000001`；目标为当前在位 `RACK-5F-001/90` | `READY` 冻结目标；候选可来自不同 PickingTask |
+| 12A | WES → WMS | `outbound.bin.return_batch@v1` | 工作线 `RETURN_BUFFER` FIFO 队首 `A000000001`；目标为请求时权威当前 rack/face，可不同于原 `RACK-5F-001/90` | `READY` 冻结目标；候选可来自不同 PickingTask |
 | 12A-1 | RCS/ECS → WES | 退箱 `BIN_MOVE` | 按原 `return_batch` 的目标储位 | 等待原 Transport 权威结果，完成后关闭对应 FIFO 成员 |
-| 12A-2 | WES/RCS/ECS | 当前面闭合后换面或换架 | 同架下一面 `270` 用 `CTU02`；当前五层架直接用 `CTU03` 从 `RACK` 到固定 `ZONE WH01` | 同架换面等待原 `CTU02 SUCCEEDED`；换架时当前架离场独立闭合，后续架只要自己的原进场 Transport `SUCCEEDED` 就回到 4A，不等待当前架 `CTU03` 终态 |
+
+上述表格按业务节点编号，不表示回架后才可换面。`feed_complete` 只要求冻结面全部 inbound 分段及成员权威成功、结果发布、
+终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
+绑定 FIVE_LAYER/FIVE_RACK 点位的 `workline_positions.capacity` 控制 CTU01 准入窗口，物理当前架最多一个，RCS 负责排队与自主进位。
+CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占；CTU02 不释放窗口。
+匹配 CTU03 已接纳才释放名额；`RECONCILING` 必须有非空 `result_deadline_at` 证明此前接纳，接纳前未知仍占窗。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
@@ -123,8 +134,8 @@ flowchart TD
 - 退料货架到位事实：`outbound.return_rack.arrival_report@v1`；WMS/RCS 的通用 Transport 结果由 WES 业务模块识别后，复用同一事实
   上报更新当前 PickingTask 的退料货架到位状态；
 - 五层货架入站分批：`outbound.bin.inbound_batch@v1`；
-- 退箱：`outbound.bin.return_batch@v1`，`RETURN_BUFFER` FIFO；
-- 转运架离场去向：`outbound.rack.departure_decide@v1`；五层架从当前面闭合后直接创建 `CTU03→WH01`；
+- 退箱：`outbound.bin.return_batch@v1`，WorkLine 级跨任务 `RETURN_BUFFER` FIFO；任务完成后先原子准备下一任务，无下一任务且 FIFO 非空才调用 `workline.return_buffer.drain_rack_decide@v1`（出库合同 §9.2.3）；
+- 转运架离场去向：`outbound.rack.departure_decide@v1`；五层架在同架所有面 `feed_complete`、相关义务允许推进后直接创建 `CTU03→WH01`；
 - 任务状态确认：`outbound.picking_task.completion_confirm@v1`；
 - Transport 四个通用搬运方法（`move_rack` / `rotate_rack` / `move_bins` / `exchange_bins`）与其提交、回调合同；
 - WorkLine 准入、`PositionProjection` 等基础能力与不变量；
@@ -247,7 +258,7 @@ PDA（人工拣料操作终端）是 WMS 侧功能，不属于 WES 集成范围�
 打印和未批准的人工业务接口」这条既有边界：本文不违反该边界，因为 WES 侧确实不提供、不消费任何 PDA 接口，
 PDA 全部内部逻辑归属 WMS。
 
-## 5\. 新增 operations：任务准入、完成释放与退料货架完成通知 {#5-operations}
+## 5\. Operations wire：人工线新增接口与复用排空决定 {#5-operations}
 
 ### 5\.1 `outbound.manual_bin.work_admission_decide@v1` {#51-outboundmanual_binwork_admission_decidev1}
 
@@ -442,6 +453,103 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 `outbound.rack.departure_decide@v1` 的发起条件和换面（`RACK_ROTATE`）判断复用；换面还是彻底退场仍由 WES 按出库合同
 §9.2.1/§9.4 既有逻辑自主决定，本 operation 不参与、不影响该决定本身。
 
+### 5\.6 `workline.return_buffer.drain_rack_decide@v1`（复用） {#56-worklinereturn_bufferdrain_rack_decidev1}
+
+本 operation 不是人工线新增接口；其权威合同仍为[出库合同 §9.2.3](wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
+本节补充人工线联调所需的完整 wire/payload，字段含义不得与出库合同或
+[`return_buffer_drain/wire.py`](../../src/app/wms_adapter/return_buffer_drain/wire.py) 分叉。
+
+| 项 | 值 |
+| --- | --- |
+| 方向 | WES 到 WMS |
+| 端点 | `POST {{WMS_BASE_URL}}/api/v1/wes/decisions` |
+| 人工线触发条件 | 当前 PickingTask 完成后先原子准备下一任务；没有可准备任务且 WorkLine `RETURN_BUFFER` FIFO 非空 |
+| 当前已实现原因 | `PICKING_TASK_COMPLETED` |
+| 成功响应 | `200 / DECIDED`，`data.result=READY \| WAIT` |
+| 可靠 owner | 当前 `workline_id`；owner 不进入 wire payload |
+
+首次请求示例：
+
+```json
+{
+  "operation": "workline.return_buffer.drain_rack_decide@v1",
+  "operation_id": "019f3406-2200-7b03-8b01-000000000003",
+  "timestamp": 1788390200000,
+  "data": {
+    "workline_code": "LINE3",
+    "plugin_key": "manual-picking",
+    "drain_reason": "PICKING_TASK_COMPLETED",
+    "return_candidates": [
+      {
+        "sequence_no": 1,
+        "bin_code": "A000000001",
+        "source": {
+          "type": "HANDOFF_POSITION",
+          "location_code": "LINE3-RETURN-HANDOFF"
+        }
+      }
+    ]
+  }
+}
+```
+
+| JSON Path | 必填 | 类型/格式 | 规则 |
+| --- | --- | --- | --- |
+| `operation` | 是 | literal | 固定 `workline.return_buffer.drain_rack_decide@v1` |
+| `operation_id` | 是 | UUIDv7 | 本次决定身份；技术重试保持原值，`WAIT` 后重求值必须生成新值 |
+| `timestamp` | 是 | nonnegative int64 / UTC Unix 毫秒 | 技术重试保持原时间戳和完整请求内容 |
+| `data.workline_code` | 是 | Identifier | 当前冻结 WorkLine 的业务编码 |
+| `data.plugin_key` | 是 | Identifier | 当前冻结插件身份；人工线为 `manual-picking` |
+| `data.drain_reason` | 是 | enum | `PICKING_TASK_COMPLETED \| WORKLINE_STOPPING \| PLUGIN_SWITCHING`；当前生产实现只触发第一项 |
+| `data.return_candidates` | 是 | array，1～4 项 | 请求时冻结的 WorkLine FIFO 连续前缀 |
+| `data.return_candidates[].sequence_no` | 是 | integer，1～4 | 必须按数组顺序从 `1` 连续编号 |
+| `data.return_candidates[].bin_code` | 是 | Identifier | 同一请求内唯一 |
+| `data.return_candidates[].source.type` | 是 | literal | 固定 `HANDOFF_POSITION` |
+| `data.return_candidates[].source.location_code` | 是 | Identifier | 该候选当前实际退料交接位，不是原来源货架或目标储位 |
+| `data.previous_operation_id` | 否 | UUIDv7 | 首次请求省略；`WAIT` 后重求值时必须直接引用最近一次 `WAIT` 的 identity；禁止显式 `null`，且不得等于本次 `operation_id` |
+
+Identifier 使用 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`。请求信封、`data`、候选和 `source` 均为严格对象，任何层级的额外字段均拒绝；
+已定义字段不接受错误类型或非法 `null`。`return_candidates` 只冻结本次申请容量的 FIFO 前缀，不表达目标 rack、face 或 slot；这些目标由
+WMS 决定。
+
+`READY` 表示 WMS 已选择承接货架和面，并为本次完整候选前缀预留容量：
+
+```json
+{
+  "operation_id": "019f3406-2200-7b03-8b01-000000000003",
+  "code": "DECIDED",
+  "timestamp": 1788390200100,
+  "data": {
+    "result": "READY",
+    "rack_id": "RACK-5F-002",
+    "rack_face": "A"
+  }
+}
+```
+
+`WAIT` 表示当前没有可用承接货架；本次决定已经闭合，到期重求值不是对原请求的技术重试：
+
+```json
+{
+  "operation_id": "019f3406-2200-7b03-8b01-000000000003",
+  "code": "DECIDED",
+  "timestamp": 1788390200100,
+  "data": {
+    "result": "WAIT",
+    "reason_code": "NO_DRAIN_RACK_AVAILABLE",
+    "retry_after_ms": 1000
+  }
+}
+```
+
+`READY` 只允许 `result + rack_id + rack_face`；`WAIT` 只允许
+`result + reason_code=NO_DRAIN_RACK_AVAILABLE + retry_after_ms`，其中 `retry_after_ms` 为 `1～60000` 的整数。响应
+`operation_id` 必须匹配请求，响应对象同样拒绝额外字段。
+
+`503 / UNAVAILABLE`、响应未知或单次收发失败时，WES 使用原 `operation_id`、原时间戳和原 payload 重试；`409 / CONFLICT` 或
+`422 / REJECTED` 进入对账，不换 identity 猜测结果。只有已可靠保存的 `READY` 才允许继续创建货架进场 Transport；HTTP 成功、
+WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权威物理结果。
+
 ## NOT in scope {#not-in-scope}
 
 - WES 不集成 PDA 的任何接口（第 4 节）；
@@ -451,8 +559,8 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 - `outbound.manual_rack.direct_pick_completed@v1` 不携带逐 slot 取货结果；退料货架没有 NG 出口，缺料、损耗等业务异常
   由 WMS/PDA 内部消化，对 WES 保持黑盒；
 - 换面（`RACK_ROTATE`）还是彻底退场不由新 operation 决定，仍是 WES 按出库合同 §9.2.1/§9.4 既有逻辑的本地判断；
-- `RETURN_BUFFER` 在停线/切换时选择排空货架面的 decision wire 已记录在 `TODOS.md`，不在本期实现；该 wire 获批前，非空
-  `RETURN_BUFFER` 的停线/切换保持 WorkLine 原插件及配置并禁止自动换面、换架或退箱；
+- drain wire 已按出库合同 §9.2.3 冻结，当前仅实现 `PICKING_TASK_COMPLETED`；`WORKLINE_STOPPING` / `PLUGIN_SWITCHING`
+  触发仍记录在 `TODOS.md`，未闭合义务和有效占用收敛前保持原插件及配置；
 - WES 不维护永久条码级 NG 状态或全程料箱生命周期；下游处置必须由已确认的移交关联或可靠物理队列承接，无法关联则拒绝自动推进；
 - 不提供料箱 NG 出口上报；人工 NG 记录和分流属于插件分支，WMS 人工业务自行完成；
 - 不新增第二套 Transport、Device、Evidence、Confirmation 或插件 runtime；
@@ -484,6 +592,7 @@ C1～C7（当时的 point2 任务准入、完成释放、应用结果三个 oper
 | `tests/contracts/wms_adapter/` 的 Event handler 合同测试 | 激活验收目标：唯一静态接收路由不随业务 owner 安装状态变化；零消费者仍可靠接收且业务应用 fail closed；新 ID 持久化后 `202`；同 ID 同内容 `200`；同 ID 不同内容 `409`；持久化失败 `503` 且无虚假 ACK |
 | `tests/integration/wms_adapter/test_manual_bin_event_receipts.py` | 使用真实 PostgreSQL 验证并发重放只有一个收据 owner、digest 冲突、evidence/ACK 事务回滚与失败后原 identity 可重试 |
 | `tests/contracts/wms_adapter/test_outbound_openapi.py` | OpenAPI 的 `reason_code` 闭集包含 `MANUAL_PICK_NG`，并准确表达各 reason 的条件联合，不把插件业务判断写入 schema |
+| `tests/contracts/wms_adapter/return_buffer_drain/test_contract.py` | `drain_rack_decide` 严格请求/响应联合、FIFO 前缀、直接前驱、额外字段拒绝、identity 匹配与公共错误映射 |
 | `workline_plugins/manual-picking/tests/test_work_admission.py` | point2 合法实际 Bin 构造包含 `task_id/bin_code/scanned_at` 的严格三字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
 | `workline_plugins/manual-picking/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 验证返回任务与请求一致后冻结绑定；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
 
@@ -610,7 +719,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | `WmsConfirmation` 可靠派发与结果恢复 | 复用生命周期，使用 `material_execution_id | picking_task_id | workline_id` 恰好一个的显式 owner 约束 |
 | WorkLine 准入与 `PositionProjection` | WorkLine 承载当前插件准入；位置投影只提供有效位置诊断，不作为跨任务对象冲突授权；不塞入 PDA/人工任务字段 |
 | `DeviceCommand`、统一 ECS Adapter、ACK/CALLBACK | 直接复用；按当前待处理动作与物理阶段提供稳定命令身份 |
-| `outbound.bin.return_batch@v1` 与 `RETURN_BUFFER` FIFO | 正常运行直接复用；停线/切换排空 decision 留在 `TODOS.md` |
+| `outbound.bin.return_batch@v1` 与 `RETURN_BUFFER` FIFO | 正常回架和任务完成 drain 共用；停线/切换触发留在 `TODOS.md` |
 | `manual-picking` 插件骨架 | 在原包内补齐模型、Decision、应用与测试；不新建动态 runtime 或 registry |
 
 ## 10. Failure modes
@@ -630,7 +739,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | point3 分流 | 当前处置关联无法证明 | `test_scan_handlers.py`、`test_scan_flow.py` | 保存异常证据，创建一次 `MOVE_LEFT`，不停箱 |
 | point3 正常路径 | 关联匹配但缺少确定业务处置 | `test_scan_handlers.py` | 不能授予正常放行，创建一次 `MOVE_LEFT` |
 | NG 分支 | WMS 已形成 NG 结果但分流命令未闭合 | 插件命令关联测试、E2E | 正常业务退出，原物理命令和资源保留至权威结果 |
-| 停线/切换排空 | `RETURN_BUFFER` 非空且排空 wire 未获批 | 合同/运行态门禁 | WorkLine 保持原插件及配置并阻止自动换面、换架或退箱；P1 TODO 对现场可见 |
+| 停线/切换排空 | drain wire 已冻结，但这两种触发尚未实现 | 合同/运行态门禁 | WorkLine 保持原插件及配置，已有义务继续可靠闭合；P1 TODO 对现场可见 |
 
 上述路径均具有指定测试、fail-closed 处理和可观察状态；本次 Review 未留下“无测试、无处理且静默”的 critical gap。
 

@@ -512,6 +512,7 @@ def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() 
         "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
         "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
         "tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py",
+        "tests/integration/wms_adapter/return_buffer_drain/test_production_wiring.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
@@ -556,6 +557,7 @@ def test_plugin_sdk_wms_values_select_real_persistence_owners(filename: str) -> 
         expected.append("tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py")
     if filename != "facts.py":
+        expected.append("tests/integration/wms_adapter/return_buffer_drain/test_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py")
@@ -837,6 +839,7 @@ def test_retired_outbound_picking_management_package_keeps_exact_heavy_tombstone
                 "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
                 "tests/integration/wms_adapter/outbound_picking/test_schema.py",
                 "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py",
+                "tests/integration/wms_adapter/return_buffer_drain/test_production_wiring.py",
                 WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
             ],
         ),
@@ -1399,6 +1402,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260914_2320_70d00a14cbdf_扩大设备命令工作线关联为_bigint.py",
         "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py",
         "migrations/versions/20260915_1440_2b1adb268fdc_增加作业线清线归档状态.py",
+        "migrations/versions/20260916_2253_4ce43f66c610_add_workline_operation_tail_index_to_.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

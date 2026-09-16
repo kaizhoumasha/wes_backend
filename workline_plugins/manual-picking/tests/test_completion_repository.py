@@ -60,6 +60,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
     repository = ManualPickingCompletionRepository(history=history)
     line = SimpleNamespace(
         id=7,
+        position_bindings={"INLET": {"location_id": "CNV0301"}},
         config={
             "device_bindings": {
                 "SCAN1": "S1",
@@ -196,7 +197,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             history.result = sdk.BinInboundBatchReady(
                 (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
             )
-            assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", "R1", "90")).complete
+            assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")).complete
             assert not await repository.ready_to_confirm(db, line, task)
     finally:
         await engine.dispose()
