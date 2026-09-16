@@ -205,12 +205,6 @@ class ManualPickingScanFlow:
         )
         if readiness != "READY":
             return readiness
-        target = await self._positions.get(db, "RACK", task.target_rack_id)
-        readiness = await self._position_readiness(
-            db, target, workline.id, "RACK_POSITION", positions[TRANSFER_RACK.slot_key], task.target_rack_face
-        )
-        if readiness != "READY":
-            return readiness
         return await self._batch_result.apply_inbound_in_session(
             db,
             evidence,

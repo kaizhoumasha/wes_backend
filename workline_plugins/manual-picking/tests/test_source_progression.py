@@ -261,6 +261,20 @@ async def test_later_rack_starts_when_its_own_ingress_succeeded_even_if_prior_so
 
 
 @pytest.mark.asyncio
+async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> None:
+    driver, line, task, positions, _, flow, creator, _, scheduler = setup_driver()
+    positions.target = None
+    flow.complete.clear()
+    flow.created = True
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls[0]["rack_id"] == "R1"
+    assert flow.calls[0]["allow_inbound"] is True
+    assert creator.rotate == [] and creator.depart == []
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_two_current_source_racks_block_progress_even_when_one_projection_is_newer() -> None:
     driver, line, task, positions, _, flow, creator, _, scheduler = setup_driver()
     prior = positions.source
@@ -315,6 +329,7 @@ async def test_source_window_fills_stable_plan_order_once_without_target_readine
         row.plan_revision = 1
     plans.rows.append(SimpleNamespace(id=14, rack_id="R3", rack_face="90", source_evidence_id=53, plan_revision=2))
     positions.target = None
+    positions.count = AsyncMock(return_value=0)
     driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=capacity))
     driver._rack_cycles = SimpleNamespace(
         occupied_source_rack_ids=AsyncMock(return_value=occupied), fenced_source_rack_ids=AsyncMock(return_value=set())
@@ -388,6 +403,7 @@ async def test_physical_rack_fence_does_not_reclaim_released_capacity_for_anothe
     for row in plans.rows:
         row.plan_revision = 1
     positions.target = None
+    positions.count = AsyncMock(return_value=0)
     driver._rack_cycles.occupied_source_rack_ids.return_value = set()
     driver._rack_cycles.fenced_source_rack_ids.return_value = {"R1"}
     driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))

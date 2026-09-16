@@ -767,6 +767,7 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
     plans.rows = [SimpleNamespace(id=21, rack_id="R1", rack_face="90", source_evidence_id=71, plan_revision=1)]
     task.last_applied_plan_revision = 1
     positions.target = None
+    positions.count = AsyncMock(return_value=0)
     creator.create = AsyncMock()
     row = decision(sdk.ReturnBufferDrainReady("R1", "90"))
     driver._drain = SimpleNamespace(
