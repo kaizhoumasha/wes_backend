@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0.0] - 2026-09-16
+
+### Added
+
+- 人工拣料工作线可按 FIVE_LAYER 容量持续补充 CTU01 来源架，并在当前货架面投料完成后立即执行 CTU02 换面或 CTU03 离场。
+- 新增 `workline.return_buffer.drain_rack_decide@v1` 可靠决定；任务完成且没有下一任务承接时，由 WMS 选择排空货架面。
+- 增加货架循环、跨任务退箱、排空决定和真实 PostgreSQL/worker 闭环测试，并为工作线排空查询增加精确索引。
+
+### Changed
+
+- RETURN_BUFFER 回架改为投料片段之间的机会式动作，不再延迟已经满足 `feed_complete` 的换面或换架。
+- PickingTask 完成后优先原子准备下一任务并复用其货架承接遗留料箱；只有无法准备下一任务时才创建独立排空义务。
+- CTU01 窗口按已持久化 Transport 与位置事实集合计算；CTU03 `ACCEPTED` 释放窗口，但不替代最终物理结果与位置对账。
+
 ## [0.46.0.0] - 2026-09-16
 
 ### Added
