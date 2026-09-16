@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-09-12
+updated_at: 2026-09-16
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -933,7 +933,8 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 必须共同证明精确 rack/face 到达，才连续使用普通 `return_batch` 为 FIFO 分配精确 slot 并搬回。
 冻结候选前缀及后续仍属本线的 FIFO 未排空、pre-buffer 仍有成员或相关可靠动作未闭合时不离场；排空后创建唯一 CTU03。
 CTU03 接纳释放窗口和业务 reservation，原物理结果仍须独立闭合。WMS 拥有 rack/face、容量与储位分配，WES 拥有本地可靠编排，
-RCS/ECS 拥有接纳和最终物理事实。此设计不引入 Epoch、兼容别名、旧路径、队尾状态、缓存计数器、schema 或 migration。
+RCS/ECS 拥有接纳和最终物理事实。此设计不引入 Epoch、兼容别名、旧路径、队尾状态、缓存计数器、业务表或字段；
+仅为既有 `wms_confirmations` 增加 `workline_id + operation + operation_id` 查询索引。
 
 ### 9.3 Bin 工作计划
 

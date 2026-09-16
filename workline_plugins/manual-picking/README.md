@@ -61,7 +61,8 @@ PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务
 请求冻结非空 FIFO 前缀；READY 选择 rack/face 并保留该前缀容量，WAIT 到期以新 identity 和直接 `previous_operation_id` 重求值。
 已创建 drain 链不被后来任务取消：共享窗口创建 CTU01，等待精确权威到位后连续使用普通 `return_batch`，保留 FIFO 及未闭合义务直到排空，再创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
-没有新增 Epoch、兼容路径、窗口表、缓存计数器、schema 或 migration；停线/插件切换触发仍留在 TODO。
+没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
+增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
 
 SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
 `SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
