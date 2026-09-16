@@ -5,8 +5,10 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Body, Depends, Path, Request, status
 
 from src.app.workline.models import (
+    PlaneSceneV2,
     PlaneSceneView,
     PlaneSnapshot,
+    PlaneSnapshotV2,
     WorkLine,
     WorkLineBaseConfigurationResponse,
     WorkLineBaseConfigurationUpdate,
@@ -23,7 +25,7 @@ from src.app.workline.services import workline_plane_service
 from src.app.workline.services.plane_service import PlaneReadPrincipal, plane_read_security_policy
 from src.app.workline.services.workline_service import workline_service
 from src.core.base_api import BaseAPI
-from src.core.rbac import RequirePermission
+from src.core.rbac import PermissionDep, RequirePermission
 from src.core.response import (
     BusinessErrorCode,
     ResourceErrorCode,
@@ -276,6 +278,39 @@ async def get_workline_plane_scene(
 
 
 @router.get(
+    "/work_lines/{id}/plane/scene/v2",
+    operation_id="work_lines_by_id_plane_scene_v2_get",
+    summary="[biz:workline:view-plane-scene] 获取作业线平面场景 v2（资源分组 + 绑定状态）",
+    response_model=ResponseSchemaModel[PlaneSceneV2],
+    status_code=status.HTTP_200_OK,
+)
+async def get_workline_plane_scene_v2(
+    request: Request,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    principal: Annotated[PlaneReadPrincipal, Depends(_plane_read_principal)],
+    _permission: PermissionDep(plane_read_security_policy.scene_permission),
+    id: int = Path(...),
+) -> ResponseSchemaModel[PlaneSceneV2]:
+    """读取 WorkLine 平面态势 scene v2；与 plane.scene.v1 并存，互不改变语义。"""
+
+    plugins = getattr(getattr(request.app.state, "deployment_runtime", None), "plugins", None)
+    if plugins is None:
+        return cast(
+            "ResponseSchemaModel[PlaneSceneV2]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="部署运行时不可用"),
+        )
+    try:
+        scene = await workline_plane_service.get_scene_v2(db, cache, id, principal=principal, plugins=plugins)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[PlaneSceneV2]", _workline_value_error_response(exc))
+    await workline_plane_service.record_read_audit(
+        db, view="scene", workline_id=id, workline_code=scene.workline.line_code
+    )
+    return cast("ResponseSchemaModel[PlaneSceneV2]", response_builder.success(data=scene))
+
+
+@router.get(
     "/work_lines/{id}/plane/snapshot",
     summary="[biz:workline:view-plane-snapshot] 获取作业线平面动态快照",
     response_model=ResponseSchemaModel[PlaneSnapshot],
@@ -301,6 +336,37 @@ async def get_workline_plane_snapshot(
         workline_code=snapshot.workline_code,
     )
     return cast("ResponseSchemaModel[PlaneSnapshot]", response_builder.success(data=snapshot))
+
+
+@router.get(
+    "/work_lines/{id}/plane/snapshot/v2",
+    operation_id="work_lines_by_id_plane_snapshot_v2_get",
+    summary="[biz:workline:view-plane-snapshot] 获取作业线平面快照 v2（按资源聚合活动状态）",
+    response_model=ResponseSchemaModel[PlaneSnapshotV2],
+    status_code=status.HTTP_200_OK,
+)
+async def get_workline_plane_snapshot_v2(
+    request: Request,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    principal: Annotated[PlaneReadPrincipal, Depends(_plane_read_principal)],
+    _permission: PermissionDep(plane_read_security_policy.snapshot_permission),
+    id: int = Path(...),
+) -> ResponseSchemaModel[PlaneSnapshotV2]:
+    """读取 WorkLine 平面态势 snapshot v2；与 plane.snapshot.v1 并存，互不改变语义。"""
+
+    plugins = getattr(getattr(request.app.state, "deployment_runtime", None), "plugins", None)
+    if plugins is None:
+        return cast(
+            "ResponseSchemaModel[PlaneSnapshotV2]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="部署运行时不可用"),
+        )
+    try:
+        snapshot = await workline_plane_service.get_snapshot_v2(db, cache, id, principal=principal, plugins=plugins)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[PlaneSnapshotV2]", _workline_value_error_response(exc))
+    await workline_plane_service.record_read_audit(db, view="snapshot", workline_id=id, workline_code=str(id))
+    return cast("ResponseSchemaModel[PlaneSnapshotV2]", response_builder.success(data=snapshot))
 
 
 # 使用 BaseAPI 零代码生成 CRUD 路由
