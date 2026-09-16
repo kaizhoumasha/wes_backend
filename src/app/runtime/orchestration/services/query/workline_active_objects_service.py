@@ -6,7 +6,7 @@ from collections import defaultdict
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from src.app.active_objects.registry import ActiveObjectFact, ActiveObjectRegistry
 from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
@@ -48,6 +48,7 @@ class WorklineActiveObjectView(BaseModel):
     operator_hint: str | None = None
     location_summary: WorklineActiveObjectLocationView | None = None
     evidence_refs: list[str] = Field(default_factory=list)
+    _device_codes: list[str] = PrivateAttr(default_factory=list)
 
 
 class WorklineActiveObjectsResponse(BaseModel):
@@ -116,18 +117,18 @@ class WorklineActiveObjectsService:
                 and location_summary.conflict_state == WorklineActiveObjectConflictState.RECONCILING
             ):
                 conflict_state = WorklineActiveObjectConflictState.RECONCILING
-            views.append(
-                WorklineActiveObjectView(
-                    object_type=object_type,
-                    object_key=object_key,
-                    conflict_state=conflict_state,
-                    primary_source=_primary_source(resolution.owner_kind, resolution.owner_code),
-                    all_sources=[_source_label(fact.owner_kind, fact.owner_code) for fact in object_facts],
-                    operator_hint=_operator_hint(conflict_state),
-                    location_summary=location_summary,
-                    evidence_refs=resolution.evidence_refs,
-                )
+            view = WorklineActiveObjectView(
+                object_type=object_type,
+                object_key=object_key,
+                conflict_state=conflict_state,
+                primary_source=_primary_source(resolution.owner_kind, resolution.owner_code),
+                all_sources=[_source_label(fact.owner_kind, fact.owner_code) for fact in object_facts],
+                operator_hint=_operator_hint(conflict_state),
+                location_summary=location_summary,
+                evidence_refs=resolution.evidence_refs,
             )
+            view._device_codes = _device_codes(object_rows)
+            views.append(view)
 
         total_count = len(views)
         limited = views[: self.max_objects]
@@ -164,6 +165,17 @@ def _location_summary(object_rows: list[dict[str, Any]]) -> WorklineActiveObject
         conflict_state=conflict_state,
         evidence_refs=[str(row["evidence_ref"]) for row in location_rows],
     )
+
+
+def _device_codes(object_rows: list[dict[str, Any]]) -> list[str]:
+    """DEVICE_COMMAND 来源行携带的真实设备编码；供上层资源关联精确匹配，不做推断。"""
+
+    codes = {
+        str(row["owner_code"])
+        for row in object_rows
+        if str(row.get("owner_kind") or "") == "DEVICE_COMMAND" and row.get("owner_code")
+    }
+    return sorted(codes)
 
 
 def _primary_source(owner_kind: str | None, owner_code: str | None) -> str | None:

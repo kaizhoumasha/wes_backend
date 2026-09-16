@@ -149,6 +149,55 @@ async def test_workline_active_objects_promotes_location_reconciling_to_object_s
 
 
 @pytest.mark.asyncio
+async def test_workline_active_objects_exposes_device_command_codes_for_resource_association() -> None:
+    """DEVICE_COMMAND 来源的真实设备编码只供内部关联，不改变 v1 公开响应。"""
+
+    service = WorklineActiveObjectsService(
+        target_repository=_TargetRows(
+            [
+                ActiveObjectFact(
+                    object_code="CMD-1",
+                    object_type="DEVICE_COMMAND",
+                    owner_kind="DEVICE_COMMAND",
+                    owner_code="DEV-001",
+                    evidence_ref="device_command:1",
+                )
+            ],
+        ),
+    )
+
+    response = await service.get_active_objects(None, workline_id=1)
+
+    assert response.objects[0]._device_codes == ["DEV-001"]
+    assert "device_codes" not in response.objects[0].model_dump()
+
+
+@pytest.mark.asyncio
+async def test_workline_active_objects_leaves_device_codes_empty_without_device_command_source() -> None:
+    """非 DEVICE_COMMAND 来源不得被当作设备编码，避免虚假关联。"""
+
+    service = WorklineActiveObjectsService(
+        target_repository=_TargetRows(
+            [
+                ActiveObjectFact(
+                    object_code="BIN-OK",
+                    object_type="BIN",
+                    owner_kind="ON_CONVEYOR",
+                    owner_code="Q-IN",
+                    evidence_ref="queue:BIN-OK",
+                )
+            ],
+            location_scope="CONVEYOR_QUEUE",
+            location_code="Q-IN",
+        ),
+    )
+
+    response = await service.get_active_objects(None, workline_id=1)
+
+    assert response.objects[0]._device_codes == []
+
+
+@pytest.mark.asyncio
 async def test_workline_active_objects_transient_window_expires_to_reconciling() -> None:
     """IN_TRANSFER + ON_CONVEYOR 在 transient window 内返回 TRANSIENT，超时后返回 RECONCILING。"""
 
