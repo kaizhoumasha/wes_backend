@@ -54,6 +54,15 @@ from src.app.wms_adapter.outbound_picking.wire import (
     parse_picking_task_prepare_request,
     parse_picking_task_prepare_response,
 )
+from src.app.wms_adapter.return_buffer_drain.wire import (
+    RETURN_BUFFER_DRAIN_OPERATION,
+)
+from src.app.wms_adapter.return_buffer_drain.wire import (
+    parse_request as parse_return_buffer_drain_request,
+)
+from src.app.wms_adapter.return_buffer_drain.wire import (
+    parse_response as parse_return_buffer_drain_response,
+)
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.core.uuid7 import is_uuid7
 from tests.mock.wms_transport_mock_openapi import (
@@ -991,6 +1000,7 @@ async def decide_return_batch(request: Request) -> Response:
         BIN_INBOUND_BATCH_OPERATION,
         RACK_DEPARTURE_OPERATION,
         COMPLETION_CONFIRM_OPERATION,
+        RETURN_BUFFER_DRAIN_OPERATION,
     }
     try:
         if operation == PICKING_TASK_PREPARE_OPERATION:
@@ -1017,6 +1027,11 @@ async def decide_return_batch(request: Request) -> Response:
             status, response = 200, _ack(operation_id, "DECIDED", None)
             response["data"] = {"result": "COMPLETED"}
             parse_completion_confirm_response(status, response, request=parsed)
+        elif operation == RETURN_BUFFER_DRAIN_OPERATION:
+            parsed = parse_return_buffer_drain_request(envelope)
+            status, response = 200, _ack(operation_id, "DECIDED", None)
+            response["data"] = {"result": "READY", "rack_id": "DRAIN-1", "rack_face": "A"}
+            parse_return_buffer_drain_response(status, response, request=parsed)
     except ValidationError:
         status = 422
         response = _ack(operation_id, "REJECTED", None, reason_code="INVALID_DATA")
@@ -1026,6 +1041,8 @@ async def decide_return_batch(request: Request) -> Response:
             parse_bin_inbound_batch_response(status, response)
         elif operation == RACK_DEPARTURE_OPERATION:
             parse_rack_departure_response(status, response)
+        elif operation == RETURN_BUFFER_DRAIN_OPERATION:
+            parse_return_buffer_drain_response(status, response)
         else:
             parse_completion_confirm_response(status, response)
     if recognized_operation:

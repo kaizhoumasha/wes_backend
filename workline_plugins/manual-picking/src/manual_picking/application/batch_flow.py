@@ -20,11 +20,11 @@ class BatchRepository(Protocol):
     async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool: ...
 
     async def return_retry_due(
-        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime
+        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime, after: datetime
     ) -> bool: ...
 
     async def inbound_progress(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str
     ) -> InboundFaceProgress | None: ...
 
 
@@ -80,9 +80,9 @@ class ManualPickingBatchFlow:
         self._uuid_factory = uuid_factory
 
     async def face_progress(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str
     ) -> InboundFaceProgress | None:
-        return await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face)
+        return await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
 
     async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool:
         return await self._repository.has_unclosed_action(db, workline_id)
@@ -103,13 +103,21 @@ class ManualPickingBatchFlow:
     ) -> bool:
         if await self._repository.has_unclosed_action(db, workline_id):
             return False
-        rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+        progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
+        if progress is not None and (progress.feed_complete or progress.next_offset is None):
+            return False
+        # 到位先投第一段；只有投料片段之间才机会式请求回架。
         return_bins: list[str] = []
-        for row in rows:
-            if not row.bin_code:
-                raise ValueError("ready return passage requires a known bin_code")
-            return_bins.append(row.bin_code)
-        progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face)
+        return_due = False
+        if progress is not None and progress.next_offset > 0:
+            rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+            for row in rows:
+                if not row.bin_code:
+                    raise ValueError("ready return passage requires a known bin_code")
+                return_bins.append(row.bin_code)
+            return_due = await self._repository.return_retry_due(
+                db, workline_id, rack_id, rack_face, now, cast("datetime", progress.last_chunk_created_at)
+            )
         intent = choose_next_batch(
             operation_id=self._uuid_factory(),
             workline_code=workline_code,
@@ -118,7 +126,7 @@ class ManualPickingBatchFlow:
             rack_face=rack_face,
             return_bins=tuple(return_bins),
             return_location=return_location,
-            return_retry_due=await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now),
+            return_retry_due=return_due,
             allow_inbound=allow_inbound and progress is None,
         )
         if intent is not None:

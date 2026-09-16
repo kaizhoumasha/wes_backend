@@ -12,18 +12,18 @@
 **What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成
 `manual_bin_processing` START/静态 Composition、未完成 PickingTask blocker、prepare adapter production route、Celery task/Beat 和 worker wiring。
 
-**Why:** 单独打开 Beat 会在没有真实人工 Epoch 或 `plan_delta` owner 时形成空转 consumer，或者让 WES 向 WMS 发出无法继续执行的准备承诺；
-未完成 PickingTask blocker 缺失还会允许带任务关闭或替换 Epoch。
+**Why:** 单独打开 Beat 会在没有真实人工 WorkLine 运行上下文或 `plan_delta` owner 时形成空转 consumer，或者让 WES 向 WMS 发出无法继续执行的准备承诺；
+未完成 PickingTask blocker 缺失还会允许带任务停止或切换工作线运行。
 
 **Context:** prepare 当前只提供 `prepare_next_for_workline(workline_id)` 暗构建能力，不注册生产入口。激活前必须保持基础 WorkLine 层
 不依赖 outbound picking 业务模型；由宿主静态 Composition 注入人工业务 blocker 和唯一 operation route，不使用动态 registry、默认 handler、
-临时 API、伪造 Epoch 或旧 runtime/status 路径。
+临时 API、伪造运行轮次或旧 runtime/status 路径。
 
 **Scope:**
 
 - 真实 `manual_bin_processing` WorkLine START plan、设备/位置绑定和静态 Composition
 - `outbound.picking_task.plan_delta@v1` 严格接收、持久化及插件应用 owner
-- `PREPARING | EXECUTING` PickingTask 对 STOP/Epoch 切换的静态业务 blocker
+- `PREPARING | EXECUTING` PickingTask 对 STOP/插件切换的静态业务 blocker
 - prepare adapter 唯一 production route、Celery task、Beat schedule、queue route 和 worker runtime
 - 真实 worker、失败恢复、停止/重启与插件业务测试
 
@@ -36,19 +36,43 @@ PostgreSQL 并发验证通过。
 
 ---
 
-### RETURN_BUFFER 停止/切换排空决策合同
+### RETURN_BUFFER 停止/切换排空接入
 
-**What:** 冻结 `workline.return_buffer.drain_rack_decide@v1`，用于停止或切换时为既有 `RETURN_BUFFER` FIFO 选择可排空货架面。
+**What:** 在已由 Issue #254 冻结并实现 `workline.return_buffer.drain_rack_decide@v1` 公共合同及
+`PICKING_TASK_COMPLETED` 分支后，补充 `WORKLINE_STOPPING` 与 `PLUGIN_SWITCHING` 两个排空触发分支。
 
-**Why:** 当前面无法为 FIFO 队首分配合格空位且没有新入站需求驱动换面时，WorkLine 仍需在不越过队首、不释放未知位置的前提下完成清场和 Epoch 关闭。
+**Why:** 停线或切换插件时，当前面可能无法为 FIFO 队首分配合格空位，且没有后续 PickingTask 的投料货架承接遗留料箱；
+WorkLine 仍需在不越过队首、不释放未知位置的前提下向 WMS 请求可承接货架。
 
-**Context:** 现有 `outbound.bin.return_batch@v1` 只处理当前面可执行的连续 FIFO 前缀。出库合同已将排空 decision 标为联合实施硬门禁；本 TODO 只跟踪该独立合同与实现，不扩大 Phase 12 人工出库线唯一新增 operation 的范围。
+**Context:** `outbound.bin.return_batch@v1` 只处理当前工作位货架面可执行的连续 FIFO 前缀；
+`workline.return_buffer.drain_rack_decide@v1` 独立负责选择排空承接货架。Issue #254 只交付任务完成触发，
+本 TODO 不重复建设 operation、可靠义务、CTU01 窗口或回架批次能力。
 
 **Effort:** M
 
 **Priority:** P1
 
-**Depends on:** 当前 `return_batch`、货架切换、位置事实和 FIFO 合同稳定，并由 WMS/WES 联合冻结 operation、严格 DTO、恢复语义与幂等规则。
+**Depends on:** Issue #254 的公共合同、任务完成分支、`return_batch`、货架循环、位置事实和 FIFO 合同完成并稳定。
+
+---
+
+### workline_integration_debug 补充 drain operation 调试支持
+
+**What:** `IntegrationDebugService`（`src/app/workline_integration_debug/service.py`）已为
+`PICKING_TASK_PREPARE`、`BIN_INBOUND_BATCH`、`BIN_RETURN_BATCH`、`RACK_DEPARTURE`、
+`RETURN_RACK_ARRIVAL_REPORT`、`COMPLETION_CONFIRM` operation 提供专门的手工模拟/推进分支；
+`workline.return_buffer.drain_rack_decide@v1`（Issue #254）尚未接入，工程师无法用现有调试工具手工驱动排空决定。
+
+**Why:** 缺少调试面板支持不影响生产行为，但会让排空场景的人工验证、演示和现场排障只能依赖真实 WMS 对接或直接读写数据库。
+
+**Context:** 该工具及 `v1/runs.py` 在 Issue #254 中未改动；补充时需先读懂现有 `IntegrationDebugPhase`/`IntegrationRunStatus`
+状态机约定，复用而非新建一套调试状态机。
+
+**Effort:** S
+
+**Priority:** P3
+
+**Depends on:** Issue #254 的排空公共合同与任务完成分支已稳定（已满足）。
 
 ---
 
@@ -67,7 +91,7 @@ PostgreSQL 并发验证通过。
 
 - 按工作线模式和标准角色展示待绑定设备、位置容量及拓扑缺口
 - 支持从未绑定设备或当前 WorkLine 设备中选择/调整角色
-- 活动 `LineRunEpoch` 存在时只读展示，提示清线并结束当前 Epoch 后调整
+- 工作线存在活动任务或未闭合执行时只读展示，提示清线并关闭当前运行后调整
 - 复用后端显式配置校验的 blocker、warning 和修复入口，不在前端复制业务规则
 
 **Depends on:** 最终 WorkLine、设备角色、位置拓扑和配置校验合同稳定。

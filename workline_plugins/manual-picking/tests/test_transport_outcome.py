@@ -245,3 +245,93 @@ async def test_source_return_result_uses_original_plan_evidence() -> None:
     payload = accept.await_args.kwargs["normalized_payload"]
     assert payload["step"] == "MANUAL_PICKING_SOURCE_RACK_OUT"
     assert payload["picking_task_id"] == "PICK-1" and payload["rack_id"] == "RACK-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN", "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT"]
+)
+@pytest.mark.parametrize("status", [TransportOutcomeStatus.SUCCEEDED, TransportOutcomeStatus.UNKNOWN])
+async def test_drain_transport_publishes_original_ready_evidence_without_task(step, status):
+    publisher, accept = _publisher(step=step)
+    _configure_drain(publisher)
+    source = publisher._evidences.get_by_id_without_lock.return_value
+    assert await publisher.publish(object(), _outcome(status=status))
+    assert await publisher.publish(object(), _outcome(status=status))
+    payload = accept.await_args.kwargs["normalized_payload"]
+    assert "picking_task_id" not in payload
+    assert payload["drain_operation_id"] == source.operation_id
+    assert accept.await_args.kwargs["source_identity"] == "transport:TRANSPORT-1:outcome:1"
+    source.normalized_payload["data"]["rack_id"] = "WRONG"
+    with pytest.raises(ValueError):
+        await publisher.publish(object(), _outcome(status=status))
+
+
+def _configure_drain(publisher):
+    from wes_plugin_sdk import BinReturnCandidate, wms_operations
+
+    from src.app.wms_adapter.return_buffer_drain.typed import encode_request
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
+    from src.utils.canonical_json import canonical_json_digest
+
+    operation_id = "019f0000-0000-7000-8000-000000000001"
+    binding = publisher._bindings.get_by_client_request_id.return_value
+    binding.correlation_id = f"drain:{operation_id}"
+    source = publisher._evidences.get_by_id_without_lock.return_value
+    source.kind = InboundEvidenceKind.WMS_RESULT
+    source.operation = "workline.return_buffer.drain_rack_decide@v1"
+    source.operation_id = operation_id
+    source.workline_id = 31
+    source.normalized_payload = {
+        "operation_id": operation_id,
+        "code": "DECIDED",
+        "timestamp": 1,
+        "data": {"result": "READY", "rack_id": "RACK-1", "rack_face": "90"},
+    }
+    source.payload_digest = canonical_json_digest(source.normalized_payload)
+    intent = wms_operations.workline_return_buffer_drain_rack_decide(
+        operation_id=operation_id,
+        workline_code="LINE-31",
+        plugin_key="manual-picking",
+        drain_reason="PICKING_TASK_COMPLETED",
+        return_candidates=(BinReturnCandidate(1, "B1", "OUTLET"),),
+    )
+    payload = encode_request(intent, timestamp=1)
+    confirmation = SimpleNamespace(
+        operation=source.operation,
+        operation_id=operation_id,
+        workline_id=31,
+        status="COMPLETED",
+        response_evidence_id=source.id,
+        request_payload=payload,
+        request_digest=canonical_json_digest(payload),
+        response_result="READY",
+    )
+    repository = AsyncMock()
+    repository.get_by_identity.return_value = confirmation
+    publisher._drain_reader = ReturnBufferDrainResultReader(repository)
+    return confirmation, source, repository
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift", ["missing_confirmation", "pending", "request_digest", "response_digest", "link", "owner"]
+)
+async def test_drain_transport_requires_host_validated_confirmation_and_evidence(drift):
+    publisher, accept = _publisher(step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT")
+    confirmation, source, repository = _configure_drain(publisher)
+    if drift == "missing_confirmation":
+        repository.get_by_identity.return_value = None
+    elif drift == "pending":
+        confirmation.status = "PENDING"
+    elif drift == "request_digest":
+        confirmation.request_digest = "0" * 64
+    elif drift == "response_digest":
+        source.payload_digest = "0" * 64
+    elif drift == "link":
+        confirmation.response_evidence_id = 999
+    else:
+        confirmation.workline_id = 99
+    with pytest.raises(ValueError):
+        await publisher.publish(object(), _outcome())
+    accept.assert_not_awaited()

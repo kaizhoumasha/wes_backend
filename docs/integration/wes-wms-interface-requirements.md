@@ -2564,7 +2564,7 @@ CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为
 `return_batch` 不返回换面或换架方案。WMS 暂时不能分配当前面合格空位，包括当前面已没有合格空位时，均返回 `NO_BATCH`。这是正常等待，不转 NG 或 `STATE_CONFLICT`；新入站需求可以驱动换面或换架。
 只要 Bin 仍位于入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或已经以当前面为冻结目标，相关货架面就必须保持在工作位；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不再锁定原来源面。
 
-正常运行时只有新入站需求驱动货架切换。停止或切换已请求时，目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、插件执行身份、请求事实、旧架离场去向、新架可靠来源/工作位/到达面和幂等规则尚未冻结，当前为 `ReviewRequired/BLOCKED`。获批前 WES 停止接纳新任务和新 Bin，保持当前插件与设备配置，不创建货架切换或退箱 Transport；全部清场义务闭合后才允许停用或切换插件。
+正常运行时只有新入站需求驱动货架切换。公共 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、严格 DTO、插件执行身份、请求事实、直接前驱和幂等规则已经冻结，当前生产实现仅支持 `PICKING_TASK_COMPLETED`。自动上架的停止或插件切换触发、场景映射、旧架离场去向及新架可靠来源/工作位/到达面尚未实现，保持 `ReviewRequired/BLOCKED`；实现前 WES 停止接纳新任务和新 Bin，保持当前插件与设备配置，不创建该场景的货架切换或退箱 Transport，全部清场义务闭合后才允许停用或切换插件。
 
 Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 调用
 `outbound.bin.work_plan@v1`。WMS 核对 Bin 后返回需要处理的 Cell。

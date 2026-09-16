@@ -13,6 +13,9 @@ from src.utils.timezone import timezone
 
 
 class Positions:
+    async def count(self, _db, *, where_clauses):
+        return 1
+
     def __init__(self):  # type: ignore[no-untyped-def]
         self.source = SimpleNamespace(
             object_id="R1",
@@ -69,8 +72,8 @@ class Flow:
         self.calls.append(kwargs)
         return self.created
 
-    async def face_progress(self, _db, _line_id, _task_id, rack_id, face):  # type: ignore[no-untyped-def]
-        return SimpleNamespace(complete=True) if (rack_id, face) in self.complete else None
+    async def face_progress(self, _db, _line_id, _task_id, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(complete=False, feed_complete=True) if (rack_id, face) in self.complete else None
 
     async def has_unclosed_action(self, _db, _line_id):  # type: ignore[no-untyped-def]
         return self.busy
@@ -96,6 +99,15 @@ def setup_driver():  # type: ignore[no-untyped-def]
     line = SimpleNamespace(
         id=7,
         line_code="LINE-1",
+        config={
+            "position_bindings": {
+                "FIVE_RACK": "FIVE_LAYER",
+                "TRANSFER_RACK": "TRANSFER",
+                "RETURN_RACK": "RETURN",
+                "INLET": "IN",
+                "OUTLET": "OUT",
+            }
+        },
         position_bindings={
             "FIVE_RACK": {"location_id": "FIVE-POS"},
             "TRANSFER_RACK": {"location_id": "TRANSFER-POS"},
@@ -126,6 +138,11 @@ def setup_driver():  # type: ignore[no-untyped-def]
         departure_reader=departure_reader,
         passages=SimpleNamespace(has_bin_before_return_buffer=AsyncMock(return_value=False)),
         tasks=tasks,
+        position_service=SimpleNamespace(require_position_capacity=AsyncMock(return_value=1)),
+        rack_cycles=SimpleNamespace(
+            occupied_source_rack_ids=AsyncMock(return_value={"R1"}),
+            fenced_source_rack_ids=AsyncMock(return_value=set()),
+        ),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000001",
     )
     return driver, line, task, positions, plans, flow, creator, departure_reader, departure_scheduler
@@ -135,17 +152,13 @@ def setup_driver():  # type: ignore[no-untyped-def]
 async def test_same_rack_rotates_once_after_closed_face_and_uses_planned_next_face() -> None:
     driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
     driver._passages.has_bin_before_return_buffer.return_value = True
-    assert await driver.advance_in_session(object(), line, task) == 0
-    driver._passages.has_bin_before_return_buffer.return_value = False
     flow.busy = True
     assert await driver.advance_in_session(object(), line, task) == 0
     flow.busy = False
-    flow.created = True
+    flow.created = True  # A new return must never run ahead of the completed face.
     assert await driver.advance_in_session(object(), line, task) == 1
-    assert creator.rotate == []
-    flow.created = False
-
-    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls == []
+    driver._passages.has_bin_before_return_buffer.assert_not_awaited()
     assert creator.rotate[0]["correlation_id"] == "pt:31:source-face:12"
     assert creator.rotate[0]["target_face"] == "270"
     assert creator.rotate[0]["source_evidence_id"] == 51
@@ -248,7 +261,7 @@ async def test_later_rack_starts_when_its_own_ingress_succeeded_even_if_prior_so
 
 
 @pytest.mark.asyncio
-async def test_later_rack_uses_its_own_success_when_prior_projection_is_still_known() -> None:
+async def test_two_current_source_racks_block_progress_even_when_one_projection_is_newer() -> None:
     driver, line, task, positions, _, flow, creator, _, scheduler = setup_driver()
     prior = positions.source
     now = timezone.now_for_db()
@@ -269,10 +282,11 @@ async def test_later_rack_uses_its_own_success_when_prior_projection_is_still_kn
         return {"R1": prior, "R2": current}.get(rack_id)
 
     positions.get = AsyncMock(side_effect=get_projection)
+    positions.count = AsyncMock(return_value=2)
     flow.created = True
 
-    assert await driver.advance_in_session(object(), line, task) == 1
-    assert flow.calls[0]["rack_id"] == "R2"
+    assert await driver.advance_in_session(object(), line, task) == 0
+    assert flow.calls == []
     assert creator.rotate == [] and creator.depart == []
     scheduler.create_in_session.assert_not_awaited()
 
@@ -286,4 +300,125 @@ async def test_later_revision_face_on_current_rack_precedes_other_rack() -> None
 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["allow_inbound"] is True
+    assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capacity", "occupied", "expected"),
+    [(1, set(), ["R1"]), (2, set(), ["R1", "R2"]), (2, {"OLD"}, ["R1"]), (2, {"OLD", "OTHER"}, [])],
+)
+async def test_source_window_fills_stable_plan_order_once_without_target_readiness(capacity, occupied, expected):
+    driver, line, task, positions, plans, _, creator, _, _ = setup_driver()
+    task.last_applied_plan_revision = 2
+    for row in plans.rows:
+        row.plan_revision = 1
+    plans.rows.append(SimpleNamespace(id=14, rack_id="R3", rack_face="90", source_evidence_id=53, plan_revision=2))
+    positions.target = None
+    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=capacity))
+    driver._rack_cycles = SimpleNamespace(
+        occupied_source_rack_ids=AsyncMock(return_value=occupied), fenced_source_rack_ids=AsyncMock(return_value=set())
+    )
+    decided = set()
+    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(side_effect=lambda *a, **k: set(decided)))
+    calls = []
+
+    async def create(_db, **kwargs):
+        calls.append(kwargs)
+        decided.add(kwargs["resource_fence_id"])
+        occupied.add(kwargs["resource_fence_id"])
+
+    creator.create = create
+    assert await driver.advance_in_session(object(), line, task) == len(expected)
+    assert [call["intent"].rack_id for call in calls] == expected
+    assert driver._position_service.require_position_capacity.await_args.kwargs == {
+        "workline_code": "LINE-1",
+        "position_code": "FIVE_LAYER",
+    }
+    assert await driver.advance_in_session(object(), line, task) == 0
+    assert len(calls) == len(expected)
+    for call in calls:
+        assert call["intent"].target_face == "90"
+        assert call["intent"].source_evidence_id == str(call["source_evidence_id"])
+        assert call["intent"].rcs_template_id == sdk.TransportRcsTemplateId.CTU01
+        assert call["intent"].target == sdk.TransportRackPosition("FIVE-POS")
+        assert call["correlation_id"] == f"pt:31:e:{call['source_evidence_id']}:rack:{call['resource_fence_id']}"
+
+
+@pytest.mark.asyncio
+async def test_source_departure_preserves_cycle_ingress_evidence_across_later_plan_faces():
+    driver, line, task, positions, plans, flow, creator, _, _ = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.rows[1].source_evidence_id = 99
+    positions.source.arrival_face = "270"
+    flow.complete.add(("R1", "270"))
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert creator.depart[0]["source_evidence_id"] == 51
+    assert creator.depart[0]["correlation_id"] == "pt:31:source-out:R1"
+
+
+@pytest.mark.asyncio
+async def test_feed_complete_departure_does_not_start_new_return_or_wait_for_passages() -> None:
+    driver, line, task, positions, _, flow, creator, _, _ = setup_driver()
+    positions.source.arrival_face = "270"
+    flow.complete.add(("R1", "270"))
+    flow.created = True
+    driver._passages.has_bin_before_return_buffer.return_value = True
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert len(creator.depart) == 1
+    assert flow.calls == []
+    driver._passages.has_bin_before_return_buffer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rotation_selects_next_unprocessed_face_on_the_same_rack() -> None:
+    driver, line, task, _, plans, flow, creator, _, _ = setup_driver()
+    plans.rows.append(SimpleNamespace(id=14, rack_id="R1", rack_face="180", source_evidence_id=53))
+    flow.complete.add(("R1", "270"))
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert creator.rotate[0]["target_face"] == "180"
+    assert creator.rotate[0]["source_evidence_id"] == 53
+    assert creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_physical_rack_fence_does_not_reclaim_released_capacity_for_another_rack():
+    driver, line, task, positions, plans, _flow, creator, *_ = setup_driver()
+    task.last_applied_plan_revision = 1
+    for row in plans.rows:
+        row.plan_revision = 1
+    positions.target = None
+    driver._rack_cycles.occupied_source_rack_ids.return_value = set()
+    driver._rack_cycles.fenced_source_rack_ids.return_value = {"R1"}
+    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
+    creator.create = AsyncMock()
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert creator.create.await_args.kwargs["resource_fence_id"] == "R2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_count", [0, 1, 2])
+async def test_multiple_source_faces_check_known_cardinality_once_per_wake(current_count):
+    driver, line, task, positions, plans, flow, creator, *_ = setup_driver()
+    positions.count = AsyncMock(return_value=current_count)
+    projections = {
+        f"R{index + 1}": SimpleNamespace(
+            object_id=f"R{index + 1}",
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
+            arrival_face="90",
+            source_transport_task_id=f"arrival-{index + 1}",
+            updated_at=timezone.now_for_db(),
+        )
+        for index in range(current_count)
+    }
+    positions.get = AsyncMock(
+        side_effect=lambda _db, _kind, rack: positions.target if rack == "TARGET" else projections.get(rack)
+    )
+    flow.complete.clear()
+    flow.created = True
+    assert len(plans.rows) == 3  # R1 two faces and R2 one face share the same physical source position.
+    assert await driver.advance_in_session(object(), line, task) == int(current_count == 1)
+    positions.count.assert_awaited_once()
     assert creator.rotate == [] and creator.depart == []

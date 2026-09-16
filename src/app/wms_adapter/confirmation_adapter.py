@@ -31,6 +31,8 @@ from src.app.wms_adapter.outbound_picking.source_empty_wire import SOURCE_EMPTY_
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_adapter.outbound_picking.work_plan_adapter import BinWorkPlanAdapter
 from src.app.wms_adapter.outbound_picking.work_plan_wire import BIN_WORK_PLAN_OPERATION
+from src.app.wms_adapter.return_buffer_drain.adapter import ReturnBufferDrainAdapter
+from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
 
 if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
@@ -46,6 +48,7 @@ class WmsConfirmationAdapter:
         self._arrival_report = ReturnRackArrivalReportAdapter(client)
         self._inbound_batch = BinInboundBatchAdapter(client)
         self._return_batch = BinReturnBatchAdapter(client)
+        self._return_buffer_drain = ReturnBufferDrainAdapter(client)
         self._work_plan = BinWorkPlanAdapter(client)
         self._departure = RackDepartureAdapter(client)
         self._material_decide = PickingMaterialDecideAdapter(client)
@@ -65,6 +68,7 @@ class WmsConfirmationAdapter:
     ) -> WmsDispatchResult:
         adapter: (
             BinInboundBatchAdapter
+            | ReturnBufferDrainAdapter
             | ReturnRackArrivalReportAdapter
             | PickingTaskPrepareAdapter
             | BinWorkPlanAdapter
@@ -83,7 +87,9 @@ class WmsConfirmationAdapter:
                 request_digest=request_digest,
                 observation=observation,
             )
-        if operation == MATERIAL_MOVEMENT_REPORT_OPERATION:
+        if operation == RETURN_BUFFER_DRAIN_OPERATION:
+            adapter = self._return_buffer_drain
+        elif operation == MATERIAL_MOVEMENT_REPORT_OPERATION:
             adapter = self._movement_report
         elif operation == MANUAL_BIN_ADMISSION_OPERATION:
             adapter = self._manual_bin_admission

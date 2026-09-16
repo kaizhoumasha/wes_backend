@@ -235,7 +235,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | `putaway.source.empty_decide@v1` | WES 到 WMS | 来源 Cell形成可靠空取证据 | `200 / DECIDED`：`RETRY \| SOURCE_ABSENT \| WAIT` | §14.5 |
 | `putaway.target_bin.clearance_decide@v1` | WES 到 WMS | 每盘 Fact闭合或不可变来源全部闭合 | `200 / DECIDED`：`KEEP \| RETURN \| WAIT` | §15.1 |
 | `putaway.target_bin.return_batch@v1` | WES 到 WMS | 退料缓存存在实际 Bin候选 | `200 / DECIDED`：`READY \| NO_BATCH \| WAIT` | §15.2 |
-| `workline.return_buffer.drain_rack_decide@v1`（候选，未获批） | WES 到 WMS | 停止或切换已请求，当前面持续 `NO_BATCH` 且需要为当前 `putaway_execution_id` 的 FIFO 选择排空货架面 | 候选：`200 / DECIDED`：`READY \| WAIT` | 共同实施硬门禁 |
+| `workline.return_buffer.drain_rack_decide@v1` | WES 到 WMS | 公共 wire 已冻结；自动上架的停止或切换触发尚未实现 | `200 / DECIDED`：`READY \| WAIT` | 共同实施硬门禁 |
 | `putaway.execution.completion_confirm@v1` | WES 到 WMS | 本地静态成员与逐盘义务全部闭合 | `200 / DECIDED`：`COMPLETED \| NOT_COMPLETED` | §16.1 |
 | `putaway.source_rack.clearance_decide@v1` | WES 到 WMS | 单层货架已无业务成员 | `200 / DECIDED`：四类清场结果 | §16.2 |
 | `putaway.execution.reconciliation_decided@v1` | WMS 到 WES | 上架多对象人工对账已形成权威结果 | `202 / RECEIVED` | §16.3 |
@@ -623,7 +623,7 @@ WMS根据库存主账、剩余可用 Cell和业务策略决定清退；WES不得
 最终结果 `FAILED` 且位置明确时，保留原成员身份及位置证据并进入人工恢复；结果超时或成员位置未知时由 TransportTask 保持
 `RECONCILING` 和资源围栏。两种情况都不得自动回原位、改址或伪造成功。
 
-当前面没有合格空位属于正常 `NO_BATCH`，不是 NG 或 `STATE_CONFLICT`。正常运行时退料 Bin 留在 FIFO，不为自己触发换面或换架；新目标 Bin 供给需求可以驱动货架切换，新面到位后重新评估 FIFO。停止或切换已请求时，目标合同允许 WMS 为排空当前 WorkLine 的既有 FIFO 选择货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 尚未获批。在其严格 DTO、完整货架切换目标和幂等 fixture 冻结前，该路径保持 `ReviewRequired/BLOCKED`：该 WorkLine 保持原插件及配置，工作人员按现场流程停料，不创建货架切换或退料 Transport。
+当前面没有合格空位属于正常 `NO_BATCH`，不是 NG 或 `STATE_CONFLICT`。正常运行时退料 Bin 留在 FIFO，不为自己触发换面或换架；新目标 Bin 供给需求可以驱动货架切换，新面到位后重新评估 FIFO。公共 `workline.return_buffer.drain_rack_decide@v1` 的严格 DTO、identity、WAIT 直接前驱和幂等规则已经冻结，当前生产实现仅支持 `PICKING_TASK_COMPLETED`。自动上架的停止或插件切换触发、场景映射及完整货架切换目标尚未实现，保持 `ReviewRequired/BLOCKED`：该 WorkLine 保持原插件及配置，工作人员按现场流程停料，不创建货架切换或退料 Transport。
 收到 `NO_BATCH` 后，新货架面到位或新事实可提前唤醒；否则 WES等待 `retry_after_ms`到期，再以新的 `operation_id + previous_operation_id` 基于仍在退料缓存的当前候选重新求值。
 
 ### 15.3 NG Bin跨线规则

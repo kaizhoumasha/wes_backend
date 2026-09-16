@@ -208,8 +208,8 @@ class PickingTaskPlanActivationService:
             ):
                 raise ValueError("plan handler returned an intent outside the frozen fact")
             seen.add(intent.rack_id)
-        if seen != set(candidates):
-            raise ValueError("plan handler omitted a pending rack")
+        if fact.target_rack is not None and fact.target_rack.rack_id not in seen:
+            raise ValueError("plan handler omitted a pending target rack")
 
 
 __all__ = [

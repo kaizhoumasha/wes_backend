@@ -138,6 +138,17 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 无论输入是哪种位置，WES 创建任务前都必须已有该货架的可信精确 `RACK_POSITION` 与当前工作面；精确输入还必须与投影完全一致。
 当前位置或当前工作面未知时失败关闭，WES 不从旧数据、目标面或业务流程推断当前事实。
 
+人工拣料 CTU02 的 `SUCCEEDED` 表示旋转后的货架已返回绑定工作位，成功成员、最终精确位置和面向必须与原任务匹配；
+仅接纳或中途旋转不能当作当前架到位。插件按 transport-only `feed_complete` 决定换面时机，Transport 不等待后续扫码或业务完成。
+
+人工拣料绑定 FIVE_LAYER/FIVE_RACK 的 `workline_positions.capacity` 是 CTU01 准入义务窗口，不是同一 RACK_POSITION 的物理货架数量；
+当前权威 active rack 仍最多一个。CTU01 的 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占，CTU02 不释放。
+匹配同 WorkLine、rack_id 和原进场 Evidence 的 CTU03 持久化接纳才释放窗口；`ACCEPTED | SUCCEEDED | FAILED` 可证明已接纳，
+`RECONCILING` 还须非空 `result_deadline_at`，接纳前的 delivery-unknown/conflict 继续占窗。该插件窗口规则不改变通用 Transport 生命周期。
+CTU03 接纳允许补充 CTU01，但不证明原架离位或最终到达；原物理义务与围栏继续由原 Transport 对账。
+RCS 负责 AGV 排队、自主进位和互斥，WES 不建队尾状态；新架只有原 Transport、成员与精确工作位 rack/face 投影共同证明到位才可作业。
+
+
 货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
 人工出库的转运货架默认使用 `F01` 出库。已确认的两类货架推荐规则及各入口实现范围见
 [人工出库货架搬运规则](../integration/manual-outbound-rack-transport.md)。

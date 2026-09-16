@@ -7,7 +7,6 @@ from wes_plugin_sdk import (
     PickingTaskPlanRack,
     PositionBindingSnapshot,
     TransportRackPosition,
-    TransportRackReference,
     TransportRcsTemplateId,
 )
 
@@ -38,117 +37,21 @@ def test_plugin_assembles_plan_applied_handler() -> None:
     assert type(plugin.picking_task_plan_applied_handler) is PickingTaskPlanAppliedHandler
 
 
-def test_plan_rack_transport_intent_preserves_source_evidence_identity() -> None:
-    try:
-        rack = PickingTaskPlanRack("FIVE-1", ("90",), source_evidence_id="101", plan_revision=1)
-    except TypeError as exc:
-        pytest.fail(f"plan rack must accept source evidence identity: {exc}")
-
-    fact = replace(FACT, target_rack=None, pending_bin_source_racks=(rack,))
-
-    result = PickingTaskPlanAppliedHandler()(fact)
-
-    assert result.transports[0].source_evidence_id == "101"
-
-
-def test_plan_handler_preserves_applied_member_order() -> None:
-    try:
-        later = PickingTaskPlanRack("BIN-A", ("90",), "102", plan_revision=2)
-        earlier = PickingTaskPlanRack("BIN-B", ("270",), "101", plan_revision=1)
-    except TypeError as exc:
-        pytest.fail(f"plan rack must expose its first plan revision: {exc}")
-    fact = replace(
-        FACT,
-        target_rack=None,
-        pending_bin_source_racks=(later, earlier),
-    )
-
-    result = PickingTaskPlanAppliedHandler()(fact)
-
-    assert [intent.rack_id for intent in result.transports] == ["BIN-A", "BIN-B"]
-
-
-def test_plan_handler_preserves_first_planned_face() -> None:
-    fact = replace(
-        FACT,
-        target_rack=None,
-        pending_bin_source_racks=(PickingTaskPlanRack("BIN-1", ("Z", "A"), "101", 1),),
-    )
-
-    result = PickingTaskPlanAppliedHandler()(fact)
-
-    assert result.transports[0].target_face == "Z"
-
-
-def test_plan_applied_maps_target_and_all_bin_racks_to_transport_intents() -> None:
+def test_plan_handler_only_creates_target_and_defers_sources_to_batch_driver() -> None:
     result = PickingTaskPlanAppliedHandler()(FACT)
-
-    assert len(result.transports) == 3
-    target, source, queued_source = result.transports
-    assert target.task_id == FACT.task_id
-    assert target.fact_id == FACT.fact_id
-    assert target.source_evidence_id == "100"
+    assert len(result.transports) == 1
+    target = result.transports[0]
     assert target.rack_id == "TRANSFER-1"
-    assert target.source == TransportRackReference("TRANSFER-1")
+    assert target.source_evidence_id == "100"
     assert target.target == TransportRackPosition("TRANSFER-RACK-POSITION")
     assert target.target_face == "90"
     assert target.rcs_template_id is TransportRcsTemplateId.F01
-    assert source.rack_id == "FIVE-1"
-    assert source.source_evidence_id == "101"
-    assert source.source == TransportRackReference("FIVE-1")
-    assert source.target == TransportRackPosition("FIVE-RACK-POSITION")
-    assert source.target_face == "90"
-    assert source.rcs_template_id is TransportRcsTemplateId.CTU01
-    assert queued_source.rack_id == "FIVE-2"
-    assert queued_source.target == source.target
-    assert queued_source.rcs_template_id is TransportRcsTemplateId.CTU01
+    assert PickingTaskPlanAppliedHandler()(replace(FACT, target_rack=None)).transports == ()
 
 
-def test_plan_applied_groups_faces_by_physical_rack_and_preserves_face_values() -> None:
-    fact = replace(
-        FACT,
-        target_rack=None,
-        pending_bin_source_racks=(
-            PickingTaskPlanRack("FIVE-1", ("270", "90"), source_evidence_id="101", plan_revision=1),
-            PickingTaskPlanRack("FIVE-2", (" opaque ",), source_evidence_id="102", plan_revision=2),
-        ),
-    )
-
-    result = PickingTaskPlanAppliedHandler()(fact)
-
-    assert [(item.rack_id, item.target_face) for item in result.transports] == [
-        ("FIVE-1", "270"),
-        ("FIVE-2", " opaque "),
-    ]
-
-
-@pytest.mark.parametrize(
-    "position_bindings",
-    [
-        (POSITIONS[0],),
-        (POSITIONS[1],),
-        (
-            PositionBindingSnapshot("FIVE_RACK", "FIVE-RACK-POSITION", "ZONE"),
-            POSITIONS[1],
-        ),
-    ],
-)
-def test_plan_applied_fails_closed_for_missing_or_invalid_required_position(
-    position_bindings: tuple[PositionBindingSnapshot, ...],
-) -> None:
+def test_plan_handler_requires_target_position() -> None:
     with pytest.raises(ValueError, match="position binding"):
-        PickingTaskPlanAppliedHandler()(replace(FACT, position_bindings=position_bindings))
-
-
-def test_plan_applied_requires_bin_position_when_bin_racks_are_pending() -> None:
-    with pytest.raises(ValueError, match="FIVE_RACK"):
-        PickingTaskPlanAppliedHandler()(
-            replace(
-                FACT,
-                target_rack=None,
-                position_bindings=(POSITIONS[1],),
-            )
-        )
+        PickingTaskPlanAppliedHandler()(replace(FACT, position_bindings=(POSITIONS[0],)))
 
 
 def test_plan_applied_fact_rejects_duplicate_physical_racks() -> None:

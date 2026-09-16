@@ -67,6 +67,10 @@ class _WorkLines:
             },
         )
 
+        self.line.position_bindings = {
+            role: {"location_id": location} for role, location in self.line.config["position_bindings"].items()
+        }
+
     async def get_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return self.line if workline_id == 7 else None
 
@@ -307,13 +311,20 @@ def _setup(
 
 
 @pytest.mark.asyncio
-async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_position_is_confirmed() -> None:
+@pytest.mark.parametrize("different_position_codes", [False, True])
+async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_position_is_confirmed(
+    different_position_codes,
+) -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
     flow, evidences, _, _, _ = _setup(batch_reader=reader, batch_result=result)
+    if different_position_codes:
+        flow._worklines.line.config["position_bindings"] = {
+            role: f"CONFIG-{role}" for role in flow._worklines.line.position_bindings
+        }
     evidence = _wms(30, InboundEvidenceKind.WMS_RESULT, "batch-1", {})
     evidence.operation = "outbound.bin.inbound_batch@v1"
     evidences.rows[30] = evidence
@@ -546,6 +557,7 @@ async def test_transport_outcome_is_consumed_without_material_execution(status: 
             "270",
         ),
         ("MANUAL_PICKING_SOURCE_RACK_OUT", "RACK_MOVE", "ZONE", "WH01", "RACK_POSITION", "WHE0809", None),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", "RACK_MOVE", "ZONE", "WH01", "RACK_POSITION", "WHE0809", None),
         ("MANUAL_PICKING_TRANSFER_RACK_OUT", "RACK_MOVE", "ZONE", "WH05", "RACK_POSITION", "WHE0406", None),
         (
             "MANUAL_PICKING_TRANSFER_RACK_OUT",
@@ -668,8 +680,13 @@ async def test_scan1_rejects_bin_from_a_source_rack_outside_the_task() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scan1_then_scan2_freezes_passage_and_typed_wms_admission() -> None:
+@pytest.mark.parametrize("different_position_codes", [False, True])
+async def test_scan1_then_scan2_freezes_passage_and_typed_wms_admission(different_position_codes) -> None:
     flow, _, passages, commands, admissions = _setup()
+    if different_position_codes:
+        flow._worklines.line.config["position_bindings"] = {
+            role: f"CONFIG-{role}" for role in flow._worklines.line.position_bindings
+        }
 
     assert (await flow.apply_in_session(object(), 1, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert (await flow.apply_in_session(object(), 2, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
@@ -1139,3 +1156,66 @@ async def test_scan4_rescan_preserves_first_fifo_order_and_command() -> None:
     assert passages.rows[0].scan4_evidence_id == 5
     assert passages.rows[0].scan4_command_code == frozen_command
     assert passages.rows[0].return_state == "MOVE_PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["valid", "different_position_codes", "wrong_rack", "no_ingress", "wrong_member", "pending"]
+)
+async def test_drain_return_requires_active_ready_chain_and_its_authoritative_ingress(case):
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="return-1",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
+    if case == "different_position_codes":
+        flow._worklines.line.config["position_bindings"] = {
+            role: f"CONFIG-{role}" for role in flow._worklines.line.position_bindings
+        }
+    drain = SimpleNamespace(
+        result=sdk.ReturnBufferDrainReady("WRONG" if case == "wrong_rack" else "RACK-1", "90")
+        if case != "pending"
+        else None
+    )
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=drain),
+        transport=AsyncMock(return_value=None if case == "no_ingress" else object()),
+        arrival_matches=AsyncMock(return_value=case != "wrong_member"),
+    )
+    # 原 source face 即使存在也不能越过已经打开的 drain 分支。
+    flow._source_racks.has_applied_source_face = AsyncMock(return_value=True)
+    evidence = _wms(31, InboundEvidenceKind.WMS_RESULT, "return-1", {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[31] = evidence
+    applied = await flow.apply_in_session(object(), 31, workline_id=7)
+    assert applied.disposition is (
+        BusinessEvidenceDisposition.APPLIED
+        if case in {"valid", "different_position_codes"}
+        else BusinessEvidenceDisposition.RECONCILING
+    )
+    assert result.apply_return_in_session.await_count == int(case in {"valid", "different_position_codes"})
+    flow._source_racks.has_applied_source_face.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_wms_response_is_validated_and_published_for_plan_wake():
+    flow, evidences, *_ = _setup()
+    evidence = _wms(31, InboundEvidenceKind.WMS_RESULT, "drain-1", {})
+    evidence.operation = "workline.return_buffer.drain_rack_decide@v1"
+    evidences.rows[31] = evidence
+    flow._drain_reader = SimpleNamespace(
+        read=AsyncMock(
+            return_value=(
+                SimpleNamespace(workline_code="LINE-1", plugin_key="manual-picking"),
+                sdk.ReturnBufferDrainOutcome(sdk.ReturnBufferDrainReady("R1", "90")),
+            )
+        )
+    )
+    applied = await flow.apply_in_session(object(), 31, workline_id=7)
+    assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    flow._drain_reader.read.assert_awaited_once()

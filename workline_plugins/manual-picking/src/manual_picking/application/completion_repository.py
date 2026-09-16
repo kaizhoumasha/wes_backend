@@ -74,7 +74,14 @@ class ManualPickingCompletionRepository:
         ):
             return False
         for source in sources:
-            progress = await self._batches.inbound_progress(db, line.id, task.task_id, source.rack_id, source.rack_face)
+            progress = await self._batches.inbound_progress(
+                db,
+                line.id,
+                task.task_id,
+                source.rack_id,
+                source.rack_face,
+                line.position_bindings["INLET"]["location_id"],
+            )
             if progress is not None:
                 if progress.complete:
                     continue

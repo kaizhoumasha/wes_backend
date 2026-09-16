@@ -348,7 +348,7 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
     assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1"]
 
 
-def test_host_rejects_handler_that_omits_a_pending_rack() -> None:
+def test_host_allows_handler_to_defer_pending_source_racks() -> None:
     fact = PickingTaskPlanAppliedFact(
         fact_id="FACT-1",
         evidence_id="12",
@@ -364,8 +364,7 @@ def test_host_rejects_handler_that_omits_a_pending_rack() -> None:
     )
     result = PickingTaskPlanHandlingResult(transports=())
 
-    with pytest.raises(ValueError, match="omitted a pending rack"):
-        _service_type()._validate_result(fact, result)
+    _service_type()._validate_result(fact, result)
 
 
 @pytest.mark.parametrize(
@@ -400,3 +399,27 @@ def test_host_rejects_transport_outside_plan_and_position_contract(
 
     with pytest.raises(ValueError, match="outside the frozen fact"):
         _service_type()._validate_result(fact, PickingTaskPlanHandlingResult(tuple(transports)))
+
+
+@pytest.mark.parametrize("include_target", [True, False])
+def test_host_allows_source_subset_but_requires_pending_target(include_target):
+    fact = PickingTaskPlanAppliedFact(
+        fact_id="FACT-1",
+        evidence_id="12",
+        fact_version="1.0",
+        task_id="TASK-1",
+        plan_revision=2,
+        target_rack=PickingTaskPlanRack("TARGET-1", ("90",), "10", 1),
+        pending_bin_source_racks=(PickingTaskPlanRack("BIN-1", ("90",), "12", 2),),
+        position_bindings=(
+            PositionBindingSnapshot("TARGET_SLOT", "TARGET-POS", "RACK_POSITION"),
+            PositionBindingSnapshot("SOURCE_SLOT", "SOURCE-POS", "RACK_POSITION"),
+        ),
+    )
+    target, source = _Handler()(fact).transports
+    result = PickingTaskPlanHandlingResult((target,) if include_target else (source,))
+    if include_target:
+        _service_type()._validate_result(fact, result)
+    else:
+        with pytest.raises(ValueError, match="omitted a pending target"):
+            _service_type()._validate_result(fact, result)

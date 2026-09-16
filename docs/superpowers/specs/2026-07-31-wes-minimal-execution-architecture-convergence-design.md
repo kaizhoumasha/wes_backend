@@ -897,7 +897,7 @@ Phase 8 粗分逐盘入库插件已从代码库移除，历史合同已移出项
    只冻结决定；Transport 确定成功且位置保存后才完成批次。这个流程不建立缓存位预留、租约或基础层业务锁。
    退箱目标只能位于当前 CTU 工作位的 `rack_id + rack_face`，但不要求是原货架、原面或原储位。`return_batch` 自身不触发换面或换架；
    当前面暂无合格空位是正常等待，不是 `STATE_CONFLICT` 或 NG。CTU 仍携带 Bin、存在未结束搬运或位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面、换架或让货架离场。
-   正常运行时只有新入站需求驱动货架切换。停止或切换已请求时停止接纳新任务和新 Bin，保持当前插件与资源绑定；目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面，但共同排空货架面决定 wire 获批前该路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退箱 Transport。全部清场义务闭合后才允许停用或切换插件。
+   正常运行时只有新入站需求驱动货架切换。公共排空货架面决定 wire 已冻结，当前生产实现仅支持 `PICKING_TASK_COMPLETED`；停止或切换已请求时停止接纳新任务和新 Bin，保持当前插件与资源绑定，其场景映射和完整搬运目标尚未实现，仍为 `ReviewRequired/BLOCKED`，不得创建该场景的货架切换或退箱 Transport。全部清场义务闭合后才允许停用或切换插件。
 4. 设备取盘并扫描完整六合一码后，WMS 返回业务资格、稳定异常分类和精确目标 SLOT；目标需要换面或换架时，同一终局
    `ACCEPT` 还返回完整目标准备方案。WES 不选料、不计算转运货架容量，也不自行决定换面或换架。
 5. 目标架、退料架和五层货架允许并行调度。退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流。
@@ -1079,8 +1079,8 @@ Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件
   已被设备或 Transport 接纳的动作只接收和保存确定结果。查询层可显示 `WAITING_WMS`，底层仍使用现有等待外部语义。
 - WES 进程重启不同于 WMS 暂不可用：保留证据、停止自动物理编排，可靠义务闭合且现场清线后重新校验并启动 WorkLine。
 
-停线或切换时排空既有 FIFO 还缺少共同的 WMS→WES 货架面决定合同，这是三个插件的实施硬门禁。候选 operation 为
-`workline.return_buffer.drain_rack_decide@v1`，但其字面量和严格 DTO 尚未获批，不得实现。联合评审至少必须冻结：
+共同的 `workline.return_buffer.drain_rack_decide@v1` operation 字面量、严格 DTO、identity、WAIT 直接前驱和幂等规则已经冻结；当前生产实现仅支持
+`PICKING_TASK_COMPLETED`。自动上架及其他插件的停线或切换触发、场景映射和完整搬运目标仍是实施硬门禁：
 
 | 合同要素 | 最小要求 |
 | --- | --- |
@@ -1091,8 +1091,8 @@ Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件
 | 等待 | `WAIT + reason_code + retry_after_ms`；WES 不自选货架、货架面、空位或替代 Transport |
 | 幂等 | 同一 `operation_id`、正文和时间戳重试返回首次完整响应；同 ID 不同正文冲突；Transport 仅在决定与当前物理门禁仍一致时创建一次 |
 
-在该 operation、严格 Schema、正反 fixture 和联合审批证据冻结前，停线/切换时遇到当前面持续 `NO_BATCH` 的 FIFO 排空为
-`ReviewRequired/BLOCKED`：保留当前插件与资源绑定，停止新任务和新 Bin，不创建货架切换或退箱 Transport，也不得宣称能够自动清场。
+自动上架及其他插件在停线/切换时遇到当前面持续 `NO_BATCH` 的 FIFO 排空仍为 `ReviewRequired/BLOCKED`：保留当前插件与资源绑定，
+停止新任务和新 Bin，不创建该场景的货架切换或退箱 Transport，也不得宣称能够自动清场。
 
 ## 13. 当前系统收敛范围
 

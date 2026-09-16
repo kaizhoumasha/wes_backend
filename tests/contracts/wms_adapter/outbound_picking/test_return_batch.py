@@ -188,10 +188,3 @@ async def test_workline_owner_matches_frozen_wire_identity(case, expected):
     worklines.get_for_update.return_value = workline
     owner = ReturnBatchOwnerService(worklines=worklines)
     assert await owner.validate_owner(object(), workline_id=7, request_payload=request()) is expected
-
-
-def test_return_batch_ignores_retired_epoch_wire_field():
-    body = request()
-    body["data"]["line_run_epoch_id"] = "EPOCH-1"
-    parsed = parse_bin_return_batch_request(body)
-    assert "line_run_epoch_id" not in parsed.model_dump(mode="json")["data"]

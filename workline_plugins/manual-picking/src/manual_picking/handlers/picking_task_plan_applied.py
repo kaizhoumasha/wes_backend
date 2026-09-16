@@ -10,7 +10,7 @@ from wes_plugin_sdk import (
     TransportRcsTemplateId,
 )
 
-from manual_picking.definition import FIVE_RACK, TRANSFER_RACK
+from manual_picking.definition import TRANSFER_RACK
 
 
 def _required_rack_position(
@@ -47,27 +47,6 @@ class PickingTaskPlanAppliedHandler:
                 )
             )
 
-        ordered_bin_racks = fact.pending_bin_source_racks
-        bin_source_target = (
-            _required_rack_position(fact.position_bindings, position_role=FIVE_RACK.slot_key)
-            if ordered_bin_racks
-            else None
-        )
-        if bin_source_target is not None:
-            transports.extend(
-                PickingTaskRackTransportIntent(
-                    task_id=fact.task_id,
-                    fact_id=fact.fact_id,
-                    source_evidence_id=rack.source_evidence_id,
-                    position_role=FIVE_RACK.slot_key,
-                    rack_id=rack.rack_id,
-                    source=TransportRackReference(rack.rack_id),
-                    target=bin_source_target,
-                    target_face=rack.rack_faces[0],
-                    rcs_template_id=TransportRcsTemplateId.CTU01,
-                )
-                for rack in ordered_bin_racks
-            )
         return PickingTaskPlanHandlingResult(transports=tuple(transports))
 
 

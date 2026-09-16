@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from wes_plugin_sdk import wms_operations
+from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
 
 from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, TRANSFER_RACK
 from manual_picking.handlers import Scan1Handler, Scan2Handler, Scan3Handler, Scan4Handler
@@ -21,15 +21,17 @@ from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
-from src.app.workline.installed_plugin import parse_device_bindings, parse_position_bindings
+from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
+from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
@@ -63,7 +65,11 @@ class ManualPickingScanFlow:
         position_reader: Any = position_projection_repository,
         batch_reader: Any = None,
         batch_result: Any = None,
+        drain_repository: Any = None,
+        drain_reader: Any = None,
     ) -> None:
+        self._drains = drain_repository
+        self._drain_reader = drain_reader
         self._commands = commands
         self._admissions = admissions
         self._evidences = evidences
@@ -99,6 +105,20 @@ class ManualPickingScanFlow:
             if evidence.operation in {BIN_INBOUND_BATCH_OPERATION, BIN_RETURN_BATCH_OPERATION}:
                 result = await self._apply_batch_result(db, evidence, workline)
                 role = "WMS_BATCH"
+            elif evidence.operation == RETURN_BUFFER_DRAIN_OPERATION:
+                if self._drain_reader is None:
+                    return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
+                intent, outcome = await self._drain_reader.read(db, evidence, workline_id=workline_id)
+                result = (
+                    "DRAIN_RECEIVED"
+                    if (
+                        intent.workline_code == workline.line_code
+                        and intent.plugin_key == workline.plugin_key
+                        and isinstance(outcome.result, (ReturnBufferDrainReady, ReturnBufferDrainWait))
+                    )
+                    else None
+                )
+                role = "WMS_DRAIN"
             elif evidence.operation == RACK_DEPARTURE_OPERATION:
                 result = "DEPARTURE_RECEIVED"
                 role = "WMS_DEPARTURE"
@@ -132,14 +152,30 @@ class ManualPickingScanFlow:
     async def _apply_batch_result(self, db: Any, evidence: Any, workline: Any) -> str | None:  # noqa: PLR0911
         if self._batch_reader is None or self._batch_result is None:
             return None
-        positions = parse_position_bindings(workline.config, DEFINITION.position_slots)
+        positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
         if evidence.operation == BIN_RETURN_BATCH_OPERATION:
             intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
-            if intent.workline_code != workline.line_code or not await self._source_racks.has_applied_source_face(
+            if intent.workline_code != workline.line_code:
+                return None
+            source = await self._positions.get(db, "RACK", intent.rack_id)
+            drain = await self._drains.current(db, workline.id) if self._drains is not None else None
+            if drain is not None:
+                if not isinstance(drain.result, ReturnBufferDrainReady) or (
+                    drain.result.rack_id,
+                    drain.result.rack_face,
+                ) != (intent.rack_id, intent.rack_face):
+                    return None
+                ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP)
+                if (
+                    source is None
+                    or ingress is None
+                    or not await self._drains.arrival_matches(db, ingress, source, intent.rack_id, intent.rack_face)
+                ):
+                    return None
+            elif not await self._source_racks.has_applied_source_face(
                 db, workline.id, intent.rack_id, intent.rack_face
             ):
                 return None
-            source = await self._positions.get(db, "RACK", intent.rack_id)
             readiness = await self._position_readiness(
                 db, source, workline.id, "RACK_POSITION", positions[FIVE_RACK.slot_key], intent.rack_face
             )
@@ -198,6 +234,8 @@ class ManualPickingScanFlow:
                 SOURCE_RACK_ROTATE_STEP,
                 SOURCE_RACK_OUT_STEP,
                 TRANSFER_RACK_OUT_STEP,
+                DRAIN_RACK_IN_STEP,
+                DRAIN_RACK_OUT_STEP,
             }
         ):
             return None
@@ -233,7 +271,7 @@ class ManualPickingScanFlow:
                 or members[0].get("object_id") != payload["rack_id"]
                 or not matching_position
                 or (
-                    payload.get("step") not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP}
+                    payload.get("step") not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP}
                     and members[0].get("arrival_face") != task.request_json.get("target_face")
                 )
             ):
@@ -296,7 +334,7 @@ class ManualPickingScanFlow:
         raw = event.data.get("bin_code")
         raw_code = raw if isinstance(raw, str) else None
         if role == "SCAN1":
-            positions = parse_position_bindings(workline.config, DEFINITION.position_slots)
+            positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
             result = await self._apply_scan1(db, evidence, workline_id, bindings, positions, raw_code)
         elif role == "SCAN2":
             result = await self._apply_scan2(db, evidence, workline_id, bindings, raw_code, event.timestamp)
