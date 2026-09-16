@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.1.0] - 2026-09-16
+
+### Fixed
+
+- 五层来源货架权威到位后即可请求并执行 `inbound_batch` 首段投料运输，不再等待目标货架到位；料箱到达工作位后仍由 SCAN1 门禁等待目标货架就绪。
+
 ## [0.47.0.0] - 2026-09-16
 
 ### Added
