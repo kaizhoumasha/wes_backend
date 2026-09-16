@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0.0] - 2026-09-16
+
+### Added
+
+- WorkLine 运维端可通过 `plane.scene.v2` 查看按位置槽位和设备角色分组的资源、实际绑定状态及孤儿绑定诊断。
+- WorkLine 运维端可通过 `plane.snapshot.v2` 和 `active-objects/v2` 只读查看资源活动数、最高冲突状态、未映射对象、来源状态与版本一致性标识。
+- 新增资源活动视图复用现有 Plane/Active Objects 权限与 Plane 读取审计，不暴露原始插件配置。
+
 ## [0.45.0.0] - 2026-09-14
 
 ### Added
