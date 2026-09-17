@@ -45,9 +45,7 @@ def decode_outcome(payload: object) -> sdk.PickingMaterialOutcome:
             if isinstance(data.target_preparation, wire.TargetRotate):
                 preparation = sdk.PickingTargetRotate()
             elif isinstance(data.target_preparation, wire.TargetReplace):
-                preparation = sdk.PickingTargetReplace(
-                    sdk.TransportRackPosition(data.target_preparation.rack_destination.location_code)
-                )
+                preparation = sdk.PickingTargetReplace()
             target = data.target_locator
             return sdk.PickingMaterialOutcome(
                 sdk.PickingMaterialAccept(

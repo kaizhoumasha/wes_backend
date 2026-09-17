@@ -25,6 +25,19 @@ class RackDepartureRepository:
             .limit(1)
         )
 
+    async def latest_for_workline(self, db: AsyncSession, workline_id: int, rack_id: str) -> WmsConfirmation | None:
+        columns = cast("Any", WmsConfirmation).__table__.c
+        return await db.scalar(
+            select(WmsConfirmation)
+            .where(
+                columns.workline_id == workline_id,
+                columns.operation == RACK_DEPARTURE_OPERATION,
+                columns.request_payload["data"]["rack_id"].as_string() == rack_id,
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
+        )
+
     async def evidence(self, db: AsyncSession, evidence_id: int | None) -> InboundEvidence | None:
         return await db.get(InboundEvidence, evidence_id) if evidence_id is not None else None
 

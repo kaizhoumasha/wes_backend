@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from src.app.wms_adapter.outbound_picking.cancel_wire import PICKING_TASK_CANCEL_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
 from src.app.wms_adapter.outbound_picking.queue_changed_wire import PICKING_TASK_QUEUE_CHANGED_OPERATION
 from src.app.wms_adapter.outbound_picking.wire import (
@@ -41,10 +42,11 @@ PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA = _closed(
         "operation": {"type": "string", "enum": [PICKING_TASK_ISSUED_OPERATION]},
         "timestamp": _TIMESTAMP,
         "data": _closed(
-            ["task_id", "task_type", "queue_revision", "dispatch_sequence"],
+            ["task_id", "task_type", "workline_code", "queue_revision", "dispatch_sequence"],
             {
                 "task_id": _BUSINESS_IDENTIFIER,
                 "task_type": {"type": "string", "enum": ["MANUAL", "AUTO"]},
+                "workline_code": _BUSINESS_IDENTIFIER,
                 "queue_revision": {"type": "integer", "minimum": 1, "maximum": 1},
                 "dispatch_sequence": _POSITIVE_INTEGER,
                 "not_before": _NONNEGATIVE_TIMESTAMP,
@@ -56,6 +58,7 @@ PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA = _closed(
 __all__ = [
     "MANUAL_BIN_COMPLETED_EVENT_EXAMPLE",
     "MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA",
+    "PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA",
     "PICKING_TASK_EVENT_EXAMPLES",
     "PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA",
     "PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA",
@@ -65,10 +68,67 @@ __all__ = [
 
 # 计划增量保持独立 schema，公开 Event route 负责静态接入。
 _RACK_FACE = {"type": "string", "minLength": 1, "maxLength": 10, "pattern": r"^[^\u0000\uD800-\uDFFF]+$"}
+_CANCEL_BIN_SOURCE_RACK = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["rack_id", "rack_faces"],
+    "properties": {
+        "rack_id": _BUSINESS_IDENTIFIER,
+        "rack_faces": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _RACK_FACE},
+    },
+}
+_CANCEL_DIRECT_PICK_SOURCE = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["rack_id", "rack_face", "slot_ids"],
+    "properties": {
+        "rack_id": _BUSINESS_IDENTIFIER,
+        "rack_face": _RACK_FACE,
+        "slot_ids": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _BUSINESS_IDENTIFIER},
+    },
+}
+PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA = _closed(
+    ["operation_id", "operation", "timestamp", "data"],
+    {
+        "operation_id": _UUIDV7,
+        "operation": {"type": "string", "enum": [PICKING_TASK_CANCEL_OPERATION]},
+        "timestamp": _NONNEGATIVE_TIMESTAMP,
+        "data": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id", "cancel_scope"],
+                    "properties": {
+                        "task_id": _BUSINESS_IDENTIFIER,
+                        "cancel_scope": {"type": "string", "enum": ["TASK"]},
+                    },
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["task_id", "cancel_scope"],
+                    "properties": {
+                        "task_id": _BUSINESS_IDENTIFIER,
+                        "cancel_scope": {"type": "string", "enum": ["PLAN_MEMBERS"]},
+                        "bin_source_racks": {"type": "array", "minItems": 1, "items": _CANCEL_BIN_SOURCE_RACK},
+                        "direct_pick_sources": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": _CANCEL_DIRECT_PICK_SOURCE,
+                        },
+                    },
+                    "anyOf": [{"required": ["bin_source_racks"]}, {"required": ["direct_pick_sources"]}],
+                },
+            ],
+            "discriminator": {"propertyName": "cancel_scope"},
+        },
+    },
+)
 _PLAN_RACK = _closed(["rack_id", "rack_face"], {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": _RACK_FACE})
 _PLAN_BIN_SOURCE_RACK = _closed(
-    ["rack_id", "rack_face"],
-    {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": {"type": "array", "minItems": 1, "items": _RACK_FACE}},
+    ["rack_id", "rack_faces"],
+    {"rack_id": _BUSINESS_IDENTIFIER, "rack_faces": {"type": "array", "minItems": 1, "items": _RACK_FACE}},
 )
 _PLAN_SLOT = _closed(
     ["type", "rack_id", "rack_face", "slot_id"],
@@ -259,6 +319,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
             "data": {
                 "task_id": "PICK-SWAGGER-001",
                 "task_type": "MANUAL",
+                "workline_code": "LINE3",
                 "queue_revision": 1,
                 "dispatch_sequence": 10,
             },
@@ -283,7 +344,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
                 "task_id": "PICK-SWAGGER-001",
                 "plan_revision": 1,
                 "target_rack": {"rack_id": "TARGET-RACK-01", "rack_face": "A"},
-                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["90", "270"]}],
+                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_faces": ["90", "270"]}],
             },
         },
     },
@@ -309,11 +370,23 @@ PICKING_TASK_EVENT_EXAMPLES = {
             },
         },
     },
+    "05_cancel_members": {
+        "summary": "5. 按计划成员取消尚未继续执行的来源",
+        "value": {
+            "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804de",
+            "operation": PICKING_TASK_CANCEL_OPERATION,
+            "timestamp": 1786060804000,
+            "data": {
+                "task_id": "PICK-SWAGGER-001",
+                "cancel_scope": "PLAN_MEMBERS",
+                "bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_faces": ["270"]}],
+            },
+        },
+    },
 }
 
 # 仅用于 Swagger 展示；不是运行时 operation 分派表。
 _PICKING_TARGET = {"type": "RACK_SLOT", "rack_id": "TARGET-RACK-01", "rack_face": "A", "slot_id": "A-05"}
-_RACK_DESTINATION = {"type": "RACK_POSITION", "location_code": "RACK-PARK-01"}
 PICKING_TASK_WMS_RESPONSE_DATA = {
     "outbound.picking_task.completion_confirm@v1": [
         (200, "DECIDED", {"result": "COMPLETED"}),
@@ -373,7 +446,7 @@ PICKING_TASK_WMS_RESPONSE_DATA = {
                 "result": "ACCEPT",
                 "target_locator": _PICKING_TARGET,
                 "next_source_action": "CONTINUE",
-                "target_preparation": {"mode": "REPLACE", "rack_destination": _RACK_DESTINATION},
+                "target_preparation": {"mode": "REPLACE"},
             },
         ),
         (

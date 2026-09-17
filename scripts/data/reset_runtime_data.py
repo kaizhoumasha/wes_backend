@@ -1,11 +1,13 @@
-"""清理 WES 运行时/调试数据,保留主数据。
+"""清理 WES PostgreSQL 与 Redis 运行时/调试数据,保留主数据。
 
 用途:开发/联调环境把历次跑流程残留的运行时数据(session/inbox/outbox/command/
 timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只有主数据"状态,
 方便重新触发 START → SCAN_COMPLETED 观察落库。
 
 设计约定:
-- 固定 schema-qualified 运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
+- 固定 schema-qualified 过程表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
+- 默认清理当前 PostgreSQL 数据库的 Redis 缓存命名空间，以及专用 Celery broker/result DB；
+  ``auth:*`` 认证会话不在缓存命名空间内，默认保留。
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
 - ``--transport-task-id`` 按 ID 清理一个 TransportTask 的完整本地 Transport 链路，
@@ -22,6 +24,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 
     uv run python scripts/data/reset_runtime_data.py            # dry-run 预览
     uv run python scripts/data/reset_runtime_data.py --yes      # 真正清空
+    uv run python scripts/data/reset_runtime_data.py --yes --no-reset-redis
     uv run python scripts/data/reset_runtime_data.py --transport-task-id transport-... --yes
     bash scripts/data/reset_runtime_data.sh --yes               # wrapper 等价
 """
@@ -39,7 +42,9 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
+from redis.asyncio import Redis
 from sqlalchemy import text
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +61,7 @@ from src.core.outbound_http.contracts import (
 )
 from src.core.outbound_http.factory import build_outbound_http_transport
 from src.database.db import close_db, get_db_context, init_db
+from src.database.redis_namespace import database_redis_cache_prefix
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +83,14 @@ def _biz(table: str) -> TableTarget:
     return TableTarget("wes_biz", table)
 
 
+def _runtime(table: str) -> TableTarget:
+    return TableTarget("wes_runtime", table)
+
+
+def _sys(table: str) -> TableTarget:
+    return TableTarget("wes_sys", table)
+
+
 # 运行时/调试数据表。这些表记录的是"跑流程产生的事实",清空后只要主数据在,
 # 就能重新跑。退役表不再作为 reset target。
 RUNTIME_TABLES: tuple[TableTarget, ...] = (
@@ -85,6 +99,17 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "callback_logs",
             "device_commands",
+            "device_status_observations",
+            "direct_pick_executions",
+            "inbound_evidence_conflicts",
+            "inbound_evidences",
+            "manual_picking_passages",
+            "material_executions",
+            "material_units",
+            "object_transition_events",
+            "picking_task_bin_source_racks",
+            "picking_tasks",
+            "position_projections",
             "resource_bin_cell_occupancies",
             "resource_bin_content_snapshot_items",
             "resource_bin_content_snapshots",
@@ -93,10 +118,29 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "resource_rack_bin_mounts",
             "resource_rack_placements",
             "resource_state_events",
+            "runtime_location_events",
+            "transport_decision_bindings",
+            "wms_confirmations",
             "workline_sessions",
             "workline_timelines",
         )
     ),
+    *(
+        _runtime(table)
+        for table in (
+            "transport_callback_receipts",
+            "transport_debug_position_projections",
+            "transport_debug_run_steps",
+            "transport_debug_runs",
+            "transport_evidence",
+            "transport_members",
+            "transport_tasks",
+            "workline_integration_run_steps",
+            "workline_integration_runs",
+            "workline_runtime_status_projections",
+        )
+    ),
+    _sys("api_access_logs"),
 )
 
 # 主数据/字典表白名单:绝对不能清。列出来既是文档,也用于自检——
@@ -112,6 +156,14 @@ MASTER_DATA_TABLES: frozenset[TableTarget] = frozenset(
         _biz("resource_bins"),
         _biz("resource_bin_types"),
         _biz("resource_bin_slot_templates"),
+        _sys("alembic_version"),
+        _sys("api_app_permissions"),
+        _sys("api_applications"),
+        _sys("permissions"),
+        _sys("role_permissions"),
+        _sys("roles"),
+        _sys("user_roles"),
+        _sys("users"),
     }
 )
 
@@ -128,6 +180,7 @@ class ResetSummary:
     reset_worklines: int = 0
     included_audit_logs: bool = False
     mock_wms_reset: dict[str, Any] | None = None
+    redis: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -147,6 +200,17 @@ class TransportTaskResetSummary:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class RedisTarget:
+    """一个不暴露凭据的 Redis 清理目标。"""
+
+    roles: tuple[str, ...]
+    url: str = field(repr=False, compare=False)
+    database: int
+    endpoint: str
+    pattern: str
+
+
 def _qualified(target: TableTarget) -> str:
     """返回只由代码内常量构造的 schema-qualified identity。"""
     return target.identity
@@ -161,6 +225,86 @@ def _mock_wms_reset_url() -> str:
     if explicit:
         return explicit.rstrip("/").removesuffix("/debug/reset") + "/debug/reset"
     return "http://localhost:8011/debug/reset"
+
+
+def _redis_database(url: str) -> int:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"redis", "rediss"}:
+        raise RuntimeError(f"不支持的 Redis URL scheme: {parsed.scheme or '<empty>'}")
+    path = parsed.path.removeprefix("/")
+    if not path:
+        return 0
+    try:
+        database = int(path)
+    except ValueError as exc:
+        raise RuntimeError("Redis URL database 必须是非负整数") from exc
+    if database < 0:
+        raise RuntimeError("Redis URL database 必须是非负整数")
+    return database
+
+
+def _redis_targets() -> tuple[RedisTarget, ...]:
+    """冻结 Redis 过程数据范围；DB 0 只清当前 PostgreSQL 数据库命名空间。"""
+    cache_pattern = f"{database_redis_cache_prefix(settings.POSTGRES_DB)}:*"
+    configured = (
+        ("application-cache", settings.REDIS_URL, cache_pattern),
+        ("celery-broker", settings.CELERY_BROKER, "*"),
+        ("celery-result-backend", settings.CELERY_BACKEND, "*"),
+    )
+    merged: dict[tuple[str, str | None, int | None, str | None, int], dict[str, Any]] = {}
+    for role, url, pattern in configured:
+        parsed = urlsplit(url)
+        database = _redis_database(url)
+        identity = (parsed.scheme, parsed.hostname, parsed.port, parsed.username, database)
+        target = merged.setdefault(identity, {"roles": [], "url": url, "patterns": set()})
+        target["roles"].append(role)
+        target["patterns"].add(pattern)
+
+    targets: list[RedisTarget] = []
+    for identity, target in merged.items():
+        scheme, host, port, _, database = identity
+        patterns = target["patterns"]
+        pattern = "*" if "*" in patterns else next(iter(patterns))
+        targets.append(
+            RedisTarget(
+                roles=tuple(sorted(target["roles"])),
+                url=target["url"],
+                database=database,
+                endpoint=f"{scheme}://{host or '<unknown>'}:{port or 6379}/{database}",
+                pattern=pattern,
+            )
+        )
+    return tuple(sorted(targets, key=lambda target: (target.endpoint, target.roles)))
+
+
+async def reset_redis_process_data(*, apply: bool) -> list[dict[str, Any]]:
+    """扫描并按冻结范围删除 Redis 过程键；认证会话不在 DB 0 命名空间内。"""
+    summaries: list[dict[str, Any]] = []
+    for target in _redis_targets():
+        client = Redis.from_url(
+            target.url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=5,
+        )
+        try:
+            keys = [str(key) async for key in client.scan_iter(match=target.pattern, count=500)]
+            deleted = 0
+            if apply:
+                for offset in range(0, len(keys), 500):
+                    deleted += int(await client.delete(*keys[offset : offset + 500]))
+            summaries.append(
+                {
+                    "roles": list(target.roles),
+                    "endpoint": target.endpoint,
+                    "pattern": target.pattern,
+                    "keys_before": len(keys),
+                    "deleted": deleted,
+                }
+            )
+        finally:
+            await client.aclose()
+    return summaries
 
 
 async def reset_mock_wms() -> dict[str, Any]:
@@ -381,6 +525,7 @@ async def reset_runtime_data(
     apply: bool,
     include_audit_logs: bool,
     reset_mocks: bool,
+    reset_redis: bool = False,
 ) -> ResetSummary:
     """清空运行时数据并重置投影字段。``apply=False`` 时只统计不写。"""
     _validate_table_sets()
@@ -398,6 +543,9 @@ async def reset_runtime_data(
         qualified_name = _qualified(target)
         counts_before[qualified_name] = await _row_count(db, qualified_name)
 
+    if not apply and reset_redis:
+        summary.redis = await reset_redis_process_data(apply=False)
+
     if apply:
         # Mock WMS 必须先于任何 WES DB mutation:它记录的"货架已到工位"事实是
         # WES 出料分配的外部输入。失败时 fail closed；仅 --no-reset-mocks 可跳过。
@@ -406,6 +554,14 @@ async def reset_runtime_data(
                 summary.mock_wms_reset = await reset_mock_wms()
             except Exception as exc:
                 raise RuntimeError(f"Mock WMS 重置失败,数据库未清理: {exc}") from exc
+
+        # Redis 先清理，避免旧 Celery 消息在数据库 reset 提交后重新投递过期流程。
+        # Redis 仅承载可重建缓存、broker 和 result backend；失败时数据库尚未修改。
+        if reset_redis:
+            try:
+                summary.redis = await reset_redis_process_data(apply=True)
+            except Exception as exc:
+                raise RuntimeError(f"Redis 过程数据清理失败,数据库未清理: {exc}") from exc
 
         try:
             # RESTART IDENTITY 重置序列;CASCADE 处理 FK 依赖(运行时表互相引用)。
@@ -472,6 +628,12 @@ def _format_summary(summary: ResetSummary) -> str:
                 lines.append(
                     f"Mock WMS 重置失败: {summary.mock_wms_reset.get('error')}",
                 )
+    if summary.redis:
+        lines.append("\nRedis 过程数据:")
+        for target in summary.redis:
+            roles = ",".join(target["roles"])
+            action = target["deleted"] if summary.mode == "apply" else target["keys_before"]
+            lines.append(f"  {roles:<38} {target['endpoint']} pattern={target['pattern']} keys={action}")
     return "\n".join(lines)
 
 
@@ -514,6 +676,13 @@ async def _amain() -> int:
         default=True,
         help="全量模式同时重置 Mock WMS 到初始状态(默认开,--no-reset-mocks 关闭；定向模式忽略)。"
         "Mock WMS 有状态,不重置则连续重跑会撞 TARGET_POSITION_OCCUPIED。",
+    )
+    parser.add_argument(
+        "--reset-redis",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="全量模式清理当前数据库缓存命名空间及专用 Celery broker/result Redis DB"
+        "(默认开,--no-reset-redis 关闭；定向模式忽略)",
     )
     parser.add_argument(
         "--force",
@@ -562,6 +731,7 @@ async def _amain() -> int:
                     apply=args.yes,
                     include_audit_logs=args.include_audit_logs,
                     reset_mocks=args.reset_mocks,
+                    reset_redis=args.reset_redis,
                 )
             if not args.yes:
                 await db.rollback()

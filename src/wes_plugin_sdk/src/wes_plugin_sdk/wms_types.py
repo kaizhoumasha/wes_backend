@@ -370,7 +370,7 @@ class BinWorkPlanWait:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RackDepartureIntent:
     operation_id: str
-    task_id: str
+    task_id: str | None
     rack_id: str
     current_location: TransportRackPosition
     current_face: str
@@ -379,9 +379,13 @@ class RackDepartureIntent:
         from .decisions import TransportRackPosition
 
         _ = _required(self.operation_id, "operation_id")
-        for name in ("task_id", "rack_id"):
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
-                raise ValueError(f"{name} must be a business identifier")
+        if (
+            self.task_id is not None
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None
+        ):
+            raise ValueError("task_id must be a business identifier or None")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.rack_id, "rack_id")) is None:
+            raise ValueError("rack_id must be a business identifier")
         if type(self.current_location) is not TransportRackPosition:
             raise TypeError("departure requires TransportRackPosition")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", self.current_location.location_code) is None:
@@ -480,15 +484,7 @@ class PickingTargetRotate:
 
 @dataclass(frozen=True, slots=True)
 class PickingTargetReplace:
-    rack_destination: TransportRackPosition
-
-    def __post_init__(self) -> None:
-        from .decisions import TransportRackPosition
-
-        if type(self.rack_destination) is not TransportRackPosition:
-            raise TypeError("rack_destination requires TransportRackPosition")
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", self.rack_destination.location_code) is None:
-            raise ValueError("rack_destination must use a business identifier")
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,41 +687,49 @@ class MaterialMovementReportIntent:
             raise ValueError("occurred_at must be nonnegative int64 milliseconds")
 
 
-type ReturnBufferDrainReason = Literal["PICKING_TASK_COMPLETED", "WORKLINE_STOPPING", "PLUGIN_SWITCHING"]
+@dataclass(frozen=True, slots=True)
+class RackFaceSequence:
+    rack_id: str
+    rack_faces: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.rack_id, "rack_id")) is None:
+            raise ValueError("rack_id must be a business identifier")
+        if type(self.rack_faces) is not tuple:
+            raise TypeError("rack_faces must be an immutable tuple")
+        if not self.rack_faces:
+            raise ValueError("rack_faces must not be empty")
+        for face in self.rack_faces:
+            validate_opaque_face(face, "rack_faces")
+        if len(self.rack_faces) != len(set(self.rack_faces)):
+            raise ValueError("rack_faces must not contain duplicates")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReturnBufferDrainIntent:
     operation_id: str
     workline_code: str
-    plugin_key: str
-    drain_reason: ReturnBufferDrainReason
-    return_candidates: tuple[BinReturnCandidate, ...]
-    previous_operation_id: str | None = None
+    required_slot_count: int
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
-        for name in ("workline_code", "plugin_key"):
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
-                raise ValueError(f"{name} must be a business identifier")
-        if self.drain_reason not in ("PICKING_TASK_COMPLETED", "WORKLINE_STOPPING", "PLUGIN_SWITCHING"):
-            raise ValueError("unsupported drain reason")
-        if self.previous_operation_id is not None:
-            _ = _required(self.previous_operation_id, "previous_operation_id")
-            if self.previous_operation_id == self.operation_id:
-                raise ValueError("drain reevaluation requires a new identity")
-        _return_candidates(self.return_candidates)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.workline_code, "workline_code")) is None:
+            raise ValueError("workline_code must be a business identifier")
+        _positive(self.required_slot_count, "required_slot_count")
 
 
 @dataclass(frozen=True, slots=True)
 class ReturnBufferDrainReady:
-    rack_id: str
-    rack_face: str
+    racks: tuple[RackFaceSequence, ...]
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.rack_id, "rack_id")) is None:
-            raise ValueError("rack_id must be a business identifier")
-        validate_opaque_face(self.rack_face, "rack_face")
+        if type(self.racks) is not tuple or not self.racks:
+            raise TypeError("racks must be a nonempty immutable tuple")
+        if any(type(rack) is not RackFaceSequence for rack in self.racks):
+            raise TypeError("racks must contain RackFaceSequence values")
+        rack_ids = [rack.rack_id for rack in self.racks]
+        if len(rack_ids) != len(set(rack_ids)):
+            raise ValueError("racks must not contain duplicate rack_id values")
 
 
 @dataclass(frozen=True, slots=True)

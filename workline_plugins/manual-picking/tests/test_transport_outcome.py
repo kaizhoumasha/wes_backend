@@ -44,6 +44,7 @@ def _publisher(*, step: str = "PICKING_TASK_BIN_SOURCE_RACK_IN") -> tuple[object
         step=step,
         resource_fence_id="RACK-1",
         source_evidence_id=101,
+        picking_task_id=None,
     )
     source = SimpleNamespace(
         id=101,
@@ -54,7 +55,7 @@ def _publisher(*, step: str = "PICKING_TASK_BIN_SOURCE_RACK_IN") -> tuple[object
     evidence_service.accept.return_value = SimpleNamespace(duplicate=False)
     publisher = ManualPickingTransportOutcomePublisher(
         binding_repository=SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding)),
-        evidence_repository=SimpleNamespace(get_by_id_without_lock=AsyncMock(return_value=source)),
+        evidence_repository=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
         evidence_service=evidence_service,
     )
     return publisher, evidence_service.accept
@@ -134,7 +135,7 @@ async def test_inbound_batch_transport_result_matches_all_frozen_bin_members() -
     accept = AsyncMock(return_value=SimpleNamespace(duplicate=False))
     publisher = ManualPickingTransportOutcomePublisher(
         binding_repository=SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding)),
-        evidence_repository=SimpleNamespace(get_by_id_without_lock=AsyncMock(return_value=source)),
+        evidence_repository=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
         evidence_service=SimpleNamespace(accept=accept),
         transports=SimpleNamespace(get_task_by_client_request=AsyncMock(return_value=task)),
     )
@@ -199,6 +200,7 @@ async def test_transfer_departure_result_preserves_original_wms_decision(status:
         resource_fence_id="RACK-1",
         correlation_id="departure-op",
         source_evidence_id=101,
+        picking_task_id=31,
     )
     source = SimpleNamespace(
         id=101,
@@ -209,7 +211,7 @@ async def test_transfer_departure_result_preserves_original_wms_decision(status:
     accept = AsyncMock(return_value=SimpleNamespace(duplicate=False))
     publisher = ManualPickingTransportOutcomePublisher(
         binding_repository=SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding)),
-        evidence_repository=SimpleNamespace(get_by_id_without_lock=AsyncMock(return_value=source)),
+        evidence_repository=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
         evidence_service=SimpleNamespace(accept=accept),
     )
     outcome = TransportOutcome(
@@ -232,6 +234,11 @@ async def test_transfer_departure_result_preserves_original_wms_decision(status:
 @pytest.mark.asyncio
 async def test_source_return_result_uses_original_plan_evidence() -> None:
     publisher, accept = _publisher(step="MANUAL_PICKING_SOURCE_RACK_OUT")
+    binding = publisher._bindings.get_by_client_request_id.return_value
+    binding.picking_task_id = "PICK-1"
+    source = publisher._evidences.get_by_id.return_value
+    source.kind = InboundEvidenceKind.WMS_RESULT
+    source.operation = "outbound.rack.departure_decide@v1"
     outcome = TransportOutcome(
         transport_task_id="TRANSPORT-1",
         client_request_id="REQUEST-1",
@@ -255,14 +262,14 @@ async def test_source_return_result_uses_original_plan_evidence() -> None:
 async def test_drain_transport_publishes_original_ready_evidence_without_task(step, status):
     publisher, accept = _publisher(step=step)
     _configure_drain(publisher)
-    source = publisher._evidences.get_by_id_without_lock.return_value
+    source = publisher._evidences.get_by_id.return_value
     assert await publisher.publish(object(), _outcome(status=status))
     assert await publisher.publish(object(), _outcome(status=status))
     payload = accept.await_args.kwargs["normalized_payload"]
     assert "picking_task_id" not in payload
     assert payload["drain_operation_id"] == source.operation_id
     assert accept.await_args.kwargs["source_identity"] == "transport:TRANSPORT-1:outcome:1"
-    source.normalized_payload["data"]["rack_id"] = "WRONG"
+    source.normalized_payload["data"]["racks"][0]["rack_id"] = "WRONG"
     with pytest.raises(ValueError):
         await publisher.publish(object(), _outcome(status=status))
 
@@ -276,8 +283,9 @@ def _configure_drain(publisher):
 
     operation_id = "019f0000-0000-7000-8000-000000000001"
     binding = publisher._bindings.get_by_client_request_id.return_value
-    binding.correlation_id = f"drain:{operation_id}"
-    source = publisher._evidences.get_by_id_without_lock.return_value
+    binding.correlation_id = f"drain:{operation_id}:rack:RACK-1"
+    binding.picking_task_id = None
+    source = publisher._evidences.get_by_id.return_value
     source.kind = InboundEvidenceKind.WMS_RESULT
     source.operation = "workline.return_buffer.drain_rack_decide@v1"
     source.operation_id = operation_id
@@ -286,15 +294,13 @@ def _configure_drain(publisher):
         "operation_id": operation_id,
         "code": "DECIDED",
         "timestamp": 1,
-        "data": {"result": "READY", "rack_id": "RACK-1", "rack_face": "90"},
+        "data": {"result": "READY", "racks": [{"rack_id": "RACK-1", "rack_faces": ["90"]}]},
     }
     source.payload_digest = canonical_json_digest(source.normalized_payload)
     intent = wms_operations.workline_return_buffer_drain_rack_decide(
         operation_id=operation_id,
         workline_code="LINE-31",
-        plugin_key="manual-picking",
-        drain_reason="PICKING_TASK_COMPLETED",
-        return_candidates=(BinReturnCandidate(1, "B1", "OUTLET"),),
+        required_slot_count=1,
     )
     payload = encode_request(intent, timestamp=1)
     confirmation = SimpleNamespace(

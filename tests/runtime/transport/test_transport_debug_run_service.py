@@ -526,10 +526,12 @@ async def test_abort_finalizes_only_a_provably_unsent_debug_task(monkeypatch: py
     run.attention_code = "EVIDENCE_SOURCE_EVENT_CONFLICT"
 
     class _Transport:
-        async def is_unsent_debug_task_finalizable_in_session(self, _db: object, task_id: str) -> bool:
+        async def is_unsent_task_finalizable_in_session(self, _db: object, task_id: str) -> bool:
             return task_id == "transport-1"
 
-        async def finalize_unsent_debug_task_in_session(self, _db: object, task_id: str) -> bool:
+        async def finalize_unsent_task_in_session(
+            self, _db: object, task_id: str, *, reason_code: str = "TRANSPORT_WITHDRAWN_BEFORE_SEND"
+        ) -> bool:
             assert task_id == "transport-1"
             repository.tasks[task_id].status = "FAILED"
             repository.tasks[task_id].reason_code = "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND"

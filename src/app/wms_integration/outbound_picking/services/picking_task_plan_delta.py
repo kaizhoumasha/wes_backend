@@ -79,6 +79,8 @@ class PickingTaskPlanDeltaService:
             if ApplyStatus(evidence.apply_status) is ApplyStatus.APPLIED:
                 return self._result(evidence, "DUPLICATE")
             task = await self._tasks.get_by_task_id_for_update(db, envelope.data.task_id)
+            if task is not None:
+                evidence.picking_task_id = task.id
             reason = await self.validate_plan(db, task, envelope.data, received_at=received_at)
             if reason == "PENDING":
                 return self._result(evidence, "UNAVAILABLE")
@@ -193,7 +195,7 @@ class PickingTaskPlanDeltaService:
             for p in data.added_direct_picks or ()
         ]
         incoming_racks = [
-            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
+            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_faces
         ]
         picks, racks = await self._plans.source_identities(
             db, task.id, direct_picks=incoming_picks, bin_racks=incoming_racks

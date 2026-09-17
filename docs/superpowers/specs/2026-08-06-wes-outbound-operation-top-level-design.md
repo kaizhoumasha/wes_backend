@@ -2,7 +2,7 @@
 title: WES 出库操作顶层设计
 status: ReviewRequired
 created_at: 2026-08-06
-updated_at: 2026-09-09
+updated_at: 2026-09-17
 scope: SMT 自动出库 PickingTask 与人工分拣 Bin 流转；分批资源计划、CTU 批次、FIFO 缓存、业务完成与物理清场边界
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -131,39 +131,40 @@ WES 可以按本文请求 WMS 给出来源、目标和任务状态，但不能�
 | --- | --- |
 | `task_id` | PickingTask 的唯一编号，发布后不再改变 |
 | `task_type` | `MANUAL \| AUTO`；发布后不可变，用于匹配人工或自动 Picking WorkLine，不拆分 PickingTask 实体 |
+| `workline_code` | WMS 指定的唯一工作线；发布后不可变 |
 | `dispatch_sequence` | WMS 提供的统一出库任务池业务优先序 |
 | `not_before` | 可选最早启动时间 |
 
-发布阶段禁止携带：
+发布阶段除 `workline_code` 外禁止携带其他执行资源字段：
 
-- `workline_code`、`station_code` 或其他具体执行线字段。
+- `station_code` 或其他由 WorkLine 配置确定的执行字段。
 - 来源货架、Bin、Cell 或退料 SLOT。
 - `PkgID`、六合一码、料盘数量或料盘顺序。
 - 目标转运货架、目标面、目标 SLOT 或容量字段。
 - TransportTask、DeviceCommand 或缓存状态。
 - 来源占用信息。
 
-WES 接收任务后进入 `QUEUED`。任务发布固定建立 `queue_revision=1`，后续队列更新必须连续递增。WES 返回成功只表示任务已经保存，
+WES 校验 WorkLine 存在、启用且插件与 `task_type` 匹配后，把任务绑定该线并进入 `QUEUED`。工作线忙碌不拒绝发布。任务发布固定建立
+`queue_revision=1`，后续队列更新必须连续递增且不得改派 WorkLine。WES 返回成功只表示任务及指派已经保存，
 不表示货架、Bin 或目标已经分配。
 
 同一任务的队列更新按 revision 依次发送。前一个 revision 没有得到明确成功响应前，WMS 不能发送下一个 revision；响应不明确时
 只重发原消息。
 
-所有 `QUEUED` 任务进入同一个出库任务池，`dispatch_sequence` 在池内唯一。WES 根据不可变 `task_type` 过滤不匹配的
-Picking WorkLine，再过滤未到 `not_before`、已被领取或当前没有匹配工作线满足启动条件的任务，选择优先序最小的可执行任务；
-暂时不可执行的前序任务不阻塞后续可执行任务。
+每条 WorkLine 独立领取分配给自己的 `QUEUED` 任务，按 `dispatch_sequence ASC → id ASC` 选择满足 `not_before` 的最高优先级任务；
+其他空闲线不得抢占。WMS 手工调整只通过 `queue_changed` 修改业务优先序或 `not_before`；换线必须取消原任务并以新 `task_id` 发布，
+不增加任务重绑定 operation、WorkLineGroup、能力标签、评分引擎或人工启动入口。
 
-多条分拣机工作线具有相同物理结构和各自关联的 STATION。WES 从无活动任务，且设备、工作位、缓存和 Transport 状态都允许启动的
-工作线中，按本地 `available_since ASC → workline_code ASC` 稳定选择。任务领取和候选工作线保留在一个事务中完成。WMS 手工
-调整只通过 `queue_changed` 修改业务优先序或 `not_before`；本阶段不增加 WorkLineGroup、能力标签、评分引擎或人工启动入口。
+WMS 可通过统一 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 整单，或在 `EXECUTING` 中按五层来源货架面和退料货架
+来源储位撤销尚未执行的计划成员。取消只停止未来准入，不撤销已经发出、被接纳、在途或结果未知的物理动作。
 
 ## 7. 异步准备与分批计划
 
 ### 7.1 准备请求
 
-WES 在同一事务中领取当前最高优先级的可执行任务并保留候选工作线后，生成并持久化准备请求的 `operation_id`，把任务迁移为
-`PREPARING`，然后调用 `outbound.picking_task.prepare@v1`。请求中的 `workline_code` 由 WES 提供，WMS 据此使用该线关联的
-STATION、货架工作位和交接位置计算资源。人工操作不能绕过该路径。
+issued 指定的 WorkLine 满足启动条件后，WES 在同一事务中领取该线最高优先级任务，生成并持久化准备请求的 `operation_id`，把任务迁移为
+`PREPARING`，然后调用 `outbound.picking_task.prepare@v1`。请求中的 `workline_code` 必须等于 issued 冻结值，WMS 据此使用该线关联的
+STATION、货架工作位和交接位置计算资源。人工操作不能绕过该路径或改派另一条线。
 
 WMS 保存请求后立即返回 `202 PREPARE_ACCEPTED`。这个响应只表示 WMS 已经接收资源计算请求，不表示已经算出可执行数据。请求响应
 未知时，WES 使用原 `operation_id` 和原请求正文重试；WMS 返回首次接收时的完整 `PREPARE_ACCEPTED` 响应，不改写时间戳或
@@ -347,7 +348,8 @@ Cell 优先级或依赖图，WES 根据 FIFO、设备和位置状态安排实际
    `target_preparation`，其 `mode` 为 `ROTATE` 或 `REPLACE`。`REJECT` 携带明确的业务异常分类和 `source_disposition`；
    `WAIT` 只表示业务决定尚未形成。
 5. 需要目标准备时，WES 保持当前盘占用扫码台，按固定顺序执行 `ROTATE → PUT` 或
-   `CURRENT_RACK_DEPARTURE → NEXT_RACK_STARTUP → PUT`。Transport 成功结果和位置、货架面全部一致后，目标机械臂
+   `departure_decide READY → CURRENT_RACK_DEPARTURE → NEXT_RACK_STARTUP → PUT`。material response 只携带 `mode=REPLACE`，
+   不携带旧架 destination。Transport 成功结果和位置、货架面全部一致后，目标机械臂
    直接执行 PUT，不再次请求物料决定。
 6. WES 把当前 `MaterialExecution` 和 WMS 已授权的接料货架面、精确 SLOT 写入目标机械臂 DeviceCommand 证据。只有匹配该命令的
    确定 `SUCCEEDED` CALLBACK 才表示 PUT 完成；接收确认、失败、超时和结果未知都不能形成位置结果。
@@ -390,7 +392,7 @@ WES 只处理接料货架面变化：
 
 1. 下一来源明细仍使用当前已到位货架和货架面时继续执行。
 2. `rack_id` 相同且 `rack_face` 变化时，根据精确目标和固定工作位创建 `ROTATE` TransportTask。
-3. `rack_id` 变化时，先按 WMS 给出的去向让当前目标架离场，再从 WES 已确认的位置把新目标架运到固定工作位。
+3. `rack_id` 变化时，先通过 `outbound.rack.departure_decide@v1` 取得当前目标架唯一去向并离场，再从 WES 已确认的位置把新目标架运到固定工作位。
 4. 接料货架面和容量预留已经接收时允许预取并扫码一盘；新货架或货架面确认到位前不能 PUT。没有安全暂存位时，料盘能否
    离开来源并进入扫码台由 ECS/PLC 硬件锁决定，不由 WES 记录的扫码台状态或资源锁决定。
 
@@ -399,7 +401,7 @@ WES 只处理接料货架面变化：
 因此，7 寸储位仍有空位但大尺寸储位耗尽时，是否换面或换架由 WMS 的下一个接料货架面体现。WES 不从现场空位推导该决定。
 
 精确目标 SLOT 在料盘扫码决定中返回。实际扫码物料需要换面或换架时，WMS 返回最终 `ACCEPT`、新的有效接料货架面、精确 SLOT
-和完整 `target_preparation`；WES 保持当前料盘在扫码台并组织执行，目标就绪后直接 PUT。WMS 尚不能形成物料资格、精确目标，
+和 `target_preparation.mode`；REPLACE 的旧架去向由独立 departure operation 决定。WES 保持当前料盘在扫码台并组织执行，目标就绪后直接 PUT。WMS 尚不能形成物料资格、精确目标，
 或者当前架仍有正在完成的短暂依赖时，返回带重试间隔的业务 `WAIT`。
 
 对已在扫码台的物料返回换架方案前，WMS 必须确认当前目标架可以立即离场：没有未确认 PUT、未接收位置结果、关联中的目标
@@ -568,8 +570,8 @@ Transport 请求和结果继续遵循独立 Transport 合同。PickingTask opera
 
 | 场景 | 通过标准 |
 | --- | --- |
-| WMS 发布 PickingTask | 请求正文不含 `workline_code`；WES 只加入自动出库任务池，不锁定执行线、Rack、Bin、Cell 或目标储位 |
-| 多条分拣机工作线同时就绪 | WES 按任务池优先序领取不同任务，并以 `available_since + workline_code` 稳定选择执行线 |
+| WMS 发布 PickingTask | 请求正文必须包含不可变 `workline_code`；WES 校验并绑定指定线，不锁定 Rack、Bin、Cell 或目标储位 |
+| 多条分拣机工作线同时就绪 | 每条线只领取分配给自己的最高优先级任务，其他空闲线不得抢占 |
 | 前序任务暂不可执行 | 后续可执行任务可以由其他就绪工作线领取；`dispatch_sequence` 不构成完成依赖 |
 | 准备请求已接收 | `PREPARE_ACCEPTED` 后任务和候选工作线保持 `PREPARING`，没有可执行计划增量前不创建 TransportTask 或 DeviceCommand |
 | 准备响应丢失 | WES 使用原 `operation_id` 和原正文重试；WMS 返回第一次保存的完整 `PREPARE_ACCEPTED` 响应 |
@@ -581,6 +583,7 @@ Transport 请求和结果继续遵循独立 Transport 合同。PickingTask opera
 | 首批期限到期仍无计划 | WES 以 `last_applied_plan_revision=0` 请求状态确认；WMS 返回带重试间隔的进行中状态或 revision 0 完成 |
 | 新来源引用未定义接料货架面 | 拒绝该计划增量，不允许先取盘后补目标资源 |
 | WMS 手工调整任务 | 通过 `queue_changed` 改变任务池业务优先序，不调用 WES 人工启动接口 |
+| WMS 取消任务 | `QUEUED/PREPARING` 使用 `TASK` 整单取消；`EXECUTING` 使用 `PLAN_MEMBERS` 撤销未执行成员，已执行物理义务继续收口 |
 | 多个退料货架或货架面 | 货架独占，SLOT 逐项执行；WES 按物理条件安排顺序 |
 | 退料与五层货架同时就绪 | 退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流 |
 | 计划同时包含多个五层来源货架面 | 每个 `rack_id + rack_face` 单独记录；同一货架的 A、B 面都有来源时记录两项；WES 只选择一个当前来源面，不得同时创建多条指向同一 CTU 工作位的货架任务 |

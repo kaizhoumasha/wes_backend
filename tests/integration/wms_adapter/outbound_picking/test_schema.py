@@ -14,7 +14,7 @@ from src.utils.timezone import timezone
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "6cf85c1760e4"
+HEAD_REVISION = "e881b50b63b1"
 
 
 @pytest.mark.asyncio
@@ -53,6 +53,71 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
                     """
                 )
             }
+            member_columns = {
+                table_name: {
+                    row["column_name"]: (row["data_type"], row["is_nullable"])
+                    for row in await connection.fetch(
+                        """
+                        SELECT column_name, data_type, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'wes_biz' AND table_name = $1
+                        """,
+                        table_name,
+                    )
+                }
+                for table_name in ("direct_pick_executions", "picking_task_bin_source_racks")
+            }
+            evidence_columns = {
+                row["column_name"]: (row["data_type"], row["is_nullable"])
+                for row in await connection.fetch(
+                    """
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'wes_biz' AND table_name = 'inbound_evidences'
+                    """
+                )
+            }
+            evidence_constraints = {
+                row["constraint_name"]: row["definition"]
+                for row in await connection.fetch(
+                    """
+                    SELECT constraint_name, pg_get_constraintdef(pg_constraint.oid) AS definition
+                    FROM information_schema.table_constraints
+                    JOIN pg_constraint ON pg_constraint.conname = constraint_name
+                    WHERE table_schema = 'wes_biz' AND table_name = 'inbound_evidences'
+                    """
+                )
+            }
+            evidence_indexes = {
+                row["indexname"]: row["indexdef"]
+                for row in await connection.fetch(
+                    """
+                    SELECT indexname, indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'wes_biz' AND tablename = 'inbound_evidences'
+                    """
+                )
+            }
+            binding_columns = {
+                row["column_name"]: (row["data_type"], row["is_nullable"])
+                for row in await connection.fetch(
+                    """
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'wes_biz' AND table_name = 'transport_decision_bindings'
+                    """
+                )
+            }
+            binding_indexes = {
+                row["indexname"]: row["indexdef"]
+                for row in await connection.fetch(
+                    """
+                    SELECT indexname, indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'wes_biz' AND tablename = 'transport_decision_bindings'
+                    """
+                )
+            }
             workline_owner_column = await connection.fetchrow(
                 """
                 SELECT data_type, is_nullable
@@ -84,7 +149,7 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
             }
         finally:
             await connection.close()
-    assert [tuple(row) for row in columns][-15:] == [
+    assert [tuple(row) for row in columns][-16:] == [
         ("task_id", "character varying", "NO"),
         ("task_type", "character varying", "NO"),
         ("status", "character varying", "NO"),
@@ -93,13 +158,14 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         ("not_before_ms", "bigint", "YES"),
         ("issued_at_ms", "bigint", "NO"),
         ("issued_evidence_id", "bigint", "NO"),
-        ("workline_id", "bigint", "YES"),
+        ("workline_id", "bigint", "NO"),
         ("last_applied_plan_revision", "bigint", "NO"),
         ("target_rack_id", "character varying", "YES"),
         ("target_rack_face", "character varying", "YES"),
         ("initial_plan_evidence_id", "bigint", "YES"),
         ("last_plan_evidence_id", "bigint", "YES"),
         ("plan_blocked_evidence_id", "bigint", "YES"),
+        ("archived_at", "timestamp without time zone", "YES"),
     ]
     assert {
         "ux_picking_tasks_task_id",
@@ -113,10 +179,12 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         "ck_picking_tasks_picking_task_not_before_nonnegative",
     }.issubset(constraints)
     assert "QUEUED" in constraints["ck_picking_tasks_picking_task_status_valid"]
+    assert "CANCELLED" in constraints["ck_picking_tasks_picking_task_status_valid"]
     assert constraints["fk_picking_tasks_issued_evidence_id_inbound_evidences"] == (
         "FOREIGN KEY (issued_evidence_id) REFERENCES wes_biz.inbound_evidences(id)"
     )
     assert "ix_picking_tasks_queue" in indexes
+    assert "(workline_id, task_type, dispatch_sequence, id)" in indexes["ix_picking_tasks_queue"]
     assert "task_type" in indexes["ix_picking_tasks_queue"]
     assert "not_before_ms" not in indexes["ix_picking_tasks_queue"]
     assert "ux_picking_tasks_active_workline" in indexes
@@ -126,7 +194,7 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
     assert index_definition is not None
     assert "UNIQUE INDEX" in index_definition
     assert "WHERE" in index_definition and "status" in index_definition and "QUEUED" in index_definition
-    assert "ck_picking_tasks_picking_task_binding_matches_status" in constraints
+    assert "ck_picking_tasks_picking_task_binding_matches_status" not in constraints
     assert "fk_picking_tasks_workline_id_work_lines" in constraints
     assert "fk_picking_tasks_line_run_epoch_id_line_run_epochs" not in constraints
     assert "ck_wms_confirmations_wms_confirmation_exactly_one_owner" in confirmation_constraints
@@ -148,6 +216,33 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         assert f"{owner} IS NOT NULL" in owner_check
     assert "= 1" in owner_check
     assert "ix_wes_biz_wms_confirmations_workline_id" in confirmation_indexes
+    for columns in member_columns.values():
+        assert columns["cancelled_evidence_id"] == ("bigint", "YES")
+    assert evidence_columns["picking_task_id"] == ("bigint", "YES")
+    assert evidence_constraints["fk_inbound_evidences_picking_task_id_picking_tasks"] == (
+        "FOREIGN KEY (picking_task_id) REFERENCES wes_biz.picking_tasks(id)"
+    )
+    evidence_timeline = evidence_indexes["ix_inbound_evidences_picking_task_timeline"]
+    assert "(picking_task_id, received_at, id)" in evidence_timeline
+    for constraint in (
+        "ck_inbound_evidences_inbound_evidence_wms_identity_required",
+        "ck_inbound_evidences_inbound_evidence_device_identity_required",
+    ):
+        assert constraint in evidence_constraints
+    transport_identity_checks = [
+        definition
+        for definition in evidence_constraints.values()
+        if "TRANSPORT_RESULT" in definition and "transport_task_id" in definition
+    ]
+    assert len(transport_identity_checks) == 1
+    assert any(
+        "TRANSPORT_RESULT" in definition and "device_code" in definition and "operation_id" in definition
+        for definition in evidence_constraints.values()
+    )
+    assert binding_columns["picking_task_id"] == ("bigint", "YES")
+    binding_task_step = binding_indexes["ix_transport_decision_bindings_task_step"]
+    assert "(workline_id, picking_task_id, step)" in binding_task_step
+    assert "(picking_task_id)" in binding_indexes["ix_transport_decision_bindings_picking_task"]
 
 
 @pytest.mark.asyncio

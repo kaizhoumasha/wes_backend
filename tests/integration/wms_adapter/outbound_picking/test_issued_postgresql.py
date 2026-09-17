@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import Session
@@ -24,24 +24,46 @@ from src.app.wms_adapter.outbound_picking.wire import (
 from src.app.wms_adapter.v1.events import router as wms_event_router
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services import PickingTaskIssuedService
+from src.app.workline.models import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 
 pytest_plugins = ("tests.integration.conftest",)
 
 
+async def _seed_workline(
+    db,  # type: ignore[no-untyped-def]
+    *,
+    is_active: bool = True,
+    line_type: LineType = LineType.HYBRID,
+    plugin_key: str = "manual-picking",
+    plugin_version: str = "0.1.0",
+) -> str:
+    """issued 要求 workline_code 指向已存在、匹配的 WorkLine；HYBRID 同时满足 MANUAL/AUTO。"""
+    line_code = f"ISSUED-{new_uuid7()[-12:]}"
+    db.add(
+        WorkLine(
+            line_code=line_code,
+            line_name="Issued integration workline",
+            line_type=line_type,
+            is_active=is_active,
+            plugin_key=plugin_key,
+            plugin_version=plugin_version,
+        )
+    )
+    await db.flush()
+    return line_code
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("active", [False, True])
-async def test_new_task_defers_prepare_only_when_a_capable_workline_is_active(
+async def test_new_task_with_active_capable_workline_is_received_and_defers_prepare(
     integration_session_factory,
     monkeypatch: pytest.MonkeyPatch,
-    active: bool,
 ) -> None:
+    """issued 起 workline_code 必填且立即绑定；匹配的活跃 WorkLine 才触发 prepare 唤醒。"""
     task_id = f"PICK-{new_uuid7()}"
     operation_id = new_uuid7()
     identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
     queue = SimpleNamespace(enqueue_picking_task_prepare=Mock())
-    worklines = AsyncMock()
-    worklines.has_active_plugin_identity.return_value = active
     defer = Mock()
     monkeypatch.setattr(
         "src.app.wms_integration.outbound_picking.services.picking_task_issued.defer_wakeup",
@@ -51,24 +73,107 @@ async def test_new_task_defers_prepare_only_when_a_capable_workline_is_active(
         integration_session_factory,
         prepare_plugin_identities=(("manual-picking", "0.1.0"),),
         task_queue_gateway=queue,
-        workline_repository=worklines,
     )
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         result = await service.record(
-            _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence()),
+            _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence(), workline_code=workline_code),
             received_at=datetime(2026, 9, 12, 10),
         )
 
         assert result.code == "RECEIVED"
-        worklines.has_active_plugin_identity.assert_awaited_once()
-        if active:
-            defer.assert_called_once()
-            assert defer.call_args.args[1] == queue.enqueue_picking_task_prepare
-        else:
-            defer.assert_not_called()
+        defer.assert_called_once()
+        assert defer.call_args.args[1] == queue.enqueue_picking_task_prepare
+        async with integration_session_factory() as db:
+            task = await db.scalar(select(PickingTask).where(PickingTask.task_id == task_id))
+            workline = await db.scalar(select(WorkLine).where(WorkLine.line_code == workline_code))
+        assert task.workline_id == workline.id
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
+            await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
+
+
+@pytest.mark.asyncio
+async def test_new_task_is_state_conflict_when_workline_is_inactive(integration_session_factory) -> None:
+    task_id = f"PICK-{new_uuid7()}"
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    service = PickingTaskIssuedService(
+        integration_session_factory,
+        prepare_plugin_identities=(("manual-picking", "0.1.0"),),
+    )
+    workline_code = None
+
+    try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db, is_active=False)
+        result = await service.record(
+            _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence(), workline_code=workline_code),
+            received_at=datetime(2026, 9, 12, 10),
+        )
+
+        assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")
+        async with integration_session_factory() as db:
+            task_count = await db.scalar(
+                select(func.count()).select_from(PickingTask).where(PickingTask.task_id == task_id)
+            )
+        assert task_count == 0
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
+            await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
+
+
+@pytest.mark.asyncio
+async def test_new_task_is_reference_conflict_when_workline_code_is_unknown(integration_session_factory) -> None:
+    task_id = f"PICK-{new_uuid7()}"
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    service = PickingTaskIssuedService(integration_session_factory)
+
+    try:
+        result = await service.record(
+            _event(
+                operation_id,
+                task_id=task_id,
+                dispatch_sequence=_dispatch_sequence(),
+                workline_code=f"UNKNOWN-{new_uuid7()}",
+            ),
+            received_at=datetime(2026, 9, 12, 10),
+        )
+
+        assert (result.code, result.reason_code) == ("CONFLICT", "REFERENCE_CONFLICT")
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
 
@@ -78,8 +183,15 @@ async def test_invalid_issued_is_recorded_replayed_and_requires_new_identity_to_
     operation_id, corrected_id = new_uuid7(), new_uuid7()
     task_id = f"PICK-{new_uuid7()}"
     identities = [f"{PICKING_TASK_ISSUED_OPERATION}:{value}" for value in (operation_id, corrected_id)]
-    handler = PickingTaskIssuedHandler(PickingTaskIssuedService(integration_session_factory))
-    valid = _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence()).model_dump(
+    handler = PickingTaskIssuedHandler(
+        PickingTaskIssuedService(integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),))
+    )
+    workline_code = None
+    async with integration_session_factory.begin() as db:
+        workline_code = await _seed_workline(db)
+    valid = _event(
+        operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence(), workline_code=workline_code
+    ).model_dump(
         mode="json",
         exclude_none=True,
     )
@@ -112,8 +224,17 @@ async def test_invalid_issued_is_recorded_replayed_and_requires_new_identity_to_
             await db.execute(
                 delete(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity.in_(identities))
             )
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.in_(identities)))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
 
 
 @pytest.mark.asyncio
@@ -128,7 +249,12 @@ async def test_invalid_issued_commit_failure_has_no_rejection_ack_or_evidence(in
 
     operation_id = new_uuid7()
     identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
-    invalid = _event(operation_id, task_id=f"PICK-{new_uuid7()}", dispatch_sequence=_dispatch_sequence()).model_dump(
+    invalid = _event(
+        operation_id,
+        task_id=f"PICK-{new_uuid7()}",
+        dispatch_sequence=_dispatch_sequence(),
+        workline_code="NOT-VALIDATED",
+    ).model_dump(
         mode="json",
         exclude_none=True,
     )
@@ -156,12 +282,14 @@ def _event(
     *,
     task_id: str,
     dispatch_sequence: int,
+    workline_code: str,
     task_type: str = "MANUAL",
     not_before: int | None = None,
 ):
     data = {
         "task_id": task_id,
         "task_type": task_type,
+        "workline_code": workline_code,
         "queue_revision": 1,
         "dispatch_sequence": dispatch_sequence,
     }
@@ -192,13 +320,19 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
     }
     dispatch_sequence = _dispatch_sequence()
     not_before = 1786060900000
-    service = PickingTaskIssuedService(integration_session_factory)
+    service = PickingTaskIssuedService(
+        integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),)
+    )
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         event = _event(
             operation_id,
             task_id=task_id,
             dispatch_sequence=dispatch_sequence,
+            workline_code=workline_code,
             not_before=not_before,
         )
         first = await service.record(event, received_at=datetime(2026, 9, 3, 10))
@@ -210,19 +344,29 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
             type(event).model_validate(extended), received_at=datetime(2026, 9, 3, 11, 30)
         )
         idempotency_conflict = await service.record(
-            _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence + 1),
+            _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence + 1, workline_code=workline_code),
             received_at=datetime(2026, 9, 3, 12),
         )
         idempotency_conflict_replay = await service.record(
-            _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence + 1),
+            _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence + 1, workline_code=workline_code),
             received_at=datetime(2026, 9, 3, 12, 30),
         )
         state_conflict = await service.record(
-            _event(conflicting_operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence),
+            _event(
+                conflicting_operation_id,
+                task_id=task_id,
+                dispatch_sequence=dispatch_sequence,
+                workline_code=workline_code,
+            ),
             received_at=datetime(2026, 9, 3, 13),
         )
         state_conflict_replay = await service.record(
-            _event(conflicting_operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence),
+            _event(
+                conflicting_operation_id,
+                task_id=task_id,
+                dispatch_sequence=dispatch_sequence,
+                workline_code=workline_code,
+            ),
             received_at=datetime(2026, 9, 3, 14),
         )
 
@@ -267,8 +411,17 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
             await db.execute(
                 delete(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity.in_(identities))
             )
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.in_(identities)))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
 
 
 @pytest.mark.asyncio
@@ -279,13 +432,21 @@ async def test_concurrent_picking_task_issued_replay_creates_one_task(
     operation_id = new_uuid7()
     identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
     dispatch_sequence = _dispatch_sequence()
-    services = [PickingTaskIssuedService(integration_session_factory) for _ in range(2)]
+    services = [
+        PickingTaskIssuedService(integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),))
+        for _ in range(2)
+    ]
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         results = await asyncio.gather(
             *(
                 service.record(
-                    _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence),
+                    _event(
+                        operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence, workline_code=workline_code
+                    ),
                     received_at=datetime(2026, 9, 3, 10),
                 )
                 for service in services
@@ -301,8 +462,17 @@ async def test_concurrent_picking_task_issued_replay_creates_one_task(
         assert task_count == 1
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
 
 
 @pytest.mark.asyncio
@@ -314,9 +484,15 @@ async def test_concurrent_tasks_cannot_claim_the_same_dispatch_sequence(
     task_types = ("MANUAL", "AUTO")
     identities = tuple(f"{PICKING_TASK_ISSUED_OPERATION}:{value}" for value in operation_ids)
     dispatch_sequence = _dispatch_sequence()
-    services = [PickingTaskIssuedService(integration_session_factory) for _ in range(2)]
+    services = [
+        PickingTaskIssuedService(integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),))
+        for _ in range(2)
+    ]
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         results = await asyncio.gather(
             *(
                 service.record(
@@ -325,6 +501,7 @@ async def test_concurrent_tasks_cannot_claim_the_same_dispatch_sequence(
                         task_id=task_id,
                         task_type=task_type,
                         dispatch_sequence=dispatch_sequence,
+                        workline_code=workline_code,
                     ),
                     received_at=datetime(2026, 9, 3, 10),
                 )
@@ -349,8 +526,17 @@ async def test_concurrent_tasks_cannot_claim_the_same_dispatch_sequence(
         assert task_count == 1
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id.in_(task_ids)))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id.in_(task_ids)))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.in_(identities)))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
 
 
 @pytest.mark.asyncio
@@ -363,9 +549,14 @@ async def test_manual_and_auto_tasks_are_persisted_in_the_same_queue_entity(
     dispatch_sequences = (_dispatch_sequence(), _dispatch_sequence())
     if dispatch_sequences[0] == dispatch_sequences[1]:
         dispatch_sequences = (dispatch_sequences[0], dispatch_sequences[1] + 1)
-    service = PickingTaskIssuedService(integration_session_factory)
+    service = PickingTaskIssuedService(
+        integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),)
+    )
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         results = [
             await service.record(
                 _event(
@@ -373,6 +564,7 @@ async def test_manual_and_auto_tasks_are_persisted_in_the_same_queue_entity(
                     task_id=task_id,
                     task_type=task_type,
                     dispatch_sequence=dispatch_sequence,
+                    workline_code=workline_code,
                 ),
                 received_at=datetime(2026, 9, 3, 10),
             )
@@ -398,8 +590,17 @@ async def test_manual_and_auto_tasks_are_persisted_in_the_same_queue_entity(
         assert {task.task_id for task in tasks} == set(task_ids)
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id.in_(task_ids)))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id.in_(task_ids)))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.in_(identities)))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
 
 
 @pytest.mark.asyncio
@@ -410,7 +611,9 @@ async def test_wms_event_http_route_persists_picking_task_before_received_ack(
     operation_id = new_uuid7()
     identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
     dispatch_sequence = _dispatch_sequence()
-    handler = PickingTaskIssuedHandler(PickingTaskIssuedService(integration_session_factory))
+    handler = PickingTaskIssuedHandler(
+        PickingTaskIssuedService(integration_session_factory, prepare_plugin_identities=(("manual-picking", "0.1.0"),))
+    )
     app = FastAPI()
     app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
     app.state.wms_picking_task_issued_handler = handler
@@ -418,8 +621,11 @@ async def test_wms_event_http_route_persists_picking_task_before_received_ack(
     app.state.wms_recovery_event_handler = None
     app.state.wms_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))
     app.include_router(wms_event_router, prefix="/api/v1/wms")
+    workline_code = None
 
     try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
             response = await client.post(
                 "/api/v1/wms/events",
@@ -427,6 +633,7 @@ async def test_wms_event_http_route_persists_picking_task_before_received_ack(
                     operation_id,
                     task_id=task_id,
                     dispatch_sequence=dispatch_sequence,
+                    workline_code=workline_code,
                 ).model_dump(mode="json", exclude_none=True),
             )
 
@@ -438,5 +645,14 @@ async def test_wms_event_http_route_persists_picking_task_before_received_ack(
         assert task.issued_evidence_id is not None
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
             await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))

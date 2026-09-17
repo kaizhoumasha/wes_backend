@@ -77,7 +77,7 @@ class _Transport:
         self.repository.tasks[task_id] = _task(task_id, client_request_id, request.kind.value)  # type: ignore[attr-defined]
         return TransportHandle(task_id, client_request_id)
 
-    async def is_unsent_debug_task_finalizable_in_session(self, db: object, task_id: str) -> bool:
+    async def is_unsent_task_finalizable_in_session(self, db: object, task_id: str) -> bool:
         del db, task_id
         return False
 
@@ -1190,7 +1190,7 @@ def _install_return_response(service, repository, payload, response, *, evidence
     )
     read = AsyncMock(return_value=evidence)
     service._confirmations = SimpleNamespace(get_by_identity_for_update=AsyncMock(return_value=confirmation))
-    service._wms_evidence = SimpleNamespace(get_by_id_without_lock=read, get_by_id_for_update=read)
+    service._wms_evidence = SimpleNamespace(get_by_id=read, get_by_id_for_update=read)
     return confirmation
 
 

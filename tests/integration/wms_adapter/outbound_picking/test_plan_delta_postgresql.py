@@ -141,6 +141,10 @@ async def prepared(integration_session_factory):
         await db.execute(delete(DirectPickExecution).where(DirectPickExecution.picking_task_id == task_id))
         await db.execute(delete(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task_id))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.id == confirmation_id))
+        # picking_task_id 与 issued_evidence_id 互为外键，先断开再各自删除。
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.picking_task_id == task_id).values(picking_task_id=None)
+        )
         await db.execute(delete(PickingTask).where(PickingTask.id == task_id))
         await db.execute(
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidences))
@@ -197,9 +201,9 @@ async def test_normal_correction_clears_blocker_and_preserves_original_rejection
     service = PickingTaskPlanDeltaService(integration_session_factory)
     first = _event(task_name)
     assert (await service.record(first, received_at=NOW)).code == "RECEIVED"
-    conflict = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["F"]}])
+    conflict = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "B", "rack_faces": ["F"]}])
     assert (await service.record(conflict, received_at=NOW)).reason_code == "REVISION_CONFLICT"
-    correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["F"]}])
+    correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "B", "rack_faces": ["F"]}])
     async with integration_session_factory() as db:
         task = await db.get(PickingTask, ids[0])
         blocked_id, version = task.plan_blocked_evidence_id, task.version
@@ -266,7 +270,7 @@ async def test_ten_character_faces_keep_exact_source_identity(integration_sessio
 
     task_name, ids = prepared
     face = "面" * 10
-    racks = [{"rack_id": "LONG", "rack_face": [face]}]
+    racks = [{"rack_id": "LONG", "rack_faces": [face]}]
     picks = [{"source_locator": {"type": "RACK_SLOT", "rack_id": "LONG", "rack_face": face, "slot_id": "S"}}]
     first = _event(task_name, added_bin_source_racks=racks, added_direct_picks=picks)
     service = PickingTaskPlanDeltaService(integration_session_factory)
@@ -286,7 +290,7 @@ async def test_ten_character_faces_keep_exact_source_identity(integration_sessio
 
 async def test_multi_face_bin_source_rack_persists_one_member_per_face(integration_session_factory, prepared):
     task_name, ids = prepared
-    event = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["90", "270"]}])
+    event = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_faces": ["90", "270"]}])
 
     assert (
         await PickingTaskPlanDeltaService(integration_session_factory).record(event, received_at=NOW)
@@ -327,9 +331,9 @@ async def test_identity_drift_blocks_original_task_without_rewriting_applied_evi
 async def _blocked_correction(factory, task_name, task_id, *, persisted=True):
     service = PickingTaskPlanDeltaService(factory)
     assert (await service.record(_event(task_name), received_at=NOW)).code == "RECEIVED"
-    bad = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "BAD", "rack_face": ["A"]}])
+    bad = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "BAD", "rack_faces": ["A"]}])
     await service.record(bad, received_at=NOW)
-    correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "GOOD", "rack_face": ["A"]}])
+    correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "GOOD", "rack_faces": ["A"]}])
     if persisted:
         # 已可靠保存为 RECONCILING 的修正；保留其首次拒绝事实供正常入口重报测试。
         async with factory.begin() as db:
@@ -397,7 +401,7 @@ async def test_concurrent_same_correction_applies_once(integration_session_facto
         if persisted:
             assert applied.id == args["correction_evidence_id"]
             assert await service._plans.first_rejection(db, applied.id) == "STATE_CONFLICT"
-    next_event = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "NEXT", "rack_face": ["A"]}])
+    next_event = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "NEXT", "rack_faces": ["A"]}])
     assert (await service.record(next_event, received_at=NOW)).code == "RECEIVED"
     async with integration_session_factory.begin() as db:
         await db.execute(update(PickingTask).where(PickingTask.id == ids[0]).values(status="EXECUTION_COMPLETED"))
@@ -515,7 +519,7 @@ async def test_plan_member_constraints_are_enforced_by_postgresql(integration_se
     from sqlalchemy.exc import IntegrityError
 
     task_name, ids = prepared
-    first = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["A", "B"]}])
+    first = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_faces": ["A", "B"]}])
     await PickingTaskPlanDeltaService(integration_session_factory).record(first, received_at=NOW)
     async with integration_session_factory() as db:
         members = await db.scalars(
@@ -546,8 +550,8 @@ async def test_source_member_ids_preserve_wire_rack_and_face_order(integration_s
     event = _event(
         task_name,
         added_bin_source_racks=[
-            {"rack_id": "Z-RACK", "rack_face": ["270", "90"]},
-            {"rack_id": "A-RACK", "rack_face": ["90"]},
+            {"rack_id": "Z-RACK", "rack_faces": ["270", "90"]},
+            {"rack_id": "A-RACK", "rack_faces": ["90"]},
         ],
     )
     assert (
@@ -569,7 +573,7 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
     )
 
     task_name, ids = prepared
-    event = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_face": ["90"]}])
+    event = _event(task_name, added_bin_source_racks=[{"rack_id": "SOURCE", "rack_faces": ["90"]}])
     assert (
         await PickingTaskPlanDeltaService(integration_session_factory).record(event, received_at=NOW)
     ).code == "RECEIVED"
@@ -699,7 +703,7 @@ async def test_source_queries_return_only_candidates_with_large_history(
     )
 
     task_name, ids = prepared
-    history = [{"rack_id": f"H{i}", "rack_face": ["A"]} for i in range(MEMBER_BATCH_SIZE * 3 + 1)]
+    history = [{"rack_id": f"H{i}", "rack_faces": ["A"]} for i in range(MEMBER_BATCH_SIZE * 3 + 1)]
     service = PickingTaskPlanDeltaService(integration_session_factory)
     assert (await service.record(_event(task_name, added_bin_source_racks=history), received_at=NOW)).code == "RECEIVED"
     async with integration_session_factory() as db:

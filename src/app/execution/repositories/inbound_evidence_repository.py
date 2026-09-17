@@ -60,29 +60,6 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         )
         return result.scalar_one_or_none()
 
-    async def get_by_id_without_lock(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
-        columns = cast("Any", InboundEvidence).__table__.c
-        result = await db.execute(select(InboundEvidence).where(columns.id == evidence_id))
-        return result.scalar_one_or_none()
-
-    async def get_device_result_for_command_for_update(
-        self,
-        db: AsyncSession,
-        command_code: str,
-    ) -> InboundEvidence | None:
-        columns = cast("Any", InboundEvidence).__table__.c
-        result = await db.execute(
-            select(InboundEvidence)
-            .where(
-                columns.command_code == command_code,
-                columns.kind == InboundEvidenceKind.DEVICE_RESULT,
-            )
-            .order_by(columns.id)
-            .limit(1)
-            .with_for_update()
-        )
-        return result.scalar_one_or_none()
-
     async def get_device_result_for_command(
         self,
         db: AsyncSession,
@@ -280,7 +257,16 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         )
         return result.scalar_one_or_none()
 
-    async def flush(self, db: AsyncSession) -> None:
+    async def _set_apply_status(
+        self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
+        *,
+        status: InboundEvidenceApplyStatus,
+        processed_at: datetime,
+    ) -> None:
+        evidence.apply_status = status
+        evidence.processed_at = processed_at
         await db.flush()
 
     async def mark_applied(
@@ -290,9 +276,7 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         *,
         processed_at: datetime,
     ) -> None:
-        evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
-        evidence.processed_at = processed_at
-        await db.flush()
+        await self._set_apply_status(db, evidence, status=InboundEvidenceApplyStatus.APPLIED, processed_at=processed_at)
 
     async def mark_ignored(
         self,
@@ -301,9 +285,7 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         *,
         processed_at: datetime,
     ) -> None:
-        evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
-        evidence.processed_at = processed_at
-        await db.flush()
+        await self._set_apply_status(db, evidence, status=InboundEvidenceApplyStatus.IGNORED, processed_at=processed_at)
 
     async def mark_reconciling(
         self,
@@ -312,9 +294,9 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         *,
         processed_at: datetime,
     ) -> None:
-        evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
-        evidence.processed_at = processed_at
-        await db.flush()
+        await self._set_apply_status(
+            db, evidence, status=InboundEvidenceApplyStatus.RECONCILING, processed_at=processed_at
+        )
 
     async def requeue_reconciling(self, db: AsyncSession, evidence: InboundEvidence) -> None:
         if InboundEvidenceApplyStatus(evidence.apply_status) is not InboundEvidenceApplyStatus.RECONCILING:

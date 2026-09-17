@@ -2,7 +2,7 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-09-12
+updated_at: 2026-09-17
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
 implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 historical RC f51677b62f5da906d4b60fa5a528d04692aff7a2 has been retired from the active repository
 delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
@@ -881,10 +881,9 @@ Phase 8 粗分逐盘入库插件已从代码库移除，历史合同已移出项
 
 ### 11.3 自动分拣线出库
 
-1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；任务发布只负责进入自动出库任务池，不指定具体 WorkLine，
-   也不分配来源和目标资源。
-2. WES 从多条同构分拣机工作线中选择一条就绪线，并以任务池当前最高优先级的可执行任务请求 WMS 准备执行。WMS 先返回
-   接收 ACK，再根据实际 WorkLine 及其关联 STATION 执行耗时资源运算，并按连续 `plan_revision` 分批回调直接取料来源和五层来源货架面
+1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；任务发布指定不可变 WorkLine，但不分配来源和目标资源。
+2. 指定 WorkLine 就绪后，WES 以该线当前最高优先级的可执行任务请求 WMS 准备执行。WMS 先返回接收 ACK，再根据 issued 冻结的
+   WorkLine 及其关联 STATION 执行耗时资源运算，并按连续 `plan_revision` 分批回调直接取料来源和五层来源货架面
    等不可变计划增量；首批必须且只能定义一个初始目标货架和货架面，后续精确目标只由逐盘终局 `ACCEPT` 返回。WES 必须先持久化增量再
    ACK；首批满足局部执行前提的增量即可冻结 WorkLine 并驱动相关货架进场。后续增量继续追加，不等待整单计算完成。
 3. `PickingTask` 的业务成员是 `DirectPickExecution` 和 `BinWorkExecution`。WMS 可以在任务执行中通过更高
@@ -1085,9 +1084,9 @@ Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件
 | 合同要素 | 最小要求 |
 | --- | --- |
 | 消息身份 | 顶层 `operation_id` 标识一次不可变决定请求；业务 `WAIT` 后重求值使用新 ID，并以 `previous_operation_id` 引用直接前序请求 |
-| 执行边界 | `workline_code + plugin_key + drain_reason`；自动上架还必须绑定当前 `putaway_execution_id`，不得把 FIFO 扩到其他执行 |
+| 执行边界 | wire payload 只携带 `workline_code + required_slot_count`；插件身份、停线或切换原因留在 WES 本地，自动上架还须在本地冻结当前 `putaway_execution_id`，不得把 FIFO 扩到其他执行 |
 | 请求事实 | 当前货架/货架面、CTU 空且无未结束搬运或未知位置、尚未冻结目标的 FIFO 连续前缀，以及 WES 已可靠确认的候选货架来源位置 |
-| `READY` 决定 | 如需换架，返回旧架完整离场去向、新架 `rack_id`、可靠来源、工作位目标和到达面；如仅换面，返回精确 `rack_id + rack_face`。WMS 必须在同一事务中把目标 rack/face 绑定到该 `workline_code`，并保留足以容纳非空 FIFO 连续前缀的合格空位，直到既有 `return_batch` 消耗或获批合同定义的明确释放；其他任务不得使用该容量。绑定直接关联当前决定 `operation_id`，不新增业务键；决定持久化后不可换目标 |
+| `READY` 决定 | 返回非空有序 `racks[]`，每项为唯一 `rack_id + rack_faces[]`；WMS 必须在同一事务中确认所有返回面的合计容量满足 `required_slot_count` 并保持容量义务。WES 按货架和面顺序复用进场、旋转和离场 Transport；精确储位仍由既有 `return_batch` 分配。决定持久化后不可改序或换目标 |
 | 等待 | `WAIT + reason_code + retry_after_ms`；WES 不自选货架、货架面、空位或替代 Transport |
 | 幂等 | 同一 `operation_id`、正文和时间戳重试返回首次完整响应；同 ID 不同正文冲突；Transport 仅在决定与当前物理门禁仍一致时创建一次 |
 

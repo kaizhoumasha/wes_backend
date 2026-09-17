@@ -27,7 +27,7 @@ class PlanRackFace(StrictWireModel):
 
 class PlanBinSourceRack(StrictWireModel):
     rack_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
-    rack_face: Annotated[list[RackFaceText], Field(min_length=1)]
+    rack_faces: Annotated[list[RackFaceText], Field(min_length=1)]
 
 
 class PlanRackSlot(PlanRackFace):

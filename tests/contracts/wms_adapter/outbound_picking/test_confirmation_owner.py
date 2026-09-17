@@ -51,9 +51,16 @@ async def test_arrival_obligation_survives_business_progress(state, accepted):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "state,accepted", [("QUEUED", False), ("PREPARING", True), ("EXECUTING", False), ("EXECUTION_COMPLETED", False)]
+    "state,accepted",
+    [
+        ("QUEUED", False),
+        ("PREPARING", True),
+        ("EXECUTING", False),
+        ("EXECUTION_COMPLETED", False),
+        ("CANCELLED", True),
+    ],
 )
-async def test_prepare_retains_existing_owner_state_contract(state, accepted):
+async def test_prepare_keeps_reliable_owner_after_preparing_task_is_cancelled(state, accepted):
     repository = SimpleNamespace(
         get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
     )

@@ -25,9 +25,11 @@ from src.app.wms_adapter.inbound_material.openapi import (
     WMS_EVENT_RESPONSES,
 )
 from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
+from src.app.wms_adapter.outbound_picking.cancel_wire import PICKING_TASK_CANCEL_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
 from src.app.wms_adapter.outbound_picking.openapi import (
     MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA,
+    PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
@@ -59,6 +61,7 @@ WMS_EVENT_REQUEST_SCHEMA = {
         *TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"],
         RECOVERY_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
+        PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
         MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA,
@@ -435,11 +438,14 @@ async def _receive_wms_event(  # noqa: PLR0911 - 每个固定 operation 在唯�
         result = await handler.handle(raw_body)
     elif operation in {
         PICKING_TASK_ISSUED_OPERATION,
+        PICKING_TASK_CANCEL_OPERATION,
         PICKING_TASK_PLAN_DELTA_OPERATION,
         PICKING_TASK_QUEUE_CHANGED_OPERATION,
     }:
         if operation == PICKING_TASK_ISSUED_OPERATION:
             handler = getattr(request.app.state, "wms_picking_task_issued_handler", None)
+        elif operation == PICKING_TASK_CANCEL_OPERATION:
+            handler = getattr(request.app.state, "wms_picking_task_cancel_handler", None)
         elif operation == PICKING_TASK_PLAN_DELTA_OPERATION:
             handler = getattr(request.app.state, "wms_picking_task_plan_delta_handler", None)
         else:

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -112,6 +114,18 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
     identities = {(target.schema, target.table) for target in reset_module.RUNTIME_TABLES}
 
     assert {
+        ("wes_biz", "inbound_evidences"),
+        ("wes_biz", "manual_picking_passages"),
+        ("wes_biz", "picking_tasks"),
+        ("wes_biz", "position_projections"),
+        ("wes_biz", "transport_decision_bindings"),
+        ("wes_biz", "wms_confirmations"),
+        ("wes_runtime", "transport_tasks"),
+        ("wes_runtime", "workline_integration_runs"),
+        ("wes_runtime", "workline_runtime_status_projections"),
+        ("wes_sys", "api_access_logs"),
+    }.issubset(identities)
+    assert {
         ("wes_biz", "line_run_epochs"),
         ("wes_biz", "line_run_epoch_device_bindings"),
         ("wes_biz", "line_run_epoch_position_bindings"),
@@ -131,6 +145,81 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
     )
     assert all(target.schema and target.table for target in reset_module.RUNTIME_TABLES)
     assert identities.isdisjoint({(target.schema, target.table) for target in reset_module.MASTER_DATA_TABLES})
+
+
+def test_redis_targets_clear_process_databases_but_scope_application_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reset_module,
+        "settings",
+        SimpleNamespace(
+            POSTGRES_DB="wes_integration",
+            REDIS_URL="redis://localhost:6379/0",
+            CELERY_BROKER="redis://localhost:6379/1",
+            CELERY_BACKEND="redis://localhost:6379/2",
+        ),
+    )
+
+    targets = {target.roles: target for target in reset_module._redis_targets()}
+
+    assert targets[("application-cache",)].database == 0
+    assert targets[("application-cache",)].pattern.startswith("app:")
+    assert targets[("application-cache",)].pattern.endswith(":*")
+    assert targets[("celery-broker",)].pattern == "*"
+    assert targets[("celery-result-backend",)].pattern == "*"
+
+
+@pytest.mark.asyncio
+async def test_redis_reset_deletes_only_scanned_process_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        reset_module,
+        "settings",
+        SimpleNamespace(
+            POSTGRES_DB="wes_integration",
+            REDIS_URL="redis://localhost:6379/0",
+            CELERY_BROKER="redis://localhost:6379/1",
+            CELERY_BACKEND="redis://localhost:6379/2",
+        ),
+    )
+    keys_by_url = {
+        "redis://localhost:6379/0": {"app:scoped:cache", "auth:user_session:1"},
+        "redis://localhost:6379/1": {"celery", "unacked"},
+        "redis://localhost:6379/2": {"celery-task-meta-1"},
+    }
+
+    class FakeRedis:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        async def scan_iter(self, *, match: str, count: int):
+            del count
+            for key in sorted(keys_by_url[self.url]):
+                if fnmatch.fnmatch(key, match):
+                    yield key
+
+        async def delete(self, *keys: str) -> int:
+            before = len(keys_by_url[self.url])
+            keys_by_url[self.url].difference_update(keys)
+            return before - len(keys_by_url[self.url])
+
+        async def aclose(self) -> None:
+            return None
+
+    def from_url(url: str, **_kwargs):
+        return FakeRedis(url)
+
+    monkeypatch.setattr(reset_module.Redis, "from_url", staticmethod(from_url))
+    cache_target = next(target for target in reset_module._redis_targets() if target.database == 0)
+    scoped_key = cache_target.pattern.removesuffix("*") + "cache"
+    keys_by_url[cache_target.url] = {scoped_key, "auth:user_session:1"}
+
+    summary = await reset_module.reset_redis_process_data(apply=True)
+
+    assert sum(target["deleted"] for target in summary) == 4
+    assert keys_by_url["redis://localhost:6379/0"] == {"auth:user_session:1"}
+    assert keys_by_url["redis://localhost:6379/1"] == set()
+    assert keys_by_url["redis://localhost:6379/2"] == set()
 
 
 def test_runtime_targets_do_not_own_retired_execution_tables() -> None:
@@ -500,6 +589,7 @@ def test_wrapper_preserves_current_flags_and_does_not_restore_retired_entrypoint
         "--yes",
         "--include-audit-logs",
         "--no-reset-mocks",
+        "--no-reset-redis",
         "--force",
         "--json",
         "--transport-task-id",

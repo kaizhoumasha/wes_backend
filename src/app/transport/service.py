@@ -547,36 +547,40 @@ class TransportService:
             deleted_member_count=member_count,
         )
 
-    async def finalize_unsent_debug_task_in_session(self, db: AsyncSession, transport_task_id: str) -> bool:
-        """把可证明从未送达外部系统的自动联调任务收敛为本地失败终态。"""
+    async def finalize_unsent_task_in_session(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+        *,
+        reason_code: str = "TRANSPORT_WITHDRAWN_BEFORE_SEND",
+    ) -> bool:
+        """把可证明从未送达外部系统的 Transport 收敛为本地失败终态。"""
 
         task = await self._repository.get_task(db, transport_task_id, for_update=True)
         if task is None:
-            raise TransportContractError("debug transport task does not exist")
-        if not await self._is_unsent_debug_task_finalizable(db, task):
+            raise TransportContractError("transport task does not exist")
+        if not await self._is_unsent_task_finalizable(db, task):
             return False
         now = timezone.now_for_db()
         self._set_outcome(
             task,
             TransportTaskStatus.FAILED,
-            "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND",
+            reason_code,
             now,
         )
         return True
 
-    async def is_unsent_debug_task_finalizable_in_session(
+    async def is_unsent_task_finalizable_in_session(
         self,
         db: AsyncSession,
         transport_task_id: str,
     ) -> bool:
-        """只读判断自动联调任务是否可由 abort 安全收敛。"""
+        """只读判断 Transport 是否仍可在外发前安全收敛。"""
 
         task = await self._repository.get_task(db, transport_task_id)
-        return task is not None and await self._is_unsent_debug_task_finalizable(db, task)
+        return task is not None and await self._is_unsent_task_finalizable(db, task)
 
-    async def _is_unsent_debug_task_finalizable(self, db: AsyncSession, task: TransportTask) -> bool:
-        if task.caller_json.get("workline_id") != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
-            return False
+    async def _is_unsent_task_finalizable(self, db: AsyncSession, task: TransportTask) -> bool:
         return (
             task.status == TransportTaskStatus.PENDING.value
             and task.send_started_at is None

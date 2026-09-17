@@ -38,12 +38,24 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
             "workline_id",
             "resource_fence_id",
         ),
+        Index(
+            "ix_transport_decision_bindings_task_step",
+            "workline_id",
+            "picking_task_id",
+            "step",
+        ),
+        Index("ix_transport_decision_bindings_picking_task", "picking_task_id"),
         {"schema": SchemaType.BIZ.value},
     )
 
     correlation_id: str = Field(min_length=1, max_length=160)
     step: str = Field(min_length=1, max_length=80)
     workline_id: int = Field(sa_type=SQL_COMPAT_BIGINT)
+    picking_task_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.picking_tasks.id",
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     resource_fence_id: str = Field(min_length=1, max_length=160)
     client_request_id: str = Field(min_length=1, max_length=120)
     source_evidence_id: int = Field(

@@ -1403,6 +1403,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260914_2351_0428e7dff7da_统一雪花主键外键为_bigint.py",
         "migrations/versions/20260915_1440_2b1adb268fdc_增加作业线清线归档状态.py",
         "migrations/versions/20260916_2253_4ce43f66c610_add_workline_operation_tail_index_to_.py",
+        "migrations/versions/20260917_1436_e881b50b63b1_add_picking_task_cancellation_and_links.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

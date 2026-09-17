@@ -113,7 +113,6 @@ class ManualPickingScanFlow:
                     "DRAIN_RECEIVED"
                     if (
                         intent.workline_code == workline.line_code
-                        and intent.plugin_key == workline.plugin_key
                         and isinstance(outcome.result, (ReturnBufferDrainReady, ReturnBufferDrainWait))
                     )
                     else None
@@ -161,11 +160,11 @@ class ManualPickingScanFlow:
             drain = await self._drains.current(db, workline.id) if self._drains is not None else None
             if drain is not None:
                 if not isinstance(drain.result, ReturnBufferDrainReady) or (
-                    drain.result.rack_id,
-                    drain.result.rack_face,
-                ) != (intent.rack_id, intent.rack_face):
+                    intent.rack_id,
+                    intent.rack_face,
+                ) not in {(rack.rack_id, face) for rack in drain.result.racks for face in rack.rack_faces}:
                     return None
-                ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP)
+                ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP, intent.rack_id)
                 if (
                     source is None
                     or ingress is None

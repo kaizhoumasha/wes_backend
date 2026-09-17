@@ -5,7 +5,7 @@ contract_version: 0.3.0
 published_at: pending
 wes_alignment: FINAL_VALIDATION_PENDING
 created_at: 2026-08-13
-updated_at: 2026-09-04
+updated_at: 2026-09-17
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
 scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
 system_stage: pre_release
@@ -2431,7 +2431,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | 容器中间位置事件/搬运最终结果主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
 | 成功 BIN 回架的 `resulted` 早于前置位置应用 | 原冻结消息和结果版本 | WES 返回 `202 / RECEIVED` 并保存待处理 Evidence；后台等待位置事实后继续，WMS 结束本次发送义务 |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
-| `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；是否引用 `previous_operation_id` 由具体业务合同决定 | 等待新事实或到期后，根据当前现场数据重新请求决定；现有 `outbound.*` operation 不传请求链字段，尚未获批的共同 drain operation 以最终审批为准 |
+| `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；当前获批合同不传请求链字段 | 等待新事实或到期后，根据当前现场数据重新请求决定；`drain_rack_decide` 同样使用新 identity 和当前 `required_slot_count` |
 | 其它 `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
 
 ## 5. WMS 交付物和场景验收
@@ -2564,7 +2564,8 @@ CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为
 `return_batch` 不返回换面或换架方案。WMS 暂时不能分配当前面合格空位，包括当前面已没有合格空位时，均返回 `NO_BATCH`。这是正常等待，不转 NG 或 `STATE_CONFLICT`；新入站需求可以驱动换面或换架。
 只要 Bin 仍位于入料缓存、工作区、CTU 或 Transport 中，位置结果未知，或已经以当前面为冻结目标，相关货架面就必须保持在工作位；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不再锁定原来源面。
 
-正常运行时只有新入站需求驱动货架切换。公共 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、严格 DTO、插件执行身份、请求事实、直接前驱和幂等规则已经冻结，当前生产实现仅支持 `PICKING_TASK_COMPLETED`。自动上架的停止或插件切换触发、场景映射、旧架离场去向及新架可靠来源/工作位/到达面尚未实现，保持 `ReviewRequired/BLOCKED`；实现前 WES 停止接纳新任务和新 Bin，保持当前插件与设备配置，不创建该场景的货架切换或退箱 Transport，全部清场义务闭合后才允许停用或切换插件。
+正常运行时只有新入站需求驱动货架切换。公共 `workline.return_buffer.drain_rack_decide@v1` 请求只携带 `workline_code + required_slot_count`，
+`READY` 返回有序 `racks[].rack_faces[]`，精确储位继续由 `return_batch` 分配；插件身份和生命周期原因留在 WES 本地。自动上架的停止或插件切换触发与场景映射尚未实现，保持 `ReviewRequired/BLOCKED`；实现前 WES 停止接纳新任务和新 Bin，保持当前插件与设备配置，不创建该场景的货架切换或退箱 Transport，全部清场义务闭合后才允许停用或切换插件。
 
 Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 调用
 `outbound.bin.work_plan@v1`。WMS 核对 Bin 后返回需要处理的 Cell。

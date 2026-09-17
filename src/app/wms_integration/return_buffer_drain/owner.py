@@ -19,5 +19,4 @@ class ReturnBufferDrainOwnerService:
             and line.id == workline_id
             and line.is_active
             and line.line_code == request.data.workline_code
-            and line.plugin_key == request.data.plugin_key
         )

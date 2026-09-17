@@ -54,6 +54,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_recovery_event_handler = None
         _app.state.wms_picking_task_issued_handler = None
+        _app.state.wms_picking_task_cancel_handler = None
         _app.state.wms_picking_task_plan_delta_handler = None
         _app.state.wms_picking_task_queue_changed_handler = None
         _app.state.wms_manual_bin_completed_handler = None
@@ -110,8 +111,10 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             ),
             task_queue_gateway=task_queue_gateway,
             completion_owner=IntegrationRunWorkLineOwner(),
+            transport_service=transport_runtime.service,
         )
         _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
+        _app.state.wms_picking_task_cancel_handler = outbound_picking_runtime.picking_task_cancel_handler
         _app.state.wms_picking_task_plan_delta_handler = outbound_picking_runtime.picking_task_plan_delta_handler
         _app.state.wms_picking_task_queue_changed_handler = outbound_picking_runtime.picking_task_queue_changed_handler
         _app.state.wms_manual_bin_completed_handler = outbound_picking_runtime.manual_bin_completed_handler
@@ -155,6 +158,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_recovery_event_handler = None
         _app.state.workline_integration_debug_runtime = None
         _app.state.wms_picking_task_issued_handler = None
+        _app.state.wms_picking_task_cancel_handler = None
         _app.state.wms_picking_task_plan_delta_handler = None
         _app.state.wms_picking_task_queue_changed_handler = None
         _app.state.wms_manual_bin_completed_handler = None

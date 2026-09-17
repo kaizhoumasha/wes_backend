@@ -156,13 +156,19 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         )
 
     async def claim_next_queued(
-        self, db: AsyncSession, *, task_type: PickingTaskType, now_ms: int
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        task_type: PickingTaskType,
+        now_ms: int,
     ) -> PickingTask | None:
         columns = cast("Any", PickingTask).__table__.c
         return await db.scalar(
             select(PickingTask)
             .where(
                 columns.status == PickingTaskStatus.QUEUED,
+                columns.workline_id == workline_id,
                 columns.task_type == task_type,
                 or_(columns.not_before_ms.is_(None), columns.not_before_ms <= now_ms),
             )

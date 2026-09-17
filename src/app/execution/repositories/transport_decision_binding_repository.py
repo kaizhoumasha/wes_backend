@@ -85,8 +85,8 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
         result = await db.scalars(
             select(columns.resource_fence_id).where(
                 columns.workline_id == workline_id,
+                columns.picking_task_id == picking_task_id,
                 columns.step.in_(steps),
-                columns.correlation_id.startswith(f"pt:{picking_task_id}:", autoescape=True),
             )
         )
         return {str(resource_id) for resource_id in result.all()}

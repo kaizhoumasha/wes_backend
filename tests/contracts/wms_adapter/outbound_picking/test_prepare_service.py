@@ -57,7 +57,10 @@ class _Tasks:
     async def has_active_for_workline(self, _db: object, _workline_id: int) -> bool:
         return self.active
 
-    async def claim_next_queued(self, _db: object, *, task_type: PickingTaskType, now_ms: int) -> PickingTask | None:
+    async def claim_next_queued(
+        self, _db: object, *, workline_id: int, task_type: PickingTaskType, now_ms: int
+    ) -> PickingTask | None:
+        assert workline_id == 7
         self.claimed_type = task_type
         return self.task
 
@@ -103,6 +106,7 @@ def _task() -> PickingTask:
         dispatch_sequence=10,
         issued_at_ms=1,
         issued_evidence_id=11,
+        workline_id=7,
     )
     task.id = 31
     return task
@@ -293,7 +297,7 @@ async def test_prepare_expected_task_fails_closed_before_mutating_queue_head() -
     assert result.reason is PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT
     assert tasks.task is not None
     assert PickingTaskStatus(tasks.task.status) is PickingTaskStatus.QUEUED
-    assert tasks.task.workline_id is None
+    assert tasks.task.workline_id == 7
     assert tasks.flushed is False
     assert confirmations.kwargs is None
     assert queue.calls == 0

@@ -53,6 +53,8 @@ class PickingTaskConfirmationOwnerService:
         }:
             return False
         allowed_states = {PickingTaskStatus.PREPARING}
+        if operation == PICKING_TASK_PREPARE_OPERATION:
+            allowed_states.add(PickingTaskStatus.CANCELLED)
         if operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION:
             # 已冻结的到位事实义务跨任务推进继续派发，不以业务完成代替 WMS 确认。
             allowed_states |= {PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED}
@@ -73,8 +75,6 @@ class PickingTaskConfirmationOwnerService:
         return bool(
             task is not None
             and PickingTaskStatus(task.status) in allowed_states
-            and isinstance(task.workline_id, int)
-            and task.workline_id > 0
             and isinstance(task.workline_id, int)
             and task.workline_id > 0
         )

@@ -10,7 +10,8 @@
 | `target_rack` / 转运货架 | 离场搬运 | `F01` | `RACK`，货架号 | WMS `departure_decide.READY` 的 `ZONE \| RACK_POSITION` |
 | `bin_source_racks` / 五层货架 | 出库搬运 | `CTU01` | `RACK`，货架号 | `RACK_POSITION` |
 | `bin_source_racks` / 五层货架 | 换面 | `CTU02` | `RACK`，货架号 | 当前实际所在的 `RACK_POSITION` |
-| `bin_source_racks` / 五层货架 | 回库搬运 | `CTU03` | `RACK`，货架号 | `ZONE` |
+| `bin_source_racks` / 五层货架 | 离场搬运 | `CTU03` | `RACK`，货架号 | WMS `departure_decide.READY` 的 `ZONE \| RACK_POSITION` |
+| WorkLine drain 货架 | 离场搬运 | `CTU03` | `RACK`，货架号 | WMS `departure_decide.READY` 的 `ZONE \| RACK_POSITION` |
 
 `rack_id` 与 `RACK.location_code` 必须一致。面向是非空不透明字符串，`"90"`、`"270"` 原样传递，
 不进行数值转换或去空格。换面不得根据计划目标推断当前位置；回库目标遵循 WMS 的权威决定。
@@ -30,9 +31,8 @@
 `510012 / "270" → CTU01 / KT17`。同一时刻能否执行仍由现有资源准入控制。
 
 联调页面第 4 步仍只创建进场 Transport。`manual-picking` 工作线业务以全部 inbound 分段及成员权威成功、结果发布和交接位正确作为
-`feed_complete`，不等待扫码、业务完成或后续回架。已有相关义务闭合后，同架下一面立即创建 CTU02；所有面投料完成后
-直接创建 `CTU03 / RACK → ZONE WH01` 离场，使用原计划 Evidence
-冻结唯一 Transport 身份。当前 PickingTask 获 WMS 完成确认且转运架原进场成功、仍在当前工作位时，可请求转运架
+`feed_complete`，不等待扫码、业务完成或后续回架。已有相关义务闭合后，同架下一面立即创建 CTU02；所有面投料完成后先请求
+`departure_decide`，READY 后按 WMS 原样 destination 创建唯一 CTU03。当前 PickingTask 获 WMS 完成确认且转运架原进场成功、仍在当前工作位时，可请求转运架
 `departure_decide`；请求不等待五层架 CTU03 返回终态，`READY` 后创建 `F01` 到 WMS 决定的原目的地。
 转运货架 `CK04` 换面仍属独立合同。代码接入不代表 WMS/ECS 已接收或现场货架已完成物理闭环。
 
@@ -42,11 +42,12 @@ KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的�
 若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
 
 工作线自动 RackCycle 按绑定 FIVE_LAYER/FIVE_RACK 点位 `capacity` 补足 CTU01 窗口，物理当前架仍最多一个，由 RCS 排队和自主进位。
-CTU02 不释放窗口，匹配 CTU03 已接纳才释放；接纳前 DELIVERY_UNKNOWN/CONFLICT 继续占窗，后续 RECONCILING 以
-`result_deadline_at` 证明此前接纳。CTU02 成功表示旋转后已经回到工作位。上述工作线规则不将联调页面手动动作扩展为自动队列调度。
+CTU02 不释放窗口；同线同架的更晚 CTU03 接纳即释放，已接纳后的失败或对账不重新占窗，提交前
+DELIVERY_UNKNOWN/CONFLICT 仍占窗。该释放只允许补充其他货架；同架复用仍等待 CTU03 `SUCCEEDED`、成功成员和明确
+`RACK_POSITION`。CTU02 成功表示旋转后已经回到工作位。
+上述工作线规则不将联调页面手动动作扩展为自动队列调度。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。
-
 
 ## 第 6–7 步：整批料箱投料
 

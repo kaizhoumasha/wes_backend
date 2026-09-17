@@ -44,6 +44,20 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_line_code_for_update(self, db: AsyncSession, line_code: str) -> WorkLine | None:
+        """按 WMS 业务编码锁定 WorkLine 配置，防止 issued 与停用/换插件并发漂移。"""
+
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(WorkLine)
+            .where(
+                columns.line_code == line_code,
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update(key_share=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_for_update(
         self,
         db: AsyncSession,

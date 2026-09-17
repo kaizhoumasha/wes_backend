@@ -1198,7 +1198,9 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
             role: f"CONFIG-{role}" for role in flow._worklines.line.position_bindings
         }
     drain = SimpleNamespace(
-        result=sdk.ReturnBufferDrainReady("WRONG" if case == "wrong_rack" else "RACK-1", "90")
+        result=sdk.ReturnBufferDrainReady(
+            (sdk.RackFaceSequence("WRONG" if case == "wrong_rack" else "RACK-1", ("90",)),)
+        )
         if case != "pending"
         else None
     )
@@ -1231,8 +1233,8 @@ async def test_drain_wms_response_is_validated_and_published_for_plan_wake():
     flow._drain_reader = SimpleNamespace(
         read=AsyncMock(
             return_value=(
-                SimpleNamespace(workline_code="LINE-1", plugin_key="manual-picking"),
-                sdk.ReturnBufferDrainOutcome(sdk.ReturnBufferDrainReady("R1", "90")),
+                SimpleNamespace(workline_code="LINE-1"),
+                sdk.ReturnBufferDrainOutcome(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))),
             )
         )
     )
