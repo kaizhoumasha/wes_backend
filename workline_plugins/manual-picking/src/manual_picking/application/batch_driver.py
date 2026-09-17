@@ -35,7 +35,7 @@ from .drain_repository import (
     SOURCE_RACK_ROTATE_STEP,
 )
 from .passage_repository import PassageRepository
-from .rack_readiness import has_single_current_rack, rack_ready, ready_rack_projection
+from .rack_readiness import has_single_current_rack, ready_rack_projection
 
 TRANSFER_RACK_OUT_STEP = "MANUAL_PICKING_TRANSFER_RACK_OUT"
 
@@ -98,7 +98,7 @@ class ManualPickingBatchDriver:
                 and task.workline_id == line.id
                 and task.status == "EXECUTION_COMPLETED"
             ):
-                source_count = await self.advance_in_session(db, line, task, require_target=False)
+                source_count = await self.advance_in_session(db, line, task)
         source_count += await self._advance_drain(db, line) if self._drain is not None else 0
         owner = await self._plans.first_completed_transfer_owner_at_position(
             db,
@@ -112,9 +112,9 @@ class ManualPickingBatchDriver:
             return source_count
         return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
 
-    async def advance_in_session(self, db: Any, line: Any, task: Any, *, require_target: bool = True) -> int:
+    async def advance_in_session(self, db: Any, line: Any, task: Any) -> int:
         filled = await self._fill_source_window(db, line, task) if task.status == "EXECUTING" else 0
-        return filled + await self._advance_current_rack(db, line, task, require_target=require_target)
+        return filled + await self._advance_current_rack(db, line, task)
 
     async def _source_window(self, db: Any, line: Any) -> tuple[int, set[str]]:
         # 调用方持有工作线锁；容量仅限制 CTU01 准入，不代表同时在位的物理货架数。
@@ -225,22 +225,10 @@ class ManualPickingBatchDriver:
         )
         return count + 1
 
-    async def _advance_current_rack(  # noqa: PLR0911
-        self, db: Any, line: Any, task: Any, *, require_target: bool
-    ) -> int:
+    async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:
         if not task.target_rack_id or not task.target_rack_face:
             return 0
         bindings = line.position_bindings
-        if require_target and not await rack_ready(
-            db,
-            line,
-            task.target_rack_id,
-            task.target_rack_face,
-            bindings[TRANSFER_RACK.slot_key]["location_id"],
-            positions=self._positions,
-            transports=self._transports,
-        ):
-            return 0
         sources = await self._plans.list_bin_source_racks(db, task.id)
         faces_by_rack: dict[str, list[Any]] = {}
         for row in sources:

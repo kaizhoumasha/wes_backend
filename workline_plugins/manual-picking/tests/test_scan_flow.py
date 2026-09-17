@@ -337,6 +337,26 @@ async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_positio
 
 
 @pytest.mark.asyncio
+async def test_inbound_batch_result_starts_bin_transport_before_target_rack_arrives() -> None:
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
+    )
+    reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
+    result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
+    flow, evidences, _, _, _ = _setup(
+        missing_projection=("RACK", "TRANSFER-1"), batch_reader=reader, batch_result=result
+    )
+    evidence = _wms(30, InboundEvidenceKind.WMS_RESULT, "batch-1", {})
+    evidence.operation = "outbound.bin.inbound_batch@v1"
+    evidences.rows[30] = evidence
+
+    applied = await flow.apply_in_session(object(), 30, workline_id=7)
+
+    assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    result.apply_inbound_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_return_batch_result_uses_confirmed_source_and_does_not_pass_when_rack_position_is_missing() -> None:
     intent = sdk.wms_operations.outbound_bin_return_batch(
         operation_id="batch-2",
