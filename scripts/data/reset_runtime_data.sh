@@ -11,6 +11,7 @@
 #   bash scripts/data/reset_runtime_data.sh --yes --json     # 输出 JSON 摘要
 #   bash scripts/data/reset_runtime_data.sh --yes --include-audit-logs   # 连审计日志一起清
 #   bash scripts/data/reset_runtime_data.sh --yes --no-reset-mocks       # 不重置 Mock WMS
+#   bash scripts/data/reset_runtime_data.sh --yes --no-reset-redis       # 不清 Redis 过程数据
 #   bash scripts/data/reset_runtime_data.sh --yes --force    # 非 APP_DEBUG 环境强制(慎用)
 #   bash scripts/data/reset_runtime_data.sh --transport-task-id transport-... --yes
 #
@@ -20,6 +21,7 @@
 #   - 定向模式不重置 Mock WMS，只删除命中安全条件的单个 TransportTask
 #   - 保留 work_lines/devices/resource_*/workline_positions 等主数据
 #   - 默认连 Mock WMS 一起重置(否则连续重跑会撞 TARGET_POSITION_OCCUPIED)
+#   - 默认清当前数据库缓存命名空间和 Celery broker/result Redis DB，保留认证会话
 #
 
 set -e
@@ -48,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             ARGS+=("$1" "$2")
             shift 2
             ;;
-        --yes|--include-audit-logs|--reset-mocks|--no-reset-mocks|--force|--json|--help|-h)
+        --yes|--include-audit-logs|--reset-mocks|--no-reset-mocks|--reset-redis|--no-reset-redis|--force|--json|--help|-h)
             ARGS+=("$1")
             if [[ "$1" == "--json" ]]; then
                 JSON_MODE=true
@@ -57,7 +59,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo -e "${RED}未知参数: $1${NC}" >&2
-            echo "使用方式: $0 [--yes] [--transport-task-id ID] [--include-audit-logs] [--no-reset-mocks] [--force] [--json]" >&2
+            echo "使用方式: $0 [--yes] [--transport-task-id ID] [--include-audit-logs] [--no-reset-mocks] [--no-reset-redis] [--force] [--json]" >&2
             exit 1
             ;;
     esac

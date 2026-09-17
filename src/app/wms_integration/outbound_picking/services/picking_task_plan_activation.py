@@ -154,6 +154,7 @@ class PickingTaskPlanActivationService:
                 _ = await self._transport_creator.create(
                     db,
                     workline_id=workline_id,
+                    picking_task_id=task.id,
                     source_evidence_id=int(intent.source_evidence_id),
                     correlation_id=(f"pt:{task.id}:e:{intent.source_evidence_id}:rack:{intent.rack_id}"),
                     step=step,
@@ -166,7 +167,7 @@ class PickingTaskPlanActivationService:
             return old_count + len(result.transports) + batch_count + completion_count
 
     async def _pending_bin_racks(self, db: Any, task: Any, decided_racks: set[str]) -> tuple[PickingTaskPlanRack, ...]:
-        rows = await self._plans.list_bin_source_racks(db, task.id)
+        rows = await self._plans.list_active_bin_source_racks(db, task.id)
         grouped: dict[str, list[Any]] = {}
         for row in rows:
             if row.rack_id not in decided_racks:

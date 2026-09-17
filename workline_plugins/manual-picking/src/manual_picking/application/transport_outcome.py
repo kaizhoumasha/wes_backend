@@ -18,7 +18,7 @@ from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultR
 from src.utils.timezone import timezone
 
 from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
-from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
+from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DRAIN_RACK_ROTATE_STEP
 
 if TYPE_CHECKING:
     from wes_plugin_sdk import ReturnBufferDrainIntent, ReturnBufferDrainOutcome
@@ -32,7 +32,7 @@ class BindingRepositoryPort(Protocol):
 
 
 class EvidenceRepositoryPort(Protocol):
-    async def get_by_id_without_lock(self, db: Any, evidence_id: int) -> InboundEvidence | None: ...
+    async def get_by_id(self, db: Any, evidence_id: int) -> InboundEvidence | None: ...
 
 
 def _drain_business_identity(
@@ -40,12 +40,12 @@ def _drain_business_identity(
 ) -> dict[str, str]:
     if (
         not isinstance(decision.result, ReturnBufferDrainReady)
-        or binding.correlation_id != f"drain:{intent.operation_id}"
-        or decision.result.rack_id != binding.resource_fence_id
+        or not binding.correlation_id.startswith(f"drain:{intent.operation_id}:rack:")
+        or binding.resource_fence_id not in {rack.rack_id for rack in decision.result.racks}
         or any(member.object_id != binding.resource_fence_id for member in outcome.members)
     ):
         raise ValueError("manual-picking drain Transport outcome lacks matching READY Evidence")
-    return {"drain_operation_id": intent.operation_id, "rack_id": decision.result.rack_id}
+    return {"drain_operation_id": intent.operation_id, "rack_id": binding.resource_fence_id}
 
 
 class ManualPickingTransportOutcomePublisher:
@@ -78,14 +78,20 @@ class ManualPickingTransportOutcomePublisher:
         if (
             binding.step
             not in rack_steps
-            | {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP}
+            | {
+                SOURCE_RACK_OUT_STEP,
+                TRANSFER_RACK_OUT_STEP,
+                DRAIN_RACK_IN_STEP,
+                DRAIN_RACK_ROTATE_STEP,
+                DRAIN_RACK_OUT_STEP,
+            }
             | batch_operations.keys()
         ):
             raise ValueError("manual-picking Transport binding step 非法")
         if outcome.caller.workline_id != str(binding.workline_id):
             raise ValueError("manual-picking Transport outcome WorkLine 不匹配")
-        source = await self._evidences.get_by_id_without_lock(db, binding.source_evidence_id)
-        if binding.step in {DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP}:
+        source = await self._evidences.get_by_id(db, binding.source_evidence_id)
+        if binding.step in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
             intent, decision = await self._drain_reader.read(db, source, workline_id=binding.workline_id)
             business_identity = _drain_business_identity(binding, intent, decision, outcome)
         elif binding.step in rack_steps:
@@ -100,19 +106,11 @@ class ManualPickingTransportOutcomePublisher:
         elif binding.step in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP}:
             if source is None or any(member.object_id != binding.resource_fence_id for member in outcome.members):
                 raise LookupError("manual-picking Transport outcome 缺少原货架离场依据")
-            if binding.step == SOURCE_RACK_OUT_STEP and source.operation == "outbound.picking_task.plan_delta@v1":
-                task_id = source.normalized_payload.get("data", {}).get("task_id")
-                if not isinstance(task_id, str) or not task_id:
-                    raise ValueError("manual-picking 原计划 Evidence 缺少 PickingTask identity")
-                business_identity = {"picking_task_id": task_id, "rack_id": binding.resource_fence_id}
-            else:
-                if (
-                    source.kind != InboundEvidenceKind.WMS_RESULT
-                    or source.operation != RACK_DEPARTURE_OPERATION
-                    or source.operation_id != binding.correlation_id
-                ):
-                    raise LookupError("manual-picking Transport outcome 缺少原离场决定")
-                business_identity = {"rack_id": binding.resource_fence_id}
+            if source.kind != InboundEvidenceKind.WMS_RESULT or source.operation != RACK_DEPARTURE_OPERATION:
+                raise LookupError("manual-picking Transport outcome 缺少原离场决定")
+            business_identity = {"rack_id": binding.resource_fence_id}
+            if binding.picking_task_id is not None:
+                business_identity["picking_task_id"] = str(binding.picking_task_id)
         else:
             if (
                 source is None

@@ -1069,11 +1069,11 @@ async def test_finalize_unsent_debug_task_records_terminal_outcome_without_resen
     )
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        assert await service.finalize_unsent_debug_task_in_session(db, handle.transport_task_id) is True
+        assert await service.finalize_unsent_task_in_session(db, handle.transport_task_id) is True
 
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "FAILED"
-    assert snapshot.reason_code == "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND"
+    assert snapshot.reason_code == "TRANSPORT_WITHDRAWN_BEFORE_SEND"
     replacement = await service.move_rack(
         new_uuid7(),
         caller,
@@ -1118,7 +1118,7 @@ async def test_finalize_unsent_debug_task_refreshes_cached_task_before_decision(
             .execution_options(synchronize_session=False)
         )
 
-        assert await service.finalize_unsent_debug_task_in_session(db, handle.transport_task_id) is False
+        assert await service.finalize_unsent_task_in_session(db, handle.transport_task_id) is False
 
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "PENDING"

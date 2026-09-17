@@ -617,7 +617,7 @@ class TransportDebugRunService:
             if confirmation.status != WmsConfirmationStatus.COMPLETED:
                 return "WAIT"
             evidence = (
-                await self._wms_evidence.get_by_id_without_lock(db, confirmation.response_evidence_id)
+                await self._wms_evidence.get_by_id(db, confirmation.response_evidence_id)
                 if confirmation.response_evidence_id is not None
                 else None
             )
@@ -1118,7 +1118,7 @@ class TransportDebugRunService:
         for task_id, task in tasks.items():
             if task.status in _TERMINAL_TRANSPORT_STATUSES:
                 continue
-            if not await self._transport.is_unsent_debug_task_finalizable_in_session(db, task_id):
+            if not await self._transport.is_unsent_task_finalizable_in_session(db, task_id):
                 return False
         return True
 
@@ -1142,7 +1142,11 @@ class TransportDebugRunService:
         tasks = await self._repository.list_transport_tasks(db, task_ids)
         for task_id, task in tasks.items():
             if task.status == TransportTaskStatus.PENDING.value:
-                _ = await self._transport.finalize_unsent_debug_task_in_session(db, task_id)
+                _ = await self._transport.finalize_unsent_task_in_session(
+                    db,
+                    task_id,
+                    reason_code="TRANSPORT_DEBUG_ABORTED_BEFORE_SEND",
+                )
 
     async def _publish_update(self, payload: dict[str, object]) -> None:
         try:

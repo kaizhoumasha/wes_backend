@@ -146,7 +146,10 @@ class PickingTaskPrepareCoordinator:
         if await self._tasks.has_active_for_workline(db, workline_id):
             return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
         task = await self._tasks.claim_next_queued(
-            db, task_type=PickingTaskType(task_type.value), now_ms=_timestamp_ms(current)
+            db,
+            workline_id=workline_id,
+            task_type=PickingTaskType(task_type.value),
+            now_ms=_timestamp_ms(current),
         )
         if task is None:
             return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK)
@@ -164,7 +167,6 @@ class PickingTaskPrepareCoordinator:
         )
         request = encode_request(intent, timestamp=_timestamp_ms(current))
         task.status = PickingTaskStatus.PREPARING
-        task.workline_id = workline_id
         await self._tasks.flush(db)
         acceptance = await self._confirmations.create_or_get(
             db,

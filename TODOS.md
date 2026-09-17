@@ -53,7 +53,6 @@ WorkLine 仍需在不越过队首、不释放未知位置的前提下向 WMS 请
 **Priority:** P1
 
 **Depends on:** Issue #254 的公共合同、任务完成分支、`return_batch`、货架循环、位置事实和 FIFO 合同完成并稳定。
-
 ---
 
 ### workline_integration_debug 补充 drain operation 调试支持

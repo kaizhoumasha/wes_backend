@@ -12,7 +12,6 @@ from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBat
 from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceKind,
-    PositionProjection,
     TransportDecisionBinding,
     WmsConfirmation,
     WmsConfirmationStatus,
@@ -50,7 +49,7 @@ class BatchRepository:
         self._history = history or BinBatchResultReader()
 
     async def occupied_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """CTU01 按货架占窗；仅同轮 CTU03 已接纳事实释放准入名额。"""
+        """CTU01 按货架占窗；更晚的同架 CTU03 接纳后释放准入名额。"""
         bindings = TransportDecisionBinding.__table__
         transports = TransportTask.__table__
         departures = bindings.alias("departures")
@@ -61,14 +60,15 @@ class BatchRepository:
             .where(
                 departures.c.workline_id == bindings.c.workline_id,
                 departures.c.resource_fence_id == bindings.c.resource_fence_id,
-                departures.c.source_evidence_id == bindings.c.source_evidence_id,
+                departures.c.id > bindings.c.id,
                 or_(
                     (bindings.c.step == SOURCE_RACK_IN_STEP) & (departures.c.step == SOURCE_RACK_OUT_STEP),
                     (bindings.c.step == DRAIN_RACK_IN_STEP) & (departures.c.step == DRAIN_RACK_OUT_STEP),
                 ),
+                departure_tasks.c.kind == "RACK_MOVE",
+                departure_tasks.c.authority_workline_id == bindings.c.workline_id,
                 or_(
                     departure_tasks.c.status.in_(("ACCEPTED", "SUCCEEDED", "FAILED")),
-                    # 提交未知也会直接进入 RECONCILING；保留的结果期限才证明曾经接纳。
                     (departure_tasks.c.status == "RECONCILING") & departure_tasks.c.result_deadline_at.is_not(None),
                 ),
             )
@@ -88,11 +88,10 @@ class BatchRepository:
         return set(rows.all())
 
     async def fenced_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """容量可在接纳时释放；同架复用须等最近 CTU03 的权威终态与明确位置。"""
+        """同架复用只等待最近离场的权威成功回调与精确最终位置。"""
         bindings = TransportDecisionBinding.__table__
         departures = TransportTask.__table__
         members = TransportMember.__table__.c
-        projections = PositionProjection.__table__.c
         newer = bindings.alias("newer_departure")
         departure_steps = (SOURCE_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP)
         has_newer = (
@@ -107,7 +106,6 @@ class BatchRepository:
         )
         known_departure = (
             select(members.id)
-            .join(PositionProjection, projections.source_transport_task_id == members.transport_task_id)
             .where(
                 departures.c.status == "SUCCEEDED",
                 departures.c.kind == "RACK_MOVE",
@@ -117,17 +115,7 @@ class BatchRepository:
                 members.object_id == bindings.c.resource_fence_id,
                 members.status == "SUCCEEDED",
                 members.position_unknown.is_(False),
-                members.final_position_json["kind"].as_string().in_(("ZONE", "RACK_POSITION")),
-                members.final_position_json["kind"].as_string() == members.target_json["kind"].as_string(),
-                members.final_position_json["location_code"].as_string()
-                == members.target_json["location_code"].as_string(),
-                projections.workline_id == bindings.c.workline_id,
-                projections.object_type == "RACK",
-                projections.object_id == bindings.c.resource_fence_id,
-                projections.position_unknown.is_(False),
-                projections.position_json["kind"].as_string() == members.final_position_json["kind"].as_string(),
-                projections.position_json["location_code"].as_string()
-                == members.final_position_json["location_code"].as_string(),
+                members.final_position_json["kind"].as_string() == "RACK_POSITION",
             )
             .exists()
         )

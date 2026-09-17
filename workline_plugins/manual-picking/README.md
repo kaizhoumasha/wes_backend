@@ -3,7 +3,7 @@
 插件标识 `manual-picking`，显示名称“人工拣料”，仅支持 `MANUAL` 工作线。
 负责传送带料箱人工拣料和退料货架直接取料两条出库路径，不承担人工入库。
 
-当前代码已包含声明与装配、PickingTask prepare 与计划资源进场决策、原 Transport 结果接收、
+当前代码已包含声明与装配、PickingTask prepare、发布与取消、计划资源进场决策、原 Transport 结果接收、
 四点扫码、WMS 料箱准入与完成、进箱/退箱批次、五层来源架窗口与换面/离场、PickingTask 完成及任务完成后的 RETURN_BUFFER 排空。
 退料货架直接取料与现场物理验收仍未完成；本机 Mock 和单元测试不代表现场验收。
 `manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
@@ -46,23 +46,28 @@ Transport 结果按原 binding 及对应计划或 drain READY Evidence 校验后
 `TRANSPORT_RESULT` Evidence；只有该事务提交成功，宿主才推进结果发布游标。插件消费时再次核对原
 Transport 身份和成功终点；`UNKNOWN` 只留证，不推定货架到位或解除任务占用。
 CTU01 在 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占窗；CTU02 不释放名额。
-只有匹配同一 WorkLine、货架和原进场 Evidence 的 CTU03 接纳才释放：持久化 `ACCEPTED | SUCCEEDED | FAILED`，
-或带非空 `result_deadline_at` 的 `RECONCILING`；接纳前 delivery-unknown/conflict 仍占窗。接纳仅允许补窗，不证明物理离场。
+同一 WorkLine、同一货架且晚于该进场 binding 的 CTU03 接纳即释放名额；不要求离场与进场使用相同 Evidence。
+已接纳后的失败或对账不重新占窗，提交前 delivery-unknown/conflict 仍占窗。该释放只允许补充其他货架；同架复用仍等待
+CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`，实际库位不要求等于请求中的动态 `ZONE`。
 当前架按原 CTU01/CTU02 成功、成员结果和绑定工作位的精确 rack/face 投影确定，不按计划顺序选取；CTU02 成功表示旋转后已返回工作位。
 
 `feed_complete` 只要求当前面最终冻结清单的全部 inbound 分段 Transport 与成员权威成功、结果已发布且终点为绑定 HANDOFF_POSITION；
 无分段的最终 `RACK_FACE_DONE` 同样成立。它不等待 SCAN、业务完成或后续回架。已有可靠义务闭合后，立即创建同架下一面 CTU02，
-或在该架所有面投料完成时直接创建 CTU03 到固定 `ZONE WH01`。投料未完成时只在分段间隙最多尝试一次机会式 `return_batch`，
+或在该架所有面投料完成时请求 `outbound.rack.departure_decide@v1`，READY 后按 WMS 原样 destination 创建 CTU03。投料未完成时只在分段间隙最多尝试一次机会式 `return_batch`，
 `NO_BATCH` 不阻断下一段投料。中间分段继续等待前段 SCAN1 清空入口；末段成功后的换面/换架不等待 SCAN1。
 
 RETURN_BUFFER 是 WorkLine 级跨任务 FIFO，正常回架使用当前权威 rack/face，不要求回原货架或原面。
 PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务；已有绑定的 `PREPARING | EXECUTING` 或成功 claim 的任务优先承接 FIFO。
-只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，原因是 `PICKING_TASK_COMPLETED`。
-请求冻结非空 FIFO 前缀；READY 选择 rack/face 并保留该前缀容量，WAIT 到期以新 identity 和直接 `previous_operation_id` 重求值。
-已创建 drain 链不被后来任务取消：共享窗口创建 CTU01，等待精确权威到位后连续使用普通 `return_batch`，保留 FIFO 及未闭合义务直到排空，再创建 CTU03。
+只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`。请求只携带
+`workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回有序 `racks[].rack_faces[]`，WAIT 到期以新
+identity 和当前数量重求值。已创建 drain 链不被后来任务取消：按货架和面顺序共享 CTU01/CTU02 窗口，等待精确权威到位后连续使用普通
+`return_batch`，保留 FIFO 及未闭合义务直到排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
+
+WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或在 `EXECUTING` 中按
+`PLAN_MEMBERS` 撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
 
 SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
 `SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。

@@ -34,6 +34,11 @@ class DirectPickExecution(EnterpriseMixin, DataTableMixin, table=True):
     slot_id: str = Field(max_length=100)
     plan_revision: int = Field(sa_type=BigInteger)
     source_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
+    cancelled_evidence_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.inbound_evidences.id",
+        sa_type=SQL_COMPAT_BIGINT,
+    )
 
 
 class PickingTaskBinSourceRack(EnterpriseMixin, DataTableMixin, table=True):
@@ -56,3 +61,8 @@ class PickingTaskBinSourceRack(EnterpriseMixin, DataTableMixin, table=True):
     rack_face: str = Field(min_length=1, max_length=10)
     plan_revision: int = Field(sa_type=BigInteger)
     source_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
+    cancelled_evidence_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.inbound_evidences.id",
+        sa_type=SQL_COMPAT_BIGINT,
+    )

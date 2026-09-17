@@ -140,6 +140,7 @@ class PickingTaskPlanDeltaRepository:
                     tasks.status.in_((PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED)),
                     members.rack_id == rack_id,
                     members.rack_face == rack_face,
+                    members.cancelled_evidence_id.is_(None),
                     members.plan_revision <= tasks.last_applied_plan_revision,
                 )
                 .limit(1)
@@ -152,6 +153,15 @@ class PickingTaskPlanDeltaRepository:
         result = await db.scalars(
             select(PickingTaskBinSourceRack)
             .where(columns.picking_task_id == task_id)
+            .order_by(columns.plan_revision, columns.id)
+        )
+        return list(result.all())
+
+    async def list_active_bin_source_racks(self, db: AsyncSession, task_id: int) -> list[PickingTaskBinSourceRack]:
+        columns = PickingTaskBinSourceRack.__table__.c
+        result = await db.scalars(
+            select(PickingTaskBinSourceRack)
+            .where(columns.picking_task_id == task_id, columns.cancelled_evidence_id.is_(None))
             .order_by(columns.plan_revision, columns.id)
         )
         return list(result.all())
@@ -238,7 +248,7 @@ class PickingTaskPlanDeltaRepository:
                 )
             await db.flush()
         bin_racks = (
-            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
+            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_faces
         )
         for batch in batched(bin_racks, MEMBER_BATCH_SIZE, strict=False):
             for rack in batch:

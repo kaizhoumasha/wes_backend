@@ -51,6 +51,9 @@ class Plans:
     async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.rows
 
+    async def list_active_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
+        return self.rows
+
     async def source_transport_matches(self, _db, *_args):  # type: ignore[no-untyped-def]
         return self.matches
 
@@ -124,7 +127,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
         target_rack_face="A",
     )
     positions, plans, flow, creator = Positions(), Plans(), Flow(), Creator()
-    departure_reader = SimpleNamespace(latest=AsyncMock(return_value=None))
+    departure_reader = SimpleNamespace(
+        latest=AsyncMock(return_value=None),
+        latest_for_workline=AsyncMock(return_value=None),
+    )
     departure_scheduler = SimpleNamespace(create_in_session=AsyncMock())
     transports = SimpleNamespace(get_task=AsyncMock(return_value=SimpleNamespace(status="SUCCEEDED")))
     tasks = SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task))
@@ -166,7 +172,7 @@ async def test_same_rack_rotates_once_after_closed_face_and_uses_planned_next_fa
 
 
 @pytest.mark.asyncio
-async def test_completed_source_rack_returns_directly_to_wh01_without_wms_decision() -> None:
+async def test_completed_source_rack_requests_workline_owned_departure_decision() -> None:
     driver, line, task, positions, plans, flow, creator, reader, scheduler = setup_driver()
     task.status = "EXECUTION_COMPLETED"
     plans.owner = task
@@ -175,11 +181,12 @@ async def test_completed_source_rack_returns_directly_to_wh01_without_wms_decisi
     flow.complete.add(("R1", "270"))
 
     assert await driver.advance_completed_in_session(object(), line) == 1
-    scheduler.create_in_session.assert_not_awaited()
+    scheduler.create_in_session.assert_awaited_once()
     reader.latest.assert_not_awaited()
-    assert creator.depart[0]["source_evidence_id"] == 51
-    assert creator.depart[0]["rack_id"] == "R1"
-    assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH01")
+    intent = scheduler.create_in_session.await_args.args[1]
+    assert intent.task_id is None and intent.rack_id == "R1"
+    assert scheduler.create_in_session.await_args.kwargs["workline_id"] == 7
+    assert creator.depart == []
 
 
 @pytest.mark.asyncio
@@ -361,15 +368,29 @@ async def test_source_window_fills_stable_plan_order_once_without_target_readine
 
 
 @pytest.mark.asyncio
-async def test_source_departure_preserves_cycle_ingress_evidence_across_later_plan_faces():
-    driver, line, task, positions, plans, flow, creator, _, _ = setup_driver()
+async def test_source_departure_uses_authoritative_departure_evidence_and_destination():
+    driver, line, task, positions, plans, flow, creator, reader, _ = setup_driver()
     task.status = "EXECUTION_COMPLETED"
     plans.rows[1].source_evidence_id = 99
     positions.source.arrival_face = "270"
     flow.complete.add(("R1", "270"))
+    reader.latest_for_workline.return_value = SimpleNamespace(
+        intent=sdk.RackDepartureIntent(
+            operation_id="019f3405-2200-7b01-8b01-000000000001",
+            task_id=None,
+            rack_id="R1",
+            current_location=sdk.TransportRackPosition("FIVE-POS"),
+            current_face="270",
+        ),
+        status=WmsConfirmationStatus.COMPLETED,
+        outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
+        evidence_id=88,
+        completed_at=timezone.now_for_db(),
+    )
     assert await driver.advance_in_session(object(), line, task) == 1
-    assert creator.depart[0]["source_evidence_id"] == 51
+    assert creator.depart[0]["source_evidence_id"] == 88
     assert creator.depart[0]["correlation_id"] == "pt:31:source-out:R1"
+    assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
 
 
 @pytest.mark.asyncio
@@ -380,7 +401,8 @@ async def test_feed_complete_departure_does_not_start_new_return_or_wait_for_pas
     flow.created = True
     driver._passages.has_bin_before_return_buffer.return_value = True
     assert await driver.advance_in_session(object(), line, task) == 1
-    assert len(creator.depart) == 1
+    assert creator.depart == []
+    driver._departure_scheduler.create_in_session.assert_awaited_once()
     assert flow.calls == []
     driver._passages.has_bin_before_return_buffer.assert_not_awaited()
 

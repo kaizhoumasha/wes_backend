@@ -3,7 +3,13 @@ from src.app.wms_integration.outbound_picking.models import DirectPickExecution,
 
 def test_plan_members_have_exact_business_identity_and_revision_zero_default():
     task = PickingTask(
-        task_id="T", task_type="MANUAL", queue_revision=1, dispatch_sequence=1, issued_at_ms=1, issued_evidence_id=1
+        task_id="T",
+        task_type="MANUAL",
+        queue_revision=1,
+        dispatch_sequence=1,
+        issued_at_ms=1,
+        issued_evidence_id=1,
+        workline_id=2,
     )
     assert task.last_applied_plan_revision == 0
     assert task.plan_blocked_evidence_id is None
@@ -35,6 +41,7 @@ def test_outbound_picking_runtime_exposes_only_wms_event_handlers() -> None:
 
     assert set(runtime.__dataclass_fields__) == {
         "picking_task_issued_handler",
+        "picking_task_cancel_handler",
         "picking_task_plan_delta_handler",
         "picking_task_queue_changed_handler",
         "manual_bin_completed_handler",
@@ -48,6 +55,9 @@ class Sessions:
 
 
 def event(revision=1, **data):
+    for rack in data.get("added_bin_source_racks", ()):
+        if "rack_face" in rack:
+            rack["rack_faces"] = rack.pop("rack_face")
     return PickingTaskPlanDeltaEvent.model_validate(
         {
             "operation": OP,
@@ -59,7 +69,7 @@ def event(revision=1, **data):
                 **(
                     {"target_rack": {"rack_id": "R", "rack_face": " A "}}
                     if revision == 1
-                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_face": ["A"]}]}
+                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_faces": ["A"]}]}
                 ),
                 **data,
             },

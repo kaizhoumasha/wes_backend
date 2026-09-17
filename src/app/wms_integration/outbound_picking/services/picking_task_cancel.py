@@ -1,21 +1,25 @@
-"""在共享 Evidence 事务内应用 PickingTask 队列版本。"""
+"""在共享 Evidence 事务内取消 PickingTask 或其计划成员。"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.models import InboundEvidenceKind
 from src.app.execution.services import InboundEvidenceConflictResult, InboundEvidenceService
-from src.app.wms_adapter.outbound_picking.queue_changed_event_handler import (
-    PickingTaskQueueChangedPersistenceResult as Result,
+from src.app.wms_adapter.outbound_picking.cancel_event_handler import (
+    PickingTaskCancelPersistenceResult as Result,
 )
-from src.app.wms_adapter.outbound_picking.queue_changed_wire import (
-    PickingTaskQueueChangedEvent,
-    PickingTaskQueueChangedInvalidData,
+from src.app.wms_adapter.outbound_picking.cancel_wire import (
+    PickingTaskCancelEvent,
+    PickingTaskCancelInvalidData,
+    PickingTaskCancelMembersData,
 )
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
+from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
+    PickingTaskCancelRepository,
+)
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -26,25 +30,35 @@ if TYPE_CHECKING:
     from src.app.execution.models import InboundEvidence
 
 
-class PickingTaskQueueChangedService:
+class TransportFinalizer(Protocol):
+    async def finalize_unsent_task_in_session(
+        self, db: AsyncSession, transport_task_id: str, *, reason_code: str = ...
+    ) -> bool: ...
+
+
+class PickingTaskCancelService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
         evidence_service: InboundEvidenceService | None = None,
         task_repository: PickingTaskRepository | None = None,
+        cancel_repository: PickingTaskCancelRepository | None = None,
+        transport_service: TransportFinalizer | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = task_repository or picking_task_repository
+        self._cancel = cancel_repository or PickingTaskCancelRepository()
+        self._transport = transport_service
 
     async def record(
         self,
-        envelope: PickingTaskQueueChangedEvent | PickingTaskQueueChangedInvalidData,
+        envelope: PickingTaskCancelEvent | PickingTaskCancelInvalidData,
         *,
         received_at: datetime,
     ) -> Result:
-        invalid = isinstance(envelope, PickingTaskQueueChangedInvalidData)
+        invalid = isinstance(envelope, PickingTaskCancelInvalidData)
         payload = envelope.raw_envelope if invalid else envelope.model_dump(mode="json", exclude_none=True)
         operation, operation_id = payload["operation"], payload["operation_id"]
         async with self._sessions.begin() as db:
@@ -63,43 +77,56 @@ class PickingTaskQueueChangedService:
             evidence = acceptance.evidence
             if isinstance(acceptance, InboundEvidenceConflictResult):
                 return self._result(evidence, "CONFLICT", "IDEMPOTENCY_CONFLICT")
-            if isinstance(envelope, PickingTaskQueueChangedInvalidData):
+            if invalid:
                 evidence.processed_at = evidence.received_at
                 return self._result(evidence, "REJECTED", "INVALID_DATA")
             if acceptance.duplicate:
-                if evidence.apply_status == Status.APPLIED:
+                if Status(evidence.apply_status) is Status.APPLIED:
                     return self._result(evidence, "DUPLICATE")
-                if evidence.apply_status == Status.RECONCILING:
-                    reason = await self._tasks.first_queue_rejection(db, cast("int", evidence.id))
+                if Status(evidence.apply_status) is Status.RECONCILING:
+                    reason = await self._cancel.first_rejection(db, cast("int", evidence.id))
                     if reason is None:
-                        raise RuntimeError("队列拒绝缺少首次原因")
+                        raise RuntimeError("取消拒绝缺少首次 reason_code")
                     return self._result(evidence, "CONFLICT", reason)
-                raise RuntimeError("队列更新 Evidence 处于非法状态")
-            data = envelope.data
-            # 与 issued 共用任务身份和目标优先序锁；prepare 的领取由同一任务行锁串行化。
-            await self._tasks.lock_task_identity(db, data.task_id)
-            if data.dispatch_sequence is not None:
-                await self._tasks.lock_dispatch_sequence(db, data.dispatch_sequence)
-            task = await self._tasks.get_by_task_id_for_update(db, data.task_id)
+                raise RuntimeError("PickingTask 取消 Evidence 处于非法状态")
+            await self._tasks.lock_task_identity(db, envelope.data.task_id)
+            task = await self._tasks.get_by_task_id_for_update(db, envelope.data.task_id)
             if task is not None:
                 evidence.picking_task_id = task.id
-            reason = None
+            reason: str | None = None
             if task is None:
                 reason = "REFERENCE_CONFLICT"
-            elif task.status != PickingTaskStatus.QUEUED or task.plan_blocked_evidence_id is not None:
+            elif envelope.data.cancel_scope == "TASK":
+                if (
+                    task.status not in (PickingTaskStatus.QUEUED, PickingTaskStatus.PREPARING)
+                    or task.last_applied_plan_revision != 0
+                ):
+                    reason = "STATE_CONFLICT"
+                else:
+                    task.status = PickingTaskStatus.CANCELLED
+                    task.increment_version()
+            elif task.status != PickingTaskStatus.EXECUTING:
                 reason = "STATE_CONFLICT"
-            elif data.queue_revision != task.queue_revision + 1:
-                reason = "REVISION_CONFLICT"
-            elif (
-                (data.dispatch_sequence is None or data.dispatch_sequence == task.dispatch_sequence)
-                and (data.not_before is None or data.not_before == task.not_before_ms)
-            ) or (
-                data.dispatch_sequence is not None
-                and await self._tasks.queued_sequence_is_occupied(
-                    db, data.dispatch_sequence, excluding_task_id=cast("int", task.id)
+            elif not isinstance(envelope.data, PickingTaskCancelMembersData):
+                raise RuntimeError("PLAN_MEMBERS 取消缺少成员合同")
+            else:
+                matched, transport_task_ids = await self._cancel.cancel_members(
+                    db,
+                    task_id=cast("int", task.id),
+                    data=envelope.data,
+                    evidence_id=cast("int", evidence.id),
                 )
-            ):
-                reason = "STATE_CONFLICT"
+                if not matched:
+                    reason = "REFERENCE_CONFLICT"
+                else:
+                    if self._transport is not None:
+                        for transport_task_id in transport_task_ids:
+                            _ = await self._transport.finalize_unsent_task_in_session(
+                                db,
+                                transport_task_id,
+                                reason_code="TRANSPORT_WITHDRAWN_BEFORE_SEND",
+                            )
+                    task.increment_version()
             if reason is not None:
                 _ = await self._evidence.record_conflict(
                     db,
@@ -111,15 +138,8 @@ class PickingTaskQueueChangedService:
                 )
                 evidence.apply_status = Status.RECONCILING
                 evidence.processed_at = received_at
+                await self._tasks.flush(db)
                 return self._result(evidence, "CONFLICT", reason)
-            if task is None:
-                raise RuntimeError("队列更新缺少任务")
-            if data.dispatch_sequence is not None:
-                task.dispatch_sequence = data.dispatch_sequence
-            if data.not_before is not None:
-                task.not_before_ms = data.not_before
-            task.queue_revision = data.queue_revision
-            task.increment_version()
             evidence.apply_status = Status.APPLIED
             evidence.processed_at = received_at
             await self._tasks.flush(db)
@@ -128,8 +148,10 @@ class PickingTaskQueueChangedService:
     @staticmethod
     def _result(evidence: InboundEvidence, code: str, reason: str | None = None) -> Result:
         return Result(
-            code=code, timestamp_ms=int(timezone.to_utc(evidence.received_at).timestamp() * 1000), reason_code=reason
+            code=code,
+            timestamp_ms=int(timezone.to_utc(evidence.received_at).timestamp() * 1000),
+            reason_code=reason,
         )
 
 
-__all__ = ["PickingTaskQueueChangedService"]
+__all__ = ["PickingTaskCancelService"]

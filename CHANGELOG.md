@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.2.0] - 2026-09-17
+
+### Added
+
+- WMS 可取消 PickingTask 整单或计划成员，并保留 Evidence、幂等和运输撤回结果。
+- 人工拣料工作线支持多货架、多货面排空、恢复和取消后的可靠顺序控制。
+
+### Changed
+
+- 统一货架离场、物料决策和运输执行路径，强化 WorkLine 绑定、任务关联和现场事实追踪。
+- 扩展 WMS/WES 合同、OpenAPI、运行时数据重置工具及插件接口，补齐取消、计划变更和回箱流程。
+
+### Fixed
+
+- 修复未发送运输任务在取消、调试运行和重启场景下的状态收敛与资源围栏问题。
+
 ## [0.47.1.0] - 2026-09-16
 
 ### Fixed

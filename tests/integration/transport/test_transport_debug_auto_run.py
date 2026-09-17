@@ -109,7 +109,7 @@ class _PersistingTransport:
         self.created.append((task_id, request))
         return TransportHandle(task_id, request.client_request_id)
 
-    async def is_unsent_debug_task_finalizable_in_session(self, db: Any, task_id: str) -> bool:
+    async def is_unsent_task_finalizable_in_session(self, db: Any, task_id: str) -> bool:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
         if task is None:
             return False

@@ -2,15 +2,14 @@
 
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, TypeAdapter, WithJsonSchema, model_validator
-from wes_plugin_sdk import ReturnBufferDrainReason
+from pydantic import ConfigDict, Field, TypeAdapter, model_validator
 
 from src.app.wms_adapter.outbound_picking import response_wire
-from src.app.wms_adapter.outbound_picking.return_batch_wire import Identifier, ReturnCandidate, ReturnSource
+from src.app.wms_adapter.outbound_picking.return_batch_wire import Identifier
 from src.app.wms_adapter.wire_common import (
-    UUIDV7_PATTERN,
     NonnegativeMilliseconds,
     OperationId,
+    PositiveInteger,
     RackFaceText,
     StrictWireModel,
 )
@@ -23,33 +22,9 @@ class DrainWireModel(StrictWireModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class DrainSource(ReturnSource, DrainWireModel):
-    pass
-
-
-class DrainCandidate(ReturnCandidate, DrainWireModel):
-    source: DrainSource
-
-
 class DrainData(DrainWireModel):
     workline_code: Identifier
-    plugin_key: Identifier
-    drain_reason: ReturnBufferDrainReason
-    return_candidates: Annotated[list[DrainCandidate], Field(min_length=1, max_length=4)]
-    previous_operation_id: Annotated[
-        OperationId | None, WithJsonSchema({"type": "string", "pattern": UUIDV7_PATTERN})
-    ] = None
-
-    @model_validator(mode="after")
-    def validate_fifo_and_predecessor(self):
-        if "previous_operation_id" in self.model_fields_set and self.previous_operation_id is None:
-            raise ValueError("previous_operation_id 不得为 null")
-        candidates = self.return_candidates
-        if [c.sequence_no for c in candidates] != list(range(1, len(candidates) + 1)):
-            raise ValueError("候选必须从 1 连续编号")
-        if len({c.bin_code for c in candidates}) != len(candidates):
-            raise ValueError("候选 Bin 不得重复")
-        return self
+    required_slot_count: PositiveInteger
 
 
 class DrainRequest(DrainWireModel):
@@ -58,17 +33,28 @@ class DrainRequest(DrainWireModel):
     timestamp: NonnegativeMilliseconds
     data: DrainData
 
+
+class DrainRack(DrainWireModel):
+    rack_id: Identifier
+    rack_faces: Annotated[list[RackFaceText], Field(min_length=1)]
+
     @model_validator(mode="after")
-    def validate_new_identity(self):
-        if self.data.previous_operation_id == self.operation_id:
-            raise ValueError("重新求值必须使用新 operation_id")
+    def validate_faces(self):
+        if len(self.rack_faces) != len(set(self.rack_faces)):
+            raise ValueError("同一货架面不得重复")
         return self
 
 
 class DrainReady(DrainWireModel):
     result: Literal["READY"]
-    rack_id: Identifier
-    rack_face: RackFaceText
+    racks: Annotated[list[DrainRack], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def validate_racks(self):
+        rack_ids = [rack.rack_id for rack in self.racks]
+        if len(rack_ids) != len(set(rack_ids)):
+            raise ValueError("货架不得重复")
+        return self
 
 
 class DrainWait(DrainWireModel):
@@ -137,4 +123,8 @@ def parse_response(
         raise observed_contract_error(
             observation, "响应 identity 不匹配", path=("operation_id",), expected_value=request.operation_id
         )
+    if request is not None and isinstance(response, DrainDecidedResponse) and isinstance(response.data, DrainReady):
+        face_count = sum(len(rack.rack_faces) for rack in response.data.racks)
+        if face_count > request.data.required_slot_count:
+            raise observed_contract_error(observation, "返回货架面数量超过 required_slot_count")
     return response

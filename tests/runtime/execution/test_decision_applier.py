@@ -334,6 +334,7 @@ async def test_create_transport_task_rejects_existing_binding_correlation_drift(
     transport = _Transport()
     persisted = {
         "workline_id": 7,
+        "picking_task_id": None,
         "resource_fence_id": "RACK-CURRENT",
         "source_evidence_id": 31,
     }

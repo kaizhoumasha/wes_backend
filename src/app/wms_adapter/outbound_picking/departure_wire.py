@@ -16,7 +16,7 @@ Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTER
 
 
 class RackDepartureData(StrictWireModel):
-    task_id: Identifier
+    task_id: Identifier | None
     rack_id: Identifier
     current_location: RackPosition
     current_face: RackFaceText

@@ -46,23 +46,6 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "apply_status IN ('PENDING', 'APPLIED', 'IGNORED', 'RECONCILING')",
             name="inbound_evidence_apply_status_valid",
         ),
-        CheckConstraint(
-            "kind NOT IN ('WMS_EVENT', 'WMS_RESULT') OR (operation IS NOT NULL AND operation_id IS NOT NULL)",
-            name="inbound_evidence_wms_identity_required",
-        ),
-        CheckConstraint(
-            "kind NOT IN ('DEVICE_EVENT', 'DEVICE_OBSERVATION', 'DEVICE_RESULT') OR device_code IS NOT NULL",
-            name="inbound_evidence_device_identity_required",
-        ),
-        CheckConstraint(
-            "(kind = 'TRANSPORT_RESULT') = (transport_task_id IS NOT NULL)",
-            name="inbound_evidence_transport_identity_required",
-        ),
-        CheckConstraint(
-            "kind <> 'TRANSPORT_RESULT' OR "
-            "(device_code IS NULL AND command_code IS NULL AND operation IS NULL AND operation_id IS NULL)",
-            name="inbound_evidence_transport_identity_isolated",
-        ),
         CheckConstraint("decision_attempt_count >= 0", name="inbound_evidence_decision_attempt_count_nonnegative"),
         CheckConstraint(
             "(decision_claim_token IS NULL) = (decision_claim_expires_at IS NULL)",
@@ -91,6 +74,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
         ),
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
         Index("ix_inbound_evidences_transport_task", "transport_task_id", "kind"),
+        Index("ix_inbound_evidences_picking_task_timeline", "picking_task_id", "received_at", "id"),
         Index(
             "ix_inbound_evidences_device_event_range",
             "received_at",
@@ -122,6 +106,11 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     )
     material_execution_id: int | None = Field(
         default=None, foreign_key="wes_biz.material_executions.id", index=True, sa_type=SQL_COMPAT_BIGINT
+    )
+    picking_task_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.picking_tasks.id",
+        sa_type=SQL_COMPAT_BIGINT,
     )
     transport_task_id: str | None = Field(default=None, max_length=120, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)

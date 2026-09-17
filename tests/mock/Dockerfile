@@ -53,6 +53,7 @@ COPY src/app/wms_adapter/outbound_picking/departure_wire.py /app/src/app/wms_ada
 COPY src/app/wms_adapter/outbound_picking/inbound_batch_wire.py /app/src/app/wms_adapter/outbound_picking/inbound_batch_wire.py
 COPY src/app/wms_adapter/outbound_picking/manual_bin_admission_wire.py /app/src/app/wms_adapter/outbound_picking/manual_bin_admission_wire.py
 COPY src/app/wms_adapter/outbound_picking/return_batch_wire.py /app/src/app/wms_adapter/outbound_picking/return_batch_wire.py
+COPY src/app/wms_adapter/return_buffer_drain/wire.py /app/src/app/wms_adapter/return_buffer_drain/wire.py
 COPY src/app/wms_adapter/outbound_picking/response_wire.py /app/src/app/wms_adapter/outbound_picking/response_wire.py
 COPY src/app/wms_adapter/outbound_picking/wire.py /app/src/app/wms_adapter/outbound_picking/wire.py
 COPY src/app/wms_adapter/transport_openapi.py /app/src/app/wms_adapter/transport_openapi.py

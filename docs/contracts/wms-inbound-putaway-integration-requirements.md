@@ -2,7 +2,7 @@
 title: WMS / WES 满箱交换与自动上架交互要求
 status: ReviewRequired
 created_at: 2026-08-13
-updated_at: 2026-08-20
+updated_at: 2026-09-17
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: Phase 13 `automatic_putaway` 的满箱交换、自动上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
@@ -769,6 +769,6 @@ WorkLine 当前插件及配置、位置投影、人工扫码记录以及受影�
 | C8 | 在业务插件包内完成 §18 场景验收；WES 核心仓库只验收共享合同和可靠性不变量 | WES、交付 | BLOCKED | 依赖 C1—C7 获批后实施 |
 | C9 | 现场验证两对交换的“非同批全成功即停线”策略不会把人员或机械臂置于危险状态 | ECS、RCS、现场 | PENDING | 未提供 |
 | C10 | 审批 SRS、最小执行架构和主计划当前真源同步，清除库存阈值或三点 SCAN 等过期表述 | 联合 | PENDING | 未提供 |
-| C11 | 冻结 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、严格 DTO、当前 `putaway_execution_id`、旧架离场去向、新架可靠来源/工作位/到达面、目标 rack/face 原子绑定与非空 FIFO 前缀容量保留、`WAIT` 和幂等 fixture | WMS、WES、RCS | BLOCKED | 未提供 |
+| C11 | 冻结 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、仅含 `workline_code + required_slot_count` 的严格请求 DTO、WES 本地当前 `putaway_execution_id` 边界、`READY.racks[].rack_faces[]` 有序容量计划、逐架逐面 Transport 推进、`WAIT` 和幂等 fixture | WMS、WES、RCS | BLOCKED | 未提供 |
 
 只有 C1—C11 全部为 `APPROVED`，本文才构成代码实施授权。

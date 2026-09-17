@@ -123,6 +123,10 @@ class BaseRepository[T]:
             audit_registrar = AuditHookRegistrar(self._model_name, self._pk_column, self.hook_manager)
             audit_registrar.register_hooks()
 
+    async def flush(self, db: AsyncSession) -> None:
+        """让 Service 层触发一次 flush 而不直接依赖 AsyncSession。"""
+        await db.flush()
+
     def _get_relation_manager(self):
         """获取关系管理器（延迟初始化）"""
         if self.relation_manager is None:

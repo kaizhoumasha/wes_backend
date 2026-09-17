@@ -20,6 +20,7 @@ class PickingTaskStatus(StrEnum):
     PREPARING = "PREPARING"
     EXECUTING = "EXECUTING"
     EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
+    CANCELLED = "CANCELLED"
     ARCHIVED = "ARCHIVED"
 
 
@@ -36,7 +37,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     __table_args__ = (
         CheckConstraint("target_rack_face IS NULL OR length(target_rack_face) >= 1", name="target_rack_face_nonempty"),
         CheckConstraint(
-            "status IN ('QUEUED', 'PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED', 'ARCHIVED')",
+            "status IN ('QUEUED', 'PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED', 'CANCELLED', 'ARCHIVED')",
             name="picking_task_status_valid",
         ),
         CheckConstraint("task_type IN ('MANUAL', 'AUTO')", name="picking_task_type_valid"),
@@ -46,12 +47,6 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         CheckConstraint(
             "not_before_ms IS NULL OR not_before_ms >= 0",
             name="picking_task_not_before_nonnegative",
-        ),
-        CheckConstraint(
-            "(status = 'QUEUED' AND workline_id IS NULL) OR "
-            "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED', 'ARCHIVED') "
-            "AND workline_id IS NOT NULL)",
-            name="picking_task_binding_matches_status",
         ),
         CheckConstraint(
             "(status = 'ARCHIVED') = (archived_at IS NOT NULL)",
@@ -76,6 +71,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         ),
         Index(
             "ix_picking_tasks_queue",
+            "workline_id",
             "task_type",
             "dispatch_sequence",
             "id",
@@ -114,8 +110,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         foreign_key="wes_biz.inbound_evidences.id",
         sa_type=SQL_COMPAT_BIGINT,
     )
-    workline_id: int | None = Field(
-        default=None,
+    workline_id: int = Field(
         foreign_key="wes_biz.work_lines.id",
         index=True,
         sa_type=SQL_COMPAT_BIGINT,

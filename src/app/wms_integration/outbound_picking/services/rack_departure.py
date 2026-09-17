@@ -42,14 +42,23 @@ class RackDepartureScheduler:
         self._confirmations = confirmations
 
     async def create_in_session(
-        self, db: AsyncSession, intent: RackDepartureIntent, *, picking_task_id: int, created_at: datetime
+        self,
+        db: AsyncSession,
+        intent: RackDepartureIntent,
+        *,
+        picking_task_id: int | None = None,
+        workline_id: int | None = None,
+        created_at: datetime,
     ) -> None:
+        if (picking_task_id is None) == (workline_id is None):
+            raise ValueError("departure confirmation requires exactly one owner")
         payload = encode_request(intent, timestamp=int(timezone.to_utc(created_at).timestamp() * 1000))
         result = await self._confirmations.create_or_get(
             db,
             operation=RACK_DEPARTURE_OPERATION,
             operation_id=intent.operation_id,
             picking_task_id=picking_task_id,
+            workline_id=workline_id,
             request_payload=payload,
             deadline_at=created_at + config.WMS_CONFIRMATION_DISPATCH_WINDOW,
             created_at=created_at,
@@ -64,6 +73,17 @@ class RackDepartureResultReader:
 
     async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> RackDepartureSnapshot | None:
         confirmation = await self._repository.latest(db, picking_task_id, rack_id)
+        return await self._snapshot(db, confirmation, rack_id)
+
+    async def latest_for_workline(
+        self, db: AsyncSession, workline_id: int, rack_id: str
+    ) -> RackDepartureSnapshot | None:
+        confirmation = await self._repository.latest_for_workline(db, workline_id, rack_id)
+        return await self._snapshot(db, confirmation, rack_id)
+
+    async def _snapshot(
+        self, db: AsyncSession, confirmation: object | None, rack_id: str
+    ) -> RackDepartureSnapshot | None:
         if confirmation is None:
             return None
         request = parse_rack_departure_request(confirmation.request_payload)

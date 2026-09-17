@@ -16,8 +16,8 @@ from tests.contracts.wms_adapter.return_buffer_drain.test_contract import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["valid", "missing", "inactive", "id", "line", "plugin"])
-async def test_owner_locks_exact_workline_and_frozen_plugin(case):
+@pytest.mark.parametrize("case", ["valid", "missing", "inactive", "id", "line"])
+async def test_owner_locks_exact_workline(case):
     from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainOwnerService
 
     line = SimpleNamespace(id=7, line_code="LINE-1", is_active=True, plugin_key="manual-picking")
@@ -29,8 +29,6 @@ async def test_owner_locks_exact_workline_and_frozen_plugin(case):
         line.id = 8
     elif case == "line":
         line.line_code = "OTHER"
-    elif case == "plugin":
-        line.plugin_key = "other-plugin"
     worklines = AsyncMock()
     worklines.get_for_update.return_value = line
     db = object()
@@ -109,9 +107,9 @@ async def test_scheduler_uses_lifecycle_idempotency_and_preserves_original_on_dr
     assert len(repository.confirmations) == 1
     owner.validate_owner.assert_awaited_once()
     with pytest.raises(WmsConfirmationIdentityConflictError):
-        await scheduler.create_in_session(object(), intent(plugin_key="changed"), workline_id=7, created_at=now)
+        await scheduler.create_in_session(object(), intent(required_slot_count=2), workline_id=7, created_at=now)
     original = repository.confirmations[(OPERATION, OPERATION_ID)]
-    assert original.request_payload["data"]["plugin_key"] == "manual-picking"
+    assert original.request_payload["data"]["required_slot_count"] == 3
     assert original.status == WmsConfirmationStatus.RECONCILING
 
 
@@ -188,7 +186,7 @@ async def test_result_reader_requires_completed_correlated_confirmation_and_evid
     if case == "valid":
         original, outcome = await reader.read(object(), evidence, workline_id=7)
         assert original == intent()
-        assert outcome.result.rack_id == "RACK-2"
+        assert outcome.result.racks[0].rack_id == "RACK-2"
         repository.get_by_identity.assert_awaited_once_with(ANY, OPERATION, OPERATION_ID)
         repository.get_by_identity_for_update.assert_not_awaited()
     else:
@@ -272,7 +270,7 @@ async def test_history_joins_completed_evidence_once_and_validates_before_typed_
         records = await ReturnBufferDrainResultReader().history(db, workline_id=7)
         assert type(records) is tuple and type(records[0]) is ReturnBufferDrainRecord
         assert records[0].intent == intent()
-        assert records[0].result.rack_id == "RACK-2"
+        assert records[0].result.racks[0].rack_id == "RACK-2"
         assert not hasattr(records[0], "request_payload")
         with pytest.raises(FrozenInstanceError):
             records[0].evidence_id = 20

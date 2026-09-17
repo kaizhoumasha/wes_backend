@@ -89,16 +89,6 @@ class FakeEvidenceRepository:
     async def get_by_source_identity_for_update(self, _db: object, source_identity: str) -> InboundEvidence | None:
         return self.evidences.get(source_identity)
 
-    async def get_device_result_for_command_for_update(self, _db: object, command_code: str) -> InboundEvidence | None:
-        return next(
-            (
-                item
-                for item in self.evidences.values()
-                if item.command_code == command_code and getattr(item.kind, "value", item.kind) == "DEVICE_RESULT"
-            ),
-            None,
-        )
-
     async def add(self, _db: object, evidence: InboundEvidence) -> InboundEvidence:
         evidence.id = self.next_id
         self.next_id += 1

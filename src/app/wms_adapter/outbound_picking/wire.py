@@ -35,6 +35,7 @@ class RackPosition(StrictWireModel):
 class PickingTaskIssuedData(StrictWireModel):
     task_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
     task_type: Literal["MANUAL", "AUTO"]
+    workline_code: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
     queue_revision: InitialQueueRevision
     dispatch_sequence: PositiveInteger
     not_before: NonnegativeMilliseconds | None = None

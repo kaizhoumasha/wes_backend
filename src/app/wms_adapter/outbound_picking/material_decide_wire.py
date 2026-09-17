@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, StringConstraints, TypeAdapter, field_validator, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, TypeAdapter, field_validator, model_validator
 
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PlanRackFace, PlanRackSlot
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictResponse, RejectedResponse, UnavailableResponse
-from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, RackPosition
+from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, StrictWireModel
 from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
@@ -51,8 +51,8 @@ class TargetRotate(StrictWireModel):
 
 
 class TargetReplace(StrictWireModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     mode: Literal["REPLACE"]
-    rack_destination: RackPosition
 
 
 class MaterialAccept(StrictWireModel):

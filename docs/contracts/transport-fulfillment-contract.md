@@ -143,11 +143,12 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 
 人工拣料绑定 FIVE_LAYER/FIVE_RACK 的 `workline_positions.capacity` 是 CTU01 准入义务窗口，不是同一 RACK_POSITION 的物理货架数量；
 当前权威 active rack 仍最多一个。CTU01 的 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占，CTU02 不释放。
-匹配同 WorkLine、rack_id 和原进场 Evidence 的 CTU03 持久化接纳才释放窗口；`ACCEPTED | SUCCEEDED | FAILED` 可证明已接纳，
-`RECONCILING` 还须非空 `result_deadline_at`，接纳前的 delivery-unknown/conflict 继续占窗。该插件窗口规则不改变通用 Transport 生命周期。
-CTU03 接纳允许补充 CTU01，但不证明原架离位或最终到达；原物理义务与围栏继续由原 Transport 对账。
+同 WorkLine、同 rack_id 且晚于该进场 binding 的 CTU03 一经持久化接纳即释放窗口：`ACCEPTED | SUCCEEDED | FAILED` 均证明
+曾被接纳，`RECONCILING` 仅在 `result_deadline_at` 非空时证明此前已接纳；提交前 delivery-unknown/conflict 仍占窗。不要求离场与进场
+使用相同 Evidence。窗口释放只允许 RCS 为其他货架调度原工作位，不证明原架已到达最终位置。
+同一 rack_id 再次入场仍受独立资源围栏约束：最新 CTU03 必须 `SUCCEEDED`，唯一 RACK 成员成功、位置明确且
+`final_position.kind=RACK_POSITION`；实际库位不要求等于请求中的动态 `ZONE`，也不依赖 PositionProjection 刷新。
 RCS 负责 AGV 排队、自主进位和互斥，WES 不建队尾状态；新架只有原 Transport、成员与精确工作位 rack/face 投影共同证明到位才可作业。
-
 
 货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
 人工出库的转运货架默认使用 `F01` 出库。已确认的两类货架推荐规则及各入口实现范围见

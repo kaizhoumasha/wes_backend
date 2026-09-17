@@ -21,6 +21,7 @@ def _valid_event() -> dict[str, object]:
         "data": {
             "task_id": "PICK-20260811-001",
             "task_type": "MANUAL",
+            "workline_code": "LINE-3",
             "queue_revision": 1,
             "dispatch_sequence": 100,
             "not_before": 1786060800000,
@@ -35,6 +36,7 @@ def test_picking_task_issued_parser_accepts_the_approved_closed_wire() -> None:
     assert event.operation == PICKING_TASK_ISSUED_OPERATION
     assert event.data.task_id == "PICK-20260811-001"
     assert event.data.task_type == "MANUAL"
+    assert event.data.workline_code == "LINE-3"
     assert event.data.queue_revision == 1
     assert event.data.dispatch_sequence == 100
     assert event.data.not_before == 1786060800000
@@ -60,6 +62,7 @@ def test_picking_task_issued_parser_accepts_immediately_eligible_not_before_zero
         (("data", "dispatch_sequence"), 0),
         (("data", "not_before"), None),
         (("data", "task_id"), " task-1"),
+        (("data", "workline_code"), "bad line"),
         (("timestamp",), 0),
     ],
 )
@@ -76,7 +79,7 @@ def test_picking_task_issued_parser_rejects_values_outside_the_approved_contract
         parse_picking_task_issued_event(payload)
 
 
-@pytest.mark.parametrize("field", ["workline_code", "transport_task_id", "bin_code"])
+@pytest.mark.parametrize("field", ["transport_task_id", "bin_code"])
 def test_picking_task_issued_parser_ignores_redundant_business_fields(field: str) -> None:
     payload = deepcopy(_valid_event())
     data = payload["data"]
@@ -93,7 +96,13 @@ def test_picking_task_issued_openapi_schema_is_closed_and_exact() -> None:
     assert schema["properties"]["operation"]["enum"] == [PICKING_TASK_ISSUED_OPERATION]
     data_schema = schema["properties"]["data"]
     assert data_schema["additionalProperties"] is True
-    assert data_schema["required"] == ["task_id", "task_type", "queue_revision", "dispatch_sequence"]
+    assert data_schema["required"] == [
+        "task_id",
+        "task_type",
+        "workline_code",
+        "queue_revision",
+        "dispatch_sequence",
+    ]
     assert data_schema["properties"]["task_type"] == {"type": "string", "enum": ["MANUAL", "AUTO"]}
     assert data_schema["properties"]["queue_revision"] == {
         "type": "integer",

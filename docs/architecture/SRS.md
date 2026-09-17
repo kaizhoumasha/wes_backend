@@ -3,7 +3,7 @@
 > **项目名称**: 休斯顿P9 智能仓储执行系统 (Houston P9 Intelligent Warehouse Execution System - WES)
 > **系统定位**: 独立部署的集成化控制中台 (Independent Integration & Control Middleware)
 > **文档版本**: 3.0 (Architecture Convergence)
-> **日期**: 2026-08-24
+> **日期**: 2026-09-17
 > **状态**: Current Requirements Baseline
 >
 > **文档层级**: 本文是产品范围、参与方职责和功能/非功能需求的唯一依据；
@@ -487,31 +487,33 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **自动发料：**
 
-1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。自动任务发布携带不可变 `task_type=AUTO`、身份和排队信息，不分配来源或目标
-   资源。WES 不读取业务单据，也不生成波次。
-2. WES 选择可执行任务和就绪工作线后请求 WMS 准备。WMS 返回 `PREPARE_ACCEPTED`，再按实际 WorkLine 及其 STATION，以连续
+1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。自动任务发布携带不可变 `task_type=AUTO`、`workline_code`、
+   身份和排队信息，不分配来源或目标资源。WES 校验并冻结指定 WorkLine，不读取业务单据，也不生成波次。
+2. 指定 WorkLine 满足启动条件后，WES 请求 WMS 准备。WMS 返回 `PREPARE_ACCEPTED`，再按该 WorkLine 及其 STATION，以连续
    `plan_revision` 分批发布五层来源货架面、退料货架 SLOT 和初始接料货架。`plan_revision=1` 必须且只能定义一个
    `target_rack`，可以同时新增来源成员；后续精确目标只由逐盘 `ACCEPT` 返回。
    计划增量只能追加来源，不能改写已经接纳的来源或 Bin，也不携带货架动作、离场去向、CTU 批次或 WMS 计算进度。WES
    持久化并 ACK 局部完整的增量后即可冻结 WorkLine 并开始相关搬运。
-3. WMS 提供任务池优先序，人工调整通过队列更新完成。WES 根据设备、工作位、缓存、活动 Transport 和空闲时长选择 WorkLine。
-   暂不可执行的前序任务不阻塞后续任务；同一工作线不提前启动后继任务，WES 不提供人工启动入口。WES 按所属插件的动作优先级、设备忙闲、
+3. WMS 提供各 WorkLine 的任务优先序，人工调整通过队列更新完成。每条线只领取 issued 指定给自己的最高优先级任务，其他空闲线不得抢占。
+   暂不可执行的前序任务不阻塞该线后续可执行任务；同一工作线不提前启动后继任务，WES 不提供人工启动入口。WES 按所属插件的动作优先级、设备忙闲、
    Transport 事实和目标面安排节拍，RCS 负责车辆路径、拥堵和避让。
 4. 每条 WorkLine 只有一台 CTU，入站和退箱批次串行；五层来源架的每个 `rack_id + rack_face` 单独记录。
    人工拣料以绑定 FIVE_LAYER/FIVE_RACK 点位的 `workline_positions.capacity` 作为 CTU01 准入义务窗口，按稳定计划顺序补足，
    物理工作位仍最多一个权威 current rack。CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占；
-   CTU02 不释放。匹配同线、同架及原进场 Evidence 的 CTU03 接纳才释放窗口；后续 `RECONCILING` 必须有非空 `result_deadline_at`
-   证明此前接纳，提交前 delivery-unknown/conflict 继续占窗。窗口释放不等于物理离场，原可靠身份和对账义务仍保留。
+   CTU02 不释放。同线同架且晚于进场 binding 的 CTU03 接纳即释放窗口；已接纳后的失败或对账不重新占窗，提交前未知仍占窗。
+   不要求离场与进场 Evidence 相同。该释放只开放其他货架准入；同架复用仍等待 CTU03 成功成员和明确 `RACK_POSITION`。
    RCS 负责 AGV 排队和自主进位；当前架由原 CTU01/CTU02、成员成功结果与绑定工作位精确 rack/face 投影共同确认，不以计划顺序代替。
    当前面首次到位即请求一次 `inbound_batch`，冻结完整最终清单并按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。
    全部冻结分段与成员权威成功、结果发布且到达绑定 HANDOFF_POSITION 即 `feed_complete`；无分段的最终 `RACK_FACE_DONE` 同样完成。
-   已冻结的相关义务先闭合；之后 feed_complete 立即驱动同架下一面 CTU02 或所有面完成后的 CTU03，不等待 SCAN、业务完成或回架。
+   已冻结的相关义务先闭合；之后 feed_complete 立即驱动同架下一面 CTU02，或在所有面完成后请求
+   `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03，不等待 SCAN、业务完成或回架。
    CTU02 成功表示旋转后已返回工作位。投料未完成时仅在分段间隙最多一次机会式 `return_batch`，NO_BATCH 不阻断后续投料。
    RETURN_BUFFER 为 WorkLine 跨任务 FIFO，WMS 对连续前缀分配当前权威 rack/face 的精确 slot，不要求原架原面；未冻结回架目标的 Bin 不锁定来源面。
    后续架有自己的精确到位证据即可推进，不等待旧架 CTU03 最终回调；原动作未知不允许换身份重发。
 5. CTU 可以乱序投箱。Bin 到达 SCAN2 后，WES 请求 Cell 工作计划。WMS 返回当前可执行成员，不下发 Cell 优先级或依赖图。
    WES 根据现场资源安排执行顺序。
-6. 设备取盘并扫描完整六合一码，`PkgID` 唯一标识当前料盘。WMS 返回 `ACCEPT | REJECT | WAIT`；`ACCEPT` 包含精确 SLOT 和需要的换面或换架方案，`WAIT`
+6. 设备取盘并扫描完整六合一码，`PkgID` 唯一标识当前料盘。WMS 返回 `ACCEPT | REJECT | WAIT`；`ACCEPT` 包含精确 SLOT 和需要的换面或换架模式，
+   REPLACE 时旧架离场 destination 由独立 `outbound.rack.departure_decide@v1` 返回，`WAIT`
    包含原因和重试间隔。WES 从可靠位置投影取得新架来源，使用 WorkLine 固定工作位，并在相关事实变化后重新求值；本地技术
    超时只暂停、告警并进入对账，不得生成业务拒绝。当前盘在扫码台等待 Transport 到位。目标机械臂成功 PUT 后，WES 提交
    逐盘位置事实，由 WMS 更新物料位置、库存和目标占用。转运货架容量、规格兼容和目标决定属于 WMS。
@@ -542,17 +544,18 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **人工发料：**
 
-1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual-picking` 的人工 WorkLine 中选线。
+1. WMS 使用已有且全局唯一的 `task_id`、不可变 `task_type=MANUAL` 和唯一 `workline_code` 发布人工任务，不增加人工业务键或独立任务实体；
+   WES 校验该线已启用 `manual-picking` 并冻结指派，不再自主选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 按上述 CTU01 窗口、权威当前架及 transport-only feed_complete 推进货架和投料，投料间隙机会式回架。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
 4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。
 5. 退料 Bin 不要求返回原货架或原面。WMS 根据当前权威工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`，WES 可靠执行 `BIN_MOVE`。
    PickingTask 完成后先在同一 WorkLine 锁内原子准备下一任务；已准备任务的后续当前架优先承接 FIFO。无可准备任务且 FIFO 非空时，
-   创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，冻结 `PICKING_TASK_COMPLETED` 和非空候选前缀。READY 选择 rack/face；
-   WAIT 使用 `NO_DRAIN_RACK_AVAILABLE + retry_after_ms`，到期以新 identity 直接引用 previous_operation_id。已创建 drain 链不被后来的任务取消。
-   READY 共用 CTU01 窗口进入配置工作位，精确权威到位后用普通 return_batch 排空 FIFO，再创建 CTU03；不重新打开 PickingTask。
+   创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，只上报 `workline_code + required_slot_count`。READY 返回有序
+   `racks[].rack_faces[]`，WAIT 使用 `NO_DRAIN_RACK_AVAILABLE + retry_after_ms`。已创建 drain 链不被后来的任务取消。
+   WES 按货架和面顺序共用 CTU01/CTU02 窗口进入配置工作位，精确权威到位后用普通 return_batch 排空 FIFO，再创建 CTU03；不重新打开 PickingTask。
    WMS 决定架面与储位，WES 可靠编排，RCS/ECS 提供接纳和结果；不新增 Epoch、队尾模型、兼容路径、缓存计数器、schema 或 migration。
-   停线与插件切换触发仍为 TODO。
+   停线与插件切换原因留在 WES 本地，不进入 wire；对应触发接入仍为 TODO。
 6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 WorkLine 清场由各自物理生命周期继续闭合。
 7. 实际 Bin 可识别但与本批预期 Bin 不同时，实际 Bin 不进入人工业务或 NG；WES 保存预期/实际身份和位置证据，将其冻结在当前安全位置，等待独立恢复 wire 获批。预期 Bin 仍未完成。
 8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，WorkLine 保持原插件及配置。WES 进程重启时校验启用 WorkLine 的插件精确版本仍在部署清单中，再从持久化证据恢复可靠处理；未知物理结果不得换身份盲目重发。

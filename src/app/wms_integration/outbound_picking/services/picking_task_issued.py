@@ -113,7 +113,33 @@ class PickingTaskIssuedService:
                     timestamp_ms=_timestamp_ms(evidence.received_at),
                     reason_code="STATE_CONFLICT",
                 )
-            _ = await self._tasks.add(
+            workline = await self._worklines.get_by_line_code_for_update(db, envelope.data.workline_code)
+            if workline is None:
+                evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+                evidence.processed_at = received_at
+                return PickingTaskIssuedPersistenceResult(
+                    code="CONFLICT",
+                    timestamp_ms=_timestamp_ms(evidence.received_at),
+                    reason_code="REFERENCE_CONFLICT",
+                )
+            plugin_identity = (workline.plugin_key, workline.plugin_version)
+            line_type = workline.line_type.value if hasattr(workline.line_type, "value") else workline.line_type
+            if (
+                workline.is_active is not True
+                or line_type not in (envelope.data.task_type, "HYBRID")
+                or plugin_identity not in self._prepare_plugin_identities
+            ):
+                evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+                evidence.processed_at = received_at
+                return PickingTaskIssuedPersistenceResult(
+                    code="CONFLICT",
+                    timestamp_ms=_timestamp_ms(evidence.received_at),
+                    reason_code="STATE_CONFLICT",
+                )
+            workline_id = workline.id
+            if not isinstance(workline_id, int) or workline_id <= 0:
+                raise RuntimeError("PickingTask 指定 WorkLine 缺少持久身份")
+            task = await self._tasks.add(
                 db,
                 PickingTask(
                     task_id=envelope.data.task_id,
@@ -123,14 +149,15 @@ class PickingTaskIssuedService:
                     not_before_ms=envelope.data.not_before,
                     issued_at_ms=envelope.timestamp,
                     issued_evidence_id=evidence.id,
+                    workline_id=workline_id,
                 ),
             )
+            if task.id is None:
+                raise RuntimeError("PickingTask 发布后缺少主键")
+            evidence.picking_task_id = task.id
             evidence.processed_at = received_at
-            if (
-                self._task_queue is not None
-                and self._prepare_plugin_identities
-                and await self._worklines.has_active_plugin_identity(db, self._prepare_plugin_identities)
-            ):
+            await self._tasks.flush(db)
+            if self._task_queue is not None:
                 defer_wakeup(db, self._task_queue.enqueue_picking_task_prepare)
             return PickingTaskIssuedPersistenceResult(
                 code="RECEIVED",

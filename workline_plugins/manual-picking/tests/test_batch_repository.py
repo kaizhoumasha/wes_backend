@@ -498,7 +498,7 @@ async def test_frozen_face_does_not_redispatch_legacy_inbound_binding() -> None:
     ],
 )
 @pytest.mark.parametrize("drain", [False, True])
-async def test_source_window_occupancy_uses_ctu01_until_matching_ctu03_acceptance(
+async def test_source_window_occupancy_uses_ctu01_until_later_ctu03_acceptance(
     in_status, out_status, reason_code, was_accepted, drain
 ):
     from manual_picking.application.batch_repository import BatchRepository
@@ -506,7 +506,7 @@ async def test_source_window_occupancy_uses_ctu01_until_matching_ctu03_acceptanc
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 15, 12)
 
-    def add(db, identity, step, status, *, evidence=51, line=7, reason=None, accepted=False):
+    def add(db, identity, step, status, *, evidence=51, line=7, reason=None, accepted=False, departure=False):
         db.add(
             TransportDecisionBinding(
                 workline_id=line,
@@ -537,6 +537,23 @@ async def test_source_window_occupancy_uses_ctu01_until_matching_ctu03_acceptanc
                 updated_at=now,
             )
         )
+        if departure:
+            db.add(
+                TransportMember(
+                    transport_task_id=identity,
+                    ordinal=0,
+                    object_type="RACK",
+                    object_id="R1",
+                    source_json={"kind": "RACK", "location_code": "R1"},
+                    target_json={"kind": "ZONE", "location_code": "WH01"},
+                    status="SUCCEEDED" if status == "SUCCEEDED" else "PENDING",
+                    final_position_json=(
+                        {"kind": "RACK_POSITION", "location_code": "WHE0502"} if status == "SUCCEEDED" else None
+                    ),
+                    position_unknown=False,
+                    updated_at=now,
+                )
+            )
 
     try:
         async with sessions.begin() as db:
@@ -545,10 +562,18 @@ async def test_source_window_occupancy_uses_ctu01_until_matching_ctu03_acceptanc
             add(db, "in", in_step, in_status)
             add(db, "duplicate-in", in_step, in_status)
             add(db, "rotate", "MANUAL_PICKING_SOURCE_RACK_ROTATE", "ACCEPTED")
-            add(db, "other-evidence", "MANUAL_PICKING_SOURCE_RACK_OUT", "ACCEPTED", evidence=52)
             add(db, "other-line", "MANUAL_PICKING_SOURCE_RACK_OUT", "ACCEPTED", line=8)
             if out_status is not None:
-                add(db, "out", out_step, out_status, reason=reason_code, accepted=was_accepted)
+                add(
+                    db,
+                    "out",
+                    out_step,
+                    out_status,
+                    evidence=52,
+                    reason=reason_code,
+                    accepted=was_accepted,
+                    departure=True,
+                )
             await db.flush()
             occupied = await BatchRepository().occupied_source_rack_ids(db, 7)
             released = out_status in {"ACCEPTED", "SUCCEEDED", "FAILED"} or (
@@ -729,20 +754,21 @@ async def test_duplicate_transport_rows_do_not_complete_or_redispatch_a_chunk() 
 @pytest.mark.parametrize("admission", ["source", "drain"])
 @pytest.mark.parametrize("prior_drain", [False, True])
 @pytest.mark.parametrize(
-    "state",
+    ("state", "window_released", "rack_reusable"),
     [
-        "ACCEPTED",
-        "RESULT_TIMEOUT",
-        "POSITION_UNKNOWN",
-        "SUCCEEDED",
-        "UNKNOWN_MEMBER",
-        "UNKNOWN_PROJECTION",
-        "STALE_PROJECTION",
-        "WRONG_FINAL",
+        ("ACCEPTED", True, False),
+        ("RESULT_TIMEOUT", True, False),
+        ("POSITION_UNKNOWN", True, False),
+        ("SUCCEEDED", True, True),
+        ("UNKNOWN_MEMBER", True, False),
+        ("UNKNOWN_PROJECTION", True, True),
+        ("STALE_PROJECTION", True, True),
+        ("MISSING_PROJECTION", True, True),
+        ("WRONG_FINAL", True, False),
     ],
 )
 async def test_same_rack_admission_waits_for_authoritative_departure_after_window_released(
-    admission, prior_drain, state
+    admission, prior_drain, state, window_released, rack_reusable
 ):
     from manual_picking.application.batch_repository import BatchRepository
     from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
@@ -752,7 +778,11 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 16, 1)
     target = {"kind": "ZONE", "location_code": "WH01"}
-    final = {"kind": "ZONE", "location_code": "WRONG"} if state == "WRONG_FINAL" else target
+    final = (
+        {"kind": "ZONE", "location_code": "WH01"}
+        if state == "WRONG_FINAL"
+        else {"kind": "RACK_POSITION", "location_code": "WHE0502"}
+    )
     departure_status = (
         "RECONCILING"
         if state in {"RESULT_TIMEOUT", "POSITION_UNKNOWN"}
@@ -769,9 +799,10 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
     positions.target = None
     positions.count = AsyncMock(return_value=0)
     creator.create = AsyncMock()
-    row = decision(sdk.ReturnBufferDrainReady("R1", "90"))
+    row = decision(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)))
     driver._drain = SimpleNamespace(
         decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(return_value=("R1", "90")),
         repository=SimpleNamespace(
             transport=AsyncMock(return_value=None), has_unclosed_rack_action=AsyncMock(return_value=False)
         ),
@@ -841,24 +872,24 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
                     updated_at=now,
                 )
             )
-            db.add(
-                PositionProjection(
-                    object_type="RACK",
-                    object_id="R1",
-                    workline_id=7,
-                    position_json=final,
-                    position_unknown=state == "UNKNOWN_PROJECTION",
-                    source_operation_id="old-out",
-                    source_transport_task_id="stale" if state == "STALE_PROJECTION" else "old-out",
+            if state != "MISSING_PROJECTION":
+                db.add(
+                    PositionProjection(
+                        object_type="RACK",
+                        object_id="R1",
+                        workline_id=7,
+                        position_json=final,
+                        position_unknown=state == "UNKNOWN_PROJECTION",
+                        source_operation_id="old-out",
+                        source_transport_task_id="stale" if state == "STALE_PROJECTION" else "old-out",
+                    )
                 )
-            )
             await db.flush()
-            # capacity 已在 CTU03 接纳时释放；同 rack 的物理围栏是另一项条件。
-            assert await driver._rack_cycles.occupied_source_rack_ids(db, 7) == set()
+            assert await driver._rack_cycles.occupied_source_rack_ids(db, 7) == (set() if window_released else {"R1"})
             count = await (
                 driver.advance_in_session(db, line, task) if admission == "source" else driver._advance_drain(db, line)
             )
-            assert count == int(state == "SUCCEEDED")
-            assert creator.create.await_count == int(state == "SUCCEEDED")
+            assert count == int(rack_reusable)
+            assert creator.create.await_count == int(rack_reusable)
     finally:
         await engine.dispose()

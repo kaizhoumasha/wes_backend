@@ -197,7 +197,7 @@ async def test_dispatch_confirmation_and_activation_lock_order(rack_database, ph
 
 
 @pytest.mark.parametrize("reply", ["RECEIVED", "DUPLICATE", "CONFLICT", "INVALID"])
-async def test_ctu03_acceptance_releases_window_once_and_unknown_keeps_it(rack_database, reply):
+async def test_ctu03_acceptance_releases_window_and_success_closes_fence(rack_database, reply):
     from manual_picking.application.batch_repository import BatchRepository
     from wes_plugin_sdk import TransportZonePosition
 
@@ -287,6 +287,32 @@ async def test_ctu03_acceptance_releases_window_once_and_unknown_keeps_it(rack_d
             assert await transport.service.submit_pending_tasks(100) == 1
             released = reply in {"RECEIVED", "DUPLICATE"}
             assert await serialized_pair(sessions, line.id, action) == (int(released), 0)
+            async with sessions() as db:
+                departure = await db.scalar(
+                    select(TransportTask)
+                    .join(
+                        TransportDecisionBinding,
+                        TransportDecisionBinding.client_request_id == TransportTask.client_request_id,
+                    )
+                    .where(TransportDecisionBinding.step == "MANUAL_PICKING_SOURCE_RACK_OUT")
+                )
+            if released:
+                await record_valid_callback(
+                    transport.service,
+                    operation_id=new_uuid7(),
+                    transport_task_id=departure.transport_task_id,
+                    operation=RESULT_OPERATION,
+                    timestamp=2,
+                    payload={
+                        "kind": "RACK_MOVE",
+                        "outcome_revision": 1,
+                        "rack_id": f"R0-{line.id}",
+                        "status": "SUCCEEDED",
+                        "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0502"},
+                    },
+                )
+                assert await transport.service.process_pending_evidence(100) == 1
+            assert await serialized_pair(sessions, line.id, action) == (0, 0)
             await record_valid_callback(
                 transport.service,
                 operation_id=callback_id,
@@ -308,15 +334,8 @@ async def test_ctu03_acceptance_releases_window_once_and_unknown_keeps_it(rack_d
                 ).all()
                 assert len(bindings) == (3 if released else 2)
                 assert len(await BatchRepository().occupied_source_rack_ids(db, line.id)) == 2
-                departure = await db.scalar(
-                    select(TransportTask)
-                    .join(
-                        TransportDecisionBinding,
-                        TransportDecisionBinding.client_request_id == TransportTask.client_request_id,
-                    )
-                    .where(TransportDecisionBinding.step == "MANUAL_PICKING_SOURCE_RACK_OUT")
-                )
-                assert departure.status == ("ACCEPTED" if released else "RECONCILING")
+                departure = await db.get(TransportTask, departure.id)
+                assert departure.status == ("SUCCEEDED" if released else "RECONCILING")
                 assert (departure.result_deadline_at is not None) == released
                 if not released:
                     assert departure.reason_code == (

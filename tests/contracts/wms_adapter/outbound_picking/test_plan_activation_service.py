@@ -211,7 +211,7 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
         transport_creator=creator,
         workline_repository=_Worklines(line),
         task_repository=SimpleNamespace(get_executing_for_workline_for_update=task_reader),
-        plan_repository=SimpleNamespace(list_bin_source_racks=AsyncMock(return_value=[])),
+        plan_repository=SimpleNamespace(list_active_bin_source_racks=AsyncMock(return_value=[])),
         transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
     )
 
@@ -271,7 +271,7 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         transport_creator=creator,
         workline_repository=_Worklines(line),
         task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=task)),
-        plan_repository=SimpleNamespace(list_bin_source_racks=AsyncMock(return_value=rows)),
+        plan_repository=SimpleNamespace(list_active_bin_source_racks=AsyncMock(return_value=rows)),
         transport_binding_repository=SimpleNamespace(
             list_task_resource_fence_ids=AsyncMock(return_value=set()),
         ),
@@ -337,7 +337,7 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
         workline_repository=_Worklines(line),
         task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=task)),
         plan_repository=SimpleNamespace(
-            list_bin_source_racks=AsyncMock(
+            list_active_bin_source_racks=AsyncMock(
                 return_value=[SimpleNamespace(rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11)]
             )
         ),

@@ -127,12 +127,7 @@ def test_scan_requires_bounded_original_strings(field, value):
     [
         accepted(),
         accepted(target_preparation={"mode": "ROTATE"}),
-        accepted(
-            target_preparation={
-                "mode": "REPLACE",
-                "rack_destination": {"type": "RACK_POSITION", "location_code": "STORE-1"},
-            }
-        ),
+        accepted(target_preparation={"mode": "REPLACE"}),
         rejected(),
         rejected(business_exception_code="SOURCE_CELL_MISMATCH", source_disposition="CLOSE"),
         {"result": "WAIT", "retry_after_ms": 1000},
@@ -159,7 +154,7 @@ async def test_final_decisions_preserve_response_without_automatic_followup(data
         elif preparation["mode"] == "ROTATE":
             assert isinstance(outcome.result.target_preparation, sdk.PickingTargetRotate)
         else:
-            assert outcome.result.target_preparation.rack_destination == sdk.TransportRackPosition("STORE-1")
+            assert isinstance(outcome.result.target_preparation, sdk.PickingTargetReplace)
     elif data["result"] == "REJECT":
         assert outcome.result.business_exception_code == data["business_exception_code"]
         assert outcome.result.ng_zone_code == "NG-1"
@@ -188,7 +183,12 @@ async def test_direct_pick_accepts_closed_source_results(data):
     [
         accepted(target_preparation=None),
         accepted(target_preparation={"mode": "NONE"}),
-        accepted(target_preparation={"mode": "REPLACE"}),
+        accepted(
+            target_preparation={
+                "mode": "REPLACE",
+                "rack_destination": {"type": "RACK_POSITION", "location_code": "STORE-1"},
+            }
+        ),
         accepted(
             target_preparation={"mode": "UNKNOWN", "rack_destination": {"type": "RACK_POSITION", "location_code": "X"}}
         ),

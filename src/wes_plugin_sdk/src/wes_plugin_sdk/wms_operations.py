@@ -25,7 +25,6 @@ from .wms_types import (
     RackDepartureIntent,
     ReplacementPlanIntent,
     ReturnBufferDrainIntent,
-    ReturnBufferDrainReason,
     ReturnRackArrivalReportIntent,
     SixInOne,
     SourceEmptyIntent,
@@ -211,7 +210,7 @@ def outbound_bin_work_plan(*, operation_id: str, task_id: str, bin_code: str, sc
 def outbound_rack_departure_decide(
     *,
     operation_id: str,
-    task_id: str,
+    task_id: str | None,
     rack_id: str,
     current_location: TransportRackPosition,
     current_face: str,
@@ -322,16 +321,10 @@ def workline_return_buffer_drain_rack_decide(
     *,
     operation_id: str,
     workline_code: str,
-    plugin_key: str,
-    drain_reason: ReturnBufferDrainReason,
-    return_candidates: tuple[BinReturnCandidate, ...],
-    previous_operation_id: str | None = None,
+    required_slot_count: int,
 ) -> ReturnBufferDrainIntent:
     return ReturnBufferDrainIntent(
         operation_id=operation_id,
         workline_code=workline_code,
-        plugin_key=plugin_key,
-        drain_reason=drain_reason,
-        return_candidates=return_candidates,
-        previous_operation_id=previous_operation_id,
+        required_slot_count=required_slot_count,
     )

@@ -35,7 +35,7 @@ def test_later_revision_accepts_both_source_kinds():
     payload["data"] = {
         "task_id": "PICK-1",
         "plan_revision": 2,
-        "added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": ["90", "270"]}],
+        "added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": ["90", "270"]}],
         "added_direct_picks": [
             {"source_locator": {"type": "RACK_SLOT", "rack_id": "RETURN", "rack_face": "C", "slot_id": "C-01"}}
         ],
@@ -46,7 +46,7 @@ def test_later_revision_accepts_both_source_kinds():
 @pytest.mark.parametrize("rack_face", [[""], ["x" * 11], [90], ["90", None]])
 def test_bin_source_rack_rejects_invalid_face_array_members(rack_face):
     payload = valid_event()
-    payload["data"]["added_bin_source_racks"] = [{"rack_id": "BIN-RACK", "rack_face": rack_face}]
+    payload["data"]["added_bin_source_racks"] = [{"rack_id": "BIN-RACK", "rack_faces": rack_face}]
 
     with pytest.raises(ValidationError):
         parse_picking_task_plan_delta_event(payload)
@@ -67,8 +67,8 @@ def test_bin_source_rack_rejects_invalid_face_array_members(rack_face):
         {"added_bin_source_racks": None},
         {"added_direct_picks": []},
         {"added_bin_source_racks": []},
-        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": []}]},
-        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": "90"}]},
+        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": []}]},
+        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": "90"}]},
         {"plan_revision": 2},
         {"plan_revision": None},
         {"added_direct_picks": [{"source_locator": {"type": "BIN_CELL"}}]},
@@ -134,7 +134,7 @@ def test_source_faces_share_the_ten_character_boundary(face, source_kind):
     payload = valid_event()
     payload["data"] = {"task_id": "PICK-1", "plan_revision": 2}
     if source_kind == "bin_rack":
-        payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_face": [face]}]
+        payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_faces": [face]}]
     else:
         payload["data"]["added_direct_picks"] = [
             {"source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE", "rack_face": face, "slot_id": "1"}}
@@ -184,7 +184,7 @@ def test_openapi_uses_business_identifiers_and_nonnegative_timestamp():
     fields = schema["properties"]["data"]["properties"]
     for rack in (fields["target_rack"], fields["added_bin_source_racks"]["items"]):
         assert rack["properties"]["rack_id"]["pattern"] == BUSINESS_IDENTIFIER_PATTERN
-    source_faces = fields["added_bin_source_racks"]["items"]["properties"]["rack_face"]
+    source_faces = fields["added_bin_source_racks"]["items"]["properties"]["rack_faces"]
     assert source_faces["type"] == "array"
     assert source_faces["minItems"] == 1
     assert source_faces["items"]["maxLength"] == 10

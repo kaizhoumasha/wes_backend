@@ -116,6 +116,7 @@ async def _binding_for(
     uuid_factory: Any,
     *,
     workline_id: int,
+    picking_task_id: int | None,
     source_evidence_id: int,
     correlation_id: str,
     step: str,
@@ -132,6 +133,7 @@ async def _binding_for(
                 correlation_id=correlation_id,
                 step=step,
                 workline_id=workline_id,
+                picking_task_id=picking_task_id,
                 resource_fence_id=resource_fence_id,
                 client_request_id=uuid_factory(),
                 source_evidence_id=source_evidence_id,
@@ -139,6 +141,7 @@ async def _binding_for(
         )
     if (
         binding.workline_id != workline_id
+        or binding.picking_task_id != picking_task_id
         or binding.resource_fence_id != resource_fence_id
         or binding.source_evidence_id != source_evidence_id
     ):
@@ -165,6 +168,7 @@ class ReliableRackTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None = None,
         source_evidence_id: int,
         correlation_id: str,
         step: str,
@@ -176,6 +180,7 @@ class ReliableRackTransportCreator:
             self._bindings,
             self._uuid_factory,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=correlation_id,
             step=step,
@@ -198,6 +203,7 @@ class ReliableRackTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None = None,
         source_evidence_id: int,
         correlation_id: str,
         step: str,
@@ -210,6 +216,7 @@ class ReliableRackTransportCreator:
             self._bindings,
             self._uuid_factory,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=correlation_id,
             step=step,
@@ -231,6 +238,7 @@ class ReliableRackTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None = None,
         source_evidence_id: int,
         correlation_id: str,
         step: str,
@@ -240,6 +248,7 @@ class ReliableRackTransportCreator:
         return await self._create_rack_departure(
             db,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=correlation_id,
             step=step,
@@ -253,6 +262,7 @@ class ReliableRackTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None = None,
         source_evidence_id: int,
         operation_id: str,
         step: str,
@@ -262,6 +272,7 @@ class ReliableRackTransportCreator:
         return await self._create_rack_departure(
             db,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=operation_id,
             step=step,
@@ -275,6 +286,7 @@ class ReliableRackTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None,
         source_evidence_id: int,
         correlation_id: str,
         step: str,
@@ -287,6 +299,7 @@ class ReliableRackTransportCreator:
             self._bindings,
             self._uuid_factory,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=correlation_id,
             step=step,
@@ -334,6 +347,7 @@ class ReliableBinTransportCreator:
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int | None = None,
         source_evidence_id: int,
         correlation_id: str,
         step: str,
@@ -345,6 +359,7 @@ class ReliableBinTransportCreator:
             self._bindings,
             self._uuid_factory,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=source_evidence_id,
             correlation_id=correlation_id,
             step=step,

@@ -20,13 +20,13 @@ OPERATION = "outbound.rack.departure_decide@v1"
 OPERATION_ID = "019f3405-2200-7b01-8b01-000000000001"
 
 
-def request():
+def request(task_id="TASK-1"):
     return {
         "operation": OPERATION,
         "operation_id": OPERATION_ID,
         "timestamp": 0,
         "data": {
-            "task_id": "TASK-1",
+            "task_id": task_id,
             "rack_id": "RACK-1",
             "current_location": {"type": "RACK_POSITION", "location_code": "WORK-1"},
             "current_face": "面 A",
@@ -83,6 +83,10 @@ def test_typed_request_reuses_physical_position_and_preserves_face():
     assert encode_request(intent, timestamp=0) == request()
     with pytest.raises(FrozenInstanceError):
         intent.current_face = "B"
+    source_intent = wms_operations.outbound_rack_departure_decide(
+        operation_id=OPERATION_ID, task_id=None, rack_id="RACK-1", current_location=position, current_face="面 A"
+    )
+    assert encode_request(source_intent, timestamp=0) == request(None)
 
 
 @pytest.mark.parametrize(
@@ -200,6 +204,16 @@ def test_request_rejects_unapproved_role_face_and_position(field, value):
 
     body = request()
     body["data"][field] = value
+    with pytest.raises(ValueError):
+        parse_rack_departure_request(body)
+
+
+def test_request_accepts_explicit_null_task_id_but_rejects_missing_field():
+    from src.app.wms_adapter.outbound_picking.departure_wire import parse_rack_departure_request
+
+    assert parse_rack_departure_request(request(None)).data.task_id is None
+    body = request(None)
+    del body["data"]["task_id"]
     with pytest.raises(ValueError):
         parse_rack_departure_request(body)
 

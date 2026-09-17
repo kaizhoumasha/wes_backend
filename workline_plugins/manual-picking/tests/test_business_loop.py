@@ -196,8 +196,23 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
         run(worker, SUBMIT)
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
-        # WMS 接纳释放 RackCycle reservation；没有 ECS 最终结果，Transport 仍为 ACCEPTED。
+        # ACK 证明 RCS/WMS 已接管离场动作，释放准入窗口；同架围栏仍等最终结果。
         assert departure.status == "ACCEPTED" and departure.result_deadline_at is not None
+        async with sessions() as db:
+            assert await BatchRepository().occupied_source_rack_ids(db, line.id) == set()
+        await callback(
+            transport.service,
+            departure,
+            {
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": arrival["rack_id"],
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0502"},
+            },
+        )
+        run(worker, APPLY)
+        run(worker, PUBLISH)
         async with sessions() as db:
             assert await BatchRepository().occupied_source_rack_ids(db, line.id) == set()
             assert await DrainRepository().current(db, line.id) is None
@@ -350,30 +365,45 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         run(worker, ACTIVATE)
         run(worker, SUBMIT)
         refilled = await source_ingresses()
-        assert set(refilled) == set(rack_ids), "CTU03 ACCEPTED must refill exactly one CTU01 through worker activation"
+        assert set(refilled) == set(rack_ids), "CTU03 ACK must refill exactly one CTU01 through activation"
         assert {rack: task.transport_task_id for rack, task in initial.items()} == {
             rack: refilled[rack].transport_task_id for rack in initial
         }
         assert refilled[rack_ids[2]].status == "ACCEPTED"
         assert refilled[rack_ids[2]].request_json["rcs_template_id"] == "CTU01"
+        await callback(
+            transport.service,
+            departure,
+            {
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": rack_ids[0],
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0502"},
+            },
+        )
+        run(worker, APPLY)
+        run(worker, PUBLISH)
+        run(worker, ACTIVATE)
+        run(worker, SUBMIT)
         run(worker, ACTIVATE)
         run(worker, ACTIVATE)
         run(worker, SUBMIT)
         assert {rack: task.transport_task_id for rack, task in (await source_ingresses()).items()} == {
             rack: task.transport_task_id for rack, task in refilled.items()
         }
-        # 没有伪造离场物理成功；第二架也仍只有接纳，窗口释放依据只来自 CTU03 接纳。
+        # 第一架窗口已在 ACK 时释放；成功回调只闭合其物理终态和同架复用围栏。
         departure = await bound_transport(sessions, line.id, SOURCE_RACK_OUT_STEP)
-        assert departure.status == "ACCEPTED"
+        assert departure.status == "SUCCEEDED"
         assert departure.request_json["rcs_template_id"] == "CTU03"
-        assert departure.last_applied_wms_outcome_revision == 0 and departure.outcome_json is None
+        assert departure.last_applied_wms_outcome_revision == 1 and departure.outcome_json is not None
         async with sessions() as db:
             members = (
                 await db.scalars(
                     select(TransportMember).where(TransportMember.transport_task_id == departure.transport_task_id)
                 )
             ).all()
-            assert members and all(member.status != "SUCCEEDED" for member in members)
+            assert members and all(member.status == "SUCCEEDED" for member in members)
         requests = [request["envelope"] for request in server.requests]
         assert sum(request["operation"] == "outbound.bin.inbound_batch@v1" for request in requests) == 1
         assert sum(request["path"].endswith("transport-requests") for request in server.requests) == 5

@@ -3,9 +3,9 @@ audience: WMS 与 WES 初级开发工程师、联调与测试人员
 created_at: 2026-09-02
 related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
-status: Approved
+status: ReviewRequired
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-09-16
+updated_at: 2026-09-17
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -47,7 +47,7 @@ flowchart TD
         A01 --> A10{"全部分段 feed_complete？"}
         A10 -->|否，前段 SCAN1 清空入口| A01
         A10 -->|是，同架后续面| A11["CTU02 换面<br/>等待权威新面"] --> A0
-        A10 -->|是，换架或末架回库| A12["CTU03 RACK→WH01<br/>独立闭合当前架"]
+        A10 -->|是，换架或末架回库| A12["departure_decide READY<br/>CTU03 独立闭合当前架"]
     end
 
     subgraph B["子流程 B：退料货架直接取料，§3.5"]
@@ -59,14 +59,14 @@ flowchart TD
     DONE -->|COMPLETED，转运架原进场已成功| TOUT["转运架 departure_decide<br/>READY 后 F01"]
     DONE -->|COMPLETED| NEXT{"原子准备下一任务"}
     NEXT -->|已准备| INHERIT["下一任务当前架承接 FIFO"]
-    NEXT -->|无下一任务且 FIFO 非空| DRAIN["drain_rack_decide<br/>READY → CTU01 → return_batch → CTU03"]
+    NEXT -->|无下一任务且 FIFO 非空| DRAIN["drain_rack_decide<br/>READY → CTU01/02 → return_batch → departure_decide → CTU03"]
 ```
 
 **任务下发与计划**
 
 | \# | 发起方 → 接收方 | Operation | 关键字段 | 结果 |
 | --- | --- | --- | --- | --- |
-| 1 | WMS → WES | `outbound.picking_task.issued@v1` | `task_id=PICK-20260902-001` | `202/RECEIVED` |
+| 1 | WMS → WES | `outbound.picking_task.issued@v1` | `task_id=PICK-20260902-001, workline_code=LINE3` | `202/RECEIVED` |
 | 2 | WES → WMS | `outbound.picking_task.prepare@v1` | 选中该任务和 WorkLine `LINE3` | `202/PREPARE_ACCEPTED` |
 | 3 | WMS → WES | `outbound.picking_task.plan_delta@v1`（revision 1） | `target_rack=TRANSFER-RACK-01/A`；`added_bin_source_racks=[RACK-5F-001/[90,270]]`；`added_direct_picks=[RETURN-RACK-01/A/A-03]` | `202/RECEIVED` |
 
@@ -77,7 +77,7 @@ flowchart TD
 | 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
-| 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面用 `CTU03 / RACK → ZONE WH01` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
+| 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
@@ -93,11 +93,12 @@ flowchart TD
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
 绑定 FIVE_LAYER/FIVE_RACK 点位的 `workline_positions.capacity` 控制 CTU01 准入窗口，物理当前架最多一个，RCS 负责排队与自主进位。
 CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占；CTU02 不释放窗口。
-匹配 CTU03 已接纳才释放名额；`RECONCILING` 必须有非空 `result_deadline_at` 证明此前接纳，接纳前未知仍占窗。
+同线同架的更晚 CTU03 接纳即释放名额；提交前未知仍占窗。该释放只开放其他货架准入，同架复用仍须等待
+CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
-实际库位 `RACK_POSITION` 可以不同于请求的动态 `ZONE WH01`，其原 Transport 与位置投影据此闭合；回调缺失时该货架保持 unknown，
+实际库位 `RACK_POSITION` 必须满足原 departure READY 冻结的 `ZONE \| RACK_POSITION`，其原 Transport 与位置投影据此闭合；回调缺失时该货架保持 unknown，
 不阻塞另一货架凭自身匹配的进场 `SUCCEEDED` 继续执行。
 
 **子流程 B：退料货架直接取料，与 A 并行（§3.5）**
@@ -126,8 +127,9 @@ CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED
 
 ### 2\.1 复用出库合同的部分（零新增） {#21}
 
-- 任务发布与队列：`outbound.picking_task.issued@v1`、`outbound.picking_task.queue_changed@v1`；
-  人工任务使用同一个 PickingTask 实体和队列，发布时固定 `data.task_type=MANUAL`，不建立人工任务表或人工任务业务键；
+- 任务发布、队列与取消：`outbound.picking_task.issued@v1`、`outbound.picking_task.queue_changed@v1`、
+  `outbound.picking_task.cancel@v1`；人工任务使用同一个 PickingTask 实体和队列，发布时固定 `data.task_type=MANUAL` 并指定不可变
+  `data.workline_code`，不建立人工任务表或人工任务业务键；
 - 任务准备与计划增量：`outbound.picking_task.prepare@v1`、`outbound.picking_task.plan_delta@v1`（含 `added_direct_picks[]`
   退料货架直接取料明细与 `added_bin_source_racks[]` 五层来源货架；后者的 `rack_face` 是非空数组，WES 按面展开；人工任务与自动任务字段
   零差异，人工线两类来源均可能出现）；
@@ -135,7 +137,8 @@ CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED
   上报更新当前 PickingTask 的退料货架到位状态；
 - 五层货架入站分批：`outbound.bin.inbound_batch@v1`；
 - 退箱：`outbound.bin.return_batch@v1`，WorkLine 级跨任务 `RETURN_BUFFER` FIFO；任务完成后先原子准备下一任务，无下一任务且 FIFO 非空才调用 `workline.return_buffer.drain_rack_decide@v1`（出库合同 §9.2.3）；
-- 转运架离场去向：`outbound.rack.departure_decide@v1`；五层架在同架所有面 `feed_complete`、相关义务允许推进后直接创建 `CTU03→WH01`；
+- 所有业务货架离场去向：`outbound.rack.departure_decide@v1`；五层来源架、drain 架 READY 后使用 `CTU03`，转运架 READY 后使用 `F01`，
+  禁止固定 `WH01` 或从其它 operation 猜测 destination；
 - 任务状态确认：`outbound.picking_task.completion_confirm@v1`；
 - Transport 四个通用搬运方法（`move_rack` / `rotate_rack` / `move_bins` / `exchange_bins`）与其提交、回调合同；
 - WorkLine 准入、`PositionProjection` 等基础能力与不变量；
@@ -464,7 +467,7 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 | 方向 | WES 到 WMS |
 | 端点 | `POST {{WMS_BASE_URL}}/api/v1/wes/decisions` |
 | 人工线触发条件 | 当前 PickingTask 完成后先原子准备下一任务；没有可准备任务且 WorkLine `RETURN_BUFFER` FIFO 非空 |
-| 当前已实现原因 | `PICKING_TASK_COMPLETED` |
+| 生命周期上下文 | 任务完成、停线或插件切换原因只保存在 WES 本地，不进入 wire payload |
 | 成功响应 | `200 / DECIDED`，`data.result=READY \| WAIT` |
 | 可靠 owner | 当前 `workline_id`；owner 不进入 wire payload |
 
@@ -477,18 +480,7 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
   "timestamp": 1788390200000,
   "data": {
     "workline_code": "LINE3",
-    "plugin_key": "manual-picking",
-    "drain_reason": "PICKING_TASK_COMPLETED",
-    "return_candidates": [
-      {
-        "sequence_no": 1,
-        "bin_code": "A000000001",
-        "source": {
-          "type": "HANDOFF_POSITION",
-          "location_code": "LINE3-RETURN-HANDOFF"
-        }
-      }
-    ]
+    "required_slot_count": 4
   }
 }
 ```
@@ -499,20 +491,12 @@ operation 的业务终态身份——同一物理货架面被多个不同 `task_
 | `operation_id` | 是 | UUIDv7 | 本次决定身份；技术重试保持原值，`WAIT` 后重求值必须生成新值 |
 | `timestamp` | 是 | nonnegative int64 / UTC Unix 毫秒 | 技术重试保持原时间戳和完整请求内容 |
 | `data.workline_code` | 是 | Identifier | 当前冻结 WorkLine 的业务编码 |
-| `data.plugin_key` | 是 | Identifier | 当前冻结插件身份；人工线为 `manual-picking` |
-| `data.drain_reason` | 是 | enum | `PICKING_TASK_COMPLETED \| WORKLINE_STOPPING \| PLUGIN_SWITCHING`；当前生产实现只触发第一项 |
-| `data.return_candidates` | 是 | array，1～4 项 | 请求时冻结的 WorkLine FIFO 连续前缀 |
-| `data.return_candidates[].sequence_no` | 是 | integer，1～4 | 必须按数组顺序从 `1` 连续编号 |
-| `data.return_candidates[].bin_code` | 是 | Identifier | 同一请求内唯一 |
-| `data.return_candidates[].source.type` | 是 | literal | 固定 `HANDOFF_POSITION` |
-| `data.return_candidates[].source.location_code` | 是 | Identifier | 该候选当前实际退料交接位，不是原来源货架或目标储位 |
-| `data.previous_operation_id` | 否 | UUIDv7 | 首次请求省略；`WAIT` 后重求值时必须直接引用最近一次 `WAIT` 的 identity；禁止显式 `null`，且不得等于本次 `operation_id` |
+| `data.required_slot_count` | 是 | positive integer | 请求时 WorkLine `RETURN_BUFFER` 中已确认可回料 Bin 数量；不包含在途、工作位、NG 或位置未知成员，且不得超过该位置配置容量 |
 
-Identifier 使用 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`。请求信封、`data`、候选和 `source` 均为严格对象，任何层级的额外字段均拒绝；
-已定义字段不接受错误类型或非法 `null`。`return_candidates` 只冻结本次申请容量的 FIFO 前缀，不表达目标 rack、face 或 slot；这些目标由
-WMS 决定。
+Identifier 使用 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`。请求信封和 `data` 均为严格对象，额外字段、错误类型和非法 `null` 全部拒绝。
+Bin 身份、FIFO 顺序、插件身份和生命周期原因由 WES 本地持有；WMS 只根据 WorkLine 和总容量需求选择承接货架面计划。
 
-`READY` 表示 WMS 已选择承接货架和面，并为本次完整候选前缀预留容量：
+`READY` 表示 WMS 已选择满足总容量需求的有序货架和货架面计划：
 
 ```json
 {
@@ -521,8 +505,10 @@ WMS 决定。
   "timestamp": 1788390200100,
   "data": {
     "result": "READY",
-    "rack_id": "RACK-5F-002",
-    "rack_face": "A"
+    "racks": [
+      {"rack_id": "RACK-5F-002", "rack_faces": ["90", "270"]},
+      {"rack_id": "RACK-5F-003", "rack_faces": ["90"]}
+    ]
   }
 }
 ```
@@ -542,13 +528,19 @@ WMS 决定。
 }
 ```
 
-`READY` 只允许 `result + rack_id + rack_face`；`WAIT` 只允许
+`READY` 只允许 `result + racks`；`racks[]` 非空有序、`rack_id` 不重复，每项 `rack_faces[]` 非空有序且同架不重复；总面数在
+`1..required_slot_count` 且每面至少承担一个预留槽位。`WAIT` 只允许
 `result + reason_code=NO_DRAIN_RACK_AVAILABLE + retry_after_ms`，其中 `retry_after_ms` 为 `1～60000` 的整数。响应
 `operation_id` 必须匹配请求，响应对象同样拒绝额外字段。
 
+WMS 内部按 `(workline_code, drain_operation_id)` 保存每线唯一活动容量 reservation；后续普通 `return_batch` 按当前 rack/face 消费，
+未知物理结果不释放，本次数量全部权威回库后关闭。该内部关联不增加 wire 字段。
+当前面至少一个 READY 批次后的 `NO_BATCH` 才推进下一面；首批 `NO_BATCH`、越序 rack/face 或末面耗尽后数量仍未闭合进入对账。
+
 `503 / UNAVAILABLE`、响应未知或单次收发失败时，WES 使用原 `operation_id`、原时间戳和原 payload 重试；`409 / CONFLICT` 或
 `422 / REJECTED` 进入对账，不换 identity 猜测结果。只有已可靠保存的 `READY` 才允许继续创建货架进场 Transport；HTTP 成功、
-WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权威物理结果。
+WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权威物理结果。WES 按 `racks[]` 和 `rack_faces[]` 顺序推进；
+同架换面等待精确到位后复用 `RACK_ROTATE`，跨架在旧架 departure `ACCEPTED` 后可提交下一架进场并由 RCS 排队。
 
 ## NOT in scope {#not-in-scope}
 

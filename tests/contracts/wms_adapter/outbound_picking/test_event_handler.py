@@ -24,6 +24,7 @@ def _body(*, queue_revision: int = 1) -> bytes:
             "data": {
                 "task_id": "PICK-20260811-001",
                 "task_type": "MANUAL",
+                "workline_code": "LINE-3",
                 "queue_revision": queue_revision,
                 "dispatch_sequence": 100,
             },

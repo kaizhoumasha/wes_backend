@@ -2931,6 +2931,21 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "migrations/versions/20260917_1436_e881b50b63b1_add_picking_task_cancellation_and_links.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/database/base_repository.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "deployment/plugin_models.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 

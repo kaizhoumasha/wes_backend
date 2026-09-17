@@ -590,6 +590,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     return
                 workline_id: int | None = None
                 material_execution_id: int | None = None
+                picking_task_id: int | None = None
                 wake_material_execution = False
                 owner_valid = True
                 if confirmation.material_execution_id is not None:
@@ -628,6 +629,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     received_at=changed_at,
                     workline_id=workline_id,
                     material_execution_id=material_execution_id,
+                    picking_task_id=picking_task_id,
                     contract_key=operation,
                     contract_version="1.0",
                     operation=operation,

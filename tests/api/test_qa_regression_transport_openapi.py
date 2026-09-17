@@ -9,6 +9,7 @@ from src.register import register_routers
 
 def test_swagger_event_examples_are_executable_wire_requests() -> None:
     from src.app.wms_adapter.inbound_material.wire import parse_recovery_event
+    from src.app.wms_adapter.outbound_picking.cancel_wire import parse_picking_task_cancel_event
     from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import parse_manual_bin_completed_event
     from src.app.wms_adapter.outbound_picking.plan_delta_wire import parse_picking_task_plan_delta_event
     from src.app.wms_adapter.outbound_picking.queue_changed_wire import parse_picking_task_queue_changed_event
@@ -20,6 +21,7 @@ def test_swagger_event_examples_are_executable_wire_requests() -> None:
     media = app.openapi()["paths"]["/api/v1/wms/events"]["post"]["requestBody"]["content"]["application/json"]
     parsers = {
         "outbound.picking_task.issued@v1": parse_picking_task_issued_event,
+        "outbound.picking_task.cancel@v1": parse_picking_task_cancel_event,
         "outbound.picking_task.queue_changed@v1": parse_picking_task_queue_changed_event,
         "outbound.picking_task.plan_delta@v1": parse_picking_task_plan_delta_event,
         "outbound.manual_bin.work_completed@v1": parse_manual_bin_completed_event,
@@ -74,7 +76,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 7
+    assert len(request_variants) == 8
     assert all(variant["type"] == "object" for variant in request_variants)
     assert all(variant.get("additionalProperties", True) is True for variant in request_variants)
     assert all(
@@ -85,6 +87,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         ["transport.task.resulted@v1"],
         ["inbound.execution.recovery_decided@v1"],
         ["outbound.picking_task.issued@v1"],
+        ["outbound.picking_task.cancel@v1"],
         ["outbound.picking_task.plan_delta@v1"],
         ["outbound.picking_task.queue_changed@v1"],
         ["outbound.manual_bin.work_completed@v1"],
@@ -123,11 +126,17 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         "BIN_EXCHANGE",
     }
     picking_task_data = request_variants[3]["properties"]["data"]
-    assert picking_task_data["required"] == ["task_id", "task_type", "queue_revision", "dispatch_sequence"]
+    assert picking_task_data["required"] == [
+        "task_id",
+        "task_type",
+        "workline_code",
+        "queue_revision",
+        "dispatch_sequence",
+    ]
     assert picking_task_data["properties"]["task_type"]["enum"] == ["MANUAL", "AUTO"]
     assert picking_task_data["properties"]["queue_revision"]["minimum"] == 1
     assert picking_task_data["properties"]["queue_revision"]["maximum"] == 1
-    queue_data = request_variants[5]["properties"]["data"]
+    queue_data = request_variants[6]["properties"]["data"]
     assert queue_data["required"] == ["task_id", "queue_revision"]
     assert queue_data.get("additionalProperties", True) is True
     assert set(queue_data["properties"]) == {"task_id", "queue_revision", "dispatch_sequence", "not_before"}
