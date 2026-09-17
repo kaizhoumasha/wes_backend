@@ -3,7 +3,7 @@
 插件标识 `manual-picking`，显示名称“人工拣料”，仅支持 `MANUAL` 工作线。
 负责传送带料箱人工拣料和退料货架直接取料两条出库路径，不承担人工入库。
 
-当前代码已包含声明与装配、PickingTask prepare 与计划资源进场决策、原 Transport 结果接收、
+当前代码已包含声明与装配、PickingTask prepare、发布与取消、计划资源进场决策、原 Transport 结果接收、
 四点扫码、WMS 料箱准入与完成、进箱/退箱批次、五层来源架窗口与换面/离场、PickingTask 完成及任务完成后的 RETURN_BUFFER 排空。
 退料货架直接取料与现场物理验收仍未完成；本机 Mock 和单元测试不代表现场验收。
 `manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
@@ -61,10 +61,13 @@ PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务
 只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`。请求只携带
 `workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回有序 `racks[].rack_faces[]`，WAIT 到期以新
 identity 和当前数量重求值。已创建 drain 链不被后来任务取消：按货架和面顺序共享 CTU01/CTU02 窗口，等待精确权威到位后连续使用普通
-`return_batch`，保留 FIFO 及未闭合义务直到排空，再创建 CTU03。
+`return_batch`，保留 FIFO 及未闭合义务直到排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
+
+WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或在 `EXECUTING` 中按
+`PLAN_MEMBERS` 撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
 
 SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
 `SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
