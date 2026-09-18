@@ -2,6 +2,7 @@
 
 from .bin_batch import BinBatchScheduler, BinInboundBatchOwnerService
 from .manual_bin_admission import ManualBinAdmissionOwnerService, ManualBinAdmissionScheduler
+from .manual_rack_direct_pick_completed import ManualRackDirectPickCompletedService
 from .picking_task_cancel import PickingTaskCancelService
 from .picking_task_completion import PickingTaskCompletionResultReader, PickingTaskCompletionScheduler
 from .picking_task_confirmation_owner import PickingTaskConfirmationOwnerService
@@ -18,6 +19,7 @@ __all__ = [
     "BinInboundBatchOwnerService",
     "ManualBinAdmissionOwnerService",
     "ManualBinAdmissionScheduler",
+    "ManualRackDirectPickCompletedService",
     "PickingTaskCancelService",
     "PickingTaskCompletionResultReader",
     "PickingTaskCompletionScheduler",
