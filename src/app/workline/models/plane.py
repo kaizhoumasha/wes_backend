@@ -222,6 +222,28 @@ class PlaneSnapshotV2(BaseModel):
     unmapped_object_count: int = Field(default=0, ge=0)
 
 
+class PlaneCurrentTaskView(BaseModel):
+    """WorkLine 当前绑定的 PickingTask 及其公开 plan_delta 目标。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    status: Literal["PREPARING", "EXECUTING"]
+    target_rack_id: str | None = None
+    target_rack_face: str | None = None
+    last_applied_plan_revision: int = Field(ge=0)
+
+
+class PlaneCurrentTaskV2(BaseModel):
+    """按需读取的 WorkLine 当前任务采样。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["plane.current-task.v2"]
+    generated_at: datetime
+    current_task: PlaneCurrentTaskView | None = None
+
+
 class PlaneActiveObjectLocation(BaseModel):
     """Active Objects v2 的位置证据摘要；与 v1 同源，仅冲突状态改为字面量。"""
 
@@ -265,6 +287,8 @@ __all__ = [
     "PlaneActiveObjectLocation",
     "PlaneActiveObjectView",
     "PlaneActiveObjectsV2",
+    "PlaneCurrentTaskV2",
+    "PlaneCurrentTaskView",
     "PlaneEdge",
     "PlaneExtremeState",
     "PlaneNode",

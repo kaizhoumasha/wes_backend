@@ -15,11 +15,17 @@ from src.app.runtime.orchestration.services.query.workline_active_objects_servic
 )
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
+from src.app.wms_integration.outbound_picking.repositories import (
+    PickingTaskRepository,
+    picking_task_repository,
+)
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin_version
 from src.app.workline.models import (
     PlaneActiveObjectLocation,
     PlaneActiveObjectsV2,
     PlaneActiveObjectView,
+    PlaneCurrentTaskV2,
+    PlaneCurrentTaskView,
     PlaneNode,
     PlaneOrphanBinding,
     PlaneResource,
@@ -77,6 +83,7 @@ class PlaneReadSecurityPolicy:
     scope: str = "WORKLINE_LOCAL"
     scene_audit_action: str = "WORKLINE_PLANE_SCENE_READ"
     snapshot_audit_action: str = "WORKLINE_PLANE_SNAPSHOT_READ"
+    current_task_audit_action: str = "WORKLINE_PLANE_CURRENT_TASK_READ"
     redacted_workline_fields: frozenset[str] = frozenset(
         {
             "config",
@@ -86,7 +93,7 @@ class PlaneReadSecurityPolicy:
         }
     )
 
-    def permission_for(self, view: Literal["scene", "snapshot"]) -> str:
+    def permission_for(self, view: Literal["scene", "snapshot", "current_task"]) -> str:
         if view == "scene":
             return self.scene_permission
         return self.snapshot_permission
@@ -110,12 +117,16 @@ class PlaneReadSecurityPolicy:
 
     def audit_event(
         self,
-        view: Literal["scene", "snapshot"],
+        view: Literal["scene", "snapshot", "current_task"],
         *,
         workline_id: int,
         workline_code: str,
     ) -> dict[str, str]:
-        action = self.scene_audit_action if view == "scene" else self.snapshot_audit_action
+        action = {
+            "scene": self.scene_audit_action,
+            "snapshot": self.snapshot_audit_action,
+            "current_task": self.current_task_audit_action,
+        }[view]
         return {
             "action": action,
             "permission": self.permission_for(view),
@@ -139,12 +150,14 @@ class WorkLinePlaneService:
         device_repository: Any = device_repository,
         position_repository: Any = workline_position_repository,
         active_objects_service: Any = workline_active_objects_service,
+        picking_task_repository: PickingTaskRepository | Any = picking_task_repository,
     ) -> None:
         self.audit_service = audit_service
         self.security_policy = security_policy
         self._devices = device_repository
         self._positions = position_repository
         self._active_objects = active_objects_service
+        self._picking_tasks = picking_task_repository
 
     async def get_scene(
         self,
@@ -313,11 +326,45 @@ class WorkLinePlaneService:
             position_by_code=position_by_code,
         )
 
+    async def get_current_task_v2(
+        self,
+        db: AsyncSession,
+        cache: Any,
+        workline_id: int,
+        *,
+        principal: PlaneReadPrincipal,
+    ) -> PlaneCurrentTaskV2:
+        """按需读取 WorkLine 当前 PickingTask；不参与 snapshot 轮询。"""
+
+        workline = await self._load_workline(db, cache, workline_id)
+        self.security_policy.ensure_can_read_workline(workline, principal)
+        task = await self._picking_tasks.get_active_for_workline(db, workline_id)
+        return self.build_current_task_v2(task)
+
+    @staticmethod
+    def build_current_task_v2(task: Any | None) -> PlaneCurrentTaskV2:
+        current_task = (
+            PlaneCurrentTaskView(
+                task_id=str(task.task_id),
+                status=str(task.status),
+                target_rack_id=task.target_rack_id,
+                target_rack_face=task.target_rack_face,
+                last_applied_plan_revision=task.last_applied_plan_revision,
+            )
+            if task is not None
+            else None
+        )
+        return PlaneCurrentTaskV2(
+            schema_version="plane.current-task.v2",
+            generated_at=timezone.now_utc(),
+            current_task=current_task,
+        )
+
     async def record_read_audit(
         self,
         db: AsyncSession,
         *,
-        view: Literal["scene", "snapshot"],
+        view: Literal["scene", "snapshot", "current_task"],
         workline_id: int,
         workline_code: str,
     ) -> None:
@@ -329,11 +376,12 @@ class WorkLinePlaneService:
             "object_id": str(workline_id),
             "change_summary": f"read plane {view}",
         }
+        path_view = {"scene": "scene", "snapshot": "snapshot", "current_task": "current-task/v2"}[view]
         await self.audit_service.create_audit_log(
             db,
             method="GET",
             title=f"WorkLine Plane {view.title()} Read",
-            path=f"/work_lines/{workline_id}/plane/{view}",
+            path=f"/work_lines/{workline_id}/plane/{path_view}",
             args=args,
             status=OperaStatus.SUCCESS,
             code="200",

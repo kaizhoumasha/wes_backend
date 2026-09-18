@@ -663,6 +663,80 @@ def test_build_snapshot_v2_aggregates_counts_and_highest_conflict_state_per_reso
     assert by_key[("DEVICE_ROLE", "SCAN1")].highest_conflict_state == "TRANSIENT"
 
 
+def test_build_current_task_v2_maps_public_fields_without_internal_evidence_ids() -> None:
+    from src.app.workline.services.plane_service import WorkLinePlaneService
+
+    result = WorkLinePlaneService.build_current_task_v2(
+        SimpleNamespace(
+            task_id="TASK-1",
+            status="EXECUTING",
+            target_rack_id="RACK-1",
+            target_rack_face="A",
+            last_applied_plan_revision=2,
+            initial_plan_evidence_id=101,
+            last_plan_evidence_id=102,
+        )
+    )
+
+    assert result.schema_version == "plane.current-task.v2"
+    assert result.current_task is not None
+    assert result.current_task.task_id == "TASK-1"
+    assert result.current_task.status == "EXECUTING"
+    assert result.current_task.target_rack_id == "RACK-1"
+    assert result.current_task.target_rack_face == "A"
+    assert "initial_plan_evidence_id" not in result.model_dump()
+    assert "last_plan_evidence_id" not in result.model_dump()
+
+
+def test_build_current_task_v2_returns_successful_empty_wrapper() -> None:
+    from src.app.workline.services.plane_service import WorkLinePlaneService
+
+    result = WorkLinePlaneService.build_current_task_v2(None)
+
+    assert result.schema_version == "plane.current-task.v2"
+    assert result.current_task is None
+    assert result.generated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_get_current_task_v2_reads_workline_active_task_without_plugin_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.workline.services.plane_service import PlaneReadPrincipal, WorkLinePlaneService
+
+    task_repository = SimpleNamespace(
+        get_active_for_workline=AsyncMock(
+            return_value=SimpleNamespace(
+                task_id="TASK-1",
+                status="PREPARING",
+                target_rack_id=None,
+                target_rack_face=None,
+                last_applied_plan_revision=0,
+            )
+        )
+    )
+    service = WorkLinePlaneService(picking_task_repository=task_repository)
+    monkeypatch.setattr(
+        service,
+        "_load_workline",
+        AsyncMock(return_value=SimpleNamespace(id=7, created_by=42)),
+    )
+
+    db = object()
+    cache = object()
+    result = await service.get_current_task_v2(
+        db,
+        cache,
+        7,
+        principal=PlaneReadPrincipal(user_id=42),
+    )
+
+    task_repository.get_active_for_workline.assert_awaited_once_with(db, 7)
+    assert result.current_task is not None
+    assert result.current_task.task_id == "TASK-1"
+    assert result.current_task.status == "PREPARING"
+
+
 @pytest.mark.asyncio
 async def test_get_snapshot_v2_degrades_to_failed_when_active_object_source_raises(
     monkeypatch: pytest.MonkeyPatch,

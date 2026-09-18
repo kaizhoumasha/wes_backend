@@ -36,6 +36,7 @@ def test_plane_v2_openapi_publishes_routes_without_internal_device_codes() -> No
 
     assert "/work_lines/{id}/plane/scene/v2" in schema["paths"]
     assert "/work_lines/{id}/plane/snapshot/v2" in schema["paths"]
+    assert "/work_lines/{id}/plane/current-task/v2" in schema["paths"]
     assert "/work_lines/{id}/active-objects/v2" in schema["paths"]
     assert "device_codes" not in schema["components"]["schemas"]["WorklineActiveObjectView"]["properties"]
     operation_ids = [operation["operationId"] for path in schema["paths"].values() for operation in path.values()]
@@ -45,6 +46,9 @@ def test_plane_v2_openapi_publishes_routes_without_internal_device_codes() -> No
     )
     assert schema["paths"]["/work_lines/{id}/plane/snapshot/v2"]["get"]["operationId"] == (
         "work_lines_by_id_plane_snapshot_v2_get"
+    )
+    assert schema["paths"]["/work_lines/{id}/plane/current-task/v2"]["get"]["operationId"] == (
+        "work_lines_by_id_plane_current_task_v2_get"
     )
     assert schema["paths"]["/work_lines/{id}/active-objects/v2"]["get"]["operationId"] == (
         "work_lines_by_id_active_objects_v2_get"
@@ -88,6 +92,11 @@ def test_plane_routes_require_dedicated_permissions() -> None:
         for route in workline_api.router.routes
         if route.path == "/work_lines/{id}/plane/snapshot/v2" and "GET" in route.methods
     )
+    current_task_v2_route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/plane/current-task/v2" and "GET" in route.methods
+    )
     active_objects_v2_route = next(
         route
         for route in active_objects_api.router.routes
@@ -96,6 +105,7 @@ def test_plane_routes_require_dedicated_permissions() -> None:
 
     assert _route_permission_names(scene_v2_route) == [plane_read_security_policy.scene_permission]
     assert _route_permission_names(snapshot_v2_route) == [plane_read_security_policy.snapshot_permission]
+    assert _route_permission_names(current_task_v2_route) == [plane_read_security_policy.snapshot_permission]
     assert _route_permission_names(active_objects_v2_route) == ["biz:workline:active-objects"]
 
 
@@ -188,7 +198,7 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("view", ["scene", "snapshot"])
+@pytest.mark.parametrize("view", ["scene", "snapshot", "current_task"])
 async def test_plane_v2_routes_delegate_with_frozen_plugins_and_record_audit(
     monkeypatch: pytest.MonkeyPatch,
     view: str,
@@ -205,14 +215,29 @@ async def test_plane_v2_routes_delegate_with_frozen_plugins_and_record_audit(
     )
     db, cache = object(), object()
     principal = SimpleNamespace(user_id=42, is_superuser=False)
-    handler = (
-        workline_api.get_workline_plane_scene_v2 if view == "scene" else workline_api.get_workline_plane_snapshot_v2
-    )
+    handler = {
+        "scene": workline_api.get_workline_plane_scene_v2,
+        "snapshot": workline_api.get_workline_plane_snapshot_v2,
+        "current_task": workline_api.get_workline_plane_current_task_v2,
+    }[view]
 
-    response = await handler(request=request, db=db, cache=cache, principal=principal, _permission=None, id=7)
+    handler_kwargs = {
+        "request": request,
+        "db": db,
+        "cache": cache,
+        "principal": principal,
+        "_permission": None,
+        "id": 7,
+    }
+    if view == "current_task":
+        handler_kwargs.pop("request")
+    response = await handler(**handler_kwargs)
 
     assert response["data"] is result
-    method.assert_awaited_once_with(db, cache, 7, principal=principal, plugins=plugins)
+    if view == "current_task":
+        method.assert_awaited_once_with(db, cache, 7, principal=principal)
+    else:
+        method.assert_awaited_once_with(db, cache, 7, principal=principal, plugins=plugins)
     service.record_read_audit.assert_awaited_once()
 
 
@@ -247,7 +272,7 @@ async def test_v2_routes_report_unavailable_deployment_runtime(view: str) -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("view", ["scene", "snapshot"])
+@pytest.mark.parametrize("view", ["scene", "snapshot", "current_task"])
 async def test_plane_v2_routes_map_missing_workline_to_not_found(
     monkeypatch: pytest.MonkeyPatch,
     view: str,
@@ -261,18 +286,21 @@ async def test_plane_v2_routes_map_missing_workline_to_not_found(
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(deployment_runtime=SimpleNamespace(plugins=plugins)))
     )
-    handler = (
-        workline_api.get_workline_plane_scene_v2 if view == "scene" else workline_api.get_workline_plane_snapshot_v2
-    )
-
-    response = await handler(
-        request=request,
-        db=object(),
-        cache=object(),
-        principal=SimpleNamespace(user_id=42, is_superuser=False),
-        _permission=None,
-        id=404,
-    )
+    handler = {
+        "scene": workline_api.get_workline_plane_scene_v2,
+        "snapshot": workline_api.get_workline_plane_snapshot_v2,
+        "current_task": workline_api.get_workline_plane_current_task_v2,
+    }[view]
+    kwargs = {
+        "db": object(),
+        "cache": object(),
+        "principal": SimpleNamespace(user_id=42, is_superuser=False),
+        "_permission": None,
+        "id": 404,
+    }
+    if view != "current_task":
+        kwargs["request"] = request
+    response = await handler(**kwargs)
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
     service.record_read_audit.assert_not_awaited()

@@ -102,6 +102,17 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         )
         return task_id is not None
 
+    async def get_active_for_workline(self, db: AsyncSession, workline_id: int) -> PickingTask | None:
+        columns = cast("Any", PickingTask).__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_((PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING)),
+            )
+            .limit(1)
+        )
+
     async def archive_open_for_workline(
         self,
         db: AsyncSession,
