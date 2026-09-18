@@ -71,6 +71,24 @@ def test_direct_pick_completed_rejects_empty_rack_face() -> None:
         )
 
 
+def test_direct_pick_completed_rejects_over_long_rack_face() -> None:
+    """rack_face 与全仓一致使用 RackFaceText（max_length=10），超长面必须被拒绝"""
+    with pytest.raises(ValidationError):
+        parse_manual_rack_direct_pick_event(
+            {
+                "operation_id": OPERATION_ID,
+                "operation": "outbound.manual_rack.direct_pick_completed@v1",
+                "timestamp": 1_788_390_000_000,
+                "data": {
+                    "task_id": "PICK-001",
+                    "rack_id": "RACK-001",
+                    "rack_face": "A" * 11,
+                    "completed_at": 1_788_389_999_000,
+                },
+            }
+        )
+
+
 def test_direct_pick_completed_rejects_future_completion_time() -> None:
     """测试 completed_at 不能晚于 timestamp"""
     with pytest.raises(ValidationError):

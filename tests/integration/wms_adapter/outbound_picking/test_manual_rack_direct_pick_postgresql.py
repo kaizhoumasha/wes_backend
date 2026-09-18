@@ -186,3 +186,49 @@ async def test_direct_pick_completion_replay_is_idempotent() -> None:
         assert first.code == "RECEIVED"
         assert second.code == "DUPLICATE"
         assert len(completions) == 1
+
+
+async def test_different_operation_id_for_a_completed_face_never_violates_the_unique_index() -> None:
+    """不同 operation_id 重报同一已完成面走不到 InboundEvidence 去重，
+    只能靠 already_completed 前置检查挡住唯一索引冲突。"""
+    task_id = "PICK-DP-004"
+    rack_id = "RETURN-RACK-04"
+    rack_face = "D"
+    async with migrated_database() as (_url, sessions):
+        async with sessions.begin() as db:
+            task, issued = await _seed_task(db, task_id=task_id)
+            db.add(
+                DirectPickExecution(
+                    picking_task_id=task.id,
+                    rack_id=rack_id,
+                    rack_face=rack_face,
+                    slot_id="SLOT-01",
+                    plan_revision=1,
+                    source_evidence_id=issued.id,
+                )
+            )
+
+        service = ManualRackDirectPickCompletedService(sessions)
+        first = await service.record(
+            _event(operation_id=new_uuid7(), task_id=task_id, rack_id=rack_id, rack_face=rack_face),
+            received_at=timezone.now_for_db(),
+        )
+        second = await service.record(
+            _event(operation_id=new_uuid7(), task_id=task_id, rack_id=rack_id, rack_face=rack_face),
+            received_at=timezone.now_for_db(),
+        )
+
+        async with sessions() as db:
+            completions = (
+                await db.scalars(
+                    select(DirectPickFaceCompletion).where(
+                        DirectPickFaceCompletion.picking_task_id == task.id,
+                        DirectPickFaceCompletion.rack_id == rack_id,
+                        DirectPickFaceCompletion.rack_face == rack_face,
+                    )
+                )
+            ).all()
+
+        assert first.code == "RECEIVED"
+        assert second.code == "RECEIVED"
+        assert len(completions) == 1
