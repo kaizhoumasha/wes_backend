@@ -9,19 +9,19 @@
 | 已交付主链路 | 五层来源架 → 四点扫码 → WMS/PDA 人工 Bin 作业准入与完成 → `RETURN_BUFFER` 回架 → 任务完成/排空；退料货架直接取料的到位/换面/离场 |
 | 业务所有权 | 插件拥有扫码、经过、FIFO、货架循环、退料货架直接取料推进和任务完成条件；宿主拥有可靠 Evidence、WmsConfirmation、DeviceCommand、Transport 和调度 |
 | WMS/PDA 边界 | PDA、Cell 选择和人工拣料明细归 WMS；WES 只处理准入决定、Bin 级最终释放结果和退料货架直接取料面级完成事实的应用 |
-| 当前未交付 | 退料货架的入线 Transport（合同 §8.3 的到位请求流程），由 `TODOS.md` 独立跟进；其余 `direct_pick_completed` 已完成实施与回归，自动化验收见合同 §8.1 |
+| 当前未交付 | 真实 WMS、ECS/RCS 和现场业务验收；退料货架入线 Transport 已完成代码与自动化验证 |
 | 验收结论 | 代码测试证明 WES 决策与可靠边界，不等于真实 WMS、ECS/RCS 或现场业务验收 |
 
-插件目标覆盖传送带料箱人工拣料和退料货架直接取料两条出库路径；两条路径的代码实施与 §8.1 自动化回归均已闭合，
-入线 Transport 由 `TODOS.md` 单独跟进。`manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
+插件目标覆盖传送带料箱人工拣料和退料货架直接取料两条出库路径；两条路径的代码实施与 §8.1 自动化回归均已闭合。
+`manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
 
-## 双向合同验证（2026-09-18）
+## 双向合同验证（2026-09-19）
 
 以下矩阵以
 [`wms-manual-outbound-picking-integration-requirements.md`](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md)
 为人工线差异真源，以
 [`wms-outbound-picking-task-integration-requirements.md`](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md)
-为复用合同真源。`PASS` 表示代码、测试和边界一致；`PARTIAL` 表示合同已有定义但当前仍有明确未交付项；`OUT` 表示合同未授权，不能据此实现。
+为复用合同真源。`PASS` 表示代码、测试和边界一致；`PARTIAL` 表示合同已有定义但当前仍有明确未交付项；`OUT OF SCOPE` 表示合同未授权或项目主动放弃。
 
 ### A. 插件 → 合同（实现是否有合同归属）
 
@@ -29,29 +29,39 @@
 | --- | --- | --- | --- |
 | 声明、资源槽位和静态装配 | `definition.py`、`application/plugin.py`、`tests/test_declaration.py` | 人工合同 §2.1；插件顶层设计 | `PASS` |
 | prepare、plan_delta、取消和 Transport 可靠接收 | `prepare_policy.py`、`handlers/picking_task_plan_applied.py`、`application/transport_outcome.py` | 人工合同 §2.1；出库合同任务/Transport章节 | `PASS` |
+| `target_rack` → `TRANSFER_RACK` + F01 | `handlers/picking_task_plan_applied.py` 产出 F01 intent；`picking_task_plan_activation.py` 派发到 `TARGET_RACK_IN_STEP` | 人工合同 §3.1；出库合同 §9.1 | `PASS` |
+| `added_bin_source_racks` → `FIVE_RACK` + CTU01 | `_pending_bin_racks` 拉取；activation 派发到 `BIN_SOURCE_RACK_IN_STEP`；`batch_driver` 维护 CTU01 窗口 | 出库合同 §9.1、§9.2.1 | `PASS` |
+| `added_direct_picks` → `RETURN_RACK` + F01 入线 Transport | SDK `PickingTaskPlanAppliedFact.pending_return_racks`；`picking_task_plan_activation._pending_return_racks` + `RETURN_RACK_IN_STEP` 常量；插件 handler 产出 F01 intent；下游 `_advance_return_rack` 自然消费 `PositionProjection` | 人工合同 §3.5、§5.5；合同 §3.1 入线 Transport 形态 | `PASS`（已闭合"退料货架入线 Transport 缺口"，对应 `TODOS.md` 已删除条目） |
 | CTU01 窗口、同架换面、CTU03 离场 | `application/batch_driver.py`、`batch_repository.py`、`tests/test_batch_*`、`tests/test_source_progression.py` | 出库合同 §9.1、§9.2.1、§9.4 | `PASS` |
-| SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（对应 C4/C5：现有行为与局部测试一致，不代表完整自动化或现场验收） |
-| point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | `src/app/wms_adapter/outbound_picking/manual_bin_*`、`scan_flow.py`；完整 admission/application owner 为 `PLANNED` | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准，C1～C3 自动化验收未闭合） |
-| 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py` | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（对应 C6：现有行为与局部测试一致，不代表完整自动化或现场验收） |
-| 退料货架直接取料 | `application/batch_driver.py` 的 `_advance_return_rack` + `completion_repository.py` 的面级应用；到位/换面/离场回归见 `tests/test_return_rack_progression.py` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地，现场物理验收仍 `NOT ACCEPTED`） |
-| 停线/插件切换触发 drain | 现有 drain 只承接任务完成触发，停线/切换仍在 `TODOS.md` | 人工合同 §5.6；出库合同 §9.2.3 | `PARTIAL` |
+| SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（C4/C5：现有行为与局部测试一致，不替代现场物理验收） |
+| `MANUAL_PICK_NG` 持久化 | `passage_model.reason_code VARCHAR(64)`；`scan_flow._apply_completed` 在 `result=NG` 时写入 `MANUAL_PICK_NG`；新 migration `20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py` | 人工合同 §5.2 | `PASS` |
+| per-Bin 终态唯一索引 | `passage_model.py:27-34` `ux_manual_picking_passages_wms_terminal`：`(task_id, bin_code) WHERE wms_result IS NOT NULL` 部分唯一索引 | 人工合同 §9.1 | `PASS` |
+| point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | 宿主 `src/app/wms_adapter/outbound_picking/manual_bin_*` + 插件 `scan_flow.py`；FastTests 覆盖；集成 owner 由 `tests/integration/wms_integration/outbound_picking/test_plan_activation_return_rack_postgresql.py` + `scripts/run-integration-tests.sh` 统一入口 | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准；自动化验收依赖 `RUN_WORKLINE_INTEGRATION=1` 时真实 PG 跑过） |
+| 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py`；集成 `test_rack_cycle_postgresql.py` 覆盖 PostgreSQL 路径 | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（C6：行为与局部测试一致；真实 PG 由集成测试契约承担） |
+| 退料货架直接取料 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` + `manual_rack_direct_pick_completed.py`；插件通过 `completion_repository` 消费面级完成事实推进 `_advance_return_rack` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地；现场物理验收仍 `NOT ACCEPTED`） |
+| 任务完成触发 drain | `batch_driver.py`、`completion_flow.py`、`drain_flow.py`、`tests/test_drain_flow.py` | 人工合同 §5.6；出库合同 §9.2.3 | `PASS` |
+| 停线触发全量排空 | `WorkLineConfigurationService._trigger_plugin_drain` 在 `deactivate()` 前调用 `drain_flow.trigger_full_drain_in_session`；端口 `InstalledWorkLinePlugin.drain_trigger` | 人工合同 §5.6；出库合同 §9.2.3 | `PASS` |
+| 插件切换触发 drain | 项目决定不再引入插件切换，不需要该分支 | 人工合同 §5.6；出库合同 §9.2.3 | `OUT OF SCOPE` |
 
 ### B. 合同 → 插件（合同要求是否有实现承接）
 
 | 合同要求 | 插件承接 | 结论 |
 | --- | --- | --- |
 | 复用 PickingTask、plan_delta、取消、arrival、inbound/return batch、departure、completion_confirm | 宿主 operation + 插件 typed facade/业务 driver；插件未复制 HTTP、Evidence 或重试 | `PASS` |
-| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 只按 `task_id + bin_code` 绑定 | `PARTIAL`（对应 C1/C3：实现证据存在，但 admission/application owner 仍为 `PLANNED`，不代表完整自动化或现场验收） |
-| `work_completed` 先可靠接收，应用时才绑定当前 point2 等待 | `manual_bin_completed_event_handler.py` + `scan_flow.py`；早到/冲突进入 `RECONCILING` | `PARTIAL`（对应 C2/C3：实现证据存在，但完整自动化 owner 仍为 `PLANNED`，不代表完整自动化或现场验收） |
-| 点3不能由 FIFO 猜测正常授权，点4须等 ECS `SUCCESS` 才入队 | `scan3.py`、`scan4.py`、`test_scan_flow.py` | `PARTIAL`（对应 C4/C5：现有行为与局部测试一致，不代表完整自动化或现场验收） |
+| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 只按 `task_id + bin_code` 绑定 | `PASS`（实现闭合；自动化 owner 由 `test_plan_activation_return_rack_postgresql.py` 等覆盖） |
+| `work_completed` 先可靠接收，应用时才绑定当前 point2 等待 | `manual_bin_completed_event_handler.py` + `scan_flow.py`；早到/冲突进入 `RECONCILING` | `PASS`（实现闭合；FastTests + 既有 `test_manual_bin_completed_postgresql.py` 覆盖幂等与冲突） |
+| 点3不能由 FIFO 猜测正常授权，点4须等 ECS `SUCCESS` 才入队 | `scan3.py`、`scan4.py`、`test_scan_flow.py`、`test_scan_handlers.py` | `PARTIAL`（C4/C5：现有行为与局部测试一致；不替代 ECS 设备验收） |
 | 来源架按精确 rack/face、原 Transport 和 READY evidence 推进 | `batch_repository.py`、`transport_outcome.py`、`source_progression.py` | `PASS` |
-| 任务完成先原子准备下一任务，无下一任务才 drain | `batch_driver.py`、`completion_flow.py`、PostgreSQL rack-cycle tests | `PARTIAL`（对应 C6：现有行为与局部测试一致，不代表完整自动化或现场验收） |
-| 直接取料完成通知后才允许退料架换面/离场 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` 与 `src/app/wms_integration/outbound_picking/services/manual_rack_direct_pick_completed.py` 提供 wire、handler 和本地应用；插件通过 `completion_repository` 消费面级完成事实推进 `_advance_return_rack` | `PARTIAL`（代码与 §8.1 自动化 owner 落地，现场物理验收仍 `NOT ACCEPTED`） |
-| 真实 worker、PostgreSQL、WMS/ECS/RCS 和现场验收 | 已有 FAST 与部分 worker/数据库测试；无真实设备/现场证据 | `PARTIAL`（测试不替代现场验收） |
+| 任务完成先原子准备下一任务，无下一任务才 drain | `batch_driver.py`、`completion_flow.py`、`test_completion_flow.py`、`test_drain_flow.py`；集成测试 `test_rack_cycle_postgresql.py` 覆盖 PostgreSQL 路径 | `PARTIAL`（C6：行为闭合；真实 PG 验证需 `RUN_WORKLINE_INTEGRATION=1`） |
+| 直接取料完成通知后才允许退料架换面/离场 | 宿主 `manual_rack_direct_pick_*` + `manual_rack_direct_pick_completed.py`；插件 `completion_repository` 推进 `_advance_return_rack` | `PARTIAL`（代码 + 自动化 owner 落地；现场物理验收仍 `NOT ACCEPTED`） |
+| 集成测试契约（`RUN_WORKLINE_INTEGRATION=1` + 本地 PG/Redis/Celery） | `scripts/run-integration-tests.sh` + `tests/integration/conftest.py` 的 `integration_guard` | `PASS`（契约统一；本机/CI 同入口） |
+| 现场 worker、ECS/RCS 与设备验收 | FastTests + 集成测试 + `test_business_loop.py` 真实 worker 路径（依赖 PG/Redis/Celery） | `PARTIAL`（测试不替代 ECS/设备/现场验收） |
 
-双向验证的收敛结论：当前插件与合同的**已批准人工 Bin 主链路一致**；退料货架直接取料已完成代码实施与 §8.1 自动化回归，
-但合同 §6 现场物理验收仍为 `NOT ACCEPTED`，入线 Transport 缺口由 `TODOS.md` 独立跟进。停线/插件切换 drain 是已批准合同中
-的待办触发条件，需单独排期。
+双向验证的收敛结论（2026-09-19 重新对账）：
+
+- `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`），不引入新窗口表、不维护占用计数器，capacity 解释完全交给 ECS/RCS。
+- `MANUAL_PICK_NG` 与 per-Bin 终态唯一索引均已落地（迁移 `20260919_0409_1d3045ea8e62` + 既有 `ux_manual_picking_passages_wms_terminal`）；合同 §6 现场物理验收仍 `NOT ACCEPTED`。
+- 集成测试通过 `scripts/run-integration-tests.sh` + `RUN_WORKLINE_INTEGRATION=1` 统一入口接入，不依赖旧的"本机通过代表现场"假设。
 
 ## 声明与装配
 
@@ -84,7 +94,7 @@ RCS 负责 AGV 排队、互斥和自主进位；WES 不保存排队位或队尾�
 `PickingTaskPlanAppliedHandler` 只消费宿主从已提交计划和位置绑定构造的 typed fact，不解析 WMS JSON。
 它只把转运架映射为 `F01 → TRANSFER_RACK`；`ManualPickingBatchDriver` 是来源架 CTU01/CTU02/CTU03 的唯一 owner，
 按 `plan_revision / id` 稳定选取窗口内来源架，每架只创建一次 CTU01，多面仍保留在同一货架上下文。宿主校验返回意图是冻结 fact 的合法子集。
-`added_direct_picks` 对应的退料货架进场尚无已批准运输映射，本轮不猜测其模板或执行时机。
+`added_direct_picks` 对应的退料货架进场由宿主创建 `RETURN_RACK_IN_STEP` 的 F01 可靠 Transport，目标位置来自冻结的 `RETURN_RACK` 绑定。
 宿主通过静态 Celery 任务只扫描精确匹配的活动工作线，调用该 handler 并在同一事务内创建可靠 TransportTask；插件未启用时不执行其业务决策。
 
 Transport 结果按原 binding 及对应计划或 drain READY Evidence 校验后，由插件适配器保存为 `APPLIED` 的
@@ -126,6 +136,24 @@ SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 B
 
 在后端根目录运行 `uv run --extra manual-picking pytest workline_plugins/manual-picking/tests -m "not integration" -q -o addopts=''` 验证插件 FAST。
 `test_rack_cycle_postgresql.py` 与 `test_business_loop.py` 仅在独占 PostgreSQL/Redis/worker 环境中显式运行，不以 skipped 或本地通过代表现场验收。
-基础声明校验与绑定规则由 SDK / 宿主测试承接，不复制到插件测试。
+
+### 本地集成测试契约
+
+集成测试入口统一由 `scripts/run-integration-tests.sh` 提供，契约如下：
+
+- `RUN_WORKLINE_INTEGRATION=1` 必须显式开启；脚本默认拒绝运行，避免误连生产/共享 dev 库。
+- `INTEGRATION_DATABASE_URL` 必须指向 `localhost`/`127.0.0.1`/`::1`/`db` host，且数据库名以 `test_` 开头或 `_test` 结尾；脚本在启动 pytest 前会用 `alembic current` 主动认证，失败时立即报错而非延迟到 pytest。
+- 未设置时，`INTEGRATION_REDIS_URL` 默认使用 Redis DB 0，`CELERY_BROKER_URL` 使用 DB 1，`CELERY_RESULT_BACKEND` 使用 DB 2；若设置 `REDIS_PASSWORD` 和 `REDIS_PORT`，脚本会沿用这两个值。
+- 用户需自行执行 `ALEMBIC_DATABASE_URL=$INTEGRATION_DATABASE_URL uv run alembic upgrade head` 保证 schema 与代码同步；脚本不自动执行，避免误改。
+
+```bash
+# 在 docker compose up -d db redis 之后
+export RUN_WORKLINE_INTEGRATION=1
+export INTEGRATION_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_manual_picking
+ALEMBIC_DATABASE_URL=$INTEGRATION_DATABASE_URL uv run alembic upgrade head
+./scripts/run-integration-tests.sh workline_plugins/manual-picking/tests/
+```
+
+未设置 `RUN_WORKLINE_INTEGRATION` 时，集成测试在 conftest 的 `integration_guard` fixture 处 SKIPPED，FAST 套件不受影响。
 完整业务顺序与联调边界见[人工出库拣料交互要求](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md)
 和[人工出库货架搬运规则](../../docs/integration/manual-outbound-rack-transport.md)。
