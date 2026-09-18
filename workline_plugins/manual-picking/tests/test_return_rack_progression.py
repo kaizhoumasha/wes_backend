@@ -60,6 +60,10 @@ class Creator:
     def __init__(self):  # type: ignore[no-untyped-def]
         self.rotate = []
         self.depart = []
+        self.created = []
+
+    async def create(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.created.append(kwargs)
 
     async def create_rotate(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.rotate.append(kwargs)
@@ -291,3 +295,26 @@ async def test_unbound_return_rack_position_leaves_the_five_rack_subflow_untouch
     assert await driver.advance_in_session(object(), line, task) == 0
     scheduler.create_in_session.assert_not_awaited()
     assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_five_rack_admission_and_return_rack_arrival_progress_together_in_one_call() -> None:
+    """合同 §1.1 示例场景：任务同时含五层架来源与 RETURN-RACK-01 直接取料，两条子流程物理上
+    并行、互不阻塞；一次 advance_in_session 必须同时推进子流程 A（五层架窗口准入）与子流程 B
+    （退料货架到位上报），而不是其中一条阻塞另一条。"""
+    driver, line, task, _, plans, creator, _, arrival_scheduler, departure = setup_driver()
+    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=1))
+    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
+    plans.list_active_bin_source_racks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[SimpleNamespace(rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1)]
+    )
+
+    assert await driver.advance_in_session(object(), line, task) == 2
+
+    assert len(creator.created) == 1
+    assert creator.created[0]["intent"].rack_id == "R1"
+    assert creator.created[0]["resource_fence_id"] == "R1"
+    arrival_scheduler.create_in_session.assert_awaited_once()
+    return_intent = arrival_scheduler.create_in_session.await_args.args[1]
+    assert return_intent.rack_id == "RETURN-RACK-01"
+    departure.create_in_session.assert_not_awaited()
