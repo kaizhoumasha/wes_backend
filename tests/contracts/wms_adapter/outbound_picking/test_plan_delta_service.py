@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
+from wes_plugin_sdk import PickingTaskPlanAdmissionDecision, PickingTaskPlanAdmissionDecisionKind
 
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.models import InboundEvidenceKind, WmsConfirmationStatus
@@ -81,6 +82,8 @@ def setup_service(
     status=Status.PENDING,
     *,
     plan_activation_plugin_identities=(),
+    plan_admission_policies=None,
+    session_factory=None,
     task_queue_gateway=None,
     workline_repository=None,
 ):
@@ -138,13 +141,18 @@ def setup_service(
         accept=AsyncMock(return_value=InboundEvidenceAcceptance(evidence=evidence, duplicate=False)),
         record_conflict=AsyncMock(),
     )
+    if plan_admission_policies and workline_repository is None:
+        workline_repository = SimpleNamespace(
+            get_by_id=AsyncMock(return_value=SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0"))
+        )
     return (
         PickingTaskPlanDeltaService(
-            Sessions(),
+            session_factory or Sessions(),
             evidence_service=evidences,
             task_repository=tasks,
             plan_repository=plans,
             plan_activation_plugin_identities=plan_activation_plugin_identities,
+            plan_admission_policies=plan_admission_policies,
             task_queue_gateway=task_queue_gateway,
             workline_repository=workline_repository,
         ),
@@ -166,6 +174,191 @@ async def test_revision_one_commits_plan_and_evidence_together():
     ) == ("EXECUTING", 1, 10, 10)
     assert task.target_rack_face == " A "
     assert evidence.apply_status == Status.APPLIED
+
+
+async def test_plan_admission_rejects_direct_picks_before_member_persistence():
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service, task, evidence, _ = setup_service(plan_admission_policies={("sample_plugin", "0.1.0"): policy})
+    receipt = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SRC", "rack_face": " A ", "slot_id": "1"}}
+        ]
+    )
+
+    result = await service.record(receipt, received_at=NOW)
+
+    assert result.code == "CONFLICT"
+    assert result.reason_code == "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    assert task.last_applied_plan_revision == 0
+    assert task.last_plan_evidence_id is None
+    assert evidence.apply_status == Status.RECONCILING
+    assert task.plan_blocked_evidence_id == evidence.id
+    service._plans.add_members.assert_not_awaited()
+    policy.assert_called_once()
+    assert policy.call_args.args[0].has_direct_picks is True
+
+
+async def test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence():
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service, task, evidence, _ = setup_service(plan_admission_policies={("sample_plugin", "0.1.0"): policy})
+    receipt = event(
+        added_bin_source_racks=[{"rack_id": "BIN-SRC", "rack_face": [" A "]}],
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "DIRECT-SRC", "rack_face": " B ", "slot_id": "1"}}
+        ],
+    )
+
+    result = await service.record(receipt, received_at=NOW)
+
+    assert result.code == "CONFLICT"
+    assert result.reason_code == "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    policy.assert_called_once()
+    fact = policy.call_args.args[0]
+    assert fact.has_direct_picks is True
+    assert task.last_applied_plan_revision == 0
+    assert evidence.apply_status == Status.RECONCILING
+    service._plans.add_members.assert_not_awaited()
+
+
+async def test_plan_admission_replay_returns_first_reason_without_reinvoking_policy():
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service, _, evidence, _ = setup_service(
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy}, status=Status.PENDING
+    )
+    service._plans.first_rejection.return_value = "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    receipt = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SRC", "rack_face": " A ", "slot_id": "1"}}
+        ]
+    )
+
+    first = await service.record(receipt, received_at=NOW)
+    replay = await service.record(receipt, received_at=NOW + timedelta(seconds=1))
+
+    assert first.reason_code == replay.reason_code == "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    assert policy.call_count == 1
+    service._evidence.record_conflict.assert_awaited_once()
+    assert evidence.apply_status == Status.RECONCILING
+
+
+async def test_bin_only_plan_is_admitted_and_applied_by_policy():
+    policy = Mock(return_value=PickingTaskPlanAdmissionDecision(kind=PickingTaskPlanAdmissionDecisionKind.ACCEPT))
+    service, task, evidence, _ = setup_service(plan_admission_policies={("sample_plugin", "0.1.0"): policy})
+
+    result = await service.record(event(), received_at=NOW)
+
+    assert result.code == "RECEIVED"
+    assert task.last_applied_plan_revision == 1
+    assert evidence.apply_status == Status.APPLIED
+    assert policy.call_args.args[0].has_direct_picks is False
+
+
+async def test_rejected_identity_payload_drift_returns_idempotency_conflict():
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service, task, evidence, _ = setup_service(plan_admission_policies={("sample_plugin", "0.1.0"): policy})
+    service._evidence.accept.side_effect = [
+        InboundEvidenceAcceptance(evidence=evidence, duplicate=False),
+        InboundEvidenceConflictResult(
+            evidence=evidence, conflict=SimpleNamespace(), source_identity=evidence.source_identity
+        ),
+    ]
+    rejected = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SRC", "rack_face": " A ", "slot_id": "1"}}
+        ]
+    )
+    drifted = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "OTHER", "rack_face": " A ", "slot_id": "1"}}
+        ]
+    )
+
+    assert (await service.record(rejected, received_at=NOW)).reason_code == "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    result = await service.record(drifted, received_at=NOW + timedelta(seconds=1))
+
+    assert result.reason_code == "IDEMPOTENCY_CONFLICT"
+    assert policy.call_count == 1
+    assert task.last_applied_plan_revision == 0
+
+
+async def test_direct_pick_remains_shared_behavior_without_a_policy():
+    service, task, evidence, _ = setup_service()
+    receipt = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SRC", "rack_face": " A ", "slot_id": "1"}}
+        ]
+    )
+
+    result = await service.record(receipt, received_at=NOW)
+
+    assert result.code == "RECEIVED"
+    assert task.last_applied_plan_revision == 1
+    assert evidence.apply_status == Status.APPLIED
+    service._plans.add_members.assert_awaited_once()
+
+
+async def test_policy_exception_propagates_and_transaction_rolls_back():
+    class RollbackSessions:
+        rolled_back = False
+
+        @asynccontextmanager
+        async def begin(self):
+            try:
+                yield object()
+            except Exception:
+                self.rolled_back = True
+                raise
+
+    sessions = RollbackSessions()
+    policy = Mock(side_effect=RuntimeError("policy failure"))
+    service, task, evidence, _ = setup_service(
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy}, session_factory=sessions
+    )
+
+    with pytest.raises(RuntimeError, match="policy failure"):
+        await service.record(event(), received_at=NOW)
+
+    assert sessions.rolled_back is True
+    assert task.last_applied_plan_revision == 0
+    assert evidence.apply_status == Status.PENDING
+    service._plans.add_members.assert_not_awaited()
+
+
+async def test_reconciling_without_first_reason_fails_closed_before_policy():
+    policy = Mock(return_value=PickingTaskPlanAdmissionDecision(kind=PickingTaskPlanAdmissionDecisionKind.ACCEPT))
+    service, task, evidence, _ = setup_service(
+        status=Status.RECONCILING,
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy},
+    )
+    service._plans.first_rejection.return_value = None
+
+    with pytest.raises(RuntimeError, match="计划拒绝缺少首次 reason_code"):
+        await service.record(event(), received_at=NOW)
+
+    assert task.last_applied_plan_revision == 0
+    assert evidence.apply_status == Status.RECONCILING
+    policy.assert_not_called()
+    service._plans.add_members.assert_not_awaited()
 
 
 async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_capability(monkeypatch):

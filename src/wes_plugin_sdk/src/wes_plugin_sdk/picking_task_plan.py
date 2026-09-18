@@ -1,6 +1,7 @@
 """PickingTask 已应用计划交给业务插件的不可变合同。"""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from .decisions import TransportRackPosition, TransportRackReference, TransportRcsTemplateId
@@ -113,7 +114,54 @@ class PickingTaskPlanAppliedHandler(Protocol):
     def __call__(self, fact: PickingTaskPlanAppliedFact) -> PickingTaskPlanHandlingResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PickingTaskPlanAdmissionFact:
+    """已通过公共 DTO 校验、供插件做业务准入判断的最小计划事实。"""
+
+    task_id: str
+    plan_revision: int
+    has_direct_picks: bool
+
+    def __post_init__(self) -> None:
+        _ = _required(self.task_id, "task_id")
+        if type(self.plan_revision) is not int or self.plan_revision < 1:
+            raise ValueError("plan_revision must be a positive integer")
+        if type(self.has_direct_picks) is not bool:
+            raise TypeError("has_direct_picks must be a bool")
+
+
+class PickingTaskPlanAdmissionDecisionKind(StrEnum):
+    """计划业务准入结果。"""
+
+    ACCEPT = "ACCEPT"
+    REJECT = "REJECT"
+
+
+@dataclass(frozen=True, slots=True)
+class PickingTaskPlanAdmissionDecision:
+    """插件对已验证计划返回的封闭、不可变准入结果。"""
+
+    kind: PickingTaskPlanAdmissionDecisionKind
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not PickingTaskPlanAdmissionDecisionKind:
+            raise TypeError("kind must be a PickingTaskPlanAdmissionDecisionKind")
+        if self.kind is PickingTaskPlanAdmissionDecisionKind.REJECT:
+            _ = _required(self.reason_code, "reason_code")
+        elif self.reason_code is not None:
+            raise ValueError("ACCEPT must not include reason_code")
+
+
+class PickingTaskPlanAdmissionPolicy(Protocol):
+    def __call__(self, fact: PickingTaskPlanAdmissionFact) -> PickingTaskPlanAdmissionDecision: ...
+
+
 __all__ = (
+    "PickingTaskPlanAdmissionDecision",
+    "PickingTaskPlanAdmissionDecisionKind",
+    "PickingTaskPlanAdmissionFact",
+    "PickingTaskPlanAdmissionPolicy",
     "PickingTaskPlanAppliedFact",
     "PickingTaskPlanAppliedHandler",
     "PickingTaskPlanHandlingResult",

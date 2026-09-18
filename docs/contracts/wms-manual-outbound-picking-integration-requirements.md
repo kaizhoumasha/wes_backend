@@ -21,6 +21,9 @@ updated_at: 2026-09-17
 定义的自动出库场景完全一致。本文只增加人工线的 point2 任务准入、最终释放决定、本地应用，以及退料货架直接取料完成通知
 四个 operation（详见第 5 节），不建立第二套通用字段表达。
 
+> **直接取料门禁：** 本文前言对退料货架直接取料及 `direct_pick_completed` 的描述仅是待评审草案，状态为 `DRAFT / NOT AUTHORIZED`。
+> 该 operation、其触发/接收语义及后续离场前提在批准前不得实施，也不纳入当前 E2E 验收。
+
 系统尚未发布。本文不提供旧接口、兼容字段或新旧路径并存。
 
 开发联调允许按[插件顶层设计 §7.13](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#713-声明先行与渐进业务接入)
@@ -33,6 +36,8 @@ updated_at: 2026-09-17
 本节用一个模拟任务，把第 2～6 节涉及的全部 operation 按时间顺序串成一条线，方便第一次读这份合同的人先建立整体画面，再去查各节的严格字段定义。示例里的 `task_id`、`bin_code`、`rack_id` 与第 5 节的 JSON 示例是同一套编号，两边可以对照阅读。
 
 任务 `PICK-20260902-001`（`task_type=MANUAL`）同时包含两类来源：五层货架 `RACK-5F-001`（Bin `A000000001`，走传送带点1～点4）和退料货架 `RETURN-RACK-01`（精确储位 `A-03`，走 §3.5 的直接取料路径）。两条子流程物理上并行、互不阻塞，最终都汇入转运货架 `TRANSFER-RACK-01`。
+
+> **状态门禁：** 下方子流程 B（直接取料）及其 `direct_pick_completed` 文本目前为 `DRAFT / NOT AUTHORIZED`。它不能作为实现依据，也不纳入当前 E2E 验收；在单独合同评审批准前，示例不得被解释为已批准流程。
 
 ```mermaid
 flowchart TD
@@ -149,6 +154,9 @@ CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`。
 
 ### 2\.2 人工出库线独有的部分（本文新增） {#22}
 
+> **直接取料门禁：** 下方退料货架直接取料条目仅引用待评审草案，状态为 `DRAFT / NOT AUTHORIZED`。不得据此实施
+> `direct_pick_completed`、其接收语义或换面/离场前提；当前 E2E 不覆盖该分支。
+
 - 工作位（点2）任务由人工经 PDA 完成，PDA 是 WMS 侧功能，不在 WES 集成范围内（详见第 4 节）；
 - point2 扫描实际 Bin 后，WES 向 WMS 请求是否存在人工任务的新 operation：
   `outbound.manual_bin.work_admission_decide@v1`（详见第 5 节）；
@@ -242,6 +250,8 @@ WES 在点2的唯一职责是：
 点4首次扫码冻结入队顺序与命令；重扫只留证对账，不更换原命令或重复放行。
 
 ### 3\.5 退料货架直接取料 {#35-direct-pick}
+
+> **DRAFT / NOT AUTHORIZED：** 本节仅保留待评审的 wire 和业务草案，当前不能实施，也不纳入当前 E2E 验收。批准前不得据此创建 operation、handler、路由或现场验收项。
 
 退料货架直接取料是人工出库线的第二条物理路径，完全独立于 §3.1～§3.4 的传送带（点1～点4），不经过任何 SCAN 设备。
 货架搬运和到位复用出库合同 §9.1（`outbound.return_rack.arrival_report@v1`，零改动）；差异只在取货动作本身：
@@ -397,8 +407,11 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 
 ### 5.4 完成事实的本地应用 {#54-completion-local-application}
 
+> **直接取料门禁：** 本节涉及的 `direct_pick_completed` 仅为 `DRAFT / NOT AUTHORIZED` 草案引用。其可靠接收、幂等、ACK、
+> 货架面应用及后续换面/离场前提在单独批准前不得实施，也不构成当前 E2E 验收。
+
 取消 `outbound.manual_bin.completion_apply_report@v1`，WES 不再向 WMS 二次报告完成事实的应用结果。
-`work_completed` 与 `direct_pick_completed` 的可靠接收、幂等和 `202 / RECEIVED` ACK 语义保持不变；ACK 不表示物理释放完成。
+对已批准的 `work_completed`，可靠接收、幂等和 `202 / RECEIVED` ACK 语义保持不变；ACK 不表示物理释放完成。
 
 WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存本地应用状态。早到、绑定不匹配或结果冲突进入本地
 `RECONCILING`，保留原 identity 与证据，不下发方向命令，也不创建额外上报义务。
@@ -410,6 +423,8 @@ WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存
 已有旧阶段 Run 和未闭合上报义务应在升级前逐项核对；接口退役不允许覆盖历史证据或重新触发物理动作。
 
 ### 5\.5 `outbound.manual_rack.direct_pick_completed@v1` {#55-outboundmanual_rackdirect_pick_completedv1}
+
+> **DRAFT / NOT AUTHORIZED：** 本 operation 的 wire 文本尚未获批，当前不能实施，也不纳入当前 E2E 验收。不得据此注册代码 operation 或创建自动化验收结果。
 
 | 项 | 值 |
 | --- | --- |
@@ -442,14 +457,14 @@ Evidence/Confirmation。
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | 出库合同 Identifier | 必须命中该任务已接收的 `plan_delta.added_direct_picks[]` 中尚未结束的退料货架面 |
-| `data.rack_id` / `data.rack_face` | 是 | string \+ code / 出库合同 Identifier | 必须等于 `added_direct_picks[].source_locator` |
-| 中当前尚未结束的退料货架和面 | {} | {} | {} |
-| `data.completed_at` | 是 | positive integer / UTC Unix 毫秒 | WMS 确认该货架面全部直接取料完成的时间；不得晚于信封 |
-| `timestamp` | {} | {} | {} |
+| `data.rack_id` | 是 | string，出库合同 Identifier | 必须等于 `added_direct_picks[].source_locator.rack_id`；不得为空或含未批准格式 |
+| `data.rack_face` | 是 | string，出库合同 Identifier | 必须等于 `added_direct_picks[].source_locator.rack_face`；不得为空或含未批准格式 |
+| `data.completed_at` | 是 | positive integer，UTC Unix 毫秒 | WMS 确认该货架面全部直接取料完成的时间，且 `completed_at <= timestamp` |
+| `timestamp` | 是 | positive integer，UTC Unix 毫秒 | 信封生成时间；必须为正整数，且不得早于 `data.completed_at` |
 
-`data` 读取上述四个必填字段，忽略冗余字段；已定义字段不接受非法 `null`、空字符串或错误类型。`task_id + rack_id + rack_face` 是本
-operation 的业务终态身份——同一物理货架面被多个不同 `task_id` 使用（例如前一个任务的直接取料先结束、同一面随后又被
-另一个任务的 `added_direct_picks[]` 引用）时，各自独立上报和收敛，不得因货架面相同而互相视为已完成。
+`data` 是严格对象，只接受上述四个字段；未知字段、缺失字段、`null`、空字符串和错误类型均拒绝，不忽略额外字段。`task_id`、
+`rack_id`、`rack_face` 必须满足出库合同 Identifier 约束。未来获批后的业务终态身份为 `task_id + rack_id + rack_face`；同一物理
+货架面被多个不同 `task_id` 引用时，各自独立上报和收敛，不得因货架面相同而互相视为已完成。
 
 本 operation 不携带逐 slot 取货结果：退料货架没有 NG 出口，缺料、损耗等业务异常完全由 WMS/PDA 内部处理，对 WES 保持
 黑盒（对照 §2.2、§4）。WES 应用该事实后，只把 `task_id + rack_id + rack_face` 标记为本地明细已结清，供既有
@@ -563,64 +578,75 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 
 ## 6\. 当前批准状态 {#6-approval-status}
 
-C1～C7（当时的 point2 任务准入、完成释放、应用结果三个 operation 及其相关现场确认项；应用结果上报现已取消）已于 2026\-09\-03 通过联合初审，
-本文构成当前基线的代码实施授权。
+下表是 C1～C7 的唯一状态矩阵。四列分别独立描述合同批准、代码实施、自动化验收和现场验收；`PLANNED` 或 `NOT ACCEPTED`
+不是通过结果。直接取料不属于 C1～C7，继续受 §1.1、§3.5 和 §5.5 的 `DRAFT / NOT AUTHORIZED` 门禁约束。
 
-退料货架直接取料完成通知 `outbound.manual_rack.direct_pick_completed@v1`（§3.5、第 5.5 节）尚未进入联合评审，不在
-已批准范围内；获批前不构成代码实施授权。
+| ID | 具体 operation / 行为 | 合同批准 | 代码实施 | 自动化验收 | 现场验收 |
+| --- | --- | --- | --- | --- | --- |
+| C1 | point2 实扫实际 Bin 后提交 `work_admission_decide`，接收 `WORK_REQUIRED / NO_WORK / WAIT` | `APPROVED` | `PARTIAL` | `PLANNED`（owner 见 §8） | `NOT ACCEPTED` |
+| C2 | `work_completed` 完成事实进入公共 Event ingress，并持久化 Evidence/ACK | `APPROVED` | `PARTIAL` | `PLANNED`（owner 见 §8） | `NOT ACCEPTED` |
+| C3 | 本地应用完成事实，按 `NORMAL / NG` 释放 point2，创建稳定命令 | `APPROVED` | `PARTIAL` | `PLANNED`（owner 见 §8） | `NOT ACCEPTED` |
+| C4 | SCAN1～SCAN4 因果校验、point3 NG 分流和正常放行 | `APPROVED` | `PARTIAL` | `PARTIAL`（现有扫码测试；完整 owner 见 §8） | `NOT ACCEPTED` |
+| C5 | 仅匹配 ECS `SUCCESS` 的 point4 结果进入 `RETURN_BUFFER` FIFO | `APPROVED` | `PARTIAL` | `PARTIAL`（现有扫码测试；完整 owner 见 §8） | `NOT ACCEPTED` |
+| C6 | 任务完成确认、下一任务原子准备及无下一任务时 drain | `APPROVED` | `PARTIAL` | `PARTIAL`（现有 completion/drain 测试；完整 owner 见 §8） | `NOT ACCEPTED` |
+| C7 | 静态 composition、worker wiring 与人工 Bin 主链路 E2E 接受 | `APPROVED` | `PLANNED` | `PLANNED`（owner 见 §8） | `NOT ACCEPTED` |
+
+`APPROVED` 仅表示合同范围获批，不表示已有代码、自动化绿灯或现场通过。任何实现或验收必须同时满足本表对应列和 §8 的 owner 约束。
+
+退料货架直接取料完成通知 `outbound.manual_rack.direct_pick_completed@v1`（§3.5、第 5.5 节）不在 C1～C7 内，尚未进入联合评审；获批前不构成代码实施授权。
 
 后续发现细节需要优化时，应通过合同变更评审更新本文及对应机器合同；在变更获批前，不静默改变当前已批准语义。
 
 ## 8. 实施验收与测试所有权
 
-本文修订是人类可读合同，不为文档正文新增 pytest。C1～C7 获批后，生产实现必须按下列唯一测试 owner 与合同分支完成验收。
+本文修订是人类可读合同，不为文档正文新增 pytest。下列 owner 均指当前仓库中已存在的测试文件和命名行为；未列出的未来测试不得被描述为已通过。
 
-### 8.1 WMS wire 合同
+### 8.1 计划准入、共享 ingress 与 allowlist
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `tests/contracts/wms_adapter/test_inbound_wire_acceptance.py` | `NORMAL` 与 `NG` 合法 DTO；未知字段、`null`、空字符串、错误类型、枚举外值和 `completed_at > timestamp` 全部拒绝 |
-| `tests/contracts/wms_adapter/test_inbound_openapi.py` | OpenAPI 只暴露四个必填 data 字段、封闭对象、字段约束和完整 ACK/错误响应联合 |
-| `tests/contracts/wms_adapter/` 的 Event handler 合同测试 | 激活验收目标：唯一静态接收路由不随业务 owner 安装状态变化；零消费者仍可靠接收且业务应用 fail closed；新 ID 持久化后 `202`；同 ID 同内容 `200`；同 ID 不同内容 `409`；持久化失败 `503` 且无虚假 ACK |
-| `tests/integration/wms_adapter/test_manual_bin_event_receipts.py` | 使用真实 PostgreSQL 验证并发重放只有一个收据 owner、digest 冲突、evidence/ACK 事务回滚与失败后原 identity 可重试 |
-| `tests/contracts/wms_adapter/test_outbound_openapi.py` | OpenAPI 的 `reason_code` 闭集包含 `MANUAL_PICK_NG`，并准确表达各 reason 的条件联合，不把插件业务判断写入 schema |
-| `tests/contracts/wms_adapter/return_buffer_drain/test_contract.py` | `drain_rack_decide` 严格请求/响应联合、FIFO 前缀、直接前驱、额外字段拒绝、identity 匹配与公共错误映射 |
-| `workline_plugins/manual-picking/tests/test_work_admission.py` | point2 合法实际 Bin 构造包含 `task_id/bin_code/scanned_at` 的严格三字段请求；`WORK_REQUIRED/NO_WORK/WAIT` 条件联合；不发送预期 Bin；条码不可读时零请求；`NO_WORK` 是正常直通而非 NG |
-| `workline_plugins/manual-picking/tests/integration/test_work_admission_postgresql.py` | 扫码到位事实与 `WmsConfirmation` 原子声明；原 ID 恢复响应未知；`WORK_REQUIRED` 验证返回任务与请求一致后冻结绑定；`NO_WORK` 最多一个 point2 释放命令；`WAIT` 零命令且新 ID 重求值 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_direct_picks_before_member_persistence` | direct-pick-only 计划在成员写入前拒绝，返回 `MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED`，不写入 `DirectPickExecution`。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence` | Bin source 与 direct-pick 混合计划同样拒绝，且不写入成员。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_replay_returns_first_reason_without_reinvoking_policy`、`::test_rejected_identity_payload_drift_returns_idempotency_conflict` | 同 identity 重放返回首次 reason；payload drift 返回 `IDEMPOTENCY_CONFLICT`，不再次调用 policy。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_direct_pick_remains_shared_behavior_without_a_policy`、`::test_outbound_picking_runtime_exposes_only_wms_event_handlers` | 未安装准入 policy 时保留共享 plan-delta ingress；共享 handler 集合不因插件 owner 缺席而变化。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_event_handler.py` | 公共 Event receipt 的持久化、重复、冲突和 fail-closed ACK；不按当前插件动态注册路由。 |
+| `tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py::test_custom_admission_reason_replays_and_drift_stays_idempotency_conflict`、`::test_payload_drift_before_admission_rejection_does_not_hide_plugin_reason`、`::test_admission_policy_exception_rolls_back_evidence_task_and_members` | 真实 PostgreSQL 下验证重放/drift、等待中的 drift 以及 policy 异常事务回滚；拒绝后 `DirectPickExecution` 不持久化。 |
+| `workline_plugins/manual-picking/tests/test_plan_admission.py` | manual-picking allowlist：含 direct picks 必须拒绝，纯 Bin 计划允许，reason code 稳定且 policy 无 I/O。 |
+| `workline_plugins/manual-picking/tests/test_declaration.py::test_manual_picking_deployment_assembles_prepare_policy_without_device_handlers`、`::test_disabled_manual_plugin_has_no_business_consumer` | 静态 `business_wms_operations` allowlist；明确不包含 `outbound.manual_rack.direct_pick_completed@v1`；插件禁用时无业务 consumer，但共享 ingress 仍由宿主拥有。 |
+| `tests/contracts/wms_adapter/return_buffer_drain/test_contract.py` | `drain_rack_decide` 严格请求/响应联合、FIFO 前缀、直接前驱、额外字段拒绝、identity 匹配与公共错误映射。 |
 
-前六项核心测试不导入 `manual-picking` 插件，只证明共享 completion ingress、可靠接收、路由与 NG wire；任务准入 operation 的请求数据及其因果恢复由后两项插件测试承接，底层 HTTP/JSON 继续复用共享 `WmsClient`，不在插件内重造传输。
+核心共享 wire/receipt owner 不导入 `manual-picking` 插件；任务准入 policy 和 allowlist 由上述插件 owner 承接，底层 HTTP/JSON 继续复用共享 `WmsClient`。本节不声称 direct-pick completion operation 已获批或已注册。
 
 `tests/runtime/execution/test_wms_confirmation_service.py` 负责共享 `WmsConfirmation` 回归：既有
 `material_execution_id` 消费者行为不变；数据库与 Service 要求 MaterialExecution、PickingTask 或 WorkLine 恰好一个 owner；相同
 operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 identity 恢复语义不变。对应 migration 必须在干净 PostgreSQL
 验证料盘、任务及 WorkLine owner 写入，零 owner 或多 owner 均拒绝。
 
-### 8.2 人工业务决策与 evidence 应用
+### 8.2 人工 Bin 决策与 evidence 应用
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `workline_plugins/manual-picking/tests/test_work_completed_decision.py` | 纯 Decision 只依赖 SDK 不可变 Fact/Snapshot；`NORMAL` 和 `NG` 各返回封闭决策，不读数据库、HTTP、Celery 或 Repository |
-| `workline_plugins/manual-picking/tests/test_external_wait_policy.py` | `WORK_REQUIRED` 保存后启动人工处理 SLA；阈值内保持 `WAITING_EXTERNAL`；超时只告警并停止新入线，不释放 point2、不改 NG、不改 FIFO、不换执行或命令身份 |
-| `workline_plugins/manual-picking/tests/test_scan_flow.py` | `task_id + bin_code` 唯一命中本次点2 `WORK_REQUIRED` 准入后，原子保存 `completed_at` 与结果；完成回调先于准入响应、`completed_at < scanned_at`、身份冲突或无唯一等待均进入 `RECONCILING`，不得暂存后自动补绑或创建命令 |
-| `workline_plugins/manual-picking/tests/integration/test_work_completed_postgresql.py` | 真实 PostgreSQL 下按固定顺序锁定 WorkLine、点2待处理动作和当前位置；并发同结果最多一个 `MANUAL_BIN_POINT2_RELEASE` 命令；并发冲突结果 fail closed；任一写入失败时整个业务应用回滚 |
+| `workline_plugins/manual-picking/tests/test_scan_flow.py::test_scan1_then_scan2_freezes_passage_and_typed_wms_admission`、`::test_no_work_result_releases_point2_without_material_execution`、`::test_work_required_waits_for_matching_wms_completion` | 实扫 Bin 后的 `WORK_REQUIRED/NO_WORK` 分支、准入绑定和 point2 释放前提。 |
+| `workline_plugins/manual-picking/tests/test_scan_flow.py::test_wms_completion_arriving_before_admission_result_never_autobinds`、`::test_wms_completion_before_actual_scan_is_not_released`、`::test_same_completed_result_with_new_event_id_is_noop`、`::test_wait_creates_new_due_admission_without_releasing_point2` | 早到、未实扫、重复完成和 WAIT 重求值均 fail closed，不自动补绑或重复释放。 |
+| `workline_plugins/manual-picking/tests/test_completion_flow.py`、`workline_plugins/manual-picking/tests/test_completion_repository.py` | completion 本地终态、确认义务、未完成 WMS work/source 的阻塞和 target transport 前提。 |
 
-核心 `tests/runtime/` 继续只证明 `InboundEvidence`、WorkLine 准入、`PositionProjection`、`DeviceCommand` 和静态绑定的中立不变量，
-不导入人工插件，不代替上述业务测试。
+`tests/runtime/` 的共享测试只证明 `InboundEvidence`、`WmsConfirmation`、`PositionProjection` 和 `DeviceCommand` 中立不变量，不代替上述插件业务 owner。
 
 ### 8.3 扫码、物理分支与生命周期
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `workline_plugins/manual-picking/tests/test_scan_handlers.py` | 四点分别执行 `-B/-C/-B/-B` 校验；点3未知走左不停箱，点4未知保持占用 |
-| `workline_plugins/manual-picking/tests/test_scan_flow.py` | 本次经过、点1→点2 FIFO、WMS 准入与完成、点3双来源和点4命令的因果关联；点4匹配 ECS `SUCCESS` 前不得进入 `RETURN_BUFFER` |
-| `workline_plugins/manual-picking/tests/test_passage_model.py` | 本次经过的 Evidence 唯一身份与退箱队列状态；退料候选只取队首连续 READY 前缀 |
-| `workline_plugins/manual-picking/tests/integration/test_manual_bin_flow_postgresql.py` | 真实 PostgreSQL 下验证 FIFO 并发不越过未闭合队首、冲突分支零命令、NG 未决物理动作和有效占用持续阻塞冲突动作，以及权威终态应用的原子性 |
+| `workline_plugins/manual-picking/tests/test_scan_handlers.py` | 四点 `-B/-C/-B/-B` 校验；point3 未知左行、point4 未知保持占用。 |
+| `workline_plugins/manual-picking/tests/test_scan_flow.py` | point1→point2 FIFO、point3 双来源/NG、point4 命令因果链；仅匹配 ECS `SUCCESS` 才进入 `RETURN_BUFFER`；drain ingress 校验。 |
+| `workline_plugins/manual-picking/tests/test_passage_model.py` | passage 唯一身份、未闭合计数与退箱队首连续 READY 前缀。 |
+| `workline_plugins/manual-picking/tests/test_batch_flow.py`、`test_batch_repository.py`、`test_batch_transport.py` | Bin inbound/return batch 的 FIFO、冻结 rack face、WMS 结果应用和 transport 绑定。 |
+| `workline_plugins/manual-picking/tests/test_drain_flow.py`、`test_drain_repository.py`、`test_transport_outcome.py` | drain 决定、READY 保留、逐面推进和权威 transport outcome。 |
 
 上述自动化测试只证明 WES 决策、事务和命令边界；不把 Mock 命令成功当作真实物理完成，也不代替 ECS/设备一致性验收与现场业务验收。
 
 ### 8.4 真实 worker 端到端装配
 
-`workline_plugins/manual-picking/tests/e2e/test_business_loop.py` 必须使用真实 PostgreSQL、broker 和 Celery worker，
+`workline_plugins/manual-picking/tests/test_business_loop.py` 是真实 PostgreSQL、broker 和 Celery worker 的 integration owner，
 安装并通过宿主静态 composition 激活真实 `manual-picking` 插件，至少覆盖：
 
 - point2 扫描实际 Bin → `work_admission_decide`；`WORK_REQUIRED` 停留并开放人工操作，`NO_WORK` 正常直通，`WAIT` 停留重求值，响应未知时用原 identity 重试；
@@ -746,6 +772,25 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | T5 扫码、分流、NG 与 RETURN 生命周期 | 插件 scan/lifecycle、plugin integration tests | T1、T2 |
 | T6 静态装配和真实 worker E2E | 宿主 composition、插件入口、plugin E2E、HEAVY mapping | T3、T4、T5 |
 
+### 11.1 测试 owner 对齐
+
+路径以当前仓库为准；表中 `EXISTS` 只表示 owner 和命名行为已经存在，不表示本轮命令已通过。直接取料 admission/allowlist
+属于当前已交付的 plan-delta 门禁测试，但 `direct_pick_completed` 仍是 §3.5/§5.5 的 `DRAFT / NOT AUTHORIZED`，不得注册或验收。
+
+| 验收域 | 当前 owner | 状态 |
+| --- | --- | --- |
+| C1 point2 实扫与准入 | `tests/contracts/wms_adapter/outbound_picking/test_manual_bin_wire.py`、`test_manual_bin_adapters.py`、`test_manual_bin_admission_scheduler.py`；`workline_plugins/manual-picking/tests/test_scan_flow.py`、`test_plan_admission.py` | `EXISTS`；plan-delta admission tests 是独立 direct-pick 门禁，不冒充 C1；未由本表推定现场通过 |
+| C2 completion ingress 与 Evidence/ACK | `tests/contracts/wms_adapter/outbound_picking/test_manual_bin_wire.py`、`test_manual_bin_completed_handler.py`、`tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py`；`workline_plugins/manual-picking/tests/test_scan_flow.py`、`test_completion_flow.py`、`test_completion_repository.py` | `EXISTS`；plan-delta event/service tests 是独立共享 ingress 门禁，不冒充 C2；PostgreSQL owner 需显式 integration 环境 |
+| C3 NORMAL/NG 本地应用与释放 | `test_scan_flow.py`、`test_completion_flow.py`、`test_completion_repository.py` | `EXISTS`；不替代真实设备结果 |
+| C4 SCAN1～SCAN4、NG 分流 | `test_scan_handlers.py`、`test_scan_flow.py` | `EXISTS` |
+| C5 ECS SUCCESS 后 RETURN_BUFFER FIFO | `test_scan_flow.py`、`test_batch_flow.py`、`test_batch_repository.py` | `EXISTS` |
+| C6 完成确认、下一任务与 drain | `test_completion_flow.py`、`test_completion_repository.py`、`test_drain_flow.py`、`test_drain_repository.py`、`test_rack_cycle_postgresql.py` | `EXISTS`；PostgreSQL/worker 需显式 integration 环境 |
+| C7 静态 composition、worker wiring 与主链路 | `test_declaration.py`、`test_business_loop.py` | `EXISTS`；E2E 需 PostgreSQL、Redis、Celery，现场仍 `NOT ACCEPTED` |
+| direct-pick-only/mixed rejection、replay/drift、no-member persistence | `test_plan_delta_service.py`、`test_plan_delta_postgresql.py`、`test_plan_admission.py` | `EXISTS`；不表示 `direct_pick_completed` 已注册 |
+| plugin-disabled shared ingress 与 operation allowlist | `test_declaration.py`、`test_plan_delta_service.py` | `EXISTS`；禁用插件不关闭宿主共享 ingress |
+
+本轮 focused 命令只产生 FAST/插件证据；PostgreSQL、真实 worker E2E 和 ECS/现场验收分别受环境与 §8.4 边界约束，不能用单元测试绿灯替代。
+
 Lane A：T1 → T2（顺序执行；共同冻结 schema 与唯一 migration）。
 
 Lane B：T3（T2 后独立处理共享 WMS wire）。
@@ -767,7 +812,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - [ ] **T1 (P1, human: ~1d / CC: ~2h)** — 合同 — 联合冻结三条人工 Bin operation 与机器合同
   - Surfaced by: Architecture / Outside Voice — point2 实际 Bin 任务准入、completion 异步应用反馈和 NG enum 必须形成闭合 wire。
   - Files: `docs/contracts/wms-manual-outbound-picking-integration-requirements.md`、`docs/contracts/wms-outbound-picking-task-integration-requirements.md`、`src/app/wms_adapter/` 的 OpenAPI schema。
-  - Verify: C1～C7 均为 `APPROVED`；运行 WMS wire/OpenAPI 聚焦测试和 `git diff --check`。
+  - Verify: 历史评审记录中的 C1～C7 均为 `APPROVED`（仅表示当时合同范围获批，不代表当前四态矩阵的代码、自动化或现场状态）；运行 WMS wire/OpenAPI 聚焦测试和 `git diff --check`。
 - [ ] **T2 (P1, human: ~1.5d / CC: ~3h)** — 数据层 — 建立 Bin 可靠义务关联与人工结果唯一记录
   - Surfaced by: Performance / Claude — 禁止 JSON 扫描，且现有 `WmsConfirmation` 只能关联料盘。
   - Files: `src/app/execution/models/wms_confirmation.py`、execution Repository/Service、`workline_plugins/manual-picking/src/manual_picking/application/`、`migrations/versions/`、`docs/architecture/heavy-test-impact.toml`。
@@ -818,6 +863,6 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - Parallelization: 3 lanes，2 parallel after schema freeze，1 sequential integration lane。
 - Lake Score: 29/29 final decisions chose a complete, explicit behavior。
 
-**VERDICT:** ENG + OUTSIDE VOICE CLEARED；C1～C7 INITIAL REVIEW APPROVED — 可按当前合同基线进入生产实现，后续细节调整须另行评审。
+**VERDICT（历史评审记录）：** ENG + OUTSIDE VOICE CLEARED；C1～C7 INITIAL REVIEW APPROVED。该记录保留原始评审结论，当前可执行状态以 §6 四态矩阵为准；直接取料仍为 `DRAFT / NOT AUTHORIZED`，不能按本历史记录实施或验收。
 
 NO UNRESOLVED DECISIONS

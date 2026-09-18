@@ -322,9 +322,13 @@ heavy_tests = []
 reviewed_content_sha256 = "09621142cc6b8620b91beab6bbac36591058d3f1d05673830d4c77271fd93497"
 
 [[mapping]]
+source_glob = "src/wes_plugin_sdk/tests/test_picking_task_plan.py"
+heavy_tests = []
+
+[[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/picking_task_plan.py"
 heavy_tests = []
-reviewed_content_sha256 = "8bb06b4bc0a0e9151539a64dbb34a7c3f70d0a61b026a2864fb168c47b5c1cfc"
+reviewed_content_sha256 = "858f91017e159442931695e2c3da20511f006f6265302ffe6275687d05b40977"
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"

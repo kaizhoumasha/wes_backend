@@ -10,7 +10,13 @@ from src.app.workline.activation import WorkLinePositionBinding
 from src.app.workline.models.workline import LineType
 
 if TYPE_CHECKING:
-    from wes_plugin_sdk import PickingTaskPlanAppliedHandler, PluginDefinition, WorkLineDeviceRole, WorkLinePositionSlot
+    from wes_plugin_sdk import (
+        PickingTaskPlanAdmissionPolicy,
+        PickingTaskPlanAppliedHandler,
+        PluginDefinition,
+        WorkLineDeviceRole,
+        WorkLinePositionSlot,
+    )
     from wes_plugin_sdk.prepare_policy import PickingTaskPreparePolicy
 
     from src.app.execution.plugin_binding import PluginRuntimeBinding
@@ -31,6 +37,7 @@ class InstalledWorkLinePlugin:
     wms_confirmation_follow_up_planner: Any | None = None
     transport_outcome_publisher: Any | None = None
     picking_task_prepare_policy: PickingTaskPreparePolicy | None = None
+    picking_task_plan_admission_policy: PickingTaskPlanAdmissionPolicy | None = None
     picking_task_plan_applied_handler: PickingTaskPlanAppliedHandler | None = None
     picking_task_batch_driver: Any | None = None
     picking_task_completion_driver: Any | None = None

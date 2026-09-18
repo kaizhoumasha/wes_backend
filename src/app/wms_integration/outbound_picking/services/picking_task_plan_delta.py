@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+from wes_plugin_sdk import (
+    PickingTaskPlanAdmissionDecisionKind,
+    PickingTaskPlanAdmissionFact,
+)
 
 from src.app.execution.models import InboundEvidenceApplyStatus as ApplyStatus
 from src.app.execution.models import InboundEvidenceKind, WmsConfirmationStatus
@@ -25,6 +30,11 @@ from src.app.workline.repositories import workline_repository as default_worklin
 from src.core.transaction_wakeup import defer_wakeup
 from src.utils.timezone import timezone
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from wes_plugin_sdk import PickingTaskPlanAdmissionPolicy
+
 
 class PickingTaskPlanDeltaService:
     def __init__(
@@ -35,6 +45,7 @@ class PickingTaskPlanDeltaService:
         task_repository: Any = None,
         plan_repository: Any = None,
         plan_activation_plugin_identities: tuple[tuple[str, str], ...] = (),
+        plan_admission_policies: Mapping[tuple[str, str], PickingTaskPlanAdmissionPolicy] | None = None,
         task_queue_gateway: Any = None,
         workline_repository: Any = None,
     ) -> None:
@@ -43,10 +54,11 @@ class PickingTaskPlanDeltaService:
         self._tasks = task_repository or picking_task_repository
         self._plans = plan_repository or PickingTaskPlanDeltaRepository()
         self._plan_activation_plugin_identities = plan_activation_plugin_identities
+        self._plan_admission_policies = plan_admission_policies or {}
         self._task_queue = task_queue_gateway
         self._worklines = workline_repository or default_workline_repository
 
-    async def record(
+    async def record(  # noqa: PLR0911
         self, envelope: PickingTaskPlanDeltaEvent | PickingTaskPlanDeltaInvalidData, *, received_at: datetime
     ) -> Result:
         invalid = isinstance(envelope, PickingTaskPlanDeltaInvalidData)
@@ -98,6 +110,10 @@ class PickingTaskPlanDeltaService:
                 await self._reject(db, task, evidence, reason, received_at)
                 return self._result(evidence, "CONFLICT", reason)
             # validate_plan 已确认 blocker 归属；与计划应用共用任务锁和一次版本推进。
+            admission_reason = await self._admission_reason(db, task, envelope.data, evidence)
+            if admission_reason is not None:
+                await self._reject(db, task, evidence, admission_reason, received_at)
+                return self._result(evidence, "CONFLICT", admission_reason)
             task.plan_blocked_evidence_id = None
             await self.apply_plan(db, task, envelope.data, evidence, received_at=received_at)
             await self._defer_activation_if_enabled(db, task)
@@ -215,6 +231,38 @@ class PickingTaskPlanDeltaService:
                 or blocker.normalized_payload.get("data", {}).get("task_id") != task.task_id
             ):
                 return "REFERENCE_CONFLICT"
+        return None
+
+    async def _admission_reason(self, db: Any, task: Any, data: Any, evidence: Any) -> str | None:
+        if not self._plan_admission_policies or task.workline_id is None:
+            return None
+        if ApplyStatus(evidence.apply_status) is ApplyStatus.RECONCILING:
+            first_reason = await self._plans.first_rejection(db, cast("int", evidence.id))
+            if first_reason is None:
+                raise RuntimeError("计划拒绝缺少首次 reason_code")
+            if first_reason not in {
+                "REVISION_CONFLICT",
+                "STATE_CONFLICT",
+                "REFERENCE_CONFLICT",
+                "SOURCE_IDENTITY_PAYLOAD_CONFLICT",
+                "SOURCE_IDENTITY_CORRELATION_CONFLICT",
+            }:
+                return first_reason
+        line = await self._worklines.get_by_id(db, task.workline_id)
+        if line is None:
+            return None
+        policy = self._plan_admission_policies.get((line.plugin_key, line.plugin_version))
+        if policy is None:
+            return None
+        decision = policy(
+            PickingTaskPlanAdmissionFact(
+                task_id=data.task_id,
+                plan_revision=data.plan_revision,
+                has_direct_picks=bool(data.added_direct_picks),
+            )
+        )
+        if decision.kind is PickingTaskPlanAdmissionDecisionKind.REJECT:
+            return decision.reason_code
         return None
 
     async def apply_plan(self, db: Any, task: Any, data: Any, evidence: Any, *, received_at: datetime) -> None:

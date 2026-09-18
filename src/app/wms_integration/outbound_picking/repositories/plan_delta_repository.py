@@ -175,7 +175,9 @@ class PickingTaskPlanDeltaRepository:
             select(columns.reason_code)
             .where(
                 columns.first_evidence_id == evidence_id,
-                columns.reason_code.in_(("REVISION_CONFLICT", "STATE_CONFLICT", "REFERENCE_CONFLICT")),
+                columns.reason_code.not_in(
+                    ("SOURCE_IDENTITY_PAYLOAD_CONFLICT", "SOURCE_IDENTITY_CORRELATION_CONFLICT")
+                ),
             )
             .order_by(columns.id)
             .limit(1)

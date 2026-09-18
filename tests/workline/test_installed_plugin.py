@@ -36,6 +36,7 @@ def _plugin(key: str = "sample_plugin") -> InstalledWorkLinePlugin:
 def test_installed_plugin_is_the_single_source_of_runtime_and_workline_metadata() -> None:
     plugin = _plugin()
 
+    assert plugin.picking_task_plan_admission_policy is None
     assert plugin.plugin_key == "sample_plugin"
     assert plugin.plugin_version == "1.0.0"
     assert plugin.supports(LineType.AUTO)

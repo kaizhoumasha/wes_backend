@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import delete, select, update
-from wes_plugin_sdk import wms_operations
+from wes_plugin_sdk import PickingTaskPlanAdmissionDecision, PickingTaskPlanAdmissionDecisionKind, wms_operations
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -262,6 +263,141 @@ async def test_member_flush_failure_rolls_back_evidence_and_task(integration_ses
             await db.scalar(
                 select(InboundEvidence.id).where(InboundEvidence.source_identity == f"{OP}:{first.operation_id}")
             )
+            is None
+        )
+
+
+async def test_custom_admission_reason_replays_and_drift_stays_idempotency_conflict(
+    integration_session_factory, prepared
+):
+    task_name, ids = prepared
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(WorkLine).where(WorkLine.id == ids[1]).values(plugin_key="sample_plugin", plugin_version="0.1.0")
+        )
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service = PickingTaskPlanDeltaService(
+        integration_session_factory,
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy},
+    )
+    first = _event(
+        task_name,
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE", "rack_face": "A", "slot_id": "1"}}
+        ],
+    )
+
+    assert (await service.record(first, received_at=NOW)).reason_code == "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    async with integration_session_factory() as db:
+        task = await db.get(PickingTask, ids[0])
+        assert task is not None
+        assert (
+            await db.scalar(select(DirectPickExecution.id).where(DirectPickExecution.picking_task_id == task.id))
+            is None
+        )
+    assert (await service.record(first, received_at=NOW + timedelta(seconds=1))).reason_code == (
+        "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    )
+    drift = first.model_copy(
+        update={
+            "data": first.data.model_copy(
+                update={
+                    "added_direct_picks": [
+                        {
+                            "source_locator": {
+                                "type": "RACK_SLOT",
+                                "rack_id": "OTHER",
+                                "rack_face": "A",
+                                "slot_id": "1",
+                            }
+                        }
+                    ]
+                }
+            ),
+            "timestamp": 2,
+        }
+    )
+    assert (await service.record(drift, received_at=NOW + timedelta(seconds=2))).reason_code == ("IDEMPOTENCY_CONFLICT")
+    assert policy.call_count == 1
+
+
+async def test_payload_drift_before_admission_rejection_does_not_hide_plugin_reason(
+    integration_session_factory, prepared
+):
+    task_name, ids = prepared
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(WorkLine).where(WorkLine.id == ids[1]).values(plugin_key="sample_plugin", plugin_version="0.1.0")
+        )
+        await db.execute(
+            update(WmsConfirmation).where(WmsConfirmation.id == ids[4]).values(status=WmsConfirmationStatus.DISPATCHING)
+        )
+    policy = Mock(
+        return_value=PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
+            reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
+        )
+    )
+    service = PickingTaskPlanDeltaService(
+        integration_session_factory,
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy},
+    )
+    first = _event(
+        task_name,
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE", "rack_face": "A", "slot_id": "1"}}
+        ],
+    )
+    drift = first.model_copy(update={"timestamp": 2})
+
+    assert (await service.record(first, received_at=NOW)).code == "UNAVAILABLE"
+    assert (await service.record(drift, received_at=NOW + timedelta(seconds=1))).reason_code == ("IDEMPOTENCY_CONFLICT")
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(WmsConfirmation).where(WmsConfirmation.id == ids[4]).values(status=WmsConfirmationStatus.COMPLETED)
+        )
+    assert (await service.record(first, received_at=NOW + timedelta(seconds=2))).reason_code == (
+        "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    )
+    assert (await service.record(first, received_at=NOW + timedelta(seconds=3))).reason_code == (
+        "MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED"
+    )
+    assert policy.call_count == 1
+
+
+async def test_admission_policy_exception_rolls_back_evidence_task_and_members(integration_session_factory, prepared):
+    task_name, ids = prepared
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(WorkLine).where(WorkLine.id == ids[1]).values(plugin_key="sample_plugin", plugin_version="0.1.0")
+        )
+    policy = Mock(side_effect=RuntimeError("policy failure"))
+    service = PickingTaskPlanDeltaService(
+        integration_session_factory,
+        plan_admission_policies={("sample_plugin", "0.1.0"): policy},
+    )
+    first = _event(task_name)
+
+    with pytest.raises(RuntimeError, match="policy failure"):
+        await service.record(first, received_at=NOW)
+
+    async with integration_session_factory() as db:
+        task = await db.get(PickingTask, ids[0])
+        assert task.last_applied_plan_revision == 0
+        assert task.target_rack_id is None
+        assert (
+            await db.scalar(
+                select(InboundEvidence.id).where(InboundEvidence.source_identity == f"{OP}:{first.operation_id}")
+            )
+            is None
+        )
+        assert (
+            await db.scalar(select(DirectPickExecution.id).where(DirectPickExecution.picking_task_id == task.id))
             is None
         )
 
