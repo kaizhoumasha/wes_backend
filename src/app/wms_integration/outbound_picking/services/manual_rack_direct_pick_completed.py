@@ -12,6 +12,7 @@ from src.app.wms_adapter.outbound_picking.manual_rack_direct_pick_event_handler 
 from src.app.wms_adapter.outbound_picking.manual_rack_direct_pick_wire import ManualRackDirectPickInvalidData
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import PickingTaskRepository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.core.transaction_wakeup import defer_wakeup
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.wms_adapter.outbound_picking.manual_rack_direct_pick_wire import ManualRackDirectPickEvent
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 
 class ManualRackDirectPickCompletedService:
@@ -30,11 +32,13 @@ class ManualRackDirectPickCompletedService:
         evidence_service: InboundEvidenceService | None = None,
         picking_tasks: PickingTaskRepository | None = None,
         plan_repository: PickingTaskPlanDeltaRepository | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = picking_tasks or PickingTaskRepository()
         self._plans = plan_repository or PickingTaskPlanDeltaRepository()
+        self._queue = task_queue_gateway
 
     async def record(
         self,
@@ -46,6 +50,8 @@ class ManualRackDirectPickCompletedService:
         payload = envelope.raw_envelope if invalid else envelope.model_dump(mode="json")
         operation, operation_id = payload["operation"], payload["operation_id"]
         async with self._sessions.begin() as db:
+            # invalid 分支只能访问 raw_envelope（dict），不能访问 envelope.data。
+            # 显式分支确保 ManualRackDirectPickInvalidData 路径不会触发 AttributeError。
             task = await self._tasks.get_by_task_id_for_update(db, envelope.data.task_id) if not invalid else None
             task_id = task.id if task is not None else None
             bound = task_id is not None and await self._plans.has_active_direct_pick_face(
@@ -107,6 +113,13 @@ class ManualRackDirectPickCompletedService:
                         completed_at=timezone.to_utc(envelope.data.completed_at / 1000).replace(tzinfo=None),
                         source_evidence_id=evidence.id,
                     )
+            # APPLIED 后立即唤醒 worker，避免退料货架到位/换面/离场被轮询节流阻塞。
+            if (
+                self._queue is not None
+                and evidence.workline_id is not None
+                and evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+            ):
+                defer_wakeup(db, self._queue.enqueue_execution_facts)
             return ManualRackDirectPickPersistenceResult(
                 code="DUPLICATE" if acceptance.duplicate else "RECEIVED",
                 timestamp_ms=timestamp_ms,

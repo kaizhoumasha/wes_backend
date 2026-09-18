@@ -128,6 +128,9 @@ class ManualPickingBatchDriver:
         return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
 
     async def _advance_completed_return_rack(self, db: Any, line: Any, advanced_task_id: int | None) -> int:
+        # 注意：与 advance_in_session 共享同 workline lock，但同一 task 的退料货架推进
+        # 在 advance_in_session → _advance_return_rack 已经处理过；这里仅补『未通过五层架
+        # 来源查询找到的纯直接取料任务』，靠 owner.id == advanced_task_id 防御 double-call。
         location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
         if not location:
             return 0
