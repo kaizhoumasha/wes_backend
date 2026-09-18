@@ -66,6 +66,99 @@ def test_accept_decision_is_closed_and_has_no_rejection_reason():
         )
 
 
+def test_applied_fact_defaults_pending_return_racks_to_empty_tuple():
+    fact = sdk.PickingTaskPlanAppliedFact(
+        fact_id="fact-1",
+        evidence_id="ev-1",
+        fact_version="1.0",
+        task_id="PICK-1",
+        plan_revision=1,
+        target_rack=None,
+        pending_bin_source_racks=(),
+        position_bindings=(),
+    )
+
+    assert fact.pending_return_racks == ()  # nosec B101 - pytest assertion
+
+
+def test_applied_fact_accepts_pending_return_racks():
+    rack = sdk.PickingTaskPlanRack("RET-1", ("A",), "ev-1", 1)
+
+    fact = sdk.PickingTaskPlanAppliedFact(
+        fact_id="fact-1",
+        evidence_id="ev-1",
+        fact_version="1.0",
+        task_id="PICK-1",
+        plan_revision=1,
+        target_rack=None,
+        pending_bin_source_racks=(),
+        pending_return_racks=(rack,),
+        position_bindings=(),
+    )
+
+    assert fact.pending_return_racks == (rack,)  # nosec B101 - pytest assertion
+
+
+def test_applied_fact_rejects_non_tuple_pending_return_racks():
+    with pytest.raises(TypeError):
+        sdk.PickingTaskPlanAppliedFact(
+            fact_id="fact-1",
+            evidence_id="ev-1",
+            fact_version="1.0",
+            task_id="PICK-1",
+            plan_revision=1,
+            target_rack=None,
+            pending_bin_source_racks=(),
+            pending_return_racks=[sdk.PickingTaskPlanRack("RET-1", ("A",), "ev-1", 1)],
+            position_bindings=(),
+        )
+
+
+def test_applied_fact_rejects_duplicate_return_rack_ids():
+    rack = sdk.PickingTaskPlanRack("RET-1", ("A",), "ev-1", 1)
+    with pytest.raises(ValueError):
+        sdk.PickingTaskPlanAppliedFact(
+            fact_id="fact-1",
+            evidence_id="ev-1",
+            fact_version="1.0",
+            task_id="PICK-1",
+            plan_revision=1,
+            target_rack=None,
+            pending_bin_source_racks=(),
+            pending_return_racks=(rack, rack),
+            position_bindings=(),
+        )
+
+
+def test_applied_fact_rejects_return_rack_id_overlap_with_target_or_bin_rack():
+    target = sdk.PickingTaskPlanRack("RET-1", ("A",), "ev-1", 1)
+    with pytest.raises(ValueError):
+        sdk.PickingTaskPlanAppliedFact(
+            fact_id="fact-1",
+            evidence_id="ev-1",
+            fact_version="1.0",
+            task_id="PICK-1",
+            plan_revision=1,
+            target_rack=target,
+            pending_bin_source_racks=(),
+            pending_return_racks=(sdk.PickingTaskPlanRack("RET-1", ("B",), "ev-2", 1),),
+            position_bindings=(),
+        )
+    bin_rack = sdk.PickingTaskPlanRack("BIN-1", ("90",), "ev-1", 1)
+    with pytest.raises(ValueError):
+        sdk.PickingTaskPlanAppliedFact(
+            fact_id="fact-1",
+            evidence_id="ev-1",
+            fact_version="1.0",
+            task_id="PICK-1",
+            plan_revision=1,
+            target_rack=None,
+            pending_bin_source_racks=(bin_rack,),
+            pending_return_racks=(sdk.PickingTaskPlanRack("BIN-1", ("A",), "ev-2", 1),),
+            position_bindings=(),
+        )
+
+
 def test_admission_policy_is_a_pure_typed_protocol():
     assert callable(sdk.PickingTaskPlanAdmissionPolicy)  # nosec B101 - pytest assertion
     policy_signature = signature(sdk.PickingTaskPlanAdmissionPolicy.__call__)
