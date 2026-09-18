@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.1.0] - 2026-09-18
+
+### Added
+
+- 停线（`deactivate()`）前主动触发插件注册的回库暂存区排空端口，把滚筒线缓冲区里全部待回库料箱一次性纳入 `workline.return_buffer.drain_rack_decide@v1` 询问，不再依赖 Celery beat 每 10 秒、每批最多 4 个的被动节奏。
+
+### Changed
+
+- `WorkLineConfigurationService._trigger_plugin_drain` 与 `_assert_no_plugin_workload` 共用新增的 `_resolve_matching_definition`，消除重复的插件解析与版本校验。
+
+### Fixed
+
+- 修复 `0a937493`（PickingTask.workline_id 收紧为非空、`workline.return_buffer.drain_rack_decide@v1` 契约改为 `required_slot_count` 模型）后未同步更新的 4 个 HEAVY 集成测试。
+
 ## [0.48.0.0] - 2026-09-18
 
 ### Added
