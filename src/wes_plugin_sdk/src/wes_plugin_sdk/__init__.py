@@ -31,6 +31,10 @@ from .facts import (
 )
 from .handler import HandlerMetadata, handler
 from .picking_task_plan import (
+    PickingTaskPlanAdmissionDecision,
+    PickingTaskPlanAdmissionDecisionKind,
+    PickingTaskPlanAdmissionFact,
+    PickingTaskPlanAdmissionPolicy,
     PickingTaskPlanAppliedFact,
     PickingTaskPlanAppliedHandler,
     PickingTaskPlanHandlingResult,
@@ -199,6 +203,10 @@ __all__ = (
     "PickingTargetRotate",
     "PickingTaskBusinessInProgress",
     "PickingTaskCompleted",
+    "PickingTaskPlanAdmissionDecision",
+    "PickingTaskPlanAdmissionDecisionKind",
+    "PickingTaskPlanAdmissionFact",
+    "PickingTaskPlanAdmissionPolicy",
     "PickingTaskPlanAppliedFact",
     "PickingTaskPlanAppliedHandler",
     "PickingTaskPlanHandlingResult",

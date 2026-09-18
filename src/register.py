@@ -103,12 +103,18 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
         from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 
+        plan_admission_policies = {
+            (plugin.definition.plugin_key, plugin.definition.plugin_version): plugin.picking_task_plan_admission_policy
+            for plugin in deployment_runtime.plugins
+            if plugin.picking_task_plan_admission_policy is not None
+        }
         outbound_picking_runtime = build_outbound_picking_runtime(
             session_factory=db_module.AsyncSessionLocal,
             prepare_plugin_identities=deployment_runtime.picking_task_prepare_service.plugin_identities,
             plan_activation_plugin_identities=(
                 deployment_runtime.picking_task_plan_activation_service.plugin_identities
             ),
+            plan_admission_policies=plan_admission_policies,
             task_queue_gateway=task_queue_gateway,
             completion_owner=IntegrationRunWorkLineOwner(),
             transport_service=transport_runtime.service,

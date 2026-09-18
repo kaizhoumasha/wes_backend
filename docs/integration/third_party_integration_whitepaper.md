@@ -350,7 +350,10 @@ POST <WES_BASE_URL>/api/v1/callback/result
   "error_detail": {
     "code": "TARGET_BLOCKED",
     "msg": "Path blocked"
-  }
+  },
+  "trace_id": null,
+  "event_id": null,
+  "causation_id": null
 }
 ```
 

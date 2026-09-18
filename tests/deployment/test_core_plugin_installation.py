@@ -7,6 +7,7 @@ import pytest
 from deployment.plugin_composition import build_deployment_runtime
 from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.dispatch import WmsDispatchCode
+from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
 from tests.contracts.wms_adapter.inbound_material.support import OPERATION_ID, _digest, _request, _response, _Transport
 
 
@@ -36,6 +37,25 @@ def test_manual_picking_composition_installs_prepare_and_plan_activation_without
     assert plugin.picking_task_plan_applied_handler is not None
     assert plugin.transport_outcome_publisher is not None
     assert runtime.picking_task_plan_activation_service.plugin_identities == (("manual-picking", "0.1.0"),)
+
+
+def test_manual_picking_admission_policy_maps_into_plan_delta_runtime() -> None:
+    transport_runtime = SimpleNamespace(service=object(), position_projection_service=object(), client=object())
+    deployment = build_deployment_runtime(
+        enabled_plugin_keys=("manual-picking",),
+        session_factory=object(),
+        transport_runtime=transport_runtime,
+        device_command_service=object(),
+    )
+    plugin = deployment.plugins[0]
+    policy = plugin.picking_task_plan_admission_policy
+    assert policy is not None
+    policies = {(plugin.definition.plugin_key, plugin.definition.plugin_version): policy}
+
+    outbound = build_outbound_picking_runtime(session_factory=object(), plan_admission_policies=policies)
+    plan_delta_service = outbound.picking_task_plan_delta_handler._recorder
+    assert plan_delta_service._plan_admission_policies == policies
+    assert plan_delta_service._plan_admission_policies[("manual-picking", "0.1.0")] is policy
 
 
 @pytest.mark.asyncio

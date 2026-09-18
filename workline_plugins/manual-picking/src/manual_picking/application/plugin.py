@@ -1,6 +1,7 @@
 """人工拣料插件的显式、无副作用业务装配。"""
 
 from manual_picking.application.passage_repository import PassageRepository
+from manual_picking.application.plan_admission import ManualPickingPlanAdmissionPolicy
 from manual_picking.application.transport_outcome import ManualPickingTransportOutcomePublisher
 from manual_picking.definition import DEFINITION
 from manual_picking.handlers import PickingTaskPlanAppliedHandler
@@ -36,6 +37,7 @@ def build_plugin(
             ),
         ),
         picking_task_prepare_policy=ManualPickingPreparePolicy(),
+        picking_task_plan_admission_policy=ManualPickingPlanAdmissionPolicy(),
         picking_task_plan_applied_handler=PickingTaskPlanAppliedHandler(),
         picking_task_batch_driver=batch_driver,
         picking_task_completion_driver=completion_driver,

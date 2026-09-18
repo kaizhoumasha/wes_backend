@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from manual_picking.application.plan_admission import ManualPickingPlanAdmissionPolicy
+
 from deployment.plugin_composition import build_deployment_runtime
 from src.app.workline.models.workline import LineType
 
@@ -35,8 +37,21 @@ def test_manual_picking_deployment_assembles_prepare_policy_without_device_handl
     )
     assert runtime.plugins[0].business_blocker is not None
     assert runtime.plugins[0].picking_task_prepare_policy is not None
+    assert type(runtime.plugins[0].picking_task_plan_admission_policy) is ManualPickingPlanAdmissionPolicy
     assert runtime.plugins[0].picking_task_batch_driver is not None
     assert runtime.plugins[0].picking_task_completion_driver is not None
+    assert runtime.plugins[0].runtime_binding.business_wms_operations == (
+        "outbound.manual_bin.work_admission_decide@v1",
+        "outbound.manual_bin.work_completed@v1",
+        "outbound.bin.inbound_batch@v1",
+        "outbound.bin.return_batch@v1",
+        "outbound.rack.departure_decide@v1",
+        "workline.return_buffer.drain_rack_decide@v1",
+    )
+    assert (
+        "outbound.manual_rack.direct_pick_completed@v1"
+        not in runtime.plugins[0].runtime_binding.business_wms_operations
+    )
     assert runtime.execution.fact_processor._plugins.has_business_evidence_consumer(
         "manual-picking", "0.1.0", operation="outbound.bin.inbound_batch@v1"
     )

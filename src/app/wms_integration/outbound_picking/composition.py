@@ -16,7 +16,10 @@ from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta i
 from src.app.wms_integration.outbound_picking.services.picking_task_queue_changed import PickingTaskQueueChangedService
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from wes_plugin_sdk import PickingTaskPlanAdmissionPolicy
 
     from src.app.wms_integration.outbound_picking.services.manual_bin_completed import CompletionOwnerPort
     from src.core.task_queue_gateway import TaskQueueGateway
@@ -36,6 +39,7 @@ def build_outbound_picking_runtime(
     session_factory: async_sessionmaker[AsyncSession],
     prepare_plugin_identities: tuple[tuple[str, str], ...] = (),
     plan_activation_plugin_identities: tuple[tuple[str, str], ...] = (),
+    plan_admission_policies: Mapping[tuple[str, str], PickingTaskPlanAdmissionPolicy] | None = None,
     task_queue_gateway: TaskQueueGateway | None = None,
     completion_owner: CompletionOwnerPort | None = None,
     transport_service: object | None = None,
@@ -49,6 +53,7 @@ def build_outbound_picking_runtime(
     plan_delta = PickingTaskPlanDeltaService(
         session_factory,
         plan_activation_plugin_identities=plan_activation_plugin_identities,
+        plan_admission_policies=plan_admission_policies,
         task_queue_gateway=task_queue_gateway,
     )
     queue_changed = PickingTaskQueueChangedService(session_factory)
