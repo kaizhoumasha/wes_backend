@@ -101,6 +101,7 @@ class ManualPickingBatchDriver:
             line.position_bindings[FIVE_RACK.slot_key]["location_id"],
         )
         source_count = 0
+        advanced_task_id = None
         if owner is not None:
             task = await self._tasks.get_by_task_id_for_update(db, owner.task_id)
             if (
@@ -109,7 +110,10 @@ class ManualPickingBatchDriver:
                 and task.workline_id == line.id
                 and task.status == "EXECUTION_COMPLETED"
             ):
+                advanced_task_id = task.id
                 source_count = await self.advance_in_session(db, line, task)
+        # 只含直接取料的任务不会被五层架来源查询找到，退料货架子流程必须独立再试一次。
+        source_count += await self._advance_completed_return_rack(db, line, advanced_task_id)
         source_count += await self._advance_drain(db, line) if self._drain is not None else 0
         owner = await self._plans.first_completed_transfer_owner_at_position(
             db,
@@ -122,6 +126,18 @@ class ManualPickingBatchDriver:
         if task is None or task.id != owner.id or task.workline_id != line.id or task.status != "EXECUTION_COMPLETED":
             return source_count
         return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
+
+    async def _advance_completed_return_rack(self, db: Any, line: Any, advanced_task_id: int | None) -> int:
+        location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
+        if not location:
+            return 0
+        owner = await self._plans.first_completed_direct_pick_owner_at_position(db, line.id, location)
+        if owner is None or owner.id == advanced_task_id:
+            return 0
+        task = await self._tasks.get_by_task_id_for_update(db, owner.task_id)
+        if task is None or task.id != owner.id or task.workline_id != line.id or task.status != "EXECUTION_COMPLETED":
+            return 0
+        return await self._advance_return_rack(db, line, task)
 
     async def advance_in_session(self, db: Any, line: Any, task: Any) -> int:
         # 子流程 A（五层架）与子流程 B（退料货架）物理并行，任一条被自身条件挡住都不影响另一条。

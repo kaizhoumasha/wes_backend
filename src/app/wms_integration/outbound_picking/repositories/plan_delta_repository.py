@@ -93,6 +93,36 @@ class PickingTaskPlanDeltaRepository:
             .limit(1)
         )
 
+    async def first_completed_direct_pick_owner_at_position(
+        self, db: AsyncSession, workline_id: int, location_code: str
+    ) -> PickingTask | None:
+        """仅含直接取料的任务完成后也要继续推进退料货架；候选的到位细节由调用方再校验。"""
+        picks = DirectPickExecution.__table__.c
+        tasks = PickingTask.__table__.c
+        projections = PositionProjection.__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .join(DirectPickExecution, picks.picking_task_id == tasks.id)
+            .join(
+                PositionProjection,
+                (projections.object_type == "RACK")
+                & (projections.object_id == picks.rack_id)
+                & (projections.workline_id == tasks.workline_id),
+            )
+            .where(
+                tasks.workline_id == workline_id,
+                tasks.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                picks.cancelled_evidence_id.is_(None),
+                picks.plan_revision <= tasks.last_applied_plan_revision,
+                picks.rack_face == projections.arrival_face,
+                projections.position_unknown.is_(False),
+                projections.position_json["kind"].as_string() == "RACK_POSITION",
+                projections.position_json["location_code"].as_string() == location_code,
+            )
+            .order_by(projections.updated_at.desc(), tasks.id, picks.id)
+            .limit(1)
+        )
+
     async def first_completed_transfer_owner_at_position(
         self, db: AsyncSession, workline_id: int, location_code: str
     ) -> PickingTask | None:

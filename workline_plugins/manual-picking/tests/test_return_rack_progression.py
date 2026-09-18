@@ -377,3 +377,29 @@ async def test_pending_confirmation_stays_quiet_because_it_is_still_normally_in_
         assert await driver.advance_in_session(object(), line, task) == 0
 
     assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_direct_pick_only_completed_task_still_advances_its_return_rack() -> None:
+    """合同 §5.5 允许只含直接取料的任务；完成后五层架来源查询找不到它，退料货架不能因此永久滞留。"""
+    driver, line, task, _, plans, _, _, scheduler, _ = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.first_completed_source_owner_at_position = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    plans.first_completed_direct_pick_owner_at_position = AsyncMock(return_value=task)  # type: ignore[method-assign]
+    plans.first_completed_transfer_owner_at_position = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await driver.advance_completed_in_session(object(), line) == 1
+    scheduler.create_in_session.assert_awaited_once()
+    assert scheduler.create_in_session.await_args.args[1].rack_id == "RETURN-RACK-01"
+
+
+@pytest.mark.asyncio
+async def test_completed_task_found_by_both_lookups_advances_its_return_rack_only_once() -> None:
+    driver, line, task, _, plans, _, _, scheduler, _ = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.first_completed_source_owner_at_position = AsyncMock(return_value=task)  # type: ignore[method-assign]
+    plans.first_completed_direct_pick_owner_at_position = AsyncMock(return_value=task)  # type: ignore[method-assign]
+    plans.first_completed_transfer_owner_at_position = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await driver.advance_completed_in_session(object(), line) == 1
+    scheduler.create_in_session.assert_awaited_once()

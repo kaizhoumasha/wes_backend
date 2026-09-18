@@ -60,6 +60,9 @@ class Plans:
     async def first_completed_source_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
         return self.owner
 
+    async def first_completed_direct_pick_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
+        return None
+
     async def first_completed_transfer_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
         return self.transfer_owner
 
