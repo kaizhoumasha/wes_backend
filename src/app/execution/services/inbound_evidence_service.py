@@ -96,6 +96,7 @@ class InboundEvidenceService:
         received_at: datetime,
         workline_id: int | None = None,
         material_execution_id: int | None = None,
+        picking_task_id: int | None = None,
         transport_task_id: str | None = None,
         device_code: str | None = None,
         command_code: str | None = None,
@@ -160,8 +161,9 @@ class InboundEvidenceService:
                 existing.operation,
                 existing.operation_id,
             )
+            picking_task_matches = picking_task_id is None or existing.picking_task_id == picking_task_id
             if existing.payload_digest == digest and (
-                existing_correlations == correlations
+                (existing_correlations == correlations and picking_task_matches)
                 or (
                     kind == InboundEvidenceKind.DEVICE_EVENT
                     and existing.kind == InboundEvidenceKind.DEVICE_EVENT
@@ -199,6 +201,7 @@ class InboundEvidenceService:
                 received_at=received_at,
                 workline_id=workline_id,
                 material_execution_id=material_execution_id,
+                picking_task_id=picking_task_id,
                 transport_task_id=transport_task_id,
                 device_code=device_code,
                 command_code=command_code,

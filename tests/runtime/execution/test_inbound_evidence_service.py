@@ -15,6 +15,7 @@ from src.app.execution.models.inbound_evidence import (
 )
 from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
 from src.app.execution.services.inbound_evidence_service import (
+    InboundEvidenceAcceptance,
     InboundEvidenceConflictResult,
     InboundEvidenceIdentityConflictError,
     InboundEvidenceService,
@@ -128,10 +129,71 @@ async def test_same_source_identity_and_normalized_payload_is_idempotent() -> No
     )
 
     assert first.duplicate is False
+    assert isinstance(duplicate, InboundEvidenceAcceptance)
     assert duplicate.duplicate is True
     assert duplicate.evidence is first.evidence
     assert first.evidence.kind == InboundEvidenceKind.WMS_RESULT
     assert first.evidence.normalized_payload == {"result": "WAIT", "data": {"reason_code": "BUSY"}}
+
+
+@pytest.mark.asyncio
+async def test_replay_without_derived_picking_task_id_remains_idempotent() -> None:
+    repository = FakeInboundEvidenceRepository()
+    service = InboundEvidenceService(repository=repository)
+    first = await service.accept(
+        object(),
+        kind=InboundEvidenceKind.WMS_EVENT,
+        source_identity="outbound.picking_task.plan_delta@v1:OP-001",
+        normalized_payload={"operation": "plan_delta", "data": {"task_id": "TASK-001"}},
+        received_at=datetime(2026, 8, 16),
+        operation="outbound.picking_task.plan_delta@v1",
+        operation_id="OP-001",
+        picking_task_id=21,
+    )
+    duplicate = await service.accept(
+        object(),
+        kind=InboundEvidenceKind.WMS_EVENT,
+        source_identity="outbound.picking_task.plan_delta@v1:OP-001",
+        normalized_payload={"data": {"task_id": "TASK-001"}, "operation": "plan_delta"},
+        received_at=datetime(2026, 8, 16, 0, 1),
+        operation="outbound.picking_task.plan_delta@v1",
+        operation_id="OP-001",
+    )
+
+    assert first.duplicate is False
+    assert isinstance(duplicate, InboundEvidenceAcceptance)
+    assert duplicate.duplicate is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_picking_task_id_drift_still_records_conflict() -> None:
+    repository = FakeInboundEvidenceRepository()
+    service = InboundEvidenceService(repository=repository)
+    payload = {"operation": "plan_delta", "data": {"task_id": "TASK-001"}}
+    await service.accept(
+        object(),
+        kind=InboundEvidenceKind.WMS_EVENT,
+        source_identity="outbound.picking_task.plan_delta@v1:OP-001",
+        normalized_payload=payload,
+        received_at=datetime(2026, 8, 16),
+        operation="outbound.picking_task.plan_delta@v1",
+        operation_id="OP-001",
+        picking_task_id=21,
+    )
+
+    conflict_result = await service.accept(
+        object(),
+        kind=InboundEvidenceKind.WMS_EVENT,
+        source_identity="outbound.picking_task.plan_delta@v1:OP-001",
+        normalized_payload=payload,
+        received_at=datetime(2026, 8, 16, 0, 1),
+        operation="outbound.picking_task.plan_delta@v1",
+        operation_id="OP-001",
+        picking_task_id=22,
+    )
+
+    assert isinstance(conflict_result, InboundEvidenceConflictResult)
+    assert repository.conflicts[0].reason_code == "SOURCE_IDENTITY_CORRELATION_CONFLICT"
 
 
 @pytest.mark.asyncio

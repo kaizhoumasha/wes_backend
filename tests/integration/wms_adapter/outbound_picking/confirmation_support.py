@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler
 
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmation
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
@@ -119,6 +119,11 @@ async def picking_confirmation_worker(database, *, server, status):
         async with sessions.begin() as db:
             await db.execute(delete(WmsConfirmation).where(WmsConfirmation.operation_id == operation_id))
             if task is not None:
+                await db.execute(
+                    update(InboundEvidence)
+                    .where(InboundEvidence.picking_task_id == task.id)
+                    .values(picking_task_id=None)
+                )
                 await db.execute(delete(PickingTask).where(PickingTask.id == task.id))
             await db.execute(
                 delete(InboundEvidence).where(InboundEvidence.operation_id.in_((operation_id, issued_operation_id)))

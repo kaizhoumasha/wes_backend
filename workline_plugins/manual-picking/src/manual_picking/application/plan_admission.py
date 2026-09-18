@@ -8,14 +8,9 @@ from wes_plugin_sdk import (
 
 
 class ManualPickingPlanAdmissionPolicy:
-    """人工拣料只接纳 Bin 计划，不接纳 direct-pick。"""
+    """人工拣料接纳所有 PickingTask 计划，包括 Bin 计划和 direct-pick。"""
 
-    def __call__(self, fact: PickingTaskPlanAdmissionFact) -> PickingTaskPlanAdmissionDecision:
-        if fact.has_direct_picks:
-            return PickingTaskPlanAdmissionDecision(
-                kind=PickingTaskPlanAdmissionDecisionKind.REJECT,
-                reason_code="MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED",
-            )
+    def __call__(self, _fact: PickingTaskPlanAdmissionFact) -> PickingTaskPlanAdmissionDecision:
         return PickingTaskPlanAdmissionDecision(kind=PickingTaskPlanAdmissionDecisionKind.ACCEPT)
 
 
