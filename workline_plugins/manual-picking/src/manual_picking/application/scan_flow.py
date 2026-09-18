@@ -543,6 +543,8 @@ class ManualPickingScanFlow:
         passage.wms_completed_at = datetime.fromtimestamp(completed.completed_at / 1000, UTC).replace(tzinfo=None)
         passage.wms_completed_evidence_id = evidence.id
         passage.disposition = completed.result
+        if completed.result == "NG":
+            passage.reason_code = "MANUAL_PICK_NG"
         passage.scan2_command_code = await self._move(
             db, workline_id, bindings, "SCAN2", passage.scan2_evidence_id, "MOVE_FORWARD"
         )

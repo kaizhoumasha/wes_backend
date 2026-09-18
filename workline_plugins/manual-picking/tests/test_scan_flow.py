@@ -774,7 +774,30 @@ async def test_work_required_waits_for_matching_wms_completion() -> None:
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert passages.rows[0].wms_result == "NORMAL"
     assert passages.rows[0].wms_completed_evidence_id == 4
+    assert passages.rows[0].reason_code is None
     assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD", "MOVE_FORWARD"]
+
+
+@pytest.mark.asyncio
+async def test_ng_work_completion_persists_manual_pick_reason_code() -> None:
+    flow, evidences, passages, _, admissions = _setup()
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    operation_id = admissions.intents[0].operation_id
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, operation_id, {"result": "WORK_REQUIRED", "task_id": "PICK-001"}
+    )
+    evidences.rows[4] = _wms(
+        4,
+        InboundEvidenceKind.WMS_EVENT,
+        "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
+        {"task_id": "PICK-001", "bin_code": "A000000001", "result": "NG", "completed_at": 1_788_389_999_000},
+    )
+
+    assert (await flow.apply_in_session(object(), 3, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert passages.rows[0].wms_result == "NG"
+    assert passages.rows[0].reason_code == "MANUAL_PICK_NG"
 
 
 @pytest.mark.asyncio
