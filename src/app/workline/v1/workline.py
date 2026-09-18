@@ -5,6 +5,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Body, Depends, Path, Request, status
 
 from src.app.workline.models import (
+    PlaneCurrentTaskV2,
     PlaneSceneV2,
     PlaneSceneView,
     PlaneSnapshot,
@@ -367,6 +368,35 @@ async def get_workline_plane_snapshot_v2(
         return cast("ResponseSchemaModel[PlaneSnapshotV2]", _workline_value_error_response(exc))
     await workline_plane_service.record_read_audit(db, view="snapshot", workline_id=id, workline_code=str(id))
     return cast("ResponseSchemaModel[PlaneSnapshotV2]", response_builder.success(data=snapshot))
+
+
+@router.get(
+    "/work_lines/{id}/plane/current-task/v2",
+    operation_id="work_lines_by_id_plane_current_task_v2_get",
+    summary="[biz:workline:view-plane-snapshot] 获取作业线当前 PickingTask v2",
+    response_model=ResponseSchemaModel[PlaneCurrentTaskV2],
+    status_code=status.HTTP_200_OK,
+)
+async def get_workline_plane_current_task_v2(
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    principal: Annotated[PlaneReadPrincipal, Depends(_plane_read_principal)],
+    _permission: PermissionDep(plane_read_security_policy.snapshot_permission),
+    id: int = Path(...),
+) -> ResponseSchemaModel[PlaneCurrentTaskV2]:
+    """按需读取 WorkLine 当前任务；失败沿用标准 API 错误语义。"""
+
+    try:
+        current_task = await workline_plane_service.get_current_task_v2(db, cache, id, principal=principal)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[PlaneCurrentTaskV2]", _workline_value_error_response(exc))
+    await workline_plane_service.record_read_audit(
+        db,
+        view="current_task",
+        workline_id=id,
+        workline_code=str(id),
+    )
+    return cast("ResponseSchemaModel[PlaneCurrentTaskV2]", response_builder.success(data=current_task))
 
 
 # 使用 BaseAPI 零代码生成 CRUD 路由

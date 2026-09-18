@@ -1264,7 +1264,7 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/**}"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_picking_task_repository_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
@@ -1703,7 +1703,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/workline/services/workline_configuration_service.py"
-heavy_tests = ["tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+heavy_tests = ["tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_picking_task_repository_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/services/plane_scene_binding.py"
