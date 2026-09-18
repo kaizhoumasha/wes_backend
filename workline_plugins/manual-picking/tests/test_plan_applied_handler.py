@@ -12,6 +12,7 @@ from wes_plugin_sdk import (
 
 POSITIONS = (
     PositionBindingSnapshot("FIVE_RACK", "FIVE-RACK-POSITION", "RACK_POSITION"),
+    PositionBindingSnapshot("RETURN_RACK", "RETURN-RACK-POSITION", "RACK_POSITION"),
     PositionBindingSnapshot("TRANSFER_RACK", "TRANSFER-RACK-POSITION", "RACK_POSITION"),
 )
 FACT = PickingTaskPlanAppliedFact(
@@ -63,3 +64,69 @@ def test_plan_applied_fact_rejects_duplicate_physical_racks() -> None:
                 PickingTaskPlanRack("FIVE-1", ("270",), source_evidence_id="102", plan_revision=2),
             ),
         )
+
+
+def test_plan_handler_creates_return_rack_intent_per_rack_with_f01() -> None:
+    fact = replace(
+        FACT,
+        pending_return_racks=(
+            PickingTaskPlanRack("RET-1", ("A",), "200", 1),
+            PickingTaskPlanRack("RET-2", ("A", "B"), "201", 1),
+        ),
+    )
+
+    result = PickingTaskPlanAppliedHandler()(fact)
+
+    by_rack = {intent.rack_id: intent for intent in result.transports}
+    assert set(by_rack) == {"TRANSFER-1", "RET-1", "RET-2"}
+    for rack_id in ("RET-1", "RET-2"):
+        intent = by_rack[rack_id]
+        assert intent.position_role == "RETURN_RACK"
+        assert intent.target == TransportRackPosition("RETURN-RACK-POSITION")
+        assert intent.rcs_template_id is TransportRcsTemplateId.F01
+        assert intent.task_id == "PICK-1"
+        assert intent.fact_id == fact.fact_id
+    assert by_rack["RET-1"].source_evidence_id == "200"
+    assert by_rack["RET-1"].target_face == "A"
+    assert by_rack["RET-2"].target_face == "A"
+
+
+def test_plan_handler_emits_one_intent_per_unique_return_rack() -> None:
+    fact = replace(
+        FACT,
+        pending_return_racks=(
+            PickingTaskPlanRack("RET-1", ("A", "B"), "200", 1),
+            PickingTaskPlanRack("RET-2", ("A",), "201", 1),
+        ),
+    )
+
+    result = PickingTaskPlanAppliedHandler()(fact)
+
+    assert [intent.rack_id for intent in result.transports] == ["TRANSFER-1", "RET-1", "RET-2"]
+    by_rack = {intent.rack_id: intent for intent in result.transports}
+    assert by_rack["RET-1"].target_face == "A"
+    assert by_rack["RET-2"].source_evidence_id == "201"
+
+
+def test_plan_handler_returns_empty_when_no_pending_racks() -> None:
+    fact = replace(FACT, target_rack=None, pending_return_racks=())
+
+    assert PickingTaskPlanAppliedHandler()(fact).transports == ()
+
+
+def test_plan_handler_requires_return_rack_position_binding() -> None:
+    fact = replace(
+        FACT,
+        target_rack=None,
+        position_bindings=(POSITIONS[0],),
+        pending_return_racks=(PickingTaskPlanRack("RET-1", ("A",), "200", 1),),
+    )
+
+    with pytest.raises(ValueError, match="RETURN_RACK"):
+        PickingTaskPlanAppliedHandler()(fact)
+
+
+def test_plan_handler_does_not_mutate_return_racks_when_target_only() -> None:
+    result = PickingTaskPlanAppliedHandler()(FACT)
+
+    assert [intent.position_role for intent in result.transports] == ["TRANSFER_RACK"]
