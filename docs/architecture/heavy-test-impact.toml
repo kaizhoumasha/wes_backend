@@ -2943,6 +2943,13 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_face_completions_table.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "src/database/base_repository.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 from wes_plugin_sdk import PickingTaskPlanAdmissionDecision, PickingTaskPlanAdmissionDecisionKind, wms_operations
 
 from src.app.execution.models import (
@@ -26,7 +26,12 @@ from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import (
+    DirectPickExecution,
+    DirectPickFaceCompletion,
+    PickingTask,
+    PickingTaskBinSourceRack,
+)
 from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
@@ -141,6 +146,7 @@ async def prepared(integration_session_factory):
         await db.execute(delete(AuditLog).where(AuditLog.args["task_id"].as_string() == task_name))
         await db.execute(delete(DirectPickExecution).where(DirectPickExecution.picking_task_id == task_id))
         await db.execute(delete(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task_id))
+        await db.execute(delete(DirectPickFaceCompletion).where(DirectPickFaceCompletion.picking_task_id == task_id))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.id == confirmation_id))
         # picking_task_id 与 issued_evidence_id 互为外键，先断开再各自删除。
         await db.execute(
@@ -675,6 +681,37 @@ async def test_plan_member_constraints_are_enforced_by_postgresql(integration_se
                 )
             )
             await db.flush()
+
+
+@pytest.mark.parametrize("violation", ["unique", "empty_face"])
+async def test_direct_pick_face_completion_constraints_are_enforced_by_postgresql(
+    integration_session_factory, prepared, violation
+):
+    from sqlalchemy.exc import IntegrityError
+
+    _task_name, ids = prepared
+    async with integration_session_factory.begin() as db:
+        db.add(
+            DirectPickFaceCompletion(
+                picking_task_id=ids[0],
+                rack_id="SOURCE",
+                rack_face="A",
+                completed_at=NOW,
+                source_evidence_id=ids[3],
+            )
+        )
+    with pytest.raises(IntegrityError):
+        # 核心 insert 绕过 Pydantic min_length 校验，直接命中数据库 CHECK/唯一约束。
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                insert(DirectPickFaceCompletion).values(
+                    picking_task_id=ids[0],
+                    rack_id="SOURCE",
+                    rack_face="" if violation == "empty_face" else "A",
+                    completed_at=NOW,
+                    source_evidence_id=ids[3],
+                )
+            )
 
 
 async def test_source_member_ids_preserve_wire_rack_and_face_order(integration_session_factory, prepared):
