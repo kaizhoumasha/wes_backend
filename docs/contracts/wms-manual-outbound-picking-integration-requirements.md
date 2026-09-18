@@ -566,8 +566,8 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 - `outbound.manual_rack.direct_pick_completed@v1` 不携带逐 slot 取货结果；退料货架没有 NG 出口，缺料、损耗等业务异常
   由 WMS/PDA 内部消化，对 WES 保持黑盒；
 - 换面（`RACK_ROTATE`）还是彻底退场不由新 operation 决定，仍是 WES 按出库合同 §9.2.1/§9.4 既有逻辑的本地判断；
-- drain wire 已按出库合同 §9.2.3 冻结，当前仅实现 `PICKING_TASK_COMPLETED`；`WORKLINE_STOPPING` / `PLUGIN_SWITCHING`
-  触发仍记录在 `TODOS.md`，未闭合义务和有效占用收敛前保持原插件及配置；
+- drain wire 已按出库合同 §9.2.3 冻结，当前实现 `PICKING_TASK_COMPLETED` 与 `WORKLINE_STOPPING` 触发；
+  `WORKLINE_STOPPING` 由 `WorkLineConfigurationService._trigger_plugin_drain` 在停线前主动触发全量排空；
 - WES 不维护永久条码级 NG 状态或全程料箱生命周期；下游处置必须由已确认的移交关联或可靠物理队列承接，无法关联则拒绝自动推进；
 - 不提供料箱 NG 出口上报；人工 NG 记录和分流属于插件分支，WMS 人工业务自行完成；
 - 不新增第二套 Transport、Device、Evidence、Confirmation 或插件 runtime；
