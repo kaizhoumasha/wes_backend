@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from wes_plugin_sdk import (
+    FactRecorded,
     PickingTaskRackTransportIntent,
     RackDepartureReady,
     RackDepartureWait,
@@ -17,7 +18,7 @@ from wes_plugin_sdk import (
     wms_operations,
 )
 
-from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET, TRANSFER_RACK
+from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET, RETURN_RACK, TRANSFER_RACK
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
@@ -31,6 +32,8 @@ from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
     DRAIN_RACK_ROTATE_STEP,
+    RETURN_RACK_OUT_STEP,
+    RETURN_RACK_ROTATE_STEP,
     SOURCE_RACK_IN_STEP,
     SOURCE_RACK_OUT_STEP,
     SOURCE_RACK_ROTATE_STEP,
@@ -61,6 +64,8 @@ class ManualPickingBatchDriver:
         rack_creator: Any,
         departure_scheduler: Any,
         departure_reader: Any,
+        arrival_scheduler: Any = None,
+        arrival_reader: Any = None,
         passages: Any = None,
         tasks: Any = None,
         position_service: Any = None,
@@ -80,6 +85,8 @@ class ManualPickingBatchDriver:
         self._rack_creator = rack_creator
         self._departure_scheduler = departure_scheduler
         self._departure_reader = departure_reader
+        self._arrival_scheduler = arrival_scheduler
+        self._arrival_reader = arrival_reader
         self._passages = passages or PassageRepository()
         self._tasks = tasks or picking_task_repository
         self._uuid_factory = uuid_factory
@@ -114,8 +121,10 @@ class ManualPickingBatchDriver:
         return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
 
     async def advance_in_session(self, db: Any, line: Any, task: Any) -> int:
+        # 子流程 A（五层架）与子流程 B（退料货架）物理并行，任一条被自身条件挡住都不影响另一条。
         filled = await self._fill_source_window(db, line, task) if task.status == "EXECUTING" else 0
-        return filled + await self._advance_current_rack(db, line, task)
+        advanced = await self._advance_current_rack(db, line, task)
+        return filled + advanced + await self._advance_return_rack(db, line, task)
 
     async def _source_window(self, db: Any, line: Any) -> tuple[int, set[str]]:
         # 调用方持有工作线锁；容量仅限制 CTU01 准入，不代表同时在位的物理货架数。
@@ -372,6 +381,89 @@ class ManualPickingBatchDriver:
             now=timezone.now_for_db(),
         )
 
+    async def _advance_return_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
+        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。"""
+        location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
+        if not location or self._arrival_scheduler is None or self._arrival_reader is None:
+            return 0
+        faces_by_rack: dict[str, list[Any]] = {}
+        for row in await self._plans.list_active_direct_picks(db, task.id):
+            # 完成事实是面级的，同面多个 slot_id 只占一个换面位置。
+            faces = faces_by_rack.setdefault(row.rack_id, [])
+            if all(face.rack_face != row.rack_face for face in faces):
+                faces.append(row)
+        ordered = [row for faces in faces_by_rack.values() for row in faces]
+        if not ordered or not await has_single_current_rack(db, line.id, location, positions=self._positions):
+            return 0
+        current = projection = None
+        for row in ordered:
+            projection = await ready_rack_projection(
+                db, line, row.rack_id, row.rack_face, location, positions=self._positions, transports=self._transports
+            )
+            if projection is not None:
+                current = row
+                break
+        if current is None or projection is None:
+            return 0
+        now = timezone.now_for_db()
+        snapshot = await self._arrival_reader.latest(db, task.id, current.rack_id)
+        if snapshot is None:
+            transport = await self._transports.get_task(db, projection.source_transport_task_id)
+            if transport.published_outcome_version <= 0:
+                return 0
+            intent = wms_operations.outbound_return_rack_arrival_report(
+                operation_id=self._uuid_factory(),
+                task_id=task.task_id,
+                transport_task_id=projection.source_transport_task_id,
+                outcome_revision=transport.published_outcome_version,
+                rack_id=current.rack_id,
+                final_position=TransportRackPosition(location),
+                arrival_face=projection.arrival_face,
+            )
+            await self._arrival_scheduler.create_in_session(db, intent, picking_task_id=task.id, created_at=now)
+            return 1
+        if snapshot.intent.task_id != task.task_id or snapshot.intent.rack_id != current.rack_id:
+            raise ValueError("return rack arrival result differs from original task and rack")
+        if (
+            snapshot.status != WmsConfirmationStatus.COMPLETED
+            or snapshot.outcome is None
+            or not isinstance(snapshot.outcome.result, FactRecorded)
+        ):
+            return 0
+        if not await self._plans.has_direct_pick_face_completion(
+            db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=current.rack_face
+        ):
+            return 0
+        rack_faces = faces_by_rack[current.rack_id]
+        for next_face in rack_faces[rack_faces.index(current) + 1 :]:
+            if await self._plans.has_direct_pick_face_completion(
+                db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=next_face.rack_face
+            ):
+                continue
+            await self._rack_creator.create_rotate(
+                db,
+                workline_id=line.id,
+                picking_task_id=task.id,
+                source_evidence_id=next_face.source_evidence_id,
+                correlation_id=f"pt:{task.id}:return-face:{next_face.id}",
+                step=RETURN_RACK_ROTATE_STEP,
+                rack_id=current.rack_id,
+                position=TransportRackPosition(location),
+                target_face=next_face.rack_face,
+            )
+            return 1
+        return await self._advance_workline_departure(
+            db,
+            line,
+            rack_id=current.rack_id,
+            current_face=projection.arrival_face,
+            correlation_id=f"pt:{task.id}:return-out:{current.rack_id}",
+            step=RETURN_RACK_OUT_STEP,
+            picking_task_id=task.id,
+            now=now,
+            current_location=location,
+        )
+
     async def _advance_workline_departure(
         self,
         db: Any,
@@ -383,14 +475,16 @@ class ManualPickingBatchDriver:
         step: str,
         picking_task_id: int | None,
         now: Any,
+        current_location: str | None = None,
     ) -> int:
+        location = current_location or line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         snapshot = await self._departure_reader.latest_for_workline(db, line.id, rack_id)
         if snapshot is None:
             intent = wms_operations.outbound_rack_departure_decide(
                 operation_id=self._uuid_factory(),
                 task_id=None,
                 rack_id=rack_id,
-                current_location=TransportRackPosition(line.position_bindings[FIVE_RACK.slot_key]["location_id"]),
+                current_location=TransportRackPosition(location),
                 current_face=current_face,
             )
             await self._departure_scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
@@ -409,7 +503,7 @@ class ManualPickingBatchDriver:
                 operation_id=self._uuid_factory(),
                 task_id=None,
                 rack_id=rack_id,
-                current_location=TransportRackPosition(line.position_bindings[FIVE_RACK.slot_key]["location_id"]),
+                current_location=TransportRackPosition(location),
                 current_face=current_face,
             )
             await self._departure_scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
@@ -494,4 +588,11 @@ class ManualPickingBatchDriver:
         return 1
 
 
-__all__ = ["SOURCE_RACK_OUT_STEP", "SOURCE_RACK_ROTATE_STEP", "TRANSFER_RACK_OUT_STEP", "ManualPickingBatchDriver"]
+__all__ = [
+    "RETURN_RACK_OUT_STEP",
+    "RETURN_RACK_ROTATE_STEP",
+    "SOURCE_RACK_OUT_STEP",
+    "SOURCE_RACK_ROTATE_STEP",
+    "TRANSFER_RACK_OUT_STEP",
+    "ManualPickingBatchDriver",
+]

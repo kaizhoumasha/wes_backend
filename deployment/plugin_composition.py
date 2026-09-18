@@ -43,6 +43,10 @@ from src.app.wms_integration.outbound_picking.services.rack_departure import (
     RackDepartureScheduler,
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
+from src.app.wms_integration.outbound_picking.services.return_rack_arrival import (
+    ReturnRackArrivalResultReader,
+    ReturnRackArrivalScheduler,
+)
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainOwnerService
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_archive_service import WorkLineArchiveService
@@ -151,6 +155,8 @@ def build_deployment_runtime(
             rack_creator=rack_creator,
             departure_scheduler=RackDepartureScheduler(WmsConfirmationLifecycleService()),
             departure_reader=RackDepartureResultReader(),
+            arrival_scheduler=ReturnRackArrivalScheduler(WmsConfirmationLifecycleService()),
+            arrival_reader=ReturnRackArrivalResultReader(),
             passages=passages,
             drain=ManualPickingDrainFlow(
                 drains,

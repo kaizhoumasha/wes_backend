@@ -224,6 +224,15 @@ class PickingTaskPlanDeltaRepository:
         )
         return list(result.all())
 
+    async def list_active_direct_picks(self, db: AsyncSession, task_id: int) -> list[DirectPickExecution]:
+        columns = DirectPickExecution.__table__.c
+        result = await db.scalars(
+            select(DirectPickExecution)
+            .where(columns.picking_task_id == task_id, columns.cancelled_evidence_id.is_(None))
+            .order_by(columns.plan_revision, columns.id)
+        )
+        return list(result.all())
+
     async def get_evidence(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
         return await db.get(InboundEvidence, evidence_id)
 
