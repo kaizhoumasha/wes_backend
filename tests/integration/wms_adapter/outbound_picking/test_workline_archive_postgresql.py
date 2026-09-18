@@ -78,6 +78,7 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
                     dispatch_sequence=3,
                     issued_at_ms=3,
                     issued_evidence_id=evidences[2].id,
+                    workline_id=line.id,
                 )
                 run = IntegrationRun(
                     run_id="archive-active-run",
@@ -118,7 +119,9 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
                 assert await integration_runs.get_active_for_workline(db, line_id) is None
                 summary = await WorkLineRepository().get_unfinished_workload_summary(db, line_id)
                 assert summary["by_type"]["picking_tasks"] == 0
-                claimed = await repository.claim_next_queued(db, task_type=PickingTaskType.MANUAL, now_ms=4)
+                claimed = await repository.claim_next_queued(
+                    db, workline_id=line_id, task_type=PickingTaskType.MANUAL, now_ms=4
+                )
                 assert claimed is not None and claimed.id == queued_id
 
             async with sessions() as db:

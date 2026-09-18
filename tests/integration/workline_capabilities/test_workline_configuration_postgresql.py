@@ -554,6 +554,7 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                         dispatch_sequence=1,
                         issued_at_ms=1,
                         issued_evidence_id=evidence.id,
+                        workline_id=workline.id,
                     )
                     db.add(task)
                     await db.flush()
@@ -571,7 +572,6 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                         locked_task = await db.get(PickingTask, task_id, with_for_update=True)
                         assert locked_task is not None
                         locked_task.status = PickingTaskStatus.PREPARING
-                        locked_task.workline_id = workline_id
                         await db.flush()
                         binding_ready.set()
                         await release_binding.wait()

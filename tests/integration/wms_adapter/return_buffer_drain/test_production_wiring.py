@@ -9,13 +9,11 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import select
-from wes_plugin_sdk import BinReturnCandidate, wms_operations
+from wes_plugin_sdk import wms_operations
 
-from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.models import InboundEvidence, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import WmsConfirmationService
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationIdentityConflictError
-from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
-from src.app.wms_adapter.factory import build_wms_client
 from src.app.wms_adapter.return_buffer_drain.typed import encode_request
 from src.app.wms_integration.return_buffer_drain import (
     ReturnBufferDrainOwnerService,
@@ -48,9 +46,7 @@ async def _seed(db):
     intent = wms_operations.workline_return_buffer_drain_rack_decide(
         operation_id=new_uuid7(),
         workline_code=line.line_code,
-        plugin_key=line.plugin_key,
-        drain_reason="PICKING_TASK_COMPLETED",
-        return_candidates=(BinReturnCandidate(1, "BIN-1", "RETURN-1"),),
+        required_slot_count=1,
     )
     return line.id, intent
 
@@ -73,12 +69,15 @@ async def test_scheduler_persists_one_workline_obligation_and_conflicts_on_drift
         assert rows[0].picking_task_id is None
         with pytest.raises(WmsConfirmationIdentityConflictError):
             await scheduler.create_in_session(
-                db, replace(intent, plugin_key="different"), workline_id=workline_id, created_at=now
+                db,
+                replace(intent, required_slot_count=intent.required_slot_count + 1),
+                workline_id=workline_id,
+                created_at=now,
             )
     async with sessions() as db:
         original = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == intent.operation_id))
         assert original.status == WmsConfirmationStatus.RECONCILING
-        assert original.request_payload["data"]["plugin_key"] == intent.plugin_key
+        assert original.request_payload["data"]["required_slot_count"] == intent.required_slot_count
 
 
 @pytest.mark.parametrize("result", ["READY", "WAIT"])
@@ -87,7 +86,7 @@ async def test_zero_plugin_worker_dispatches_and_preserves_typed_result(confirma
     database_url, sessions = confirmation_database
     now = timezone.now_for_db()
     data = (
-        {"result": "READY", "rack_id": "RACK-2", "rack_face": "B"}
+        {"result": "READY", "racks": [{"rack_id": "RACK-2", "rack_faces": ["B"]}]}
         if result == "READY"
         else {"result": "WAIT", "reason_code": "NO_DRAIN_RACK_AVAILABLE", "retry_after_ms": 1000}
     )
@@ -117,7 +116,11 @@ async def test_zero_plugin_worker_dispatches_and_preserves_typed_result(confirma
             evidence = await db.get(InboundEvidence, confirmation.response_evidence_id)
             original, outcome = await ReturnBufferDrainResultReader().read(db, evidence, workline_id=workline_id)
             assert original == intent
-            assert outcome.result.rack_id == "RACK-2" if result == "READY" else outcome.result.retry_after_ms == 1000
+            if result == "READY":
+                assert outcome.result.racks[0].rack_id == "RACK-2"
+                assert outcome.result.racks[0].rack_faces == ("B",)
+            else:
+                assert outcome.result.retry_after_ms == 1000
             assert server.requests == [
                 {
                     "path": "/api/v1/wes/decisions",
@@ -136,50 +139,3 @@ async def test_zero_plugin_worker_dispatches_and_preserves_typed_result(confirma
             success=success,
             primary_error=primary_error,
         )
-
-
-async def test_response_is_saved_when_frozen_plugin_owner_changes_during_http(confirmation_database):
-    _, sessions = confirmation_database
-    now = timezone.now_for_db()
-    server = ConfirmationServer(
-        status_code=200, code="DECIDED", data={"result": "READY", "rack_id": "R2", "rack_face": "A"}
-    )
-    client = build_wms_client(base_url=server.url, timeout_seconds=5)
-    adapter = WmsConfirmationAdapter(client)
-
-    class OwnerChangesDuringHttp:
-        async def dispatch(self, **kwargs):
-            result = await adapter.dispatch(**kwargs)
-            async with sessions.begin() as db:
-                line = await db.get(WorkLine, workline_id)
-                line.plugin_key = "another-plugin"
-            return result
-
-    service = WmsConfirmationService(
-        workline_owner=ReturnBufferDrainOwnerService(), session_factory=sessions, adapter=OwnerChangesDuringHttp()
-    )
-    try:
-        async with sessions.begin() as db:
-            workline_id, intent = await _seed(db)
-            await ReturnBufferDrainScheduler(service).create_in_session(
-                db, intent, workline_id=workline_id, created_at=now
-            )
-        server.start()
-        await service.dispatch_batch()
-        async with sessions() as db:
-            confirmation = await db.scalar(
-                select(WmsConfirmation).where(WmsConfirmation.operation_id == intent.operation_id)
-            )
-            evidence = await db.scalar(
-                select(InboundEvidence).where(InboundEvidence.operation_id == intent.operation_id)
-            )
-            assert confirmation.status == WmsConfirmationStatus.RECONCILING
-            assert confirmation.request_payload["data"]["plugin_key"] == intent.plugin_key
-            assert evidence.workline_id == workline_id
-            assert evidence.normalized_payload["data"] == server.data
-            assert evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING
-            assert len(server.requests) == 1
-        assert await service.dispatch_batch() == 0
-    finally:
-        await client.aclose()
-        server.close()
