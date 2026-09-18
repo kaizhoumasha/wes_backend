@@ -465,7 +465,7 @@ async def test_picking_snapshot_counts_bound_active_and_blocked_tasks_only(integ
                 else:
                     assert summary["sample"] is None
             task.status = PickingTaskStatus.QUEUED
-            task.workline_id = None
+            task.workline_id = other_line.id
             task.plan_blocked_evidence_id = None
             await db.flush()
             assert (await repository.get_unfinished_workload_summary(db, line.id))["count"] == 0

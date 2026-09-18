@@ -34,6 +34,7 @@ class InstalledWorkLinePlugin:
     start_plan_builder: Any | None = None
     business_blocker: Any | None = None
     business_archiver: Any | None = None
+    drain_trigger: Any | None = None
     wms_confirmation_follow_up_planner: Any | None = None
     transport_outcome_publisher: Any | None = None
     picking_task_prepare_policy: PickingTaskPreparePolicy | None = None

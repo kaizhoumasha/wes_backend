@@ -141,6 +141,19 @@ def build_deployment_runtime(
         batch_result = ManualPickingBatchResultFlow(
             batch_reader, ReliableBinTransportCreator(transport_runtime.service), passages
         )
+        drain_flow = ManualPickingDrainFlow(
+            drains,
+            passages,
+            PickingTaskPrepareCoordinator(
+                session_factory,
+                policy=ManualPickingPreparePolicy(),
+                task_queue_gateway=task_queue_gateway,
+                workline_reserved=prepare_workline_reserved,
+            ),
+            ReturnBufferDrainScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+            batch_scheduler,
+            batch_reader,
+        )
         batch_driver = ManualPickingBatchDriver(
             ManualPickingBatchFlow(
                 batch_repository,
@@ -158,19 +171,7 @@ def build_deployment_runtime(
             arrival_scheduler=ReturnRackArrivalScheduler(WmsConfirmationLifecycleService()),
             arrival_reader=ReturnRackArrivalResultReader(),
             passages=passages,
-            drain=ManualPickingDrainFlow(
-                drains,
-                passages,
-                PickingTaskPrepareCoordinator(
-                    session_factory,
-                    policy=ManualPickingPreparePolicy(),
-                    task_queue_gateway=task_queue_gateway,
-                    workline_reserved=prepare_workline_reserved,
-                ),
-                ReturnBufferDrainScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
-                batch_scheduler,
-                batch_reader,
-            ),
+            drain=drain_flow,
         )
         scan_flow = ManualPickingScanFlow(
             commands=device_command_service,
@@ -186,7 +187,14 @@ def build_deployment_runtime(
             PickingTaskCompletionScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
             uuid_factory=new_uuid7,
         )
-        plugins = (build_plugin(scan_flow=scan_flow, batch_driver=batch_driver, completion_driver=completion_driver),)
+        plugins = (
+            build_plugin(
+                scan_flow=scan_flow,
+                batch_driver=batch_driver,
+                completion_driver=completion_driver,
+                drain_flow=drain_flow,
+            ),
+        )
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,
@@ -217,6 +225,9 @@ def build_deployment_runtime(
             definitions=definitions,
             business_blockers={
                 plugin.plugin_key: plugin.business_blocker for plugin in plugins if plugin.business_blocker is not None
+            },
+            drain_triggers={
+                plugin.plugin_key: plugin.drain_trigger for plugin in plugins if plugin.drain_trigger is not None
             },
             device_cache_invalidator=device_service,
         ),

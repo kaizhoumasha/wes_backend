@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
-from manual_picking.application.drain_flow import ManualPickingDrainFlow
+from manual_picking.application.drain_flow import FULL_DRAIN_LIMIT, ManualPickingDrainFlow
 
 NOW = datetime(2026, 9, 17)
 
@@ -94,6 +94,26 @@ async def test_no_batch_advances_to_the_next_ordered_face() -> None:
     ]
 
     assert await flow.active_rack_face(object(), _line(), decision) == ("R1", "270")
+
+
+@pytest.mark.asyncio
+async def test_decide_passes_default_limit_to_passages() -> None:
+    flow, _, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),))
+
+    await flow.decide_in_session(object(), _line(), NOW)
+
+    assert flow._passages.ready_return_prefix_for_update.await_args.kwargs["limit"] == 4
+
+
+@pytest.mark.asyncio
+async def test_trigger_full_drain_asks_for_the_full_return_buffer_not_just_one_batch() -> None:
+    flow, scheduler, _, _ = _flow(rows=tuple(SimpleNamespace(bin_code=f"B{i}") for i in range(10)))
+
+    await flow.trigger_full_drain_in_session(object(), _line(), NOW)
+
+    assert flow._passages.ready_return_prefix_for_update.await_args.kwargs["limit"] == FULL_DRAIN_LIMIT
+    intent = scheduler.create_in_session.await_args.args[1]
+    assert intent.required_slot_count == 10
 
 
 @pytest.mark.asyncio
