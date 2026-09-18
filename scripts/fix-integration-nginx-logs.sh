@@ -76,8 +76,11 @@ ensure_container_running() {
 
 fix_log_dir_and_files() {
   print_info "修正 ${CONTAINER} 内的 /var/log/nginx 目录与文件属主 ..."
-  run_in_target "docker exec ${CONTAINER} sh -lc 'chown -R nginx:adm /var/log/nginx; chmod 750 /var/log/nginx; find /var/log/nginx -maxdepth 1 -type f -exec chmod 640 {} +'"
-  print_success "/var/log/nginx 目录与文件权限已修正为 nginx:adm (750/640)"
+  # 目录 755 + 文件 644：与 nginx 官方镜像默认一致；
+  # nginx worker(uid 101) 作为 owner 写入，其他用户在 host 上（CANTAISYS）
+  # 也能直接 cat /srv/wes/app/current-single/logs/nginx/*.log 排查。
+  run_in_target "docker exec ${CONTAINER} sh -lc 'chown -R nginx:adm /var/log/nginx; chmod 755 /var/log/nginx; find /var/log/nginx -maxdepth 1 -type f -exec chmod 644 {} +'"
+  print_success "/var/log/nginx 目录与文件权限已修正为 nginx:adm (755/644)"
 }
 
 reload_nginx() {

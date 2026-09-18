@@ -169,7 +169,7 @@ tests/integration/wms_adapter/<domain_key>/
 | `docs/architecture/phase10-legacy-cutover-manifest.json` | Phase 10 producer seal、legacy task/broker identity 与 Task 7 维护态 cutover 机器清单；不代表现场已执行 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |
-| `scripts/fix-integration-nginx-logs.sh` | 联调服务器 NGINX 容器日志目录与文件权限修复；让 `/api/v1/callback/{result,event}` 的 access_log 能正常写入 |
+| `scripts/fix-integration-nginx-logs.sh` | 联调服务器 NGINX 容器日志目录与文件权限修复；让 `/api/v1/callback/{result,event}` 的 access_log 能正常写入，并保留 CANTAISYS 在 host 侧直接读日志的能力 |
 | `tools/release_checker/` | 独立、stdlib-only 的前端 consumer → 后端 provider 方向兼容检查器；固定 oasdiff，运行时不导入 WES 应用或前端源码 |
 
 ## 6. 快速查找
