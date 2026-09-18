@@ -252,6 +252,25 @@ async def test_ready_departure_decision_returns_the_return_rack_with_its_own_ste
 
 
 @pytest.mark.asyncio
+async def test_arrival_on_a_later_face_still_rotates_back_to_the_earlier_unfinished_face() -> None:
+    """到位面由外部搬运决定，不保证是计划首面；更早的未结面不能被跳过。"""
+    driver, line, task, positions, plans, creator, reader, _, departure = setup_driver()
+    plans.picks.append(
+        SimpleNamespace(id=23, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=62)
+    )
+    positions.current.arrival_face = "B"
+    reader.latest.return_value = recorded_snapshot()
+    plans.completed.add(("RETURN-RACK-01", "B"))
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert creator.rotate[0]["target_face"] == "A"
+    assert creator.rotate[0]["source_evidence_id"] == 61
+    assert creator.rotate[0]["correlation_id"] == "pt:31:return-face:21"
+    assert creator.depart == []
+    departure.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_blocked_five_rack_subflow_does_not_block_the_return_rack_subflow() -> None:
     driver, line, task, positions, plans, _, _, scheduler, _ = setup_driver()
     plans.list_bin_source_racks = AsyncMock(  # type: ignore[method-assign]

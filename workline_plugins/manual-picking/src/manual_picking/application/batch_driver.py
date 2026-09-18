@@ -434,9 +434,10 @@ class ManualPickingBatchDriver:
             db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=current.rack_face
         ):
             return 0
-        rack_faces = faces_by_rack[current.rack_id]
-        for next_face in rack_faces[rack_faces.index(current) + 1 :]:
-            if await self._plans.has_direct_pick_face_completion(
+        # 到位面由外部搬运决定，不保证是计划首面；遍历全部面而非 index 之后的切片，
+        # 否则更早的未结面会被静默跳过。
+        for next_face in faces_by_rack[current.rack_id]:
+            if next_face is current or await self._plans.has_direct_pick_face_completion(
                 db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=next_face.rack_face
             ):
                 continue
