@@ -93,6 +93,7 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
     wms_completed_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
+    reason_code: str | None = Field(default=None, max_length=64, description="人工拣料 NG 原因码，如 MANUAL_PICK_NG")
     scan1_command_code: str | None = Field(default=None, max_length=160)
     scan2_command_code: str | None = Field(default=None, max_length=160)
     scan2_fault_command_code: str | None = Field(default=None, max_length=160)

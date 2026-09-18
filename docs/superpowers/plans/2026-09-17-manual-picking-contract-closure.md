@@ -79,8 +79,8 @@ The plan reuses all of the above; nothing here needs to be rebuilt.
   approval and a separate plan; still gated `DRAFT / NOT AUTHORIZED` in the contract doc.
 - Persisting a direct-pick completion model, `completed_at` application state, or rack-face
   departure application.
-- `WORKLINE_STOPPING` / `PLUGIN_SWITCHING` RETURN_BUFFER drain — owned by the existing
-  `TODOS.md` item, untouched by this closure.
+- `WORKLINE_STOPPING` RETURN_BUFFER drain — owned by `WorkLineConfigurationService._trigger_plugin_drain`,
+  untouched by this closure. Plugin switching is no longer a planned trigger for this project.
 - PDA integration, Cell-level business data, supplier ECS/PLC protocols, and field
   acceptance.
 - New migration, new outbox/confirmation type, dynamic plugin registry, compatibility path,

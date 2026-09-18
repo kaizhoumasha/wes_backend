@@ -47,6 +47,7 @@ class PickingTaskPlanAppliedFact(HandlerFact):
     target_rack: PickingTaskPlanRack | None
     pending_bin_source_racks: tuple[PickingTaskPlanRack, ...]
     position_bindings: tuple[PositionBindingSnapshot, ...]
+    pending_return_racks: tuple[PickingTaskPlanRack, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("fact_id", "evidence_id", "fact_version", "task_id"):
@@ -71,6 +72,17 @@ class PickingTaskPlanAppliedFact(HandlerFact):
         roles = [binding.position_role for binding in self.position_bindings]
         if len(roles) != len(set(roles)):
             raise ValueError("position_bindings must not contain duplicate roles")
+        if type(self.pending_return_racks) is not tuple or any(
+            type(rack) is not PickingTaskPlanRack for rack in self.pending_return_racks
+        ):
+            raise TypeError("pending_return_racks must contain PickingTaskPlanRack values")
+        return_rack_ids = [rack.rack_id for rack in self.pending_return_racks]
+        if len(return_rack_ids) != len(set(return_rack_ids)):
+            raise ValueError("pending_return_racks must not contain duplicate rack_id values")
+        if (self.target_rack is not None and self.target_rack.rack_id in return_rack_ids) or any(
+            rack_id in rack_ids for rack_id in return_rack_ids
+        ):
+            raise ValueError("pending_return_racks rack_id must not duplicate target or bin source racks")
 
 
 @dataclass(frozen=True, slots=True)

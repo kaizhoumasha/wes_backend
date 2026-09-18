@@ -10,7 +10,7 @@ from wes_plugin_sdk import (
     TransportRcsTemplateId,
 )
 
-from manual_picking.definition import TRANSFER_RACK
+from manual_picking.definition import RETURN_RACK, TRANSFER_RACK
 
 
 def _required_rack_position(
@@ -46,6 +46,23 @@ class PickingTaskPlanAppliedHandler:
                     rcs_template_id=TransportRcsTemplateId.F01,
                 )
             )
+        transports.extend(
+            PickingTaskRackTransportIntent(
+                task_id=fact.task_id,
+                fact_id=fact.fact_id,
+                source_evidence_id=return_rack.source_evidence_id,
+                position_role=RETURN_RACK.slot_key,
+                rack_id=return_rack.rack_id,
+                source=TransportRackReference(return_rack.rack_id),
+                target=_required_rack_position(
+                    fact.position_bindings,
+                    position_role=RETURN_RACK.slot_key,
+                ),
+                target_face=return_rack.rack_faces[0],
+                rcs_template_id=TransportRcsTemplateId.F01,
+            )
+            for return_rack in fact.pending_return_racks
+        )
 
         return PickingTaskPlanHandlingResult(transports=tuple(transports))
 

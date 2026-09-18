@@ -191,3 +191,53 @@ def test_openapi_uses_business_identifiers_and_nonnegative_timestamp():
     slot = fields["added_direct_picks"]["items"]["properties"]["source_locator"]["properties"]
     for field in ("rack_id", "slot_id"):
         assert slot[field]["pattern"] == BUSINESS_IDENTIFIER_PATTERN
+
+
+def test_multiple_direct_picks_in_same_array_are_accepted_per_contract():
+    """合同 §1.1：多个退料货架放在同一 added_direct_picks 数组中，不重复字段。"""
+    payload = valid_event()
+    payload["data"] = {
+        "task_id": "PICK-1",
+        "plan_revision": 1,
+        "target_rack": {"rack_id": "TRANSFER-1", "rack_face": "90"},
+        "added_direct_picks": [
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "RET-1", "rack_face": "A", "slot_id": "A-03"}},
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "RET-2", "rack_face": "A", "slot_id": "A-01"}},
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "RET-1", "rack_face": "B", "slot_id": "B-05"}},
+        ],
+    }
+
+    parsed = parse_picking_task_plan_delta_event(payload)
+
+    assert isinstance(parsed, PickingTaskPlanDeltaEvent)
+    assert parsed.data.added_direct_picks is not None
+    rack_face_by_rack = {
+        pick.source_locator.rack_id: pick.source_locator.rack_face for pick in parsed.data.added_direct_picks
+    }
+    assert rack_face_by_rack == {"RET-1": "B", "RET-2": "A"}
+
+
+def test_duplicate_added_direct_picks_key_keeps_last_value_in_json_payload():
+    """重复字段名按 JSON 协议取最后一个值；合同要求 WMS 不原地补字段重发。"""
+    payload = valid_event()
+    payload["data"] = {
+        "task_id": "PICK-1",
+        "plan_revision": 1,
+        "added_direct_picks": [
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "RET-1", "rack_face": "A", "slot_id": "A-03"}}
+        ],
+    }
+    text = (
+        '{"operation":"outbound.picking_task.plan_delta@v1",'
+        '"operation_id":"019f33f0-58d7-7b4d-a23a-1b90aa5d4473",'
+        '"timestamp":1786060800000,'
+        '"data":{"task_id":"PICK-1","plan_revision":1,'
+        '"target_rack":{"rack_id":"TRANSFER-1","rack_face":"90"},'
+        '"added_direct_picks":[{"source_locator":{"type":"RACK_SLOT","rack_id":"RET-1","rack_face":"A","slot_id":"A-03"}}],'
+        '"added_direct_picks":[{"source_locator":{"type":"RACK_SLOT","rack_id":"RET-2","rack_face":"B","slot_id":"B-09"}}]}}'
+    )
+
+    parsed = PickingTaskPlanDeltaEvent.model_validate_json(text)
+
+    assert parsed.data.added_direct_picks is not None
+    assert [pick.source_locator.rack_id for pick in parsed.data.added_direct_picks] == ["RET-2"]
