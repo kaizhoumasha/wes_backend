@@ -5,7 +5,7 @@ related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: ReviewRequired
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-09-17
+updated_at: 2026-09-18
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -21,8 +21,8 @@ updated_at: 2026-09-17
 定义的自动出库场景完全一致。本文只增加人工线的 point2 任务准入、最终释放决定、本地应用，以及退料货架直接取料完成通知
 四个 operation（详见第 5 节），不建立第二套通用字段表达。
 
-> **直接取料门禁：** 本文前言对退料货架直接取料及 `direct_pick_completed` 的描述仅是待评审草案，状态为 `DRAFT / NOT AUTHORIZED`。
-> 该 operation、其触发/接收语义及后续离场前提在批准前不得实施，也不纳入当前 E2E 验收。
+> **直接取料状态：** 本文前言对退料货架直接取料及 `direct_pick_completed` 的描述已获批并完成实施：该 operation、其触发/接收
+> 语义及后续离场前提均已落地，自动化验收 owner 见第 8 节。
 
 系统尚未发布。本文不提供旧接口、兼容字段或新旧路径并存。
 
@@ -37,7 +37,7 @@ updated_at: 2026-09-17
 
 任务 `PICK-20260902-001`（`task_type=MANUAL`）同时包含两类来源：五层货架 `RACK-5F-001`（Bin `A000000001`，走传送带点1～点4）和退料货架 `RETURN-RACK-01`（精确储位 `A-03`，走 §3.5 的直接取料路径）。两条子流程物理上并行、互不阻塞，最终都汇入转运货架 `TRANSFER-RACK-01`。
 
-> **状态门禁：** 下方子流程 B（直接取料）及其 `direct_pick_completed` 文本目前为 `DRAFT / NOT AUTHORIZED`。它不能作为实现依据，也不纳入当前 E2E 验收；在单独合同评审批准前，示例不得被解释为已批准流程。
+> **状态：** 下方子流程 B（直接取料）及其 `direct_pick_completed` 已获批并完成实施；子流程 A、B 物理并行、互不阻塞由第 8 节回归测试验证。
 
 ```mermaid
 flowchart TD
@@ -154,8 +154,8 @@ CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`。
 
 ### 2\.2 人工出库线独有的部分（本文新增） {#22}
 
-> **直接取料门禁：** 下方退料货架直接取料条目仅引用待评审草案，状态为 `DRAFT / NOT AUTHORIZED`。不得据此实施
-> `direct_pick_completed`、其接收语义或换面/离场前提；当前 E2E 不覆盖该分支。
+> **直接取料状态：** 下方退料货架直接取料条目已获批并完成实施；`direct_pick_completed`、其接收语义及换面/离场前提
+> 均已落地，并由第 8 节回归测试覆盖该分支。
 
 - 工作位（点2）任务由人工经 PDA 完成，PDA 是 WMS 侧功能，不在 WES 集成范围内（详见第 4 节）；
 - point2 扫描实际 Bin 后，WES 向 WMS 请求是否存在人工任务的新 operation：
@@ -251,7 +251,7 @@ WES 在点2的唯一职责是：
 
 ### 3\.5 退料货架直接取料 {#35-direct-pick}
 
-> **DRAFT / NOT AUTHORIZED：** 本节仅保留待评审的 wire 和业务草案，当前不能实施，也不纳入当前 E2E 验收。批准前不得据此创建 operation、handler、路由或现场验收项。
+> **APPROVED：** 本节的 wire 和业务定义已获批并完成实施；对应 operation、handler、路由均已创建，自动化验收 owner 见第 8 节，现场验收状态见 §6。
 
 退料货架直接取料是人工出库线的第二条物理路径，完全独立于 §3.1～§3.4 的传送带（点1～点4），不经过任何 SCAN 设备。
 货架搬运和到位复用出库合同 §9.1（`outbound.return_rack.arrival_report@v1`，零改动）；差异只在取货动作本身：
@@ -407,8 +407,8 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 
 ### 5.4 完成事实的本地应用 {#54-completion-local-application}
 
-> **直接取料门禁：** 本节涉及的 `direct_pick_completed` 仅为 `DRAFT / NOT AUTHORIZED` 草案引用。其可靠接收、幂等、ACK、
-> 货架面应用及后续换面/离场前提在单独批准前不得实施，也不构成当前 E2E 验收。
+> **直接取料状态：** 本节涉及的 `direct_pick_completed` 已获批并完成实施。其可靠接收、幂等、ACK、
+> 货架面应用及后续换面/离场前提均已落地，并由第 8 节回归测试覆盖。
 
 取消 `outbound.manual_bin.completion_apply_report@v1`，WES 不再向 WMS 二次报告完成事实的应用结果。
 对已批准的 `work_completed`，可靠接收、幂等和 `202 / RECEIVED` ACK 语义保持不变；ACK 不表示物理释放完成。
@@ -424,7 +424,7 @@ WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存
 
 ### 5\.5 `outbound.manual_rack.direct_pick_completed@v1` {#55-outboundmanual_rackdirect_pick_completedv1}
 
-> **DRAFT / NOT AUTHORIZED：** 本 operation 的 wire 文本尚未获批，当前不能实施，也不纳入当前 E2E 验收。不得据此注册代码 operation 或创建自动化验收结果。
+> **APPROVED：** 本 operation 的 wire 文本已获批并完成实施；代码 operation 已注册，自动化验收结果见第 8 节。
 
 | 项 | 值 |
 | --- | --- |
@@ -579,7 +579,7 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 ## 6\. 当前批准状态 {#6-approval-status}
 
 下表是 C1～C7 的唯一状态矩阵。四列分别独立描述合同批准、代码实施、自动化验收和现场验收；`PLANNED` 或 `NOT ACCEPTED`
-不是通过结果。直接取料不属于 C1～C7，继续受 §1.1、§3.5 和 §5.5 的 `DRAFT / NOT AUTHORIZED` 门禁约束。
+不是通过结果。直接取料不属于 C1～C7；§1.1、§3.5 和 §5.5 描述均已获批并完成代码实施，自动化验收 owner 见第 8 节，现场验收仍为 `NOT ACCEPTED`。
 
 | ID | 具体 operation / 行为 | 合同批准 | 代码实施 | 自动化验收 | 现场验收 |
 | --- | --- | --- | --- | --- | --- |
@@ -593,7 +593,7 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 
 `APPROVED` 仅表示合同范围获批，不表示已有代码、自动化绿灯或现场通过。任何实现或验收必须同时满足本表对应列和 §8 的 owner 约束。
 
-退料货架直接取料完成通知 `outbound.manual_rack.direct_pick_completed@v1`（§3.5、第 5.5 节）不在 C1～C7 内，尚未进入联合评审；获批前不构成代码实施授权。
+退料货架直接取料完成通知 `outbound.manual_rack.direct_pick_completed@v1`（§3.5、第 5.5 节）不在 C1～C7 内；已完成联合评审获批和代码实施，自动化验收 owner 见第 8 节，现场验收仍为 `NOT ACCEPTED`。
 
 后续发现细节需要优化时，应通过合同变更评审更新本文及对应机器合同；在变更获批前，不静默改变当前已批准语义。
 
@@ -605,17 +605,17 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_direct_picks_before_member_persistence` | direct-pick-only 计划在成员写入前拒绝，返回 `MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED`，不写入 `DirectPickExecution`。 |
-| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence` | Bin source 与 direct-pick 混合计划同样拒绝，且不写入成员。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_direct_picks_before_member_persistence` | 共享准入拒绝机制：policy 返回 REJECT 时在成员写入前拒绝，不写入 `DirectPickExecution`。用例里的 `MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED` 只是 stub policy 的 reason code 样本，不再对应任何线上代码路径。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence` | 混合 Bin source 与 direct-pick 的计划在 policy 返回 REJECT 时同样拒绝，且不写入成员；同为共享机制门禁，非 manual-picking 当前行为。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_replay_returns_first_reason_without_reinvoking_policy`、`::test_rejected_identity_payload_drift_returns_idempotency_conflict` | 同 identity 重放返回首次 reason；payload drift 返回 `IDEMPOTENCY_CONFLICT`，不再次调用 policy。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_direct_pick_remains_shared_behavior_without_a_policy`、`::test_outbound_picking_runtime_exposes_only_wms_event_handlers` | 未安装准入 policy 时保留共享 plan-delta ingress；共享 handler 集合不因插件 owner 缺席而变化。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_event_handler.py` | 公共 Event receipt 的持久化、重复、冲突和 fail-closed ACK；不按当前插件动态注册路由。 |
 | `tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py::test_custom_admission_reason_replays_and_drift_stays_idempotency_conflict`、`::test_payload_drift_before_admission_rejection_does_not_hide_plugin_reason`、`::test_admission_policy_exception_rolls_back_evidence_task_and_members` | 真实 PostgreSQL 下验证重放/drift、等待中的 drift 以及 policy 异常事务回滚；拒绝后 `DirectPickExecution` 不持久化。 |
-| `workline_plugins/manual-picking/tests/test_plan_admission.py` | manual-picking allowlist：含 direct picks 必须拒绝，纯 Bin 计划允许，reason code 稳定且 policy 无 I/O。 |
+| `workline_plugins/manual-picking/tests/test_plan_admission.py` | manual-picking 准入：含 direct picks 与纯 Bin 计划一律 ACCEPT（§5.5 已支持直接取料），决定稳定且 policy 无 I/O。 |
 | `workline_plugins/manual-picking/tests/test_declaration.py::test_manual_picking_deployment_assembles_prepare_policy_without_device_handlers`、`::test_disabled_manual_plugin_has_no_business_consumer` | 静态 `business_wms_operations` allowlist；明确不包含 `outbound.manual_rack.direct_pick_completed@v1`；插件禁用时无业务 consumer，但共享 ingress 仍由宿主拥有。 |
 | `tests/contracts/wms_adapter/return_buffer_drain/test_contract.py` | `drain_rack_decide` 严格请求/响应联合、FIFO 前缀、直接前驱、额外字段拒绝、identity 匹配与公共错误映射。 |
 
-核心共享 wire/receipt owner 不导入 `manual-picking` 插件；任务准入 policy 和 allowlist 由上述插件 owner 承接，底层 HTTP/JSON 继续复用共享 `WmsClient`。本节不声称 direct-pick completion operation 已获批或已注册。
+核心共享 wire/receipt owner 不导入 `manual-picking` 插件；任务准入 policy 和 allowlist 由上述插件 owner 承接，底层 HTTP/JSON 继续复用共享 `WmsClient`。direct-pick completion operation（`outbound.manual_rack.direct_pick_completed@v1`）已获批并完成实施：wire、handler 与 service 位于宿主共享 `src/app/wms_adapter/outbound_picking/` 与 `src/app/wms_integration/outbound_picking/`，不进入插件 `business_wms_operations` allowlist（见上表），回归 owner 见 `workline_plugins/manual-picking/tests/test_return_rack_progression.py`。
 
 `tests/runtime/execution/test_wms_confirmation_service.py` 负责共享 `WmsConfirmation` 回归：既有
 `material_execution_id` 消费者行为不变；数据库与 Service 要求 MaterialExecution、PickingTask 或 WorkLine 恰好一个 owner；相同
@@ -775,7 +775,8 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 ### 11.1 测试 owner 对齐
 
 路径以当前仓库为准；表中 `EXISTS` 只表示 owner 和命名行为已经存在，不表示本轮命令已通过。直接取料 admission/allowlist
-属于当前已交付的 plan-delta 门禁测试，但 `direct_pick_completed` 仍是 §3.5/§5.5 的 `DRAFT / NOT AUTHORIZED`，不得注册或验收。
+属于当前已交付的 plan-delta 门禁测试；`direct_pick_completed`（§3.5/§5.5）已获批并完成实施，回归 owner 见 §8.1 与
+`test_return_rack_progression.py`。
 
 | 验收域 | 当前 owner | 状态 |
 | --- | --- | --- |
@@ -786,7 +787,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | C5 ECS SUCCESS 后 RETURN_BUFFER FIFO | `test_scan_flow.py`、`test_batch_flow.py`、`test_batch_repository.py` | `EXISTS` |
 | C6 完成确认、下一任务与 drain | `test_completion_flow.py`、`test_completion_repository.py`、`test_drain_flow.py`、`test_drain_repository.py`、`test_rack_cycle_postgresql.py` | `EXISTS`；PostgreSQL/worker 需显式 integration 环境 |
 | C7 静态 composition、worker wiring 与主链路 | `test_declaration.py`、`test_business_loop.py` | `EXISTS`；E2E 需 PostgreSQL、Redis、Celery，现场仍 `NOT ACCEPTED` |
-| direct-pick-only/mixed rejection、replay/drift、no-member persistence | `test_plan_delta_service.py`、`test_plan_delta_postgresql.py`、`test_plan_admission.py` | `EXISTS`；不表示 `direct_pick_completed` 已注册 |
+| 共享准入拒绝机制、replay/drift、no-member persistence | `test_plan_delta_service.py`、`test_plan_delta_postgresql.py`、`test_plan_admission.py` | `EXISTS`；manual-picking 已改为 direct-pick 一律 ACCEPT，拒绝用例只覆盖共享机制；`direct_pick_completed` 完成通知已获批并完成实施，另见 §8.1 与 `test_return_rack_progression.py` |
 | plugin-disabled shared ingress 与 operation allowlist | `test_declaration.py`、`test_plan_delta_service.py` | `EXISTS`；禁用插件不关闭宿主共享 ingress |
 
 本轮 focused 命令只产生 FAST/插件证据；PostgreSQL、真实 worker E2E 和 ECS/现场验收分别受环境与 §8.4 边界约束，不能用单元测试绿灯替代。
@@ -863,6 +864,6 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - Parallelization: 3 lanes，2 parallel after schema freeze，1 sequential integration lane。
 - Lake Score: 29/29 final decisions chose a complete, explicit behavior。
 
-**VERDICT（历史评审记录）：** ENG + OUTSIDE VOICE CLEARED；C1～C7 INITIAL REVIEW APPROVED。该记录保留原始评审结论，当前可执行状态以 §6 四态矩阵为准；直接取料仍为 `DRAFT / NOT AUTHORIZED`，不能按本历史记录实施或验收。
+**VERDICT（历史评审记录）：** ENG + OUTSIDE VOICE CLEARED；C1～C7 INITIAL REVIEW APPROVED。该记录保留原始评审结论，当前可执行状态以 §6 四态矩阵为准；直接取料已获批并完成实施，回归验收见 §6 与 §8。
 
 NO UNRESOLVED DECISIONS

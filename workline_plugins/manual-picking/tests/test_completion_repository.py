@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import wes_plugin_sdk as sdk
+from manual_picking.application.completion_flow import ManualPickingCompletionFlow
 from manual_picking.application.completion_repository import ManualPickingCompletionRepository
 from manual_picking.application.passage_model import ManualPickingPassage
 from sqlalchemy import event
@@ -12,7 +13,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.app.execution.models import InboundEvidence, TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import (
+    DirectPickExecution,
+    DirectPickFaceCompletion,
+    PickingTaskBinSourceRack,
+)
 
 
 @pytest.mark.asyncio
@@ -28,6 +33,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
         for table in (
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
+            DirectPickFaceCompletion.__table__,
             PickingTaskBinSourceRack.__table__,
             ManualPickingPassage.__table__,
             TransportDecisionBinding.__table__,
@@ -130,6 +136,17 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             db.add(direct_pick)
             await db.flush()
             assert not await repository.ready_to_confirm(db, line, task)
+            face_completion = DirectPickFaceCompletion(
+                picking_task_id=11,
+                rack_id="R2",
+                rack_face="90",
+                completed_at=datetime(2026, 9, 14, 4),
+                source_evidence_id=1,
+            )
+            db.add(face_completion)
+            await db.flush()
+            assert await repository.ready_to_confirm(db, line, task)
+            await db.delete(face_completion)
             await db.delete(direct_pick)
             history.done = False
             binding = TransportDecisionBinding(
@@ -212,7 +229,12 @@ async def test_target_only_plan_waits_for_confirmed_target_transport() -> None:
         connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
 
     async with engine.begin() as connection:
-        for table in (InboundEvidence.__table__, DirectPickExecution.__table__, ManualPickingPassage.__table__):
+        for table in (
+            InboundEvidence.__table__,
+            DirectPickExecution.__table__,
+            DirectPickFaceCompletion.__table__,
+            ManualPickingPassage.__table__,
+        ):
             await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -264,5 +286,112 @@ async def test_target_only_plan_waits_for_confirmed_target_transport() -> None:
                 source_transport_task_id="target-move",
             )
             assert await repository.ready_to_confirm(db, line, task)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm() -> None:
+    """五层架来源结清 + 直接取料面结清后，完成确认必须真正发出，不能被直接取料永久挡住。"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_runtime")
+
+    async with engine.begin() as connection:
+        for table in (
+            InboundEvidence.__table__,
+            DirectPickExecution.__table__,
+            DirectPickFaceCompletion.__table__,
+            PickingTaskBinSourceRack.__table__,
+            ManualPickingPassage.__table__,
+            TransportDecisionBinding.__table__,
+            TransportTask.__table__,
+            TransportMember.__table__,
+        ):
+            await connection.run_sync(table.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    class History:
+        async def latest_inbound_detail(self, _db, *, workline_id, task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+            return (
+                sdk.wms_operations.outbound_bin_inbound_batch(
+                    operation_id="batch-1", task_id=task_id, rack_id=rack_id, rack_face=rack_face
+                ),
+                sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone()),
+                SimpleNamespace(id=31),
+                datetime(2026, 9, 14, 4),
+            )
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.intents: list = []
+
+        async def create_in_session(self, _db, intent, *, picking_task_id, created_at):  # type: ignore[no-untyped-def]
+            self.intents.append((intent, picking_task_id, created_at))
+
+    class Completions:
+        async def latest(self, _db, _picking_task_id):  # type: ignore[no-untyped-def]
+            return None
+
+    scheduler = Scheduler()
+    repository = ManualPickingCompletionRepository(history=History(), completion_reader=Completions())
+    flow = ManualPickingCompletionFlow(repository, scheduler, uuid_factory=lambda: "op-complete")
+    line = SimpleNamespace(
+        id=7,
+        position_bindings={"INLET": {"location_id": "CNV0301"}},
+        config={"device_bindings": {"SCAN1": "S1", "SCAN2": "S2", "SCAN3": "S3", "SCAN4": "S4"}},
+    )
+    task = SimpleNamespace(
+        id=11,
+        task_id="PICK-1",
+        status="EXECUTING",
+        last_applied_plan_revision=1,
+        plan_blocked_evidence_id=None,
+    )
+    now = datetime(2026, 9, 14, 5)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                PickingTaskBinSourceRack(
+                    picking_task_id=11, rack_id="R1", rack_face="90", plan_revision=1, source_evidence_id=1
+                )
+            )
+            db.add(
+                DirectPickExecution(
+                    picking_task_id=11,
+                    rack_id="RETURN-RACK-01",
+                    rack_face="180",
+                    slot_id="S1",
+                    plan_revision=1,
+                    source_evidence_id=1,
+                )
+            )
+            await db.flush()
+            # 直接取料面未结清时，完成确认必须等待。
+            assert await flow.advance_in_session(db, line, task, now=now) == 0
+            assert scheduler.intents == []
+            db.add(
+                DirectPickFaceCompletion(
+                    picking_task_id=11,
+                    rack_id="RETURN-RACK-01",
+                    rack_face="180",
+                    completed_at=now,
+                    source_evidence_id=1,
+                )
+            )
+            await db.flush()
+            assert await flow.advance_in_session(db, line, task, now=now) == 1
+            assert scheduler.intents == [
+                (
+                    sdk.wms_operations.outbound_picking_task_completion_confirm(
+                        operation_id="op-complete", task_id="PICK-1", last_applied_plan_revision=1
+                    ),
+                    11,
+                    now,
+                )
+            ]
     finally:
         await engine.dispose()

@@ -2,6 +2,7 @@
 
 from .bin_batch import BinBatchScheduler, BinInboundBatchOwnerService
 from .manual_bin_admission import ManualBinAdmissionOwnerService, ManualBinAdmissionScheduler
+from .manual_rack_direct_pick_completed import ManualRackDirectPickCompletedService
 from .picking_task_cancel import PickingTaskCancelService
 from .picking_task_completion import PickingTaskCompletionResultReader, PickingTaskCompletionScheduler
 from .picking_task_confirmation_owner import PickingTaskConfirmationOwnerService
@@ -12,12 +13,14 @@ from .picking_task_prepare import PickingTaskPrepareCoordinator
 from .picking_task_prepare_batch import PickingTaskPrepareBatchService
 from .picking_task_queue_changed import PickingTaskQueueChangedService
 from .rack_departure import RackDepartureResultReader, RackDepartureScheduler
+from .return_rack_arrival import ReturnRackArrivalResultReader, ReturnRackArrivalScheduler
 
 __all__ = [
     "BinBatchScheduler",
     "BinInboundBatchOwnerService",
     "ManualBinAdmissionOwnerService",
     "ManualBinAdmissionScheduler",
+    "ManualRackDirectPickCompletedService",
     "PickingTaskCancelService",
     "PickingTaskCompletionResultReader",
     "PickingTaskCompletionScheduler",
@@ -31,6 +34,8 @@ __all__ = [
     "RackDepartureResultReader",
     "RackDepartureScheduler",
     "ReturnBatchOwnerService",
+    "ReturnRackArrivalResultReader",
+    "ReturnRackArrivalScheduler",
 ]
 
 from .return_batch_owner import ReturnBatchOwnerService

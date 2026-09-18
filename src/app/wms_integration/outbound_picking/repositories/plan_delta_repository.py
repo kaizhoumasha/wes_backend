@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003
 from itertools import batched
 from typing import Any
 
@@ -19,6 +20,7 @@ from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import (
     DirectPickExecution,
+    DirectPickFaceCompletion,
     PickingTask,
     PickingTaskBinSourceRack,
     PickingTaskStatus,
@@ -91,6 +93,36 @@ class PickingTaskPlanDeltaRepository:
             .limit(1)
         )
 
+    async def first_completed_direct_pick_owner_at_position(
+        self, db: AsyncSession, workline_id: int, location_code: str
+    ) -> PickingTask | None:
+        """仅含直接取料的任务完成后也要继续推进退料货架；候选的到位细节由调用方再校验。"""
+        picks = DirectPickExecution.__table__.c
+        tasks = PickingTask.__table__.c
+        projections = PositionProjection.__table__.c
+        return await db.scalar(
+            select(PickingTask)
+            .join(DirectPickExecution, picks.picking_task_id == tasks.id)
+            .join(
+                PositionProjection,
+                (projections.object_type == "RACK")
+                & (projections.object_id == picks.rack_id)
+                & (projections.workline_id == tasks.workline_id),
+            )
+            .where(
+                tasks.workline_id == workline_id,
+                tasks.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                picks.cancelled_evidence_id.is_(None),
+                picks.plan_revision <= tasks.last_applied_plan_revision,
+                picks.rack_face == projections.arrival_face,
+                projections.position_unknown.is_(False),
+                projections.position_json["kind"].as_string() == "RACK_POSITION",
+                projections.position_json["location_code"].as_string() == location_code,
+            )
+            .order_by(projections.updated_at.desc(), tasks.id, picks.id)
+            .limit(1)
+        )
+
     async def first_completed_transfer_owner_at_position(
         self, db: AsyncSession, workline_id: int, location_code: str
     ) -> PickingTask | None:
@@ -148,6 +180,62 @@ class PickingTaskPlanDeltaRepository:
             is not None
         )
 
+    async def has_active_direct_pick_face(
+        self, db: AsyncSession, *, picking_task_id: int, rack_id: str, rack_face: str
+    ) -> bool:
+        columns = DirectPickExecution.__table__.c
+        return (
+            await db.scalar(
+                select(columns.id)
+                .where(
+                    columns.picking_task_id == picking_task_id,
+                    columns.rack_id == rack_id,
+                    columns.rack_face == rack_face,
+                    columns.cancelled_evidence_id.is_(None),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def has_direct_pick_face_completion(
+        self, db: AsyncSession, *, picking_task_id: int, rack_id: str, rack_face: str
+    ) -> bool:
+        columns = DirectPickFaceCompletion.__table__.c
+        return (
+            await db.scalar(
+                select(columns.id)
+                .where(
+                    columns.picking_task_id == picking_task_id,
+                    columns.rack_id == rack_id,
+                    columns.rack_face == rack_face,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def add_direct_pick_face_completion(
+        self,
+        db: AsyncSession,
+        *,
+        picking_task_id: int,
+        rack_id: str,
+        rack_face: str,
+        completed_at: datetime,
+        source_evidence_id: int,
+    ) -> None:
+        db.add(
+            DirectPickFaceCompletion(
+                picking_task_id=picking_task_id,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                completed_at=completed_at,
+                source_evidence_id=source_evidence_id,
+            )
+        )
+        await db.flush()
+
     async def list_bin_source_racks(self, db: AsyncSession, task_id: int) -> list[PickingTaskBinSourceRack]:
         columns = PickingTaskBinSourceRack.__table__.c
         result = await db.scalars(
@@ -161,6 +249,15 @@ class PickingTaskPlanDeltaRepository:
         columns = PickingTaskBinSourceRack.__table__.c
         result = await db.scalars(
             select(PickingTaskBinSourceRack)
+            .where(columns.picking_task_id == task_id, columns.cancelled_evidence_id.is_(None))
+            .order_by(columns.plan_revision, columns.id)
+        )
+        return list(result.all())
+
+    async def list_active_direct_picks(self, db: AsyncSession, task_id: int) -> list[DirectPickExecution]:
+        columns = DirectPickExecution.__table__.c
+        result = await db.scalars(
+            select(DirectPickExecution)
             .where(columns.picking_task_id == task_id, columns.cancelled_evidence_id.is_(None))
             .order_by(columns.plan_revision, columns.id)
         )

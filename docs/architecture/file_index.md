@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-14
+**最后更新**：2026-09-18
 
 ## 1. 真源与入口
 
@@ -104,6 +104,7 @@ API → Service → Repository → Database
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
 | `src/app/wms_diagnostics/` | WES 观察到的双向 WIRE、实际校验与字段对比；有界脱敏 Redis 近期记录及只读 API/SSE，另提供 WMS 可靠义务与入站 Evidence 的持久化只读查询；不拥有业务状态或重试 |
 | `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
+| `migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_face_completions_table.py` | 新增 `direct_pick_face_completions` 事实表（模型见 `outbound_picking/models/plan_members.py` 的 `DirectPickFaceCompletion`），记录退料货架直接取料按 `(picking_task_id, rack_id, rack_face)` 完成的唯一事实 |
 | `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata、typed WMS intent/outcome 与纯 facade 合同；不含宿主 I/O、OpenAPI/wire DTO 或具体工作线业务 |
 | `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
 | `workline_plugins/manual-picking/src/manual_picking/{handlers/,application/}` | 四点扫码决定、本次经过持久状态、跨任务退箱 FIFO、来源架换面/离场与插件显式装配；不使用 `MaterialExecution` 承载料箱业务 |

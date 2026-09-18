@@ -1,4 +1,4 @@
-"""人工拣料本地完成条件：计划来源结清、无直接取料、无待 WMS 回答的料箱。"""
+"""人工拣料本地完成条件：计划来源结清、无未结清的直接取料面、无待 WMS 回答的料箱。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from src.app.execution.models import TransportDecisionBinding
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution
+from src.app.wms_integration.outbound_picking.models import DirectPickExecution, DirectPickFaceCompletion
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionResultReader
@@ -44,8 +44,25 @@ class ManualPickingCompletionRepository:
         return await self._completion_reader.latest(db, picking_task_id)
 
     async def ready_to_confirm(self, db: AsyncSession, line: Any, task: Any) -> bool:
+        """计划已接纳直接取料，因此只有未结清的面（未取消且无面级完成事实）才阻塞完成确认。"""
         direct = cast("Any", DirectPickExecution).__table__.c
-        if await db.scalar(select(direct.id).where(direct.picking_task_id == task.id).limit(1)) is not None:
+        completed = cast("Any", DirectPickFaceCompletion).__table__.c
+        unclosed_face = (
+            select(direct.id)
+            .where(
+                direct.picking_task_id == task.id,
+                direct.cancelled_evidence_id.is_(None),
+                ~select(completed.id)
+                .where(
+                    completed.picking_task_id == direct.picking_task_id,
+                    completed.rack_id == direct.rack_id,
+                    completed.rack_face == direct.rack_face,
+                )
+                .exists(),
+            )
+            .limit(1)
+        )
+        if await db.scalar(unclosed_face) is not None:
             return False
         passage = cast("Any", ManualPickingPassage).__table__.c
         if (

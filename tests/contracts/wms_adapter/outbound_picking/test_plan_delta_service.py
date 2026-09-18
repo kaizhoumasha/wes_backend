@@ -46,6 +46,7 @@ def test_outbound_picking_runtime_exposes_only_wms_event_handlers() -> None:
         "picking_task_plan_delta_handler",
         "picking_task_queue_changed_handler",
         "manual_bin_completed_handler",
+        "manual_rack_direct_pick_handler",
     }
 
 

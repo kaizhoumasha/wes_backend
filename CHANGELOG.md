@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0.0] - 2026-09-18
+
+### Added
+
+- WMS 可向 WES 上报退料货架面级直接取料完成事实（`outbound.manual_rack.direct_pick_completed@v1`），WES 应用后把指定货架面标记为本地结清，供既有换面/离场判断复用。
+- 退料货架到位报告新增可靠调度器与结果读取；到位上报、换面与离场由 WES 按面级完成事实自动推进。
+- 退料货架直接取料完成事实持久化为新表 `direct_pick_face_completions`，由 Alembic 迁移交付，并通过 PostgreSQL 集成测试验证幂等与唯一约束。
+
+### Changed
+
+- 退料货架到位异常（identity drift、未记录、长时间未完成）只记录日志，不再拖垮共享事务。
+- 完成确认只被未结清的直接取料面阻塞；已结清面不再阻塞人工拣料任务的最终确认。
+- 只含直接取料的完成任务也会继续推进退料货架子流程，不再依赖五层架来源查询路径。
+
+### Fixed
+
+- 退料货架换面循环遍历全部面而非到位面之后的切片，确保换面顺序与到达顺序一致。
+- `ManualRackDirectPickCompletedService` 在 APPLIED 后立即唤醒 worker，避免退料货架到位/换面/离场被轮询节流阻塞。
+
 ## [0.47.2.0] - 2026-09-17
 
 ### Added

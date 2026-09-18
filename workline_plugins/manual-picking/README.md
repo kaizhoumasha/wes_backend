@@ -6,16 +6,16 @@
 | --- | --- |
 | 插件身份 | `plugin_key=manual-picking`，版本由 `src/manual_picking/definition.py` 声明，显示名称“人工拣料” |
 | 适用工作线 | 仅 `MANUAL` 工作线；不承担人工入库 |
-| 已交付主链路 | 五层来源架 → 四点扫码 → WMS/PDA 人工 Bin 作业准入与完成 → `RETURN_BUFFER` 回架 → 任务完成/排空 |
-| 业务所有权 | 插件拥有扫码、经过、FIFO、货架循环和任务完成条件；宿主拥有可靠 Evidence、WmsConfirmation、DeviceCommand、Transport 和调度 |
-| WMS/PDA 边界 | PDA、Cell 选择和人工拣料明细归 WMS；WES 只处理准入决定和 Bin 级最终释放结果 |
-| 当前未交付 | 退料货架直接取料的执行、`direct_pick_completed` 消费和现场物理验收；合同 §5.5 尚未获联合评审批准 |
+| 已交付主链路 | 五层来源架 → 四点扫码 → WMS/PDA 人工 Bin 作业准入与完成 → `RETURN_BUFFER` 回架 → 任务完成/排空；退料货架直接取料的到位/换面/离场 |
+| 业务所有权 | 插件拥有扫码、经过、FIFO、货架循环、退料货架直接取料推进和任务完成条件；宿主拥有可靠 Evidence、WmsConfirmation、DeviceCommand、Transport 和调度 |
+| WMS/PDA 边界 | PDA、Cell 选择和人工拣料明细归 WMS；WES 只处理准入决定、Bin 级最终释放结果和退料货架直接取料面级完成事实的应用 |
+| 当前未交付 | 退料货架的入线 Transport（合同 §8.3 的到位请求流程），由 `TODOS.md` 独立跟进；其余 `direct_pick_completed` 已完成实施与回归，自动化验收见合同 §8.1 |
 | 验收结论 | 代码测试证明 WES 决策与可靠边界，不等于真实 WMS、ECS/RCS 或现场业务验收 |
 
-插件目标覆盖传送带料箱人工拣料和退料货架直接取料两条出库路径；当前生产实现只闭合前者。`manual_bin_processing` 已废弃，
-本插件不导入、不复用，也不提供兼容入口。
+插件目标覆盖传送带料箱人工拣料和退料货架直接取料两条出库路径；两条路径的代码实施与 §8.1 自动化回归均已闭合，
+入线 Transport 由 `TODOS.md` 单独跟进。`manual_bin_processing` 已废弃，本插件不导入、不复用，也不提供兼容入口。
 
-## 双向合同验证（2026-09-17）
+## 双向合同验证（2026-09-18）
 
 以下矩阵以
 [`wms-manual-outbound-picking-integration-requirements.md`](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md)
@@ -33,7 +33,7 @@
 | SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（对应 C4/C5：现有行为与局部测试一致，不代表完整自动化或现场验收） |
 | point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | `src/app/wms_adapter/outbound_picking/manual_bin_*`、`scan_flow.py`；完整 admission/application owner 为 `PLANNED` | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准，C1～C3 自动化验收未闭合） |
 | 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py` | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（对应 C6：现有行为与局部测试一致，不代表完整自动化或现场验收） |
-| 退料货架直接取料 | 当前仅持久化 `added_direct_picks` 计划成员，未有插件执行/完成 handler | 人工合同 §3.5、§5.5 | `OUT`（合同 §6 明确未批准） |
+| 退料货架直接取料 | `application/batch_driver.py` 的 `_advance_return_rack` + `completion_repository.py` 的面级应用；到位/换面/离场回归见 `tests/test_return_rack_progression.py` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地，现场物理验收仍 `NOT ACCEPTED`） |
 | 停线/插件切换触发 drain | 现有 drain 只承接任务完成触发，停线/切换仍在 `TODOS.md` | 人工合同 §5.6；出库合同 §9.2.3 | `PARTIAL` |
 
 ### B. 合同 → 插件（合同要求是否有实现承接）
@@ -46,11 +46,12 @@
 | 点3不能由 FIFO 猜测正常授权，点4须等 ECS `SUCCESS` 才入队 | `scan3.py`、`scan4.py`、`test_scan_flow.py` | `PARTIAL`（对应 C4/C5：现有行为与局部测试一致，不代表完整自动化或现场验收） |
 | 来源架按精确 rack/face、原 Transport 和 READY evidence 推进 | `batch_repository.py`、`transport_outcome.py`、`source_progression.py` | `PASS` |
 | 任务完成先原子准备下一任务，无下一任务才 drain | `batch_driver.py`、`completion_flow.py`、PostgreSQL rack-cycle tests | `PARTIAL`（对应 C6：现有行为与局部测试一致，不代表完整自动化或现场验收） |
-| 直接取料完成通知后才允许退料架换面/离场 | 当前没有 `direct_pick_completed` operation，也没有对应业务应用 | `OUT`（合同 §3.5/§5.5 为 `DRAFT / NOT AUTHORIZED`） |
+| 直接取料完成通知后才允许退料架换面/离场 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` 与 `src/app/wms_integration/outbound_picking/services/manual_rack_direct_pick_completed.py` 提供 wire、handler 和本地应用；插件通过 `completion_repository` 消费面级完成事实推进 `_advance_return_rack` | `PARTIAL`（代码与 §8.1 自动化 owner 落地，现场物理验收仍 `NOT ACCEPTED`） |
 | 真实 worker、PostgreSQL、WMS/ECS/RCS 和现场验收 | 已有 FAST 与部分 worker/数据库测试；无真实设备/现场证据 | `PARTIAL`（测试不替代现场验收） |
 
-双向验证的收敛结论：当前插件与合同的**已批准人工 Bin 主链路一致**；唯一明确的代码缺口是合同 §5.5 的退料货架直接取料，
-但该 operation 在合同 §6 尚未批准，因此不能把缺口改写为默认实现。停线/插件切换 drain 是已批准合同中的待办触发条件，需单独排期。
+双向验证的收敛结论：当前插件与合同的**已批准人工 Bin 主链路一致**；退料货架直接取料已完成代码实施与 §8.1 自动化回归，
+但合同 §6 现场物理验收仍为 `NOT ACCEPTED`，入线 Transport 缺口由 `TODOS.md` 独立跟进。停线/插件切换 drain 是已批准合同中
+的待办触发条件，需单独排期。
 
 ## 声明与装配
 

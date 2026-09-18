@@ -6,6 +6,7 @@ import json
 
 from src.app.wms_adapter.outbound_picking.cancel_wire import PICKING_TASK_CANCEL_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
+from src.app.wms_adapter.outbound_picking.manual_rack_direct_pick_wire import MANUAL_RACK_DIRECT_PICK_OPERATION
 from src.app.wms_adapter.outbound_picking.queue_changed_wire import PICKING_TASK_QUEUE_CHANGED_OPERATION
 from src.app.wms_adapter.outbound_picking.wire import (
     BUSINESS_IDENTIFIER_PATTERN,
@@ -58,6 +59,8 @@ PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA = _closed(
 __all__ = [
     "MANUAL_BIN_COMPLETED_EVENT_EXAMPLE",
     "MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA",
+    "MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE",
+    "MANUAL_RACK_DIRECT_PICK_EVENT_REQUEST_SCHEMA",
     "PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA",
     "PICKING_TASK_EVENT_EXAMPLES",
     "PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA",
@@ -227,14 +230,51 @@ MANUAL_BIN_COMPLETED_EVENT_EXAMPLE = {
     }
 }
 
+MANUAL_RACK_DIRECT_PICK_EVENT_REQUEST_SCHEMA = _closed(
+    ["operation_id", "operation", "timestamp", "data"],
+    {
+        "operation_id": _UUIDV7,
+        "operation": {"type": "string", "enum": [MANUAL_RACK_DIRECT_PICK_OPERATION]},
+        "timestamp": _TIMESTAMP,
+        "data": _closed(
+            ["task_id", "rack_id", "rack_face", "completed_at"],
+            {
+                "task_id": _BUSINESS_IDENTIFIER,
+                "rack_id": _BUSINESS_IDENTIFIER,
+                "rack_face": _RACK_FACE,
+                "completed_at": _TIMESTAMP,
+            },
+        ),
+    },
+)
+
+MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE = {
+    "09_manual_rack_direct_pick_completed": {
+        "summary": "9. 退料货架直接取料完成决定",
+        "description": "引用已进入手工出库联调的直接取料来源；completed_at 不得晚于 timestamp。",
+        "value": {
+            "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e3",
+            "operation": MANUAL_RACK_DIRECT_PICK_OPERATION,
+            "timestamp": 1786060808000,
+            "data": {
+                "task_id": "PICK-SWAGGER-001",
+                "rack_id": "DIRECT-RACK-01",
+                "rack_face": "B",
+                "completed_at": 1786060807900,
+            },
+        },
+    }
+}
+
 PICKING_TASK_TEST_GUIDE = """
 WMS 调用 WES 的唯一 Event 入口，按 `operation` 选择严格合同。
 支持 Transport 位置/结果、入库恢复决定，以及下方 PickingTask 发布、队列调整和计划增量。
 
 ### Examples 的范围
 
-Request body 的 Examples 仅用于 WMS → WES 事件：1–4 为 PickingTask，5–6 为 Transport 回报，
-7 为入库对账后继续执行，8 为人工工作位 Bin 完成决定。共覆盖当前入口支持的 7 种 operation，编号不是跨领域的连续业务流程。
+Request body 的 Examples 仅用于 WMS → WES 事件：1–5 为 PickingTask（含按成员取消），5–6 为 Transport 回报，
+7 为入库对账后继续执行，8 为人工工作位 Bin 完成决定，9 为退料货架直接取料完成决定。
+共 10 个示例，覆盖当前入口支持的 9 种 operation，编号不是跨领域的连续业务流程。
 Transport 示例必须引用已存在的任务与真实设备事实；入库恢复示例必须引用实际待对账执行与证据。
 prepare、inbound_batch、material.decide、completion_confirm 等由 WES 调用 WMS，
 正常返回见下方「WMS 正常业务响应」，不属于此 Event 入口的请求 Examples。

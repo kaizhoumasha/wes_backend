@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003
 from typing import ClassVar
 
 from sqlalchemy import BigInteger, CheckConstraint, Index
@@ -66,3 +67,24 @@ class PickingTaskBinSourceRack(EnterpriseMixin, DataTableMixin, table=True):
         foreign_key="wes_biz.inbound_evidences.id",
         sa_type=SQL_COMPAT_BIGINT,
     )
+
+
+class DirectPickFaceCompletion(EnterpriseMixin, DataTableMixin, table=True):
+    __tablename__: ClassVar[str] = "direct_pick_face_completions"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_direct_pick_face_completion",
+            "picking_task_id",
+            "rack_id",
+            "rack_face",
+            unique=True,
+        ),
+        CheckConstraint("length(rack_face) > 0", name="direct_pick_completion_face_nonempty"),
+        {"schema": SchemaType.BIZ.value},
+    )
+    picking_task_id: int = Field(foreign_key="wes_biz.picking_tasks.id", sa_type=SQL_COMPAT_BIGINT)
+    rack_id: str = Field(max_length=100)
+    rack_face: str = Field(min_length=1, max_length=10)
+    completed_at: datetime
+    source_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
