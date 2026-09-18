@@ -55,6 +55,26 @@ WorkLine 仍需在不越过队首、不释放未知位置的前提下向 WMS 请
 **Depends on:** Issue #254 的公共合同、任务完成分支、`return_batch`、货架循环、位置事实和 FIFO 合同完成并稳定。
 ---
 
+### 退料货架入线 Transport 缺口
+
+**What:** 补齐把退料货架搬到 `RETURN_RACK` 作业位的入线 Transport 创建与编排（合同 §8.3 提到的「请求退料货架到位」流程）。
+
+**Why:** `ManualPickingBatchDriver._advance_return_rack` 的到位识别完全依赖 `ready_rack_projection`，
+即退料货架必须已有一条指向该作业位、且来源 Transport 为 SUCCEEDED 的 `PositionProjection`。
+当前仓库里没有任何代码会创建产生这条投影的入线 Transport，因此生产环境无法触发退料货架子流程，
+直接取料的到位上报、换面与离场在真实链路上都不会发生。
+
+**Context:** 子流程 B 的其余环节（到位上报可靠义务、面级完成事实、换面、WorkLine 自有离场）已在
+`feature/manual-rack-direct-pick` 交付并有回归（`workline_plugins/manual-picking/tests/test_return_rack_progression.py`）；
+A7b 评审确认这一缺口可接受并留待独立工作，本 TODO 不重复建设已有的上报、换面或离场能力。
+
+**Effort:** M
+
+**Priority:** P1
+
+**Depends on:** 直接取料计划准入、到位上报调度器与面级完成事实已稳定；合同 §8.3 的到位请求语义获批。
+---
+
 ### workline_integration_debug 补充 drain operation 调试支持
 
 **What:** `IntegrationDebugService`（`src/app/workline_integration_debug/service.py`）已为

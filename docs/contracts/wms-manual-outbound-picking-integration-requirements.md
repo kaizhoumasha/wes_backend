@@ -605,13 +605,13 @@ WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权�
 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
-| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_direct_picks_before_member_persistence` | direct-pick-only 计划在成员写入前拒绝，返回 `MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED`，不写入 `DirectPickExecution`。 |
-| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence` | Bin source 与 direct-pick 混合计划同样拒绝，且不写入成员。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_direct_picks_before_member_persistence` | 共享准入拒绝机制：policy 返回 REJECT 时在成员写入前拒绝，不写入 `DirectPickExecution`。用例里的 `MANUAL_PICKING_DIRECT_PICK_UNSUPPORTED` 只是 stub policy 的 reason code 样本，不再对应任何线上代码路径。 |
+| `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence` | 混合 Bin source 与 direct-pick 的计划在 policy 返回 REJECT 时同样拒绝，且不写入成员；同为共享机制门禁，非 manual-picking 当前行为。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_plan_admission_replay_returns_first_reason_without_reinvoking_policy`、`::test_rejected_identity_payload_drift_returns_idempotency_conflict` | 同 identity 重放返回首次 reason；payload drift 返回 `IDEMPOTENCY_CONFLICT`，不再次调用 policy。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py::test_direct_pick_remains_shared_behavior_without_a_policy`、`::test_outbound_picking_runtime_exposes_only_wms_event_handlers` | 未安装准入 policy 时保留共享 plan-delta ingress；共享 handler 集合不因插件 owner 缺席而变化。 |
 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_event_handler.py` | 公共 Event receipt 的持久化、重复、冲突和 fail-closed ACK；不按当前插件动态注册路由。 |
 | `tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py::test_custom_admission_reason_replays_and_drift_stays_idempotency_conflict`、`::test_payload_drift_before_admission_rejection_does_not_hide_plugin_reason`、`::test_admission_policy_exception_rolls_back_evidence_task_and_members` | 真实 PostgreSQL 下验证重放/drift、等待中的 drift 以及 policy 异常事务回滚；拒绝后 `DirectPickExecution` 不持久化。 |
-| `workline_plugins/manual-picking/tests/test_plan_admission.py` | manual-picking allowlist：含 direct picks 必须拒绝，纯 Bin 计划允许，reason code 稳定且 policy 无 I/O。 |
+| `workline_plugins/manual-picking/tests/test_plan_admission.py` | manual-picking 准入：含 direct picks 与纯 Bin 计划一律 ACCEPT（§5.5 已支持直接取料），决定稳定且 policy 无 I/O。 |
 | `workline_plugins/manual-picking/tests/test_declaration.py::test_manual_picking_deployment_assembles_prepare_policy_without_device_handlers`、`::test_disabled_manual_plugin_has_no_business_consumer` | 静态 `business_wms_operations` allowlist；明确不包含 `outbound.manual_rack.direct_pick_completed@v1`；插件禁用时无业务 consumer，但共享 ingress 仍由宿主拥有。 |
 | `tests/contracts/wms_adapter/return_buffer_drain/test_contract.py` | `drain_rack_decide` 严格请求/响应联合、FIFO 前缀、直接前驱、额外字段拒绝、identity 匹配与公共错误映射。 |
 
@@ -787,7 +787,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | C5 ECS SUCCESS 后 RETURN_BUFFER FIFO | `test_scan_flow.py`、`test_batch_flow.py`、`test_batch_repository.py` | `EXISTS` |
 | C6 完成确认、下一任务与 drain | `test_completion_flow.py`、`test_completion_repository.py`、`test_drain_flow.py`、`test_drain_repository.py`、`test_rack_cycle_postgresql.py` | `EXISTS`；PostgreSQL/worker 需显式 integration 环境 |
 | C7 静态 composition、worker wiring 与主链路 | `test_declaration.py`、`test_business_loop.py` | `EXISTS`；E2E 需 PostgreSQL、Redis、Celery，现场仍 `NOT ACCEPTED` |
-| direct-pick-only/mixed rejection、replay/drift、no-member persistence | `test_plan_delta_service.py`、`test_plan_delta_postgresql.py`、`test_plan_admission.py` | `EXISTS`；`direct_pick_completed` 完成通知已获批并完成实施，另见 §8.1 与 `test_return_rack_progression.py` |
+| 共享准入拒绝机制、replay/drift、no-member persistence | `test_plan_delta_service.py`、`test_plan_delta_postgresql.py`、`test_plan_admission.py` | `EXISTS`；manual-picking 已改为 direct-pick 一律 ACCEPT，拒绝用例只覆盖共享机制；`direct_pick_completed` 完成通知已获批并完成实施，另见 §8.1 与 `test_return_rack_progression.py` |
 | plugin-disabled shared ingress 与 operation allowlist | `test_declaration.py`、`test_plan_delta_service.py` | `EXISTS`；禁用插件不关闭宿主共享 ingress |
 
 本轮 focused 命令只产生 FAST/插件证据；PostgreSQL、真实 worker E2E 和 ECS/现场验收分别受环境与 §8.4 边界约束，不能用单元测试绿灯替代。
