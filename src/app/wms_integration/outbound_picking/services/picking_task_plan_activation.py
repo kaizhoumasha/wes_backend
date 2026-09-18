@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 _PLAN_BATCH_LIMIT = 100
 TARGET_RACK_IN_STEP = "PICKING_TASK_TARGET_RACK_IN"
 BIN_SOURCE_RACK_IN_STEP = "PICKING_TASK_BIN_SOURCE_RACK_IN"
+RETURN_RACK_IN_STEP = "PICKING_TASK_RETURN_RACK_IN"
+RETURN_RACK_SLOT_KEY = "RETURN_RACK"
 
 
 class PickingTaskPlanActivationService:
@@ -112,7 +114,7 @@ class PickingTaskPlanActivationService:
                 or task.last_applied_plan_revision < 1
             ):
                 return old_count
-            steps = (TARGET_RACK_IN_STEP, BIN_SOURCE_RACK_IN_STEP)
+            steps = (TARGET_RACK_IN_STEP, BIN_SOURCE_RACK_IN_STEP, RETURN_RACK_IN_STEP)
             decided_racks = await self._bindings.list_task_resource_fence_ids(
                 db,
                 workline_id=workline_id,
@@ -120,6 +122,7 @@ class PickingTaskPlanActivationService:
                 steps=steps,
             )
             pending_racks = await self._pending_bin_racks(db, task, decided_racks)
+            pending_return_racks = await self._pending_return_racks(db, task, decided_racks)
             target_rack = (
                 PickingTaskPlanRack(
                     rack_id=task.target_rack_id,
@@ -142,15 +145,17 @@ class PickingTaskPlanActivationService:
                     PositionBindingSnapshot(position_role=role, **binding)
                     for role, binding in sorted(line.position_bindings.items())
                 ),
+                pending_return_racks=pending_return_racks,
             )
             result = handler(fact)
             self._validate_result(fact, result)
             for intent in result.transports:
-                step = (
-                    TARGET_RACK_IN_STEP
-                    if fact.target_rack is not None and intent.rack_id == fact.target_rack.rack_id
-                    else BIN_SOURCE_RACK_IN_STEP
-                )
+                if fact.target_rack is not None and intent.rack_id == fact.target_rack.rack_id:
+                    step = TARGET_RACK_IN_STEP
+                elif intent.position_role == RETURN_RACK_SLOT_KEY:
+                    step = RETURN_RACK_IN_STEP
+                else:
+                    step = BIN_SOURCE_RACK_IN_STEP
                 _ = await self._transport_creator.create(
                     db,
                     workline_id=workline_id,
@@ -182,12 +187,31 @@ class PickingTaskPlanActivationService:
             for rack_id, rack_rows in grouped.items()
         )
 
+    async def _pending_return_racks(
+        self, db: Any, task: Any, decided_racks: set[str]
+    ) -> tuple[PickingTaskPlanRack, ...]:
+        rows = await self._plans.list_active_direct_picks(db, task.id)
+        grouped: dict[str, list[Any]] = {}
+        for row in rows:
+            if row.rack_id not in decided_racks:
+                grouped.setdefault(row.rack_id, []).append(row)
+        return tuple(
+            PickingTaskPlanRack(
+                rack_id=rack_id,
+                rack_faces=tuple(dict.fromkeys(row.rack_face for row in rack_rows)),
+                source_evidence_id=str(rack_rows[0].source_evidence_id),
+                plan_revision=rack_rows[0].plan_revision,
+            )
+            for rack_id, rack_rows in grouped.items()
+        )
+
     @staticmethod
     def _validate_result(fact: PickingTaskPlanAppliedFact, result: object) -> None:
         if type(result) is not PickingTaskPlanHandlingResult:
             raise TypeError("plan handler must return PickingTaskPlanHandlingResult")
         candidates = {rack.rack_id: rack for rack in ((fact.target_rack,) if fact.target_rack is not None else ())}
         candidates.update({rack.rack_id: rack for rack in fact.pending_bin_source_racks})
+        candidates.update({rack.rack_id: rack for rack in fact.pending_return_racks})
         seen: set[str] = set()
         bindings = {binding.position_role: binding for binding in fact.position_bindings}
         for intent in result.transports:
@@ -211,10 +235,15 @@ class PickingTaskPlanActivationService:
             seen.add(intent.rack_id)
         if fact.target_rack is not None and fact.target_rack.rack_id not in seen:
             raise ValueError("plan handler omitted a pending target rack")
+        for return_rack in fact.pending_return_racks:
+            if return_rack.rack_id not in seen:
+                raise ValueError("plan handler omitted a pending return rack")
 
 
 __all__ = [
     "BIN_SOURCE_RACK_IN_STEP",
+    "RETURN_RACK_IN_STEP",
+    "RETURN_RACK_SLOT_KEY",
     "TARGET_RACK_IN_STEP",
     "PickingTaskPlanActivationService",
 ]
