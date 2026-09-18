@@ -46,6 +46,23 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "apply_status IN ('PENDING', 'APPLIED', 'IGNORED', 'RECONCILING')",
             name="inbound_evidence_apply_status_valid",
         ),
+        CheckConstraint(
+            "(kind = 'TRANSPORT_RESULT') = (transport_task_id IS NOT NULL)",
+            name="inbound_evidence_transport_identity_required",
+        ),
+        CheckConstraint(
+            "kind <> 'TRANSPORT_RESULT' OR "
+            "(device_code IS NULL AND command_code IS NULL AND operation IS NULL AND operation_id IS NULL)",
+            name="inbound_evidence_transport_identity_isolated",
+        ),
+        CheckConstraint(
+            "kind NOT IN ('WMS_EVENT', 'WMS_RESULT') OR (operation IS NOT NULL AND operation_id IS NOT NULL)",
+            name="inbound_evidence_wms_identity_required",
+        ),
+        CheckConstraint(
+            "kind NOT IN ('DEVICE_EVENT', 'DEVICE_OBSERVATION', 'DEVICE_RESULT') OR device_code IS NOT NULL",
+            name="inbound_evidence_device_identity_required",
+        ),
         CheckConstraint("decision_attempt_count >= 0", name="inbound_evidence_decision_attempt_count_nonnegative"),
         CheckConstraint(
             "(decision_claim_token IS NULL) = (decision_claim_expires_at IS NULL)",

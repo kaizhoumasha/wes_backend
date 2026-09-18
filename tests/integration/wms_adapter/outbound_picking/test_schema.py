@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import subprocess
+from typing import TYPE_CHECKING
 
 import asyncpg
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from src.app.execution.models import InboundEvidence, InboundEvidenceKind
 from src.app.workline.models import WorkLine
 from src.utils.timezone import timezone
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "e881b50b63b1"
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
+
+HEAD_REVISION = "496bdbaaff26"
 
 
 @pytest.mark.asyncio
@@ -264,17 +268,28 @@ async def test_evidence_workline_id_migration_preserves_rows_and_rejects_lossy_d
                         ),
                     ]
                 )
-                await db.flush()
-                db.add(
-                    InboundEvidence(
+            # 反射当前(旧)版本的 inbound_evidences 表结构再插入，而不是用当前 ORM 模型：
+            # 模型会随后续迁移（如 picking_task_id）持续演进，若用模型直接插入，
+            # 未来任何新增列都会让这条构造在旧版本 schema 上插入失败。
+            async with engine.begin() as conn:
+
+                def _reflect_evidence_table(sync_conn: Connection) -> sa.Table:
+                    return sa.Table("inbound_evidences", sa.MetaData(), autoload_with=sync_conn, schema="wes_biz")
+
+                evidence_table = await conn.run_sync(_reflect_evidence_table)
+                await conn.execute(
+                    evidence_table.insert().values(
                         id=43,
-                        kind=InboundEvidenceKind.DEVICE_EVENT,
+                        kind="DEVICE_EVENT",
                         source_identity="bigint-migration",
                         payload_digest="a" * 64,
                         normalized_payload={"preserved": True},
                         received_at=timezone.now_for_db(),
+                        created_at=timezone.now_for_db(),
                         workline_id=42,
                         device_code="SCANNER",
+                        apply_status="PENDING",
+                        decision_attempt_count=0,
                     )
                 )
         finally:

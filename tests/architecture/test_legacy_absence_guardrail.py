@@ -38,6 +38,7 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260915_1440_2b1adb268fdc_增加作业线清线归档状态.py",
         "migrations/versions/20260916_2253_4ce43f66c610_add_workline_operation_tail_index_to_.py",
         "migrations/versions/20260917_1436_e881b50b63b1_add_picking_task_cancellation_and_links.py",
+        "migrations/versions/20260918_1350_496bdbaaff26_restore_inbound_evidence_wms_and_device_.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "2260238a90c79fc2c34fa706ed7f4375ec67540207d23b521e1e60a689212473"
