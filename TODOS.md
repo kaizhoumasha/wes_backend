@@ -36,23 +36,27 @@ PostgreSQL 并发验证通过。
 
 ---
 
-### RETURN_BUFFER 停止/切换排空接入
+### RETURN_BUFFER 插件切换排空接入
 
-**What:** 在已由 Issue #254 冻结并实现 `workline.return_buffer.drain_rack_decide@v1` 公共合同及
-`PICKING_TASK_COMPLETED` 分支后，补充 `WORKLINE_STOPPING` 与 `PLUGIN_SWITCHING` 两个排空触发分支。
+**What:** 在已由 Issue #254 冻结并实现 `workline.return_buffer.drain_rack_decide@v1` 公共合同、
+`PICKING_TASK_COMPLETED` 分支，以及 `WORKLINE_STOPPING` 分支（停线时经 `WorkLineConfigurationService._trigger_plugin_drain`
+自动触发全量排空，见 `src/app/workline/services/workline_configuration_service.py`）之后，补充 `PLUGIN_SWITCHING`
+排空触发分支。
 
-**Why:** 停线或切换插件时，当前面可能无法为 FIFO 队首分配合格空位，且没有后续 PickingTask 的投料货架承接遗留料箱；
+**Why:** 切换插件时，当前面可能无法为 FIFO 队首分配合格空位，且没有后续 PickingTask 的投料货架承接遗留料箱；
 WorkLine 仍需在不越过队首、不释放未知位置的前提下向 WMS 请求可承接货架。
 
 **Context:** `outbound.bin.return_batch@v1` 只处理当前工作位货架面可执行的连续 FIFO 前缀；
 `workline.return_buffer.drain_rack_decide@v1` 独立负责选择排空承接货架。Issue #254 只交付任务完成触发，
-本 TODO 不重复建设 operation、可靠义务、CTU01 窗口或回架批次能力。
+WORKLINE_STOPPING 分支已接入；本 TODO 不重复建设 operation、可靠义务、CTU01 窗口或回架批次能力，
+只需在 `WorkLineConfigurationService.save()` 的插件切换路径上复用同一个 `drain_trigger` 端口。
 
-**Effort:** M
+**Effort:** S
 
 **Priority:** P1
 
-**Depends on:** Issue #254 的公共合同、任务完成分支、`return_batch`、货架循环、位置事实和 FIFO 合同完成并稳定。
+**Depends on:** Issue #254 的公共合同、任务完成分支、`return_batch`、货架循环、位置事实和 FIFO 合同完成并稳定；
+`drain_trigger` 插件端口（`InstalledWorkLinePlugin.drain_trigger`）已就绪。
 ---
 
 ### 退料货架入线 Transport 缺口

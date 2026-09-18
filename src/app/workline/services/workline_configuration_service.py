@@ -22,6 +22,7 @@ from src.app.workline.repositories.workline_repository import workline_repositor
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException
 from src.utils.device_cache import workline_device_cache
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -77,6 +78,14 @@ class PluginBusinessBlockerPort(Protocol):
     async def get_unfinished_workload_summary(self, db: Any, workline_id: int) -> dict[str, Any]: ...
 
 
+class PluginReturnBufferDrainPort(Protocol):
+    async def trigger_full_drain_in_session(self, db: Any, workline: WorkLine, now: Any) -> None: ...
+
+
+class _PluginMismatch(Exception):
+    """workline 冻结的 plugin_key/plugin_version 未安装或不一致。"""
+
+
 class WorkLineConfigurationService:
     """分别维护稳定物理配置和业务插件关联，共用工作线事务边界。"""
 
@@ -85,6 +94,7 @@ class WorkLineConfigurationService:
         *,
         definitions: tuple[PluginDefinition, ...],
         business_blockers: Mapping[str, PluginBusinessBlockerPort] | None = None,
+        drain_triggers: Mapping[str, PluginReturnBufferDrainPort] | None = None,
         workline_repository: WorkLineConfigurationRepositoryPort = cast(
             "WorkLineConfigurationRepositoryPort", workline_repository
         ),
@@ -98,6 +108,7 @@ class WorkLineConfigurationService:
     ) -> None:
         self._definitions = definitions
         self._business_blockers = dict(business_blockers or {})
+        self._drain_triggers = dict(drain_triggers or {})
         self._worklines = workline_repository
         self._devices = device_repository
         self._device_cache_invalidator = device_cache_invalidator
@@ -427,6 +438,9 @@ class WorkLineConfigurationService:
         if not bool(workline.is_active):
             return workline
 
+        await self._trigger_plugin_drain(db, workline)
+        await db.flush()
+
         workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
         common_blockers = [owner_type for owner_type, blocked in workload["by_type"].items() if bool(blocked)]
         if common_blockers:
@@ -459,6 +473,16 @@ class WorkLineConfigurationService:
             raise ValueError(f"重复安装业务插件: {plugin_key}")
         return matches[0]
 
+    def _resolve_matching_definition(self, workline: WorkLine) -> PluginDefinition:
+        """解析 workline.plugin_key 并校验其冻结版本，不一致则抛出 `_PluginMismatch`。"""
+        try:
+            installed = self._resolve_definition(workline.plugin_key)
+        except (LookupError, ValueError) as exc:
+            raise _PluginMismatch(str(exc)) from exc
+        if workline.plugin_version is not None and installed.plugin_version != workline.plugin_version:
+            raise _PluginMismatch(f"未安装当前业务插件版本: {workline.plugin_key}@{workline.plugin_version}")
+        return installed
+
     def _validate_plugin(self, workline: WorkLine, plugin_key: str | None) -> str | None:
         if plugin_key is None:
             return None
@@ -471,6 +495,19 @@ class WorkLineConfigurationService:
             raise BusinessException(message=f"plugin {plugin_key} 不支持 WorkLine line_type {line_type.value}")
         return plugin.plugin_key
 
+    async def _trigger_plugin_drain(self, db: Any, workline: WorkLine) -> None:
+        """停线前主动触发插件的回库暂存区排空，不阻塞、不改变后续未完成负载判定。"""
+        if workline.plugin_key is None:
+            return
+        trigger = self._drain_triggers.get(workline.plugin_key)
+        if trigger is None:
+            return
+        try:
+            self._resolve_matching_definition(workline)
+        except _PluginMismatch:
+            return
+        await trigger.trigger_full_drain_in_session(db, workline, timezone.now_for_db())
+
     async def _assert_no_plugin_workload(
         self,
         db: Any,
@@ -481,13 +518,9 @@ class WorkLineConfigurationService:
         if workline.plugin_key is None:
             return
         try:
-            installed = self._resolve_definition(workline.plugin_key)
-        except LookupError as exc:
+            installed = self._resolve_matching_definition(workline)
+        except _PluginMismatch as exc:
             raise BusinessException(message=str(exc)) from exc
-        except ValueError as exc:
-            raise BusinessException(message=str(exc)) from exc
-        if workline.plugin_version is not None and installed.plugin_version != workline.plugin_version:
-            raise BusinessException(message=f"未安装当前业务插件版本: {workline.plugin_key}@{workline.plugin_version}")
         blocker = self._business_blockers.get(installed.plugin_key)
         if blocker is None:
             return

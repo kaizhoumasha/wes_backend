@@ -623,6 +623,88 @@ async def test_missing_selected_plugin_version_blocks_lifecycle_before_business_
     assert worklines.inactive_writes == db.commits == 0
 
 
+class _DrainTrigger:
+    def __init__(self) -> None:
+        self.trigger_full_drain_in_session = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_triggers_plugin_return_buffer_drain_before_checking_blockers() -> None:
+    db = _Db()
+    drain_trigger = _DrainTrigger()
+    service = WorkLineConfigurationService(
+        position_repository=_RackPositions(),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
+        drain_triggers={"example_plugin": drain_trigger},
+        workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
+        device_repository=_Devices([]),
+    )
+
+    result = await service.deactivate(db, workline_id=7, version=3)
+
+    assert result.is_active is False
+    drain_trigger.trigger_full_drain_in_session.assert_awaited_once()
+    called_workline = drain_trigger.trigger_full_drain_in_session.await_args.args[1]
+    assert called_workline.plugin_key == "example_plugin"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_still_triggers_drain_when_blocked_by_other_workload() -> None:
+    db = _Db()
+    drain_trigger = _DrainTrigger()
+    worklines = _WorkLines(_workline(is_active=True, plugin_key="example_plugin"), unfinished=True)
+    service = WorkLineConfigurationService(
+        position_repository=_RackPositions(),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
+        drain_triggers={"example_plugin": drain_trigger},
+        workline_repository=worklines,
+        device_repository=_Devices([]),
+    )
+
+    with pytest.raises(BusinessException):
+        await service.deactivate(db, workline_id=7, version=3)
+
+    drain_trigger.trigger_full_drain_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_without_registered_drain_trigger_is_unaffected() -> None:
+    db = _Db()
+    service = WorkLineConfigurationService(
+        position_repository=_RackPositions(),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
+        workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
+        device_repository=_Devices([]),
+    )
+
+    result = await service.deactivate(db, workline_id=7, version=3)
+
+    assert result.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_deactivate_skips_drain_trigger_when_plugin_version_is_stale() -> None:
+    db = _Db()
+    drain_trigger = _DrainTrigger()
+    worklines = _WorkLines(_workline(is_active=True, plugin_key="example_plugin", plugin_version="unavailable"))
+    service = WorkLineConfigurationService(
+        position_repository=_RackPositions(),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
+        drain_triggers={"example_plugin": drain_trigger},
+        workline_repository=worklines,
+        device_repository=_Devices([]),
+    )
+
+    with pytest.raises(BusinessException):
+        await service.deactivate(db, workline_id=7, version=3)
+
+    drain_trigger.trigger_full_drain_in_session.assert_not_awaited()
+
+
 class _RackPositions:
     def __init__(self) -> None:
         self.saved: tuple[WorkLinePositionInput, ...] = ()
