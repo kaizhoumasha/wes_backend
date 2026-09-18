@@ -7,6 +7,7 @@ from copy import deepcopy
 from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
 from src.app.wms_adapter.outbound_picking.openapi import (
     MANUAL_BIN_COMPLETED_EVENT_EXAMPLE,
+    MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE,
     PICKING_TASK_EVENT_EXAMPLES,
 )
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictData
@@ -133,6 +134,7 @@ WMS_EVENT_EXAMPLES = {
         },
     },
     **MANUAL_BIN_COMPLETED_EVENT_EXAMPLE,
+    **MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE,
 }
 
 
