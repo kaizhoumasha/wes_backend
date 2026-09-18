@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -42,6 +43,8 @@ from .passage_repository import PassageRepository
 from .rack_readiness import has_single_current_rack, ready_rack_projection
 
 TRANSFER_RACK_OUT_STEP = "MANUAL_PICKING_TRANSFER_RACK_OUT"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -382,7 +385,12 @@ class ManualPickingBatchDriver:
         )
 
     async def _advance_return_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
-        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。"""
+        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。
+
+        已知缺口：到位识别依赖退料货架已有 PositionProjection，而当前无任何代码
+        创建对应的入线 Transport（见 TODOS.md「退料货架入线 Transport 缺口」），
+        生产环境暂时无法触发本子流程。
+        """
         location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
         if not location or self._arrival_scheduler is None or self._arrival_reader is None:
             return 0
@@ -423,12 +431,45 @@ class ManualPickingBatchDriver:
             await self._arrival_scheduler.create_in_session(db, intent, picking_task_id=task.id, created_at=now)
             return 1
         if snapshot.intent.task_id != task.task_id or snapshot.intent.rack_id != current.rack_id:
-            raise ValueError("return rack arrival result differs from original task and rack")
-        if (
-            snapshot.status != WmsConfirmationStatus.COMPLETED
-            or snapshot.outcome is None
-            or not isinstance(snapshot.outcome.result, FactRecorded)
-        ):
+            # 本子流程与五层架子流程共用事务，抛异常会回滚对方本拍已完成的推进，因此只记录并让位。
+            logger.error(
+                "manual_picking.return_rack_arrival_identity_drift",
+                extra={
+                    "picking_task_id": task.id,
+                    "task_id": task.task_id,
+                    "rack_id": current.rack_id,
+                    "operation_id": snapshot.intent.operation_id,
+                    "confirmation_task_id": snapshot.intent.task_id,
+                    "confirmation_rack_id": snapshot.intent.rack_id,
+                },
+            )
+            return 0
+        if snapshot.status != WmsConfirmationStatus.COMPLETED:
+            # PENDING/DISPATCHING 是正常在途；RECONCILING/SUPERSEDED 不会自愈，货架将永久滞留。
+            if snapshot.status in {WmsConfirmationStatus.RECONCILING, WmsConfirmationStatus.SUPERSEDED}:
+                logger.warning(
+                    "manual_picking.return_rack_arrival_stuck",
+                    extra={
+                        "picking_task_id": task.id,
+                        "task_id": task.task_id,
+                        "rack_id": current.rack_id,
+                        "operation_id": snapshot.intent.operation_id,
+                        "status": snapshot.status,
+                    },
+                )
+            return 0
+        if snapshot.outcome is None or not isinstance(snapshot.outcome.result, FactRecorded):
+            # REJECTED/CONFLICT/UNAVAILABLE 派生的结果同样不会自愈，必须留下可检索的告警。
+            logger.warning(
+                "manual_picking.return_rack_arrival_not_recorded",
+                extra={
+                    "picking_task_id": task.id,
+                    "task_id": task.task_id,
+                    "rack_id": current.rack_id,
+                    "operation_id": snapshot.intent.operation_id,
+                    "result": type(snapshot.outcome.result).__name__ if snapshot.outcome is not None else None,
+                },
+            )
             return 0
         if not await self._plans.has_direct_pick_face_completion(
             db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=current.rack_face

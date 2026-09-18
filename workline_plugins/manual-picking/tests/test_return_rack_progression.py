@@ -1,5 +1,6 @@
 """退料货架直接取料按权威在位面、WMS 到位事实和面级完成事实推进。"""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -318,3 +319,61 @@ async def test_five_rack_admission_and_return_rack_arrival_progress_together_in_
     return_intent = arrival_scheduler.create_in_session.await_args.args[1]
     assert return_intent.rack_id == "RETURN-RACK-01"
     departure.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arrival_identity_drift_is_logged_and_never_rolls_back_the_shared_transaction(caplog) -> None:  # type: ignore[no-untyped-def]
+    """两条子流程共用事务，身份漂移抛异常会回滚五层架子流程本拍的成果，因此只记录并让位。"""
+    driver, line, task, _, _, creator, reader, scheduler, departure = setup_driver()
+    reader.latest.return_value = recorded_snapshot(rack_id="OTHER-RACK")
+
+    with caplog.at_level(logging.ERROR, logger="manual_picking.application.batch_driver"):
+        assert await driver.advance_in_session(object(), line, task) == 0
+
+    assert "manual_picking.return_rack_arrival_identity_drift" in caplog.text
+    scheduler.create_in_session.assert_not_awaited()
+    departure.create_in_session.assert_not_awaited()
+    assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_rejected_arrival_result_returns_zero_with_a_greppable_warning(caplog) -> None:  # type: ignore[no-untyped-def]
+    driver, line, task, _, _, creator, reader, scheduler, departure = setup_driver()
+    snapshot = recorded_snapshot()
+    snapshot.outcome = sdk.ReturnRackArrivalReportOutcome(sdk.OperationRejected("INVALID_DATA"))
+    reader.latest.return_value = snapshot
+
+    with caplog.at_level(logging.WARNING, logger="manual_picking.application.batch_driver"):
+        assert await driver.advance_in_session(object(), line, task) == 0
+
+    assert "manual_picking.return_rack_arrival_not_recorded" in caplog.text
+    scheduler.create_in_session.assert_not_awaited()
+    departure.create_in_session.assert_not_awaited()
+    assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_reconciling_confirmation_warns_because_the_rack_will_never_leave_on_its_own(caplog) -> None:  # type: ignore[no-untyped-def]
+    driver, line, task, _, _, _, reader, scheduler, _ = setup_driver()
+    snapshot = recorded_snapshot()
+    snapshot.status = WmsConfirmationStatus.RECONCILING
+    reader.latest.return_value = snapshot
+
+    with caplog.at_level(logging.WARNING, logger="manual_picking.application.batch_driver"):
+        assert await driver.advance_in_session(object(), line, task) == 0
+
+    assert "manual_picking.return_rack_arrival_stuck" in caplog.text
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_confirmation_stays_quiet_because_it_is_still_normally_in_flight(caplog) -> None:  # type: ignore[no-untyped-def]
+    driver, line, task, _, _, _, reader, _, _ = setup_driver()
+    snapshot = recorded_snapshot()
+    snapshot.status = WmsConfirmationStatus.PENDING
+    reader.latest.return_value = snapshot
+
+    with caplog.at_level(logging.WARNING, logger="manual_picking.application.batch_driver"):
+        assert await driver.advance_in_session(object(), line, task) == 0
+
+    assert caplog.text == ""
