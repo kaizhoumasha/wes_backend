@@ -15,6 +15,13 @@ def choose_next_batch(
     return_retry_due: bool,
     allow_inbound: bool,
 ) -> BinReturnBatchIntent | BinInboundBatchIntent | None:
+    if allow_inbound:
+        return wms_operations.outbound_bin_inbound_batch(
+            operation_id=operation_id,
+            task_id=task_id,
+            rack_id=rack_id,
+            rack_face=rack_face,
+        )
     if return_bins and return_retry_due:
         return wms_operations.outbound_bin_return_batch(
             operation_id=operation_id,
@@ -25,13 +32,6 @@ def choose_next_batch(
                 BinReturnCandidate(sequence_no, bin_code, return_location)
                 for sequence_no, bin_code in enumerate(return_bins[:4], 1)
             ),
-        )
-    if allow_inbound:
-        return wms_operations.outbound_bin_inbound_batch(
-            operation_id=operation_id,
-            task_id=task_id,
-            rack_id=rack_id,
-            rack_face=rack_face,
         )
     return None
 
