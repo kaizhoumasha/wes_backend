@@ -45,7 +45,7 @@ class PickingTaskCancelRepository:
             for slot_id in source.slot_ids
         }
         requested_racks = {
-            (source.rack_id, rack_face) for source in data.bin_source_racks or () for rack_face in source.rack_faces
+            (source.rack_id, rack_face) for source in data.bin_source_racks or () for rack_face in source.rack_face
         }
         direct_rows: list[DirectPickExecution] = []
         rack_rows: list[PickingTaskBinSourceRack] = []

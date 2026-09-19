@@ -30,24 +30,45 @@ def test_plan_member_cancel_preserves_ordered_typed_selectors() -> None:
             {
                 "task_id": "PICK-1",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "R1", "rack_faces": ["90", "270"]}],
+                "bin_source_racks": [{"rack_id": "R1", "rack_face": ["90", "270"]}],
                 "direct_pick_sources": [{"rack_id": "D1", "rack_face": "A", "slot_ids": ["A-1", "A-2"]}],
             }
         )
     )
     assert type(parsed.data) is PickingTaskCancelMembersData
-    assert parsed.data.bin_source_racks[0].rack_faces == ["90", "270"]
+    assert parsed.data.bin_source_racks[0].rack_face == ("90", "270")
+
+
+def test_plan_member_cancel_accepts_single_face_string() -> None:
+    parsed = parse_picking_task_cancel_event(
+        _event(
+            {
+                "task_id": "PICK-1",
+                "cancel_scope": "PLAN_MEMBERS",
+                "bin_source_racks": [{"rack_id": "R1", "rack_face": "270"}],
+            }
+        )
+    )
+    assert parsed.data.bin_source_racks[0].rack_face == ("270",)
 
 
 @pytest.mark.parametrize(
     "patch",
     [
-        {"cancel_scope": "TASK", "bin_source_racks": [{"rack_id": "R1", "rack_faces": ["90"]}]},
+        {"cancel_scope": "TASK", "bin_source_racks": [{"rack_id": "R1", "rack_face": ["90"]}]},
         {"cancel_scope": "PLAN_MEMBERS"},
         {"cancel_scope": "PLAN_MEMBERS", "bin_source_racks": []},
         {
             "cancel_scope": "PLAN_MEMBERS",
-            "bin_source_racks": [{"rack_id": "R1", "rack_faces": ["90", "90"]}],
+            "bin_source_racks": [{"rack_id": "R1", "rack_face": ["90", "90"]}],
+        },
+        {
+            "cancel_scope": "PLAN_MEMBERS",
+            "bin_source_racks": [{"rack_id": "R1", "rack_face": []}],
+        },
+        {
+            "cancel_scope": "PLAN_MEMBERS",
+            "bin_source_racks": [{"rack_id": "R1", "rack_face": [""]}],
         },
     ],
 )

@@ -347,7 +347,7 @@ class PickingTaskPlanDeltaRepository:
                 )
             await db.flush()
         bin_racks = (
-            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_faces
+            (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
         )
         for batch in batched(bin_racks, MEMBER_BATCH_SIZE, strict=False):
             for rack in batch:

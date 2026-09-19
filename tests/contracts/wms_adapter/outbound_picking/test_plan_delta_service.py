@@ -59,7 +59,7 @@ class Sessions:
 def event(revision=1, **data):
     for rack in data.get("added_bin_source_racks", ()):
         if "rack_face" in rack:
-            rack["rack_faces"] = rack.pop("rack_face")
+            pass  # 新形态下 rack_face 即最终形态，无需再转
     return PickingTaskPlanDeltaEvent.model_validate(
         {
             "operation": OP,
@@ -71,7 +71,7 @@ def event(revision=1, **data):
                 **(
                     {"target_rack": {"rack_id": "R", "rack_face": " A "}}
                     if revision == 1
-                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_faces": ["A"]}]}
+                    else {"added_bin_source_racks": [{"rack_id": "B", "rack_face": ["A"]}]}
                 ),
                 **data,
             },
@@ -707,7 +707,14 @@ async def test_multi_face_bin_rack_expands_to_independent_source_identities_and_
     assert await service.validate_plan(object(), task, receipt.data, received_at=NOW) is None
     assert service._plans.source_identities.await_args.kwargs["bin_racks"] == [("B", "90"), ("B", "270")]
 
-    duplicated = event(added_bin_source_racks=[{"rack_id": "B", "rack_face": ["90", "90"]}])
+    # 重复检测由 wire 层前置（同 rack 同 face 数组内重复会被 BeforeValidator 拒绝）；
+    # service 端仍可达的形态是两个 entry 同 rack 同 face，保留 conflict 路径。
+    duplicated = event(
+        added_bin_source_racks=[
+            {"rack_id": "B", "rack_face": ["90"]},
+            {"rack_id": "B", "rack_face": ["90"]},
+        ]
+    )
     assert await service.validate_plan(object(), task, duplicated.data, received_at=NOW) == "REFERENCE_CONFLICT"
 
     repository = PickingTaskPlanDeltaRepository()

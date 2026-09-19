@@ -86,7 +86,7 @@ async def test_zero_plugin_worker_dispatches_and_preserves_typed_result(confirma
     database_url, sessions = confirmation_database
     now = timezone.now_for_db()
     data = (
-        {"result": "READY", "racks": [{"rack_id": "RACK-2", "rack_faces": ["B"]}]}
+        {"result": "READY", "racks": [{"rack_id": "RACK-2", "rack_face": ["B"]}]}
         if result == "READY"
         else {"result": "WAIT", "reason_code": "NO_DRAIN_RACK_AVAILABLE", "retry_after_ms": 1000}
     )

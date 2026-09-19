@@ -27,7 +27,7 @@ def decode_outcome(response: wire.DrainResponse) -> sdk.ReturnBufferDrainOutcome
     if response.code == "DECIDED":
         if isinstance(response.data, wire.DrainReady):
             result = sdk.ReturnBufferDrainReady(
-                tuple(sdk.RackFaceSequence(rack.rack_id, tuple(rack.rack_faces)) for rack in response.data.racks)
+                tuple(sdk.RackFaceSequence(rack.rack_id, rack.rack_face) for rack in response.data.racks)
             )
         else:
             result = sdk.ReturnBufferDrainWait(response.data.retry_after_ms, response.data.reason_code)

@@ -10,7 +10,7 @@ from src.app.wms_adapter.wire_common import (
     NonnegativeMilliseconds,
     OperationId,
     PositiveInteger,
-    RackFaceText,
+    RackFaceValues,
     StrictWireModel,
 )
 from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
@@ -36,13 +36,7 @@ class DrainRequest(DrainWireModel):
 
 class DrainRack(DrainWireModel):
     rack_id: Identifier
-    rack_faces: Annotated[list[RackFaceText], Field(min_length=1)]
-
-    @model_validator(mode="after")
-    def validate_faces(self):
-        if len(self.rack_faces) != len(set(self.rack_faces)):
-            raise ValueError("同一货架面不得重复")
-        return self
+    rack_face: RackFaceValues
 
 
 class DrainReady(DrainWireModel):
@@ -124,7 +118,7 @@ def parse_response(
             observation, "响应 identity 不匹配", path=("operation_id",), expected_value=request.operation_id
         )
     if request is not None and isinstance(response, DrainDecidedResponse) and isinstance(response.data, DrainReady):
-        face_count = sum(len(rack.rack_faces) for rack in response.data.racks)
+        face_count = sum(len(rack.rack_face) for rack in response.data.racks)
         if face_count > request.data.required_slot_count:
             raise observed_contract_error(observation, "返回货架面数量超过 required_slot_count")
     return response

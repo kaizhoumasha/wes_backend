@@ -71,13 +71,20 @@ __all__ = [
 
 # 计划增量保持独立 schema，公开 Event route 负责静态接入。
 _RACK_FACE = {"type": "string", "minLength": 1, "maxLength": 10, "pattern": r"^[^\u0000\uD800-\uDFFF]+$"}
+# 一个货架来源面：支持单值字符串（同 rack 单面）或非空不重复字符串数组（同 rack 多面）。
+_RACK_FACE_OR_ARRAY = {
+    "oneOf": [
+        _RACK_FACE,
+        {"type": "array", "minItems": 1, "uniqueItems": True, "items": _RACK_FACE},
+    ],
+}
 _CANCEL_BIN_SOURCE_RACK = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["rack_id", "rack_faces"],
+    "required": ["rack_id", "rack_face"],
     "properties": {
         "rack_id": _BUSINESS_IDENTIFIER,
-        "rack_faces": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _RACK_FACE},
+        "rack_face": _RACK_FACE_OR_ARRAY,
     },
 }
 _CANCEL_DIRECT_PICK_SOURCE = {
@@ -130,8 +137,8 @@ PICKING_TASK_CANCEL_EVENT_REQUEST_SCHEMA = _closed(
 )
 _PLAN_RACK = _closed(["rack_id", "rack_face"], {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": _RACK_FACE})
 _PLAN_BIN_SOURCE_RACK = _closed(
-    ["rack_id", "rack_faces"],
-    {"rack_id": _BUSINESS_IDENTIFIER, "rack_faces": {"type": "array", "minItems": 1, "items": _RACK_FACE}},
+    ["rack_id", "rack_face"],
+    {"rack_id": _BUSINESS_IDENTIFIER, "rack_face": _RACK_FACE_OR_ARRAY},
 )
 _PLAN_SLOT = _closed(
     ["type", "rack_id", "rack_face", "slot_id"],
@@ -384,7 +391,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
                 "task_id": "PICK-SWAGGER-001",
                 "plan_revision": 1,
                 "target_rack": {"rack_id": "TARGET-RACK-01", "rack_face": "A"},
-                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_faces": ["90", "270"]}],
+                "added_bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["90", "270"]}],
             },
         },
     },
@@ -419,7 +426,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
             "data": {
                 "task_id": "PICK-SWAGGER-001",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_faces": ["270"]}],
+                "bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["270"]}],
             },
         },
     },

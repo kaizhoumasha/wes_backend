@@ -26,8 +26,8 @@ def response(result: str = "READY"):
         "data": {
             "result": "READY",
             "racks": [
-                {"rack_id": "RACK-2", "rack_faces": ["90", "270"]},
-                {"rack_id": "RACK-3", "rack_faces": ["90"]},
+                {"rack_id": "RACK-2", "rack_face": ["90", "270"]},
+                {"rack_id": "RACK-3", "rack_face": ["90"]},
             ],
         }
         if result == "READY"
@@ -125,11 +125,11 @@ def test_ready_response_rejects_invalid_plan(case):
     elif case == "duplicate_rack":
         racks[1]["rack_id"] = "RACK-2"
     elif case == "empty_faces":
-        racks[0]["rack_faces"] = []
+        racks[0]["rack_face"] = []
     elif case == "duplicate_face":
-        racks[0]["rack_faces"] = ["90", "90"]
+        racks[0]["rack_face"] = ["90", "90"]
     elif case == "too_many_faces":
-        racks[0]["rack_faces"] = ["1", "2", "3", "4"]
+        racks[0]["rack_face"] = ["1", "2", "3", "4"]
     elif case == "mixed":
         body["data"]["retry_after_ms"] = 1
     else:
