@@ -310,7 +310,7 @@ class ManualPickingBatchDriver:
             now=timezone.now_for_db(),
         )
 
-    async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:
+    async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
         if not task.target_rack_id or not task.target_rack_face:
             return 0
         bindings = line.position_bindings
@@ -370,6 +370,10 @@ class ManualPickingBatchDriver:
                     allow_inbound=task.status == "EXECUTING",
                 )
             )
+        if await self._advance_return_batch_before_rack_action(
+            db, line, task, current.rack_id, current.rack_face, inlet_location, timezone.now_for_db()
+        ):
+            return 1
         rack_faces = faces_by_rack[current.rack_id]
         current_index = rack_faces.index(current)
         for next_face in rack_faces[current_index + 1 :]:
@@ -582,6 +586,26 @@ class ManualPickingBatchDriver:
             destination=result.rack_destination,
         )
         return 1
+
+    async def _advance_return_batch_before_rack_action(
+        self, db: Any, line: Any, task: Any, rack_id: str, rack_face: str, inlet_location: str, now: Any
+    ) -> bool:
+        if not await self._passages.ready_return_prefix_for_update(db, line.id):
+            return False
+        return bool(
+            await self._flow.advance_in_session(
+                db,
+                workline_id=line.id,
+                workline_code=line.line_code,
+                task_id=task.task_id,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                return_location=line.position_bindings[OUTLET.slot_key]["location_id"],
+                inlet_location=inlet_location,
+                now=now,
+                allow_inbound=False,
+            )
+        )
 
     async def _advance_transfer_departure(self, db: Any, line: Any, task: Any, now: Any) -> int:
         current_location = line.position_bindings[TRANSFER_RACK.slot_key]["location_id"]

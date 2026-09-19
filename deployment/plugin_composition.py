@@ -42,6 +42,7 @@ from src.app.wms_integration.outbound_picking.services.rack_departure import (
     RackDepartureResultReader,
     RackDepartureScheduler,
 )
+from src.app.wms_integration.outbound_picking.services.rack_departure_owner import RackDepartureOwnerService
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.wms_integration.outbound_picking.services.return_rack_arrival import (
     ReturnRackArrivalResultReader,
@@ -101,6 +102,7 @@ def build_deployment_runtime(
             ReturnBufferDrainOwnerService(),
         )
     )
+    workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, RackDepartureOwnerService())
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "manual-picking" in enabled_plugin_keys:
         from manual_picking.application.batch_driver import ManualPickingBatchDriver
@@ -166,7 +168,7 @@ def build_deployment_runtime(
             positions=position_projection_repository,
             transports=TransportRepository(),
             rack_creator=rack_creator,
-            departure_scheduler=RackDepartureScheduler(WmsConfirmationLifecycleService()),
+            departure_scheduler=RackDepartureScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
             departure_reader=RackDepartureResultReader(),
             arrival_scheduler=ReturnRackArrivalScheduler(WmsConfirmationLifecycleService()),
             arrival_reader=ReturnRackArrivalResultReader(),

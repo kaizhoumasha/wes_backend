@@ -145,7 +145,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
         rack_creator=creator,
         departure_scheduler=departure_scheduler,
         departure_reader=departure_reader,
-        passages=SimpleNamespace(has_bin_before_return_buffer=AsyncMock(return_value=False)),
+        passages=SimpleNamespace(
+            has_bin_before_return_buffer=AsyncMock(return_value=False),
+            ready_return_prefix_for_update=AsyncMock(return_value=()),
+        ),
         tasks=tasks,
         position_service=SimpleNamespace(require_position_capacity=AsyncMock(return_value=1)),
         rack_cycles=SimpleNamespace(
@@ -280,6 +283,19 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["rack_id"] == "R1"
     assert flow.calls[0]["allow_inbound"] is True
+    assert creator.rotate == [] and creator.depart == []
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_rack_checks_return_buffer_before_rotation() -> None:
+    driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
+    flow.complete.add(("R1", "90"))
+    flow.created = True
+    driver._passages.ready_return_prefix_for_update.return_value = (SimpleNamespace(bin_code="BIN-1"),)
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls[0]["allow_inbound"] is False
     assert creator.rotate == [] and creator.depart == []
     scheduler.create_in_session.assert_not_awaited()
 

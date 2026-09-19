@@ -102,17 +102,21 @@ class _SourceRacks:
 class _Projections:
     def __init__(self, missing=None):  # type: ignore[no-untyped-def]
         self.missing = missing
+        self.bin_projections = {}
 
     async def get(self, db, object_type, object_id, *, for_update=False):  # type: ignore[no-untyped-def]
         if (object_type, object_id) == self.missing:
             return None
         if object_type == "BIN":
-            return SimpleNamespace(
-                workline_id=7,
-                position_unknown=False,
-                position_json={"kind": "HANDOFF_POSITION", "location_code": "INLET-POSITION"},
-                arrival_face=None,
-                source_transport_task_id=f"MOVE-{object_id}",
+            return self.bin_projections.setdefault(
+                object_id,
+                SimpleNamespace(
+                    workline_id=7,
+                    position_unknown=False,
+                    position_json={"kind": "HANDOFF_POSITION", "location_code": "INLET-POSITION"},
+                    arrival_face=None,
+                    source_transport_task_id=f"MOVE-{object_id}",
+                ),
             )
         face = "A" if object_id == "TRANSFER-1" else "90"
         location = "TRANSFER-RACK-POSITION" if object_id == "TRANSFER-1" else "FIVE-RACK-POSITION"
@@ -123,6 +127,9 @@ class _Projections:
             arrival_face=face,
             source_transport_task_id=f"MOVE-{object_id}",
         )
+
+    async def flush(self, db):  # type: ignore[no-untyped-def]
+        return None
 
 
 class _Transports:
@@ -1051,6 +1058,9 @@ async def test_scan4_enters_return_buffer_only_after_matching_ecs_success() -> N
 
     assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert passage.return_state == "READY"
+    projection = await flow._positions.get(object(), "BIN", passage.bin_code, for_update=True)
+    assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "OUTLET-POSITION"}
+    assert projection.position_unknown is False
 
 
 @pytest.mark.asyncio
