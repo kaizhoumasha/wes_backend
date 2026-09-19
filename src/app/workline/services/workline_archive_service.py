@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import (
     PickingTaskRepository,
     picking_task_repository,
@@ -29,6 +30,14 @@ class WorkLineArchiveConfigurationError(ValueError):
     """当前冻结插件不能执行其业务归档。"""
 
 
+class WorkLineArchivePickingTaskNotFoundError(LookupError):
+    """归档请求的 PickingTask 不存在或不属于该 WorkLine。"""
+
+
+class WorkLineArchivePickingTaskInvalidStateError(ValueError):
+    """归档请求的 PickingTask 处于不可归档状态。"""
+
+
 @dataclass(frozen=True, slots=True)
 class WorkLineArchiveResult:
     workline_id: int
@@ -36,6 +45,9 @@ class WorkLineArchiveResult:
     archived_picking_tasks: int
     archived_plugin_tasks: int
     archived_integration_runs: int
+    archived_single_picking_task: bool = False
+    archived_single_picking_task_id: int | None = None
+    picking_task_status_before: PickingTaskStatus | None = None
 
     @property
     def archived_total(self) -> int:
@@ -120,10 +132,75 @@ class WorkLineArchiveService:
             raise WorkLineArchiveConfigurationError(str(exc)) from exc
         return plugin.business_archiver
 
+    async def archive_picking_task(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        version: int,
+        picking_task_id: int | None = None,
+        task_id: str | None = None,
+        now: datetime | None = None,
+    ) -> WorkLineArchiveResult:
+        """在 WorkLine 行锁内归档单个 PickingTask；plan_members/face_completion 依赖状态机防御。"""
+
+        workline = await self._worklines.get_for_update(db, workline_id)
+        if workline is None:
+            raise WorkLineArchiveNotFoundError(f"WorkLine {workline_id} 不存在")
+        if type(version) is not int or version != workline.version:
+            raise WorkLineArchiveVersionConflictError(f"WorkLine {workline_id} 版本已变化，请重新读取状态")
+
+        if (picking_task_id is None) == (task_id is None):
+            raise ValueError("picking_task_id 与 task_id 必须二选一")
+
+        if picking_task_id is not None:
+            task = await self._picking_tasks.get_by_id_for_update(db, picking_task_id)
+        elif task_id is not None:
+            await self._picking_tasks.lock_task_identity(db, task_id)
+            task = await self._picking_tasks.get_by_task_id_for_update(db, task_id)
+        else:  # pragma: no cover - mutually-exclusive guard 已保证不可达
+            raise ValueError("picking_task_id 与 task_id 必须二选一")
+
+        if task is None or task.workline_id != workline_id:
+            raise WorkLineArchivePickingTaskNotFoundError(
+                f"PickingTask {'id=' + str(picking_task_id) if picking_task_id is not None else 'task_id=' + task_id} 不存在或不属于 WorkLine {workline_id}"
+            )
+
+        status_before = PickingTaskStatus(task.status)
+        allowed_states = {
+            PickingTaskStatus.PREPARING,
+            PickingTaskStatus.EXECUTING,
+            PickingTaskStatus.EXECUTION_COMPLETED,
+        }
+        if status_before not in allowed_states:
+            raise WorkLineArchivePickingTaskInvalidStateError(
+                f"PickingTask {task.id} 状态 {status_before} 不可归档；仅允许 PREPARING/EXECUTING/EXECUTION_COMPLETED"
+            )
+
+        archived_at = timezone.to_db_datetime(now) if now is not None else timezone.now_for_db()
+        if archived_at is None:
+            raise ValueError("now 必须是有效时间")
+
+        await self._picking_tasks.archive_single(db, task=task, archived_at=archived_at)
+        workline = await self._worklines.advance_version_for_archive(db, workline)
+
+        return WorkLineArchiveResult(
+            workline_id=workline_id,
+            version=workline.version,
+            archived_picking_tasks=0,
+            archived_plugin_tasks=0,
+            archived_integration_runs=0,
+            archived_single_picking_task=True,
+            archived_single_picking_task_id=task.id,
+            picking_task_status_before=status_before,
+        )
+
 
 __all__ = [
     "WorkLineArchiveConfigurationError",
     "WorkLineArchiveNotFoundError",
+    "WorkLineArchivePickingTaskInvalidStateError",
+    "WorkLineArchivePickingTaskNotFoundError",
     "WorkLineArchiveResult",
     "WorkLineArchiveService",
     "WorkLineArchiveVersionConflictError",

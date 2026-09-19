@@ -151,6 +151,20 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
             await db.flush()
         return len(rows)
 
+    async def archive_single(
+        self,
+        db: AsyncSession,
+        *,
+        task: PickingTask,
+        archived_at: datetime,
+    ) -> None:
+        """归档单个 PickingTask；调用方已持有 WorkLine 行锁与本任务的行/advisory 锁。"""
+
+        task.status = PickingTaskStatus.ARCHIVED
+        task.archived_at = archived_at
+        task.increment_version()
+        await db.flush()
+
     async def get_executing_for_workline_for_update(
         self,
         db: AsyncSession,
