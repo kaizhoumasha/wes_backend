@@ -104,46 +104,64 @@ class ManualPickingBatchFlow:
         if await self._repository.has_unclosed_action(db, workline_id):
             return False
         progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
-        return_bins: list[str] = []
-        return_due = False
+        if progress is None:
+            if not allow_inbound:
+                return False
+            intent = choose_next_batch(
+                operation_id=self._uuid_factory(),
+                workline_code=workline_code,
+                task_id=task_id,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                return_bins=(),
+                return_location=return_location,
+                return_retry_due=False,
+                allow_inbound=True,
+            )
+            assert intent is not None
+            await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
+            return True
         rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+        return_bins: list[str] = []
         for row in rows:
             if not row.bin_code:
                 raise ValueError("ready return passage requires a known bin_code")
             return_bins.append(row.bin_code)
-        if return_bins:
-            after = (
-                cast("datetime", progress.last_chunk_created_at)
-                if progress is not None and progress.next_offset is not None and progress.next_offset > 0
-                else now
+        after = getattr(progress, "last_chunk_created_at", None) or now
+        can_interleave_return = progress.feed_complete or progress.next_offset is not None
+        if (
+            can_interleave_return
+            and return_bins
+            and await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now, after)
+        ):
+            intent = choose_next_batch(
+                operation_id=self._uuid_factory(),
+                workline_code=workline_code,
+                task_id=task_id,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                return_bins=tuple(return_bins),
+                return_location=return_location,
+                return_retry_due=True,
+                allow_inbound=False,
             )
-            return_due = await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now, after)
-        intent = choose_next_batch(
-            operation_id=self._uuid_factory(),
-            workline_code=workline_code,
-            task_id=task_id,
-            rack_id=rack_id,
-            rack_face=rack_face,
-            return_bins=tuple(return_bins),
-            return_location=return_location,
-            return_retry_due=return_due,
-            allow_inbound=allow_inbound and progress is None,
-        )
-        if intent is not None:
+            assert intent is not None
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
-        if progress is None or progress.next_offset is None:
-            return False
-        await self._inbound.create_inbound_chunk(
-            db,
-            workline_id=workline_id,
-            intent=progress.intent,
-            ready=cast("BinInboundBatchReady", progress.result),
-            evidence_id=progress.evidence_id,
-            offset=progress.next_offset,
-            inlet_location=inlet_location,
-        )
-        return True
+        if not progress.feed_complete:
+            if progress.next_offset is None:
+                return False
+            await self._inbound.create_inbound_chunk(
+                db,
+                workline_id=workline_id,
+                intent=progress.intent,
+                ready=cast("BinInboundBatchReady", progress.result),
+                evidence_id=progress.evidence_id,
+                offset=progress.next_offset,
+                inlet_location=inlet_location,
+            )
+            return True
+        return False
 
 
 __all__ = ["ManualPickingBatchFlow"]

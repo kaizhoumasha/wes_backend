@@ -63,7 +63,7 @@ class _Inbound:
 
 
 @pytest.mark.asyncio
-async def test_batch_flow_claims_fifo_before_inbound_and_keeps_single_wms_request() -> None:
+async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_request() -> None:
     module = import_module("manual_picking.application.batch_flow")
     repo = _Repository(between_chunks=True)
     passages = _Passages(("A000000001", "A000000002"))
@@ -131,7 +131,7 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("face_done", [True, False])
-async def test_batch_flow_requests_return_batch_when_ready_bins_exist(face_done: bool) -> None:
+async def test_batch_flow_requests_inbound_before_return_on_first_face(face_done: bool) -> None:
     module = import_module("manual_picking.application.batch_flow")
     scheduler = _Scheduler()
     flow = module.ManualPickingBatchFlow(
@@ -153,7 +153,8 @@ async def test_batch_flow_requests_return_batch_when_ready_bins_exist(face_done:
         inlet_location="CNV0301",
         now=datetime(2026, 9, 13, 12),
     )
-    assert type(scheduler.intents[0][0]) is sdk.BinReturnBatchIntent
+    expected = sdk.BinReturnBatchIntent if face_done else sdk.BinInboundBatchIntent
+    assert type(scheduler.intents[0][0]) is expected
 
 
 @pytest.mark.asyncio
@@ -560,7 +561,6 @@ async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(
     assert len(scheduler.intents) == (0 if face_done else 1)
     if not face_done:
         assert type(scheduler.intents[0][0]) is sdk.BinInboundBatchIntent
-    passages.ready_return_prefix_for_update.assert_awaited_once()
 
 
 @pytest.mark.asyncio
