@@ -131,7 +131,10 @@ class BatchRepository:
         )
         return set(rows.all())
 
-    async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool:
+    async def has_unclosed_action_for_face(
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ) -> bool:
+        """只阻塞当前批次/货架面，避免无关异常冻结整条工作线。"""
         confirmations = cast("Any", WmsConfirmation).__table__.c
         pending = await db.scalar(
             select(confirmations.id)
@@ -145,6 +148,12 @@ class BatchRepository:
                         WmsConfirmationStatus.RECONCILING,
                     )
                 ),
+                confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
+                or_(
+                    confirmations.operation == BIN_RETURN_BATCH_OPERATION,
+                    confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                ),
             )
             .limit(1)
         )
@@ -157,6 +166,12 @@ class BatchRepository:
             .where(
                 confirmations.workline_id == workline_id,
                 confirmations.operation.in_(_BATCH_OPERATIONS),
+                confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
+                or_(
+                    confirmations.operation == BIN_RETURN_BATCH_OPERATION,
+                    confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                ),
                 evidences.published_at.is_(None),
                 evidences.kind == InboundEvidenceKind.WMS_RESULT,
                 evidences.operation.in_(_BATCH_OPERATIONS),
@@ -166,11 +181,16 @@ class BatchRepository:
         if unpublished is not None:
             return True
         transports = cast("Any", TransportTask).__table__.c
+        members = cast("Any", TransportMember).__table__
         active = await db.scalar(
             select(transports.id)
+            .join(members, members.c.transport_task_id == transports.transport_task_id)
             .where(
                 transports.authority_workline_id == workline_id,
                 transports.kind == "BIN_MOVE",
+                members.c.object_type == "BIN",
+                members.c.target_json["rack_id"].as_string() == rack_id,
+                members.c.target_json["rack_face"].as_string() == rack_face,
                 or_(
                     transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
                     transports.outcome_version > transports.published_outcome_version,

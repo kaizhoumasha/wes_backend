@@ -47,27 +47,92 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.asyncio
-async def test_batch_gate_waits_for_wms_result_application_and_transport_publication() -> None:
+async def test_face_gate_ignores_unrelated_pending_batch() -> None:
     module = import_module("manual_picking.application.batch_repository")
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 13, 12)
     try:
         async with sessions.begin() as db:
             repo = module.BatchRepository()
-            assert not await repo.has_unclosed_action(db, 7)
+            db.add(
+                WmsConfirmation(
+                    operation="outbound.bin.inbound_batch@v1",
+                    operation_id="019f0000-0000-7000-8000-000000000101",
+                    workline_id=7,
+                    request_digest="a" * 64,
+                    request_payload={
+                        "operation": "outbound.bin.inbound_batch@v1",
+                        "data": {"task_id": "PICK-2", "rack_id": "R2", "rack_face": "270"},
+                    },
+                    deadline_at=now,
+                    status="PENDING",
+                )
+            )
+            await db.flush()
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-2", "R2", "270")
+            db.add(
+                TransportTask(
+                    transport_task_id="return-1",
+                    client_request_id="return-client-1",
+                    request_digest="c" * 64,
+                    kind="BIN_MOVE",
+                    caller_json={"workline_id": "7"},
+                    request_json={"moves": []},
+                    submit_operation_id="return-submit-1",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="d" * 64,
+                    status="RECONCILING",
+                    authority_workline_id=7,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                TransportMember(
+                    transport_task_id="return-1",
+                    ordinal=1,
+                    object_type="BIN",
+                    object_id="BIN-1",
+                    source_json={"kind": "HANDOFF_POSITION", "location_code": "RETURN"},
+                    target_json={"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "1"},
+                    updated_at=now,
+                )
+            )
+            await db.flush()
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unrelated_history() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 13, 12)
+    try:
+        async with sessions.begin() as db:
+            repo = module.BatchRepository()
+            # 1) PENDING confirmation 同 workline/同 task/同 face 阻塞;不同 workline 不阻塞。
             confirmation = WmsConfirmation(
                 operation="outbound.bin.inbound_batch@v1",
-                operation_id="019f0000-0000-7000-8000-000000000001",
+                operation_id="019f0000-0000-7000-8000-000000000201",
                 workline_id=7,
                 request_digest="a" * 64,
-                request_payload={"operation": "outbound.bin.inbound_batch@v1"},
+                request_payload={
+                    "operation": "outbound.bin.inbound_batch@v1",
+                    "data": {"task_id": "PICK-1", "rack_id": "R1", "rack_face": "90"},
+                },
                 deadline_at=now,
                 status="PENDING",
             )
             db.add(confirmation)
             await db.flush()
-            assert await repo.has_unclosed_action(db, 7)
-            assert not await repo.has_unclosed_action(db, 8)
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 8, "PICK-1", "R1", "90")
+
+            # 2) COMPLETED confirmation 但 response_evidence 未 published 仍阻塞。
             confirmation.status = "COMPLETED"
             evidence = InboundEvidence(
                 kind="WMS_RESULT",
@@ -83,12 +148,13 @@ async def test_batch_gate_waits_for_wms_result_application_and_transport_publica
             db.add(evidence)
             await db.flush()
             confirmation.response_evidence_id = evidence.id
-            assert await repo.has_unclosed_action(db, 7)
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
             evidence.published_at = now
             evidence.decision_digest = "e" * 64
             await db.flush()
-            assert not await repo.has_unclosed_action(db, 7)
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
 
+            # 3) 未关联的 history evidence(其他 operation_id)不构成阻塞。
             db.add(
                 InboundEvidence(
                     kind="WMS_RESULT",
@@ -98,27 +164,40 @@ async def test_batch_gate_waits_for_wms_result_application_and_transport_publica
                     received_at=now,
                     workline_id=7,
                     operation="outbound.bin.inbound_batch@v1",
-                    operation_id="019f0000-0000-7000-8000-000000000099",
+                    operation_id="019f0000-0000-7000-8000-000000000299",
                     apply_status="APPLIED",
                 )
             )
             await db.flush()
-            assert not await repo.has_unclosed_action(db, 7)
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
 
-            old_rack_result = InboundEvidence(
-                kind="TRANSPORT_RESULT",
-                source_identity="transport:old-rack:outcome:1",
-                payload_digest="f" * 64,
-                normalized_payload={"step": "PICKING_TASK_BIN_SOURCE_RACK_IN"},
-                received_at=now,
-                workline_id=7,
-                transport_task_id="old-rack",
-                apply_status="APPLIED",
+            # 4) TRANSPORT_RESULT evidence 不计入 WMS_RESULT 阻塞条件。
+            db.add(
+                InboundEvidence(
+                    kind="TRANSPORT_RESULT",
+                    source_identity="transport:old-rack:outcome:1",
+                    payload_digest="f" * 64,
+                    normalized_payload={"step": "PICKING_TASK_BIN_SOURCE_RACK_IN"},
+                    received_at=now,
+                    workline_id=7,
+                    transport_task_id="old-rack",
+                    apply_status="APPLIED",
+                )
             )
-            db.add(old_rack_result)
             await db.flush()
-            assert not await repo.has_unclosed_action(db, 7)
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+    finally:
+        await engine.dispose()
 
+
+@pytest.mark.asyncio
+async def test_face_gate_transport_state_transitions_release_only_after_publication() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 13, 12)
+    try:
+        async with sessions.begin() as db:
+            repo = module.BatchRepository()
             task = TransportTask(
                 transport_task_id="transport-1",
                 client_request_id="client-1",
@@ -136,17 +215,28 @@ async def test_batch_gate_waits_for_wms_result_application_and_transport_publica
                 updated_at=now,
             )
             db.add(task)
+            db.add(
+                TransportMember(
+                    transport_task_id="transport-1",
+                    ordinal=1,
+                    object_type="BIN",
+                    object_id="BIN-1",
+                    source_json={"kind": "HANDOFF_POSITION", "location_code": "RETURN"},
+                    target_json={"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "1"},
+                    updated_at=now,
+                )
+            )
             await db.flush()
-            assert await repo.has_unclosed_action(db, 7)
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
             task.status = "SUCCEEDED"
             task.outcome_version = 1
-            assert await repo.has_unclosed_action(db, 7)
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
             task.published_outcome_version = 1
             await db.flush()
-            assert not await repo.has_unclosed_action(db, 7)
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
             task.status = "FAILED"
             await db.flush()
-            assert not await repo.has_unclosed_action(db, 7)
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
     finally:
         await engine.dispose()
 

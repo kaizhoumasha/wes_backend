@@ -17,7 +17,9 @@ if TYPE_CHECKING:
 
 
 class BatchRepository(Protocol):
-    async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool: ...
+    async def has_unclosed_action_for_face(
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ) -> bool: ...
 
     async def return_retry_due(
         self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime, after: datetime
@@ -84,8 +86,10 @@ class ManualPickingBatchFlow:
     ) -> InboundFaceProgress | None:
         return await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
 
-    async def has_unclosed_action(self, db: AsyncSession, workline_id: int) -> bool:
-        return await self._repository.has_unclosed_action(db, workline_id)
+    async def has_unclosed_action_for_face(
+        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+    ) -> bool:
+        return await self._repository.has_unclosed_action_for_face(db, workline_id, task_id, rack_id, rack_face)
 
     async def advance_in_session(
         self,
@@ -101,7 +105,7 @@ class ManualPickingBatchFlow:
         now: datetime,
         allow_inbound: bool = True,
     ) -> bool:
-        if await self._repository.has_unclosed_action(db, workline_id):
+        if await self._repository.has_unclosed_action_for_face(db, workline_id, task_id, rack_id, rack_face):
             return False
         progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
         if progress is None:

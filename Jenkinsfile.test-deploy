@@ -511,23 +511,24 @@ try:
     client = build_wms_client(base_url=settings.WMS_BASE_URL, timeout_seconds=10.0)
     asyncio.run(client.aclose())
     celery_app.loader.import_default_modules()
-    required = {
+    transport_required = {
         "src.celery_app.tasks.transport.advance_transport_debug_runs_batch",
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
         "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
         "src.celery_app.tasks.transport.submit_transport_tasks_batch",
-        "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
     }
+    confirmation = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
     legacy = {
         "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
         "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
         "src.celery_app.tasks.workline.check_wms_effect_status",
         "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
     }
-    assert required == {name for name, route in task_routes.items() if route == {"queue": "wms-fulfillment"}}
+    assert transport_required == {name for name, route in task_routes.items() if route == {"queue": "wms-fulfillment"}}
+    assert task_routes[confirmation] == {"queue": "celery"}
     registered = set(celery_app.tasks)
-    assert required <= registered
+    assert transport_required | {confirmation} <= registered
     assert legacy.isdisjoint(registered)
 except Exception as exc:
     print(f"WMS_TARGET_PREFLIGHT_ERROR={type(exc).__name__}: {exc}", flush=True)
