@@ -196,10 +196,9 @@ class ManualPickingBatchDriver:
             )
         return len(selected)
 
-    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911, PLR0912
-        # 旧批次必须先发布/闭合，否则新 drain 会改变该响应的当前货架归属。
-        if await self._flow.has_unclosed_action(db, line.id):
-            return 0
+    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911
+        # Drain 闸门从工作线级 has_unclosed_action 收紧为 per-decision
+        # has_unclosed_rack_action,允许不同 drain 决策的 rack 面独立推进。
         count, decision = await self._drain.decide_in_session(db, line, timezone.now_for_db())
         if decision is None:
             return count
@@ -349,7 +348,7 @@ class ManualPickingBatchDriver:
                 projection = candidate
         if current is None or projection is None:
             return 0
-        if await self._flow.has_unclosed_action(db, line.id):
+        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, current.rack_id, current.rack_face):
             return 0
         inlet_location = bindings[INLET.slot_key]["location_id"]
         progress = await self._flow.face_progress(
@@ -591,6 +590,8 @@ class ManualPickingBatchDriver:
         self, db: Any, line: Any, task: Any, rack_id: str, rack_face: str, inlet_location: str, now: Any
     ) -> bool:
         if not await self._passages.ready_return_prefix_for_update(db, line.id):
+            return False
+        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, rack_id, rack_face):
             return False
         return bool(
             await self._flow.advance_in_session(

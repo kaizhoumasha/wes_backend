@@ -34,6 +34,7 @@ WORKER_READY_TIMEOUT_SECONDS = 60.0
 TASK_TIMEOUT_SECONDS = 30.0
 CONNECTION_DRAIN_TIMEOUT_SECONDS = 15.0
 FULFILLMENT_QUEUE = "wms-fulfillment"
+CONFIRMATION_QUEUE = "celery"
 TRANSPORT_BROKER_KEY_PREFIX_ENV = "TRANSPORT_BROKER_KEY_PREFIX"
 
 
@@ -157,6 +158,7 @@ def _worker_environment(
     transport_submit_path: str,
     run_id: str,
     key_prefix: str,
+    worker_queues: str = FULFILLMENT_QUEUE,
 ) -> dict[str, str]:
     database = make_url(database_url)
     redis = make_url(redis_url)
@@ -178,7 +180,7 @@ def _worker_environment(
         "REDIS_DB": str((redis.database or "0").lstrip("/")),
         "CELERY_BROKER_URL": redis_url,
         "CELERY_RESULT_BACKEND": redis_url,
-        "CELERY_WORKER_QUEUES": FULFILLMENT_QUEUE,
+        "CELERY_WORKER_QUEUES": worker_queues,
         "CELERY_WORKER_CONCURRENCY": "1",
         "WMS_BASE_URL": wms_base_url,
         "TRANSPORT_SUBMIT_PATH": transport_submit_path,
@@ -202,9 +204,12 @@ class TransportBrokerWorker:
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     hostname: str = field(init=False)
     process: subprocess.Popen[str] | None = field(default=None, init=False)
+    confirmation_process: subprocess.Popen[str] | None = field(default=None, init=False)
     log_path: Path | None = field(default=None, init=False)
     key_prefix: str = field(init=False)
     _log_file: Any = field(default=None, init=False, repr=False)
+    _confirmation_log_file: Any = field(default=None, init=False, repr=False)
+    confirmation_log_path: Path | None = field(default=None, init=False)
     _descendant_pids: set[int] = field(default_factory=set, init=False)
     producer: Celery = field(init=False, repr=False)
 
@@ -223,11 +228,11 @@ class TransportBrokerWorker:
         self.producer.conf.broker_transport_options = _broker_transport_options(self.key_prefix)
         self.producer.conf.result_backend_transport_options = _broker_transport_options(self.key_prefix)
 
-    def start(self) -> TransportBrokerWorker:
-        self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115 - worker 生命周期跨越 start/close。
-            mode="w+", prefix=f"wes-transport-{self.run_id}-", suffix=".log", delete=False
+    def _start_process(self, queue: str, hostname: str, log_prefix: str) -> tuple[subprocess.Popen[str], Any, Path]:
+        log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115 - worker 生命周期跨越 start/close。
+            mode="w+", prefix=log_prefix, suffix=".log", delete=False
         )
-        self.log_path = Path(self._log_file.name)
+        log_path = Path(log_file.name)
         command = [
             "uv",
             "run",
@@ -239,14 +244,14 @@ class TransportBrokerWorker:
             "--pool=prefork",
             "--concurrency=1",
             "--loglevel=INFO",
-            f"--queues={FULFILLMENT_QUEUE}",
-            f"--hostname={self.hostname}",
+            f"--queues={queue}",
+            f"--hostname={hostname}",
             "--without-gossip",
             "--without-mingle",
             "--include",
             "tests.support.transport_broker",
         ]
-        self.process = subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
             env=_worker_environment(
@@ -256,22 +261,32 @@ class TransportBrokerWorker:
                 self.transport_submit_path,
                 self.run_id,
                 self.key_prefix,
+                queue,
             ),
-            stdout=self._log_file,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
         )
         deadline = time.monotonic() + WORKER_READY_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise AssertionError(f"Transport worker exited early; log={self.log_path}")
-            self._log_file.flush()
-            if " ready." in self.log_path.read_text(errors="replace"):
-                self._capture_descendants()
-                return self
+            if process.poll() is not None:
+                raise AssertionError(f"Transport worker exited early; log={log_path}")
+            log_file.flush()
+            if " ready." in log_path.read_text(errors="replace"):
+                return process, log_file, log_path
             time.sleep(0.1)
-        raise AssertionError(f"Transport worker readiness timed out; log={self.log_path}")
+        raise AssertionError(f"Transport worker readiness timed out; log={log_path}")
+
+    def start(self) -> TransportBrokerWorker:
+        self.process, self._log_file, self.log_path = self._start_process(
+            FULFILLMENT_QUEUE, self.hostname, f"wes-transport-{self.run_id}-"
+        )
+        self.confirmation_process, self._confirmation_log_file, self.confirmation_log_path = self._start_process(
+            CONFIRMATION_QUEUE, f"it-confirmation-{self.run_id}@localhost", f"wes-confirmation-{self.run_id}-"
+        )
+        self._capture_descendants()
+        return self
 
     def send(
         self,
@@ -280,12 +295,8 @@ class TransportBrokerWorker:
         kwargs: dict[str, object] | None = None,
         expires: float | None = None,
     ) -> Any:
-        return self.producer.send_task(
-            task_name,
-            kwargs=kwargs or {},
-            queue=FULFILLMENT_QUEUE,
-            expires=expires,
-        )
+        queue = CONFIRMATION_QUEUE if task_name.endswith("dispatch_wms_confirmations_batch") else FULFILLMENT_QUEUE
+        return self.producer.send_task(task_name, kwargs=kwargs or {}, queue=queue, expires=expires)
 
     @staticmethod
     def result(result: Any, timeout: float = TASK_TIMEOUT_SECONDS) -> Any:
@@ -298,14 +309,15 @@ class TransportBrokerWorker:
         return self.log_path.read_text(errors="replace")
 
     def _capture_descendants(self) -> None:
-        if self.process is None:
-            return
-        try:
-            self._descendant_pids.update(
-                child.pid for child in psutil.Process(self.process.pid).children(recursive=True)
-            )
-        except psutil.Error:
-            pass
+        for process in (self.process, self.confirmation_process):
+            if process is None:
+                continue
+            try:
+                self._descendant_pids.update(
+                    child.pid for child in psutil.Process(process.pid).children(recursive=True)
+                )
+            except psutil.Error:
+                pass
 
     def _cleanup_broker_artifacts(self) -> None:
         client = Redis.from_url(self.redis_url, decode_responses=True)
@@ -367,26 +379,27 @@ class TransportBrokerWorker:
             raise errors[0]
 
     def close(self, *, success: bool) -> None:
-        process = self.process
         errors: list[BaseException] = []
-        if process is not None:
+        processes = [process for process in (self.process, self.confirmation_process) if process is not None]
+        if processes:
             try:
                 self._capture_descendants()
             except BaseException as exc:
                 errors.append(exc)
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired as exc:
-                    errors.append(exc)
+            for process in processes:
+                if process.poll() is None:
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=5)
-                    except BaseException as kill_error:
-                        errors.append(kill_error)
-                except BaseException as exc:
-                    errors.append(exc)
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=20)
+                    except subprocess.TimeoutExpired as exc:
+                        errors.append(exc)
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait(timeout=5)
+                        except BaseException as kill_error:
+                            errors.append(kill_error)
+                    except BaseException as exc:
+                        errors.append(exc)
             try:
                 self._capture_descendants()
             except BaseException as exc:
@@ -400,7 +413,8 @@ class TransportBrokerWorker:
                 errors.append(exc)
             if alive:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    for process in processes:
+                        os.killpg(process.pid, signal.SIGKILL)
                     _, alive = psutil.wait_procs(alive, timeout=5)
                 except BaseException as exc:
                     errors.append(exc)
@@ -417,14 +431,18 @@ class TransportBrokerWorker:
             except BaseException as exc:
                 errors.append(exc)
         try:
-            if self._log_file is not None:
-                self._log_file.close()
+            for log_file in (self._log_file, self._confirmation_log_file):
+                if log_file is not None:
+                    log_file.close()
         except BaseException as exc:
             errors.append(exc)
         finally:
             self.process = None
-        if success and not errors and self.log_path is not None:
-            self.log_path.unlink(missing_ok=True)
+            self.confirmation_process = None
+        if success and not errors:
+            for log_path in (self.log_path, self.confirmation_log_path):
+                if log_path is not None:
+                    log_path.unlink(missing_ok=True)
         if errors:
             raise BaseExceptionGroup(
                 f"Transport worker {self.run_id} teardown 有 {len(errors)} 项失败；日志保留于 {self.log_path}",
@@ -471,6 +489,7 @@ async def close_transport_test_resources(
 
 
 __all__ = [
+    "CONFIRMATION_QUEUE",
     "FULFILLMENT_QUEUE",
     "MockWmsHttpServer",
     "TransportBrokerWorker",

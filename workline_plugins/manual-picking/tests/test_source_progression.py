@@ -70,7 +70,7 @@ class Plans:
 class Flow:
     def __init__(self):  # type: ignore[no-untyped-def]
         self.created = False
-        self.busy = False
+        self.face_busy = False
         self.complete = {("R1", "90")}
         self.calls = []
 
@@ -81,8 +81,8 @@ class Flow:
     async def face_progress(self, _db, _line_id, _task_id, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
         return SimpleNamespace(complete=False, feed_complete=True) if (rack_id, face) in self.complete else None
 
-    async def has_unclosed_action(self, _db, _line_id):  # type: ignore[no-untyped-def]
-        return self.busy
+    async def has_unclosed_action_for_face(self, _db, _line_id, _task_id, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
+        return self.face_busy
 
 
 class Creator:
@@ -164,9 +164,9 @@ def setup_driver():  # type: ignore[no-untyped-def]
 async def test_same_rack_rotates_once_after_closed_face_and_uses_planned_next_face() -> None:
     driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
     driver._passages.has_bin_before_return_buffer.return_value = True
-    flow.busy = True
+    flow.face_busy = True
     assert await driver.advance_in_session(object(), line, task) == 0
-    flow.busy = False
+    flow.face_busy = False
     flow.created = True  # A new return must never run ahead of the completed face.
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls == []
@@ -201,7 +201,7 @@ async def test_transfer_decision_starts_after_wms_completion_while_source_return
     task.status = "EXECUTION_COMPLETED"
     plans.owner = task
     plans.transfer_owner = task
-    flow.busy = True
+    flow.face_busy = True
     driver._passages.has_bin_before_return_buffer.return_value = True
 
     assert await driver.advance_completed_in_session(object(), line) == 1

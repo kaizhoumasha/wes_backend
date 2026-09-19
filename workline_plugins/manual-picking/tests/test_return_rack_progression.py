@@ -111,7 +111,9 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     departure_scheduler = SimpleNamespace(create_in_session=AsyncMock())
     driver = ManualPickingBatchDriver(
-        SimpleNamespace(has_unclosed_action=AsyncMock(return_value=False)),
+        SimpleNamespace(
+            has_unclosed_action_for_face=AsyncMock(return_value=False),
+        ),
         plans=plans,
         positions=positions,
         transports=SimpleNamespace(
@@ -281,7 +283,7 @@ async def test_blocked_five_rack_subflow_does_not_block_the_return_rack_subflow(
     plans.list_bin_source_racks = AsyncMock(  # type: ignore[method-assign]
         return_value=[SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51)]
     )
-    driver._flow.has_unclosed_action.return_value = True  # 子流程 A 停在未闭合动作上。
+    driver._flow.has_unclosed_action_for_face.return_value = True  # 当前货架面停在未闭合动作上。
     positions.count = AsyncMock(return_value=1)
 
     assert await driver.advance_in_session(object(), line, task) == 1

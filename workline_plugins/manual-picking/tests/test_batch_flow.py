@@ -20,7 +20,7 @@ class _Repository:
         self.face_done = face_done
         self.between_chunks = between_chunks
 
-    async def has_unclosed_action(self, _db, _workline_id):  # type: ignore[no-untyped-def]
+    async def has_unclosed_action_for_face(self, _db, _workline_id, _task_id, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
         return self.busy
 
     async def return_retry_due(self, _db, _workline_id, _rack_id, _rack_face, _now, _after):  # type: ignore[no-untyped-def]
@@ -392,7 +392,7 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
             return True
 
     flow = Flow()
-    flow.has_unclosed_action = AsyncMock(return_value=False)
+    flow.has_unclosed_action_for_face = AsyncMock(return_value=False)
     flow.face_progress = AsyncMock(return_value=None)
     driver = module.ManualPickingBatchDriver(
         flow,
@@ -509,7 +509,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
             return True
 
     flow = Flow()
-    flow.has_unclosed_action = AsyncMock(return_value=False)
+    flow.has_unclosed_action_for_face = AsyncMock(return_value=False)
     flow.face_progress = AsyncMock(return_value=None)
     driver = module.ManualPickingBatchDriver(
         flow,
@@ -591,7 +591,7 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
             created_at,
         )
     )
-    repo.has_unclosed_action = AsyncMock(return_value=False)
+    repo.has_unclosed_action_for_face = AsyncMock(return_value=False)
     scheduler, inbound = _Scheduler(), _Inbound()
     flow = module.ManualPickingBatchFlow(
         repo, _Passages(("RETURN-1",)), scheduler, inbound, uuid_factory=lambda: "return-1"

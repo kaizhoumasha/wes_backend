@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 将 WMS 确认调度与 Transport 执行拆分到独立队列；人工拣料只阻塞同一货架面未闭合动作，并保留未闭合 BIN_MOVE 的执行围栏。
+
 ## [0.48.1.0] - 2026-09-18
 
 ### Added
