@@ -130,6 +130,33 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("face_done", [True, False])
+async def test_batch_flow_requests_return_batch_when_ready_bins_exist(face_done: bool) -> None:
+    module = import_module("manual_picking.application.batch_flow")
+    scheduler = _Scheduler()
+    flow = module.ManualPickingBatchFlow(
+        _Repository(face_done=face_done, return_due=True),
+        _Passages(("A000000001",)),
+        scheduler,
+        _Inbound(),
+        uuid_factory=lambda: "return-op",
+    )
+
+    assert await flow.advance_in_session(
+        object(),
+        workline_id=7,
+        workline_code="LINE-1",
+        task_id="PICK-1",
+        rack_id="R1",
+        rack_face="90",
+        return_location="CNV0302",
+        inlet_location="CNV0301",
+        now=datetime(2026, 9, 13, 12),
+    )
+    assert type(scheduler.intents[0][0]) is sdk.BinReturnBatchIntent
+
+
+@pytest.mark.asyncio
 async def test_frozen_face_schedules_second_transport_without_second_wms_request() -> None:
     module = import_module("manual_picking.application.batch_flow")
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
@@ -514,9 +541,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
 @pytest.mark.parametrize("face_done", [False, True])
 async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(face_done: bool) -> None:
     module = import_module("manual_picking.application.batch_flow")
-    passages = SimpleNamespace(
-        ready_return_prefix_for_update=AsyncMock(side_effect=AssertionError("new return lookup"))
-    )
+    passages = SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=()))
     repo = _Repository(face_done=face_done)
     scheduler = _Scheduler()
     flow = module.ManualPickingBatchFlow(repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1")
@@ -535,7 +560,7 @@ async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(
     assert len(scheduler.intents) == (0 if face_done else 1)
     if not face_done:
         assert type(scheduler.intents[0][0]) is sdk.BinInboundBatchIntent
-    passages.ready_return_prefix_for_update.assert_not_awaited()
+    passages.ready_return_prefix_for_update.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from .picking_task_prepare import PickingTaskPrepareCoordinator
 from .picking_task_prepare_batch import PickingTaskPrepareBatchService
 from .picking_task_queue_changed import PickingTaskQueueChangedService
 from .rack_departure import RackDepartureResultReader, RackDepartureScheduler
+from .rack_departure_owner import RackDepartureOwnerService
 from .return_rack_arrival import ReturnRackArrivalResultReader, ReturnRackArrivalScheduler
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "PickingTaskPrepareBatchService",
     "PickingTaskPrepareCoordinator",
     "PickingTaskQueueChangedService",
+    "RackDepartureOwnerService",
     "RackDepartureResultReader",
     "RackDepartureScheduler",
     "ReturnBatchOwnerService",

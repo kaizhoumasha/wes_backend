@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
 
-from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, TRANSFER_RACK
+from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET, TRANSFER_RACK
 from manual_picking.handlers import Scan1Handler, Scan2Handler, Scan3Handler, Scan4Handler
 from manual_picking.handlers.scan_types import PassageSnapshot, ScanFact, normal_bin_code, scanned_bin_identity
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
@@ -130,7 +130,8 @@ class ManualPickingScanFlow:
         elif evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
             result, role = await self._apply_device_event(db, evidence, workline, bindings)
         elif evidence.kind == InboundEvidenceKind.DEVICE_RESULT:
-            result = await self._apply_device_result(db, evidence, workline_id, bindings)
+            outlet_location = workline.position_bindings[OUTLET.slot_key]["location_id"]
+            result = await self._apply_device_result(db, evidence, workline_id, bindings, outlet_location)
             role = "DEVICE_RESULT"
         elif evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT:
             result = await self._apply_transport_result(db, evidence, workline_id)
@@ -473,7 +474,7 @@ class ManualPickingScanFlow:
         return decision.route
 
     async def _apply_device_result(  # noqa: PLR0911
-        self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str]
+        self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], outlet_location: str
     ) -> str | None:
         command_code = evidence.command_code
         if not command_code:
@@ -502,6 +503,13 @@ class ManualPickingScanFlow:
         if passage.scan4_command_code == command_code:
             if passage.return_state != "MOVE_PENDING" or command.status != CommandStatus.SUCCEEDED:
                 return None
+            projection = await self._positions.get(db, "BIN", passage.bin_code, for_update=True)
+            if projection is None or projection.workline_id != workline_id:
+                return None
+            projection.position_json = {"kind": "HANDOFF_POSITION", "location_code": outlet_location}
+            projection.position_unknown = False
+            projection.arrival_face = None
+            await self._positions.flush(db)
             passage.return_state = "READY"
             return "RETURN_BUFFER_READY"
         if passage.scan3_command_code == command_code and passage.scan3_route == "MOVE_LEFT":
