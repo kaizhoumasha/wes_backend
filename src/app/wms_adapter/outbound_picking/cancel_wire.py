@@ -8,7 +8,13 @@ from typing import Annotated, Any, Literal
 from pydantic import ConfigDict, Field, StringConstraints, model_validator
 
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
-from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, RackFaceText, StrictWireModel
+from src.app.wms_adapter.wire_common import (
+    NonnegativeMilliseconds,
+    OperationId,
+    RackFaceText,
+    RackFaceValues,
+    StrictWireModel,
+)
 from src.app.wms_diagnostics.observation import WmsCallObservation, validate_observed
 
 PICKING_TASK_CANCEL_OPERATION = "outbound.picking_task.cancel@v1"
@@ -17,13 +23,7 @@ BusinessIdentifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIE
 
 class CancelBinSourceRack(StrictWireModel):
     rack_id: BusinessIdentifier
-    rack_faces: Annotated[list[RackFaceText], Field(min_length=1)]
-
-    @model_validator(mode="after")
-    def reject_duplicate_faces(self) -> CancelBinSourceRack:
-        if len(set(self.rack_faces)) != len(self.rack_faces):
-            raise ValueError("rack_faces 不得重复")
-        return self
+    rack_face: RackFaceValues
 
 
 class CancelDirectPickSource(StrictWireModel):

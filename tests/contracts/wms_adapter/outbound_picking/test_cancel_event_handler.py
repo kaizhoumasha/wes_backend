@@ -38,7 +38,7 @@ def _plan_members_body() -> bytes:
             "data": {
                 "task_id": "PICK-20260811-001",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_faces": ["90", "270"]}],
+                "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "270"]}],
             },
         }
     ).encode()

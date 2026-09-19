@@ -123,7 +123,7 @@ async def executing_task_with_members(integration_session_factory):
                     "task_id": task_name,
                     "plan_revision": 1,
                     "target_rack": {"rack_id": "TARGET", "rack_face": "opaqueFace"},
-                    "added_bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_faces": ["90", "270"]}],
+                    "added_bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "270"]}],
                     "added_direct_picks": [
                         {
                             "source_locator": {
@@ -197,7 +197,7 @@ async def test_cancel_members_matches_selectors_and_marks_rows(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_faces": ["90"]}],
+            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
             "direct_pick_sources": [{"rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]}],
         }
     )
@@ -247,7 +247,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
             # 90 面真实存在；999 面不存在——整条请求必须原子拒绝，不部分写入。
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_faces": ["90", "999"]}],
+            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "999"]}],
         }
     )
 
@@ -279,7 +279,7 @@ async def test_cancel_members_rejects_reselecting_an_already_cancelled_member(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_faces": ["90"]}],
+            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
         }
     )
 

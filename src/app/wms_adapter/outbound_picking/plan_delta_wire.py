@@ -13,6 +13,7 @@ from src.app.wms_adapter.wire_common import (
     OperationId,
     PositiveInteger,
     RackFaceText,
+    RackFaceValues,
     StrictWireModel,
 )
 from src.app.wms_diagnostics.observation import WmsCallObservation, validate_observed
@@ -27,7 +28,7 @@ class PlanRackFace(StrictWireModel):
 
 class PlanBinSourceRack(StrictWireModel):
     rack_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
-    rack_faces: Annotated[list[RackFaceText], Field(min_length=1)]
+    rack_face: RackFaceValues
 
 
 class PlanRackSlot(PlanRackFace):

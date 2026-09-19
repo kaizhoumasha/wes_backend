@@ -35,7 +35,7 @@ def test_later_revision_accepts_both_source_kinds():
     payload["data"] = {
         "task_id": "PICK-1",
         "plan_revision": 2,
-        "added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": ["90", "270"]}],
+        "added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": ["90", "270"]}],
         "added_direct_picks": [
             {"source_locator": {"type": "RACK_SLOT", "rack_id": "RETURN", "rack_face": "C", "slot_id": "C-01"}}
         ],
@@ -43,10 +43,22 @@ def test_later_revision_accepts_both_source_kinds():
     assert parse_picking_task_plan_delta_event(payload).data.plan_revision == 2
 
 
-@pytest.mark.parametrize("rack_face", [[""], ["x" * 11], [90], ["90", None]])
+def test_bin_source_rack_accepts_single_face_string() -> None:
+    payload = valid_event()
+    payload["data"] = {
+        "task_id": "PICK-1",
+        "plan_revision": 2,
+        "added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": "270"}],
+    }
+    parsed = parse_picking_task_plan_delta_event(payload)
+    assert parsed.data.added_bin_source_racks
+    assert parsed.data.added_bin_source_racks[0].rack_face == ("270",)
+
+
+@pytest.mark.parametrize("rack_face", [[""], ["x" * 11], [90], ["90", None], ""])
 def test_bin_source_rack_rejects_invalid_face_array_members(rack_face):
     payload = valid_event()
-    payload["data"]["added_bin_source_racks"] = [{"rack_id": "BIN-RACK", "rack_faces": rack_face}]
+    payload["data"]["added_bin_source_racks"] = [{"rack_id": "BIN-RACK", "rack_face": rack_face}]
 
     with pytest.raises(ValidationError):
         parse_picking_task_plan_delta_event(payload)
@@ -67,8 +79,7 @@ def test_bin_source_rack_rejects_invalid_face_array_members(rack_face):
         {"added_bin_source_racks": None},
         {"added_direct_picks": []},
         {"added_bin_source_racks": []},
-        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": []}]},
-        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_faces": "90"}]},
+        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": []}]},
         {"plan_revision": 2},
         {"plan_revision": None},
         {"added_direct_picks": [{"source_locator": {"type": "BIN_CELL"}}]},
@@ -83,6 +94,21 @@ def test_invalid_data_preserves_original_envelope_for_evidence(patch):
     receipt = parse_picking_task_plan_delta_receipt(payload)
     assert isinstance(receipt, PickingTaskPlanDeltaInvalidData)
     assert receipt.raw_envelope == original
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": []}]},
+        {"added_bin_source_racks": [{"rack_id": "BIN-RACK", "rack_face": ["90", "90"]}]},
+    ],
+)
+def test_bin_source_rack_rejects_empty_or_duplicate(patch: dict[str, object]) -> None:
+    payload = valid_event()
+    payload["data"]["plan_revision"] = 2
+    payload["data"].update(patch)
+    with pytest.raises(ValidationError):
+        parse_picking_task_plan_delta_event(payload)
 
 
 @pytest.mark.parametrize("revision", [1, 2])
@@ -134,7 +160,7 @@ def test_source_faces_share_the_ten_character_boundary(face, source_kind):
     payload = valid_event()
     payload["data"] = {"task_id": "PICK-1", "plan_revision": 2}
     if source_kind == "bin_rack":
-        payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_faces": [face]}]
+        payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_face": [face]}]
     else:
         payload["data"]["added_direct_picks"] = [
             {"source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE", "rack_face": face, "slot_id": "1"}}
@@ -184,10 +210,11 @@ def test_openapi_uses_business_identifiers_and_nonnegative_timestamp():
     fields = schema["properties"]["data"]["properties"]
     for rack in (fields["target_rack"], fields["added_bin_source_racks"]["items"]):
         assert rack["properties"]["rack_id"]["pattern"] == BUSINESS_IDENTIFIER_PATTERN
-    source_faces = fields["added_bin_source_racks"]["items"]["properties"]["rack_faces"]
-    assert source_faces["type"] == "array"
-    assert source_faces["minItems"] == 1
-    assert source_faces["items"]["maxLength"] == 10
+    source_faces = fields["added_bin_source_racks"]["items"]["properties"]["rack_face"]
+    assert "oneOf" in source_faces
+    array_branch = next(branch for branch in source_faces["oneOf"] if branch.get("type") == "array")
+    assert array_branch["minItems"] == 1
+    assert array_branch["items"]["maxLength"] == 10
     slot = fields["added_direct_picks"]["items"]["properties"]["source_locator"]["properties"]
     for field in ("rack_id", "slot_id"):
         assert slot[field]["pattern"] == BUSINESS_IDENTIFIER_PATTERN

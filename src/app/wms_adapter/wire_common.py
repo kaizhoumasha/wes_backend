@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypeGuard, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from wes_plugin_sdk.validation import is_persistable_text as _is_persistable_text
 from wes_plugin_sdk.validation import validate_opaque_face
 
@@ -28,6 +28,43 @@ def _rack_face(value: str) -> str:
 
 
 RackFaceText = Annotated[str, StringConstraints(min_length=1, max_length=10), AfterValidator(_rack_face)]
+
+
+def _coerce_rack_faces(value: object) -> tuple[str, ...]:
+    """接受单值字符串或字符串数组，统一归一为去重有序 tuple。
+
+    字符级校验与 RackFaceText 完全等价；空集合 / 重复元素直接拒绝。
+    """
+
+    if isinstance(value, str):
+        faces: list[str] = [value]
+    elif isinstance(value, (list, tuple)):
+        faces = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("rack_face 元素必须是字符串")  # noqa: TRY004
+            faces.append(item)
+    else:
+        raise ValueError("rack_face 必须是字符串或字符串数组")  # noqa: TRY004
+    if not faces:
+        raise ValueError("rack_face 不得为空")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for face in faces:
+        # 与 RackFaceText.AfterValidator(_rack_face) 等价：触发 OpaqueFace 校验
+        validate_opaque_face(face, "rack_face")
+        if face in seen:
+            raise ValueError("rack_face 不得重复")
+        seen.add(face)
+        normalized.append(face)
+    return tuple(normalized)
+
+
+RackFaceValues = Annotated[
+    tuple[str, ...],
+    BeforeValidator(_coerce_rack_faces),
+    Field(min_length=1),
+]
 
 
 class StrictWireModel(BaseModel):
@@ -63,6 +100,7 @@ __all__ = [
     "PositiveInteger",
     "PositiveMilliseconds",
     "RackFaceText",
+    "RackFaceValues",
     "StrictWireModel",
     "is_wire_operation",
     "is_wire_operation_id",
