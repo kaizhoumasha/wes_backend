@@ -937,7 +937,7 @@ async def test_postgresql_concurrent_distinct_event_payloads_persist_independent
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
+@pytest.mark.parametrize("status", [CommandStatus.ACKNOWLEDGED])
 async def test_postgresql_unclosed_result_states_block_workline_close(
     integration_session_factory,
     status: CommandStatus,

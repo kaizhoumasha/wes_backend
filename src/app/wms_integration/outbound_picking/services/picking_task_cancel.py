@@ -116,16 +116,14 @@ class PickingTaskCancelService:
                     data=envelope.data,
                     evidence_id=cast("int", evidence.id),
                 )
-                if not matched:
-                    reason = "REFERENCE_CONFLICT"
-                else:
-                    if self._transport is not None:
-                        for transport_task_id in transport_task_ids:
-                            _ = await self._transport.finalize_unsent_task_in_session(
-                                db,
-                                transport_task_id,
-                                reason_code="TRANSPORT_WITHDRAWN_BEFORE_SEND",
-                            )
+                if self._transport is not None:
+                    for transport_task_id in transport_task_ids:
+                        _ = await self._transport.finalize_unsent_task_in_session(
+                            db,
+                            transport_task_id,
+                            reason_code="TRANSPORT_WITHDRAWN_BEFORE_SEND",
+                        )
+                if matched:
                     task.increment_version()
             if reason is not None:
                 _ = await self._evidence.record_conflict(

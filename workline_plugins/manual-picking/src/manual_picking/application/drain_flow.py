@@ -119,7 +119,7 @@ class ManualPickingDrainFlow:
                 outcome, _ = latest
                 if isinstance(outcome.result, BinBatchNoBatch):
                     continue
-                return (rack.rack_id, face) if rows else None
+                return rack.rack_id, face
         if rows:
             raise ValueError("drain READY 容量未闭合但所有货架面均已耗尽")
         return None

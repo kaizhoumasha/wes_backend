@@ -134,7 +134,7 @@ async def test_member_cancel_marks_all_matches_and_finalizes_each_unsent_transpo
     )
 
 
-async def test_member_cancel_is_atomic_when_any_selector_does_not_match() -> None:
+async def test_member_cancel_skips_selectors_that_do_not_match() -> None:
     service, task, evidence, evidences, _, cancellations, transport = setup_service(
         task_status=PickingTaskStatus.EXECUTING
     )
@@ -142,11 +142,11 @@ async def test_member_cancel_is_atomic_when_any_selector_does_not_match() -> Non
 
     result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
 
-    assert (result.code, result.reason_code) == ("CONFLICT", "REFERENCE_CONFLICT")
+    assert (result.code, result.reason_code) == ("RECEIVED", None)
     task.increment_version.assert_not_called()
     transport.finalize_unsent_task_in_session.assert_not_awaited()
-    assert evidence.apply_status is Status.RECONCILING
-    evidences.record_conflict.assert_awaited_once()
+    assert evidence.apply_status is Status.APPLIED
+    evidences.record_conflict.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

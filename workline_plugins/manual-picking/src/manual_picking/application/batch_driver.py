@@ -229,6 +229,7 @@ class ManualPickingBatchDriver:
                     correlation_id=f"drain:{decision.intent.operation_id}:rack:{previous_rack}",
                     step=DRAIN_RACK_OUT_STEP,
                     picking_task_id=None,
+                    source_evidence_id=decision.evidence_id,
                     now=timezone.now_for_db(),
                 )
             if departure is None or departure.status not in {"ACCEPTED", "SUCCEEDED", "FAILED"}:
@@ -306,6 +307,7 @@ class ManualPickingBatchDriver:
             correlation_id=f"drain:{decision.intent.operation_id}:rack:{rack_id}",
             step=DRAIN_RACK_OUT_STEP,
             picking_task_id=None,
+            source_evidence_id=decision.evidence_id,
             now=timezone.now_for_db(),
         )
 
@@ -350,29 +352,35 @@ class ManualPickingBatchDriver:
             return 0
         if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, current.rack_id, current.rack_face):
             return 0
+        if await self._advance_return_batch_before_rack_action(
+            db,
+            line,
+            task,
+            current.rack_id,
+            current.rack_face,
+            bindings[INLET.slot_key]["location_id"],
+            timezone.now_for_db(),
+        ):
+            return 1
         inlet_location = bindings[INLET.slot_key]["location_id"]
         progress = await self._flow.face_progress(
             db, line.id, task.task_id, current.rack_id, current.rack_face, inlet_location
         )
         if progress is None or not progress.feed_complete:
-            return int(
-                await self._flow.advance_in_session(
-                    db,
-                    workline_id=line.id,
-                    workline_code=line.line_code,
-                    task_id=task.task_id,
-                    rack_id=current.rack_id,
-                    rack_face=current.rack_face,
-                    return_location=bindings[OUTLET.slot_key]["location_id"],
-                    inlet_location=inlet_location,
-                    now=timezone.now_for_db(),
-                    allow_inbound=task.status == "EXECUTING",
-                )
+            advanced = await self._flow.advance_in_session(
+                db,
+                workline_id=line.id,
+                workline_code=line.line_code,
+                task_id=task.task_id,
+                rack_id=current.rack_id,
+                rack_face=current.rack_face,
+                return_location=bindings[OUTLET.slot_key]["location_id"],
+                inlet_location=inlet_location,
+                now=timezone.now_for_db(),
+                allow_inbound=task.status == "EXECUTING" and getattr(current, "cancelled_evidence_id", None) is None,
             )
-        if await self._advance_return_batch_before_rack_action(
-            db, line, task, current.rack_id, current.rack_face, inlet_location, timezone.now_for_db()
-        ):
-            return 1
+            if advanced or getattr(current, "cancelled_evidence_id", None) is None:
+                return int(advanced)
         rack_faces = faces_by_rack[current.rack_id]
         current_index = rack_faces.index(current)
         for next_face in rack_faces[current_index + 1 :]:
@@ -539,6 +547,7 @@ class ManualPickingBatchDriver:
         step: str,
         picking_task_id: int | None,
         now: Any,
+        source_evidence_id: int | None = None,
         current_location: str | None = None,
     ) -> int:
         location = current_location or line.position_bindings[FIVE_RACK.slot_key]["location_id"]
@@ -578,7 +587,7 @@ class ManualPickingBatchDriver:
             db,
             workline_id=line.id,
             picking_task_id=picking_task_id,
-            source_evidence_id=snapshot.evidence_id,
+            source_evidence_id=snapshot.evidence_id if source_evidence_id is None else source_evidence_id,
             correlation_id=correlation_id,
             step=step,
             rack_id=rack_id,

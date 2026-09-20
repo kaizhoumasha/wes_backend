@@ -1245,12 +1245,19 @@ class TransportService:
             ordered_authority_workline_id=None if is_debug else task.authority_workline_id,
             current_caller_workline_id=task.caller_json.get("workline_id", ""),
         )
-        await self._invalidate_other_task_positions(db, task, member)
         previous = (
-            await self._position_projections.get_current(db, member.object_type, member.object_id)
-            if not is_debug
-            else None
+            await self._repository.get_debug_position_projection(
+                db, member.object_type, member.object_id, for_update=True
+            )
+            if is_debug
+            else await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True)
         )
+        if previous is not None and previous.source_transport_task_id != task.transport_task_id:
+            source_task = await self._repository.get_task(db, previous.source_transport_task_id)
+            if source_task is not None and source_task.created_at >= task.created_at:
+                # 旧任务迟到回写不能推翻较新任务已确认的位置事实。
+                return
+        await self._invalidate_other_task_positions(db, task, member)
         allow_replacement = bool(
             not is_debug
             and task.authority_workline_id is not None
@@ -1314,6 +1321,10 @@ class TransportService:
         )
         for projection in projections:
             if projection is not None and projection.source_transport_task_id != task.transport_task_id:
+                source_task = await self._repository.get_task(db, projection.source_transport_task_id)
+                if source_task is not None and source_task.created_at >= task.created_at:
+                    # 旧任务迟到回写不能推翻较新任务已确认的位置事实。
+                    continue
                 projection.position_unknown = True
 
     def _apply_submit_result(

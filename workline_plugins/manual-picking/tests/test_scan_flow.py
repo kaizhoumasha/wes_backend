@@ -98,6 +98,9 @@ class _SourceRacks:
     async def has_applied_source_face(self, db, workline_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
         return (workline_id, rack_id, rack_face) == (7, "RACK-1", "90")
 
+    async def has_source_face(self, db, workline_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+        return (workline_id, rack_id, rack_face) == (7, "RACK-1", "90")
+
 
 class _Projections:
     def __init__(self, missing=None):  # type: ignore[no-untyped-def]
@@ -262,8 +265,7 @@ class _Commands:
         return any(
             request.workline_id == workline_id
             and request.device_code == device_code
-            and self.statuses.get(f"COMMAND-{index}", "SUCCEEDED")
-            in {"PENDING", "DISPATCHING", "ACKNOWLEDGED", "RECONCILING"}
+            and self.statuses.get(f"COMMAND-{index}", "SUCCEEDED") in {"PENDING", "DISPATCHING", "ACKNOWLEDGED"}
             for index, request in enumerate(self.requests, start=1)
         )
 
@@ -390,6 +392,29 @@ async def test_return_batch_result_uses_confirmed_source_and_does_not_pass_when_
     applied = await blocked.apply_in_session(object(), 31, workline_id=7)
     assert applied.disposition is BusinessEvidenceDisposition.DEFERRED
     assert result.apply_return_in_session.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_return_batch_result_accepts_a_cancelled_source_member_at_the_rack() -> None:
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="batch-cancelled",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
+    flow._source_racks.has_applied_source_face = AsyncMock(return_value=False)
+    evidence = _wms(33, InboundEvidenceKind.WMS_RESULT, "batch-cancelled", {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[33] = evidence
+
+    applied = await flow.apply_in_session(object(), 33, workline_id=7)
+
+    assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    result.apply_return_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio

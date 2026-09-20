@@ -50,7 +50,7 @@ async def seed_task(db, line, *, queued=False):
         dispatch_sequence=int(identity[-8:], 16),
         issued_at_ms=1,
         issued_evidence_id=evidence.id,
-        workline_id=None if queued else line.id,
+        workline_id=line.id,
     )
     db.add(task)
     await db.flush()

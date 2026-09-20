@@ -303,7 +303,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
             )
-            assert await repo.return_retry_due(
+            assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
             )
             assert await repo.return_retry_due(db, 7, "R1", "270", now, now + timedelta(microseconds=1))
@@ -336,7 +336,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                 )
             )
             await db.flush()
-            assert await repo.return_retry_due(
+            assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
             )
 
@@ -794,7 +794,7 @@ async def test_feed_complete_requires_published_transport_members_at_inlet(case:
 
 
 @pytest.mark.asyncio
-async def test_one_return_check_per_feed_gap_even_after_retry_or_new_return_bins() -> None:
+async def test_no_batch_never_reopens_return_check_for_the_same_face() -> None:
     module = import_module("manual_picking.application.batch_repository")
     chunk_created = datetime(2026, 9, 15, 12)
     completed = chunk_created + timedelta(seconds=1)
@@ -810,7 +810,7 @@ async def test_one_return_check_per_feed_gap_even_after_retry_or_new_return_bins
     db = SimpleNamespace(scalar=AsyncMock(return_value=99))  # Newly ready return bins cannot open another check.
     assert not await repo.return_retry_due(db, 7, "R1", "90", completed + timedelta(minutes=1), chunk_created)
     db.scalar.assert_not_awaited()
-    assert await repo.return_retry_due(
+    assert not await repo.return_retry_due(
         db, 7, "R1", "90", completed + timedelta(minutes=1), completed + timedelta(seconds=1)
     )
 

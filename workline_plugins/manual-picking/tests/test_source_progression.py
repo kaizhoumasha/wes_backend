@@ -288,6 +288,30 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
 
 
 @pytest.mark.asyncio
+async def test_cancelled_source_rack_does_not_start_new_inbound_batch() -> None:
+    driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
+    plans.rows[0].cancelled_evidence_id = 91
+    flow.complete.add(("R1", "90"))
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls == []
+    scheduler.create_in_session.assert_not_awaited()
+    assert creator.rotate[0]["target_face"] == "270"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_source_rack_continues_after_no_batch_without_inbound_progress() -> None:
+    driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
+    plans.rows[0].cancelled_evidence_id = 91
+    flow.complete.clear()
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls[0]["allow_inbound"] is False
+    assert creator.rotate[0]["target_face"] == "270"
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_source_rack_checks_return_buffer_before_rotation() -> None:
     driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
     flow.complete.add(("R1", "90"))

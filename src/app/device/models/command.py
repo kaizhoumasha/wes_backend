@@ -147,7 +147,6 @@ _UNCLOSED_STATUSES = frozenset(
         CommandStatus.PENDING,
         CommandStatus.DISPATCHING,
         CommandStatus.ACKNOWLEDGED,
-        CommandStatus.RECONCILING,
     }
 )
 _ALLOWED_TRANSITIONS: dict[CommandStatus, frozenset[CommandStatus]] = {
@@ -266,7 +265,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
 
     @property
     def occupies_device_slot(self) -> bool:
-        """未闭合命令仍参与调试与停线等本地安全判断。"""
+        """仅未完成派发的命令占用设备槽位；RECONCILING 只保留告警和对账。"""
 
         return CommandStatus(self.status) in _UNCLOSED_STATUSES
 

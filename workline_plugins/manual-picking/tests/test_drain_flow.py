@@ -97,6 +97,16 @@ async def test_no_batch_advances_to_the_next_ordered_face() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ready_return_batch_allows_departure_after_passage_is_closed() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
+    decision = SimpleNamespace(result=ready)
+    flow, _, _, history = _flow(rows=())
+    history.latest_return.return_value = (SimpleNamespace(result=object()), NOW)
+
+    assert await flow.active_rack_face(object(), _line(), decision) == ("R1", "90")
+
+
+@pytest.mark.asyncio
 async def test_decide_passes_default_limit_to_passages() -> None:
     flow, _, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),))
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select
@@ -201,35 +200,20 @@ class BatchRepository:
         return active is not None
 
     async def return_retry_due(
-        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime, after: datetime
+        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, _now: datetime, after: datetime
     ) -> bool:
         latest = await self._history.latest_return(db, workline_id=workline_id, rack_id=rack_id, rack_face=rack_face)
         if latest is None:
             return True
         outcome, completed_at = latest
+        # NO_BATCH 是本次回架决定的确定终态：继续当前货架的 CTU02/CTU03，最终由 drain 补发空载货架。
+        if isinstance(outcome.result, BinBatchNoBatch):
+            return False
         # 一次投料间隙只冻结一个回架决定；新 SCAN4 或 retry 到期不重开该机会。
         if completed_at >= after:
             return False
         result = outcome.result
-        if not isinstance(result, BinBatchNoBatch) or now >= completed_at + timedelta(
-            milliseconds=result.retry_after_ms
-        ):
-            return True
-        passages = cast("Any", ManualPickingPassage).__table__.c
-        evidences = cast("Any", InboundEvidence).__table__.c
-        new_ready = await db.scalar(
-            select(passages.id)
-            .join(InboundEvidence, evidences.command_code == passages.scan4_command_code)
-            .where(
-                passages.workline_id == workline_id,
-                passages.return_state == "READY",
-                evidences.kind == InboundEvidenceKind.DEVICE_RESULT,
-                evidences.published_at > completed_at,
-                evidences.published_at <= now,
-            )
-            .limit(1)
-        )
-        return new_ready is not None
+        return not isinstance(result, BinBatchNoBatch)
 
     async def inbound_progress(
         self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str

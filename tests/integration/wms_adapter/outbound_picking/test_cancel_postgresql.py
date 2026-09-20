@@ -237,7 +237,7 @@ async def test_cancel_members_matches_selectors_and_marks_rows(
     assert direct_row.cancelled_evidence_id == evidence_id
 
 
-async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
+async def test_cancel_members_skips_selectors_that_do_not_match(
     integration_session_factory, executing_task_with_members
 ) -> None:
     task_id, task_name = executing_task_with_members
@@ -246,7 +246,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            # 90 面真实存在；999 面不存在——整条请求必须原子拒绝，不部分写入。
+            # 90 面真实存在；999 面不存在——只取消当前仍可取消的成员。
             "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "999"]}],
         }
     )
@@ -257,7 +257,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
             db, task_id=task_id, data=data, evidence_id=evidence_id
         )
 
-    assert matched is False
+    assert matched is True
     assert transport_task_ids == ()
     async with integration_session_factory() as db:
         rack_row = await db.scalar(
@@ -267,7 +267,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
                 PickingTaskBinSourceRack.rack_face == "90",
             )
         )
-    assert rack_row.cancelled_evidence_id is None
+    assert rack_row.cancelled_evidence_id == evidence_id
 
 
 async def test_cancel_members_rejects_reselecting_an_already_cancelled_member(

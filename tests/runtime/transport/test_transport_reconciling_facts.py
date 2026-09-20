@@ -282,6 +282,46 @@ async def test_cross_task_position_stays_unconfirmed_when_original_task_later_re
     assert (await reconciling_service.get_task_snapshot(new.transport_task_id)).status == "SUCCEEDED"
 
 
+@pytest.mark.asyncio
+async def test_late_old_task_result_does_not_invalidate_newer_confirmed_projection(
+    reconciling_service,
+    db_engine,
+):
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID)
+    old = await reconciling_service.move_rack(
+        new_uuid7(), caller, "ordered-rack", RackPosition("A"), RackPosition("B"), "90"
+    )
+    new = await reconciling_service.move_rack(
+        new_uuid7(), caller, "ordered-rack", RackPosition("A"), RackPosition("C"), "90"
+    )
+    for handle, target in ((new, "C"), (old, "B")):
+        await record_valid_callback(
+            reconciling_service,
+            operation_id=f"ordered-{handle.transport_task_id[-8:]}",
+            transport_task_id=handle.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": "ordered-rack",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": target},
+                "arrival_face": "90",
+            },
+        )
+        assert await reconciling_service.process_pending_evidence(1) == 1
+
+    async with reconciling_service._sessions() as db:
+        projection = await db.scalar(
+            select(TransportDebugPositionProjection).where(TransportDebugPositionProjection.object_id == "ordered-rack")
+        )
+    assert projection is not None
+    assert projection.position_unknown is False
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "C"}
+    assert projection.source_transport_task_id == new.transport_task_id
+
+
 class FakeProvider:
     async def submit(
         self,

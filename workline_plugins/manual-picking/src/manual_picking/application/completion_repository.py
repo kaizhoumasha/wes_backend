@@ -91,6 +91,8 @@ class ManualPickingCompletionRepository:
         ):
             return False
         for source in sources:
+            if getattr(source, "cancelled_evidence_id", None) is not None:
+                continue
             progress = await self._batches.inbound_progress(
                 db,
                 line.id,

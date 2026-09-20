@@ -153,6 +153,7 @@ class ManualPickingScanFlow:
         if self._batch_reader is None or self._batch_result is None:
             return None
         positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
+        task = await self._tasks.get_executing_for_workline_for_update(db, workline.id)
         if evidence.operation == BIN_RETURN_BATCH_OPERATION:
             intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
             if intent.workline_code != workline.line_code:
@@ -172,9 +173,7 @@ class ManualPickingScanFlow:
                     or not await self._drains.arrival_matches(db, ingress, source, intent.rack_id, intent.rack_face)
                 ):
                     return None
-            elif not await self._source_racks.has_applied_source_face(
-                db, workline.id, intent.rack_id, intent.rack_face
-            ):
+            elif not await self._source_racks.has_source_face(db, workline.id, intent.rack_id, intent.rack_face):
                 return None
             readiness = await self._position_readiness(
                 db, source, workline.id, "RACK_POSITION", positions[FIVE_RACK.slot_key], intent.rack_face
@@ -190,7 +189,6 @@ class ManualPickingScanFlow:
                 confirmed_face=intent.rack_face,
                 return_location=positions["OUTLET"],
             )
-        task = await self._tasks.get_executing_for_workline_for_update(db, workline.id)
         if task is None:
             return None
         intent, _ = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
