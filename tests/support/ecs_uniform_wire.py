@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from redis import Redis
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
 from src.app.device.v1.ecs_callback import router as ecs_callback_router
 from src.celery_app.app import celery_app
+from src.utils.timezone import timezone
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVICE_COMMAND_QUEUE = "device-command"
@@ -100,7 +100,7 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
             "command_code": command["command_code"],
             "device_code": command["device_code"],
             "result": "SUCCESS",
-            "finish_time": int(datetime.now(UTC).timestamp() * 1000),
+            "finish_time": int(timezone.now_utc().timestamp() * 1000),
             "data": {"physical_result": "DONE"},
             "error_detail": None,
         }

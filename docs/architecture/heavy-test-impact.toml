@@ -1080,7 +1080,7 @@ reviewed_content_sha256 = "a15bf10520daa1c1a0333c87f0e18b42d1f2284ed357427b5f973
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/gateway.py"
 heavy_tests = []
-reviewed_content_sha256 = "a44804b0b87ebdbd92932ef83cbcedfffdb65d4b964c54b7bb1adb0ddcbb0851"
+reviewed_content_sha256 = "f4a7781fb15efef1ac577f6db34cfff73931733b911b122ac2683a59f09ffac0"
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/index_builder.py"

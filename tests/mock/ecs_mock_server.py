@@ -11,7 +11,6 @@ import os
 import random
 import sys
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -34,6 +33,7 @@ if str(DOCKER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(DOCKER_APP_ROOT))
 
 from src.app.callback.contracts.runtime_events import is_platform_control_event
+from src.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ class DeviceRuntimeState(BaseModel):
 
 
 def _now_ms() -> int:
-    return int(datetime.now(UTC).timestamp() * 1000)
+    return int(timezone.now_utc().timestamp() * 1000)
 
 
 def _calculate_signature(app_secret: str, app_id: str, timestamp: str, method: str, path: str) -> str:

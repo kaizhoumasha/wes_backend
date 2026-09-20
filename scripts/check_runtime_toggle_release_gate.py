@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +25,9 @@ def _split_checks(values: list[str]) -> frozenset[str]:
 
 def _parse_today(raw_value: str | None) -> date:
     if not raw_value:
-        return datetime.now(UTC).date()
+        from src.utils.timezone import timezone
+
+        return timezone.now().date()
     return date.fromisoformat(raw_value)
 
 

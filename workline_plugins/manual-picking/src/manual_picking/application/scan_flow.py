@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any, cast
 
 from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
@@ -546,7 +546,7 @@ class ManualPickingScanFlow:
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
             return None
         passage.wms_result = completed.result
-        passage.wms_completed_at = datetime.fromtimestamp(completed.completed_at / 1000, UTC).replace(tzinfo=None)
+        passage.wms_completed_at = timezone.to_utc(completed.completed_at / 1000).replace(tzinfo=None)
         passage.wms_completed_evidence_id = evidence.id
         passage.disposition = completed.result
         if completed.result == "NG":
