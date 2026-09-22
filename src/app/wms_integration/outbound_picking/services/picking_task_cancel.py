@@ -105,8 +105,6 @@ class PickingTaskCancelService:
                 else:
                     task.status = PickingTaskStatus.CANCELLED
                     task.increment_version()
-            elif task.status != PickingTaskStatus.EXECUTING:
-                reason = "STATE_CONFLICT"
             elif not isinstance(envelope.data, PickingTaskCancelMembersData):
                 raise RuntimeError("PLAN_MEMBERS 取消缺少成员合同")
             else:

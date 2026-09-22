@@ -1,0 +1,212 @@
+# AC1-AC42 唯一 primary owner registry。
+# UNVERIFIED 不是通过状态；表示当前仍缺绑定当前 staged snapshot 的确定性 owner。
+
+[[acceptance]]
+id = "AC1"
+status = "PARTIAL"
+owner = "tests/runtime/execution/test_wms_confirmation_service.py::test_confirmation_owner_foreign_key_resolves_in_a_fresh_process"
+
+[[acceptance]]
+id = "AC2"
+status = "PARTIAL"
+owner = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py::test_claim_is_exclusive_fifo_and_each_batch_is_capped_at_100"
+
+[[acceptance]]
+id = "AC3"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC4"
+status = "PARTIAL"
+owner = "tests/e2e/transport/test_transport_production_wiring.py::test_real_broker_route_worker_http_and_postgresql_converge_without_a_business_producer"
+
+[[acceptance]]
+id = "AC5"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC6"
+status = "PARTIAL"
+owner = "tests/runtime/execution/test_transport_decision_binding.py"
+
+[[acceptance]]
+id = "AC7"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_service.py"
+
+[[acceptance]]
+id = "AC8"
+status = "PARTIAL"
+owner = "workline_plugins/manual-picking/tests/test_business_loop.py::test_completed_task_drains_fifo_through_real_worker"
+
+[[acceptance]]
+id = "AC9"
+status = "PARTIAL"
+owner = "workline_plugins/manual-picking/tests/test_business_loop.py::test_completed_task_drains_fifo_through_real_worker"
+
+[[acceptance]]
+id = "AC10"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC11"
+status = "PARTIAL"
+owner = "tests/integration/transport/test_transport_evidence_transaction.py"
+
+[[acceptance]]
+id = "AC12"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_decision_binding.py"
+
+[[acceptance]]
+id = "AC13"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_reliable_recovery_postgresql.py::test_tx1_commit_survives_tx2_crash_and_replay"
+
+[[acceptance]]
+id = "AC14"
+status = "PARTIAL"
+owner = "tests/integration/transport/test_transport_callback_receipts.py::test_callback_receipt_and_evidence_roll_back_in_one_transaction"
+
+[[acceptance]]
+id = "AC15"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_projection_authority_fencing_postgresql.py"
+
+[[acceptance]]
+id = "AC16"
+status = "PARTIAL"
+owner = "tests/integration/transport/test_transport_evidence_transaction.py::test_concurrent_duplicate_callback_converges_to_received_and_duplicate"
+
+[[acceptance]]
+id = "AC17"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_reliable_recovery_postgresql.py::test_candidate_query_is_null_safe_stable_and_bounded"
+
+[[acceptance]]
+id = "AC18"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_projection_replay.py::test_ack_replay_delegates_to_invalidation_owner_without_provider_submit"
+
+[[acceptance]]
+id = "AC19"
+status = "PARTIAL"
+owner = "tests/runtime/execution/test_position_projection.py"
+
+[[acceptance]]
+id = "AC20"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_projection_replay.py"
+
+[[acceptance]]
+id = "AC21"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC22"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC23"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC24"
+status = "VERIFIED"
+owner = "tests/integration/execution/test_projection_domain_ordering_postgresql.py"
+
+[[acceptance]]
+id = "AC25"
+status = "VERIFIED"
+owner = "tests/architecture/test_position_projection_mutation_authority.py"
+
+[[acceptance]]
+id = "AC26"
+status = "PARTIAL"
+owner = "tests/runtime/execution/test_position_projection.py"
+
+[[acceptance]]
+id = "AC27"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_reliable_recovery_postgresql.py"
+
+[[acceptance]]
+id = "AC28"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_projection_domain_ordering_postgresql.py"
+
+[[acceptance]]
+id = "AC29"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_projection_replay.py"
+
+[[acceptance]]
+id = "AC30"
+status = "VERIFIED"
+owner = "tests/architecture/test_position_projection_mutation_authority.py"
+
+[[acceptance]]
+id = "AC31"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC32"
+status = "PARTIAL"
+owner = "tests/integration/transport/test_transport_projection_candidate_postgresql.py"
+
+[[acceptance]]
+id = "AC33"
+status = "UNVERIFIED"
+owner = ""
+
+[[acceptance]]
+id = "AC34"
+status = "VERIFIED"
+owner = "tests/integration/transport/test_transport_projection_candidate_postgresql.py"
+
+[[acceptance]]
+id = "AC35"
+status = "VERIFIED"
+owner = "tests/integration/transport/test_transport_projection_candidate_postgresql.py"
+
+[[acceptance]]
+id = "AC36"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_projection_authority_fencing_postgresql.py"
+
+[[acceptance]]
+id = "AC37"
+status = "VERIFIED"
+owner = "tests/integration/execution/test_projection_domain_ordering_postgresql.py"
+
+[[acceptance]]
+id = "AC38"
+status = "PARTIAL"
+owner = "tests/contracts/wms_adapter/test_transport_adapter.py"
+
+[[acceptance]]
+id = "AC39"
+status = "BLOCKED-EXTERNAL"
+owner = ""
+
+[[acceptance]]
+id = "AC40"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_projection_replay.py::test_ack_replay_rolls_back_retryable_candidate_and_continues_batch"
+
+[[acceptance]]
+id = "AC41"
+status = "PARTIAL"
+owner = "tests/runtime/transport/test_transport_projection_replay.py"
+
+[[acceptance]]
+id = "AC42"
+status = "PARTIAL"
+owner = "tests/integration/execution/test_reliable_recovery_postgresql.py"

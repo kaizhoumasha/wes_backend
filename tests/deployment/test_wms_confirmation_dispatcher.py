@@ -14,8 +14,10 @@ TASK_NAME = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_ba
 def test_wms_fulfillment_queue_contains_only_transport_tasks() -> None:
     assert {task_name for task_name, route in task_routes.items() if route == {"queue": "wms-fulfillment"}} == {
         "src.celery_app.tasks.transport.advance_transport_debug_runs_batch",
+        "src.celery_app.tasks.transport.replay_transport_ack_invalidations_batch",
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
         "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+        "src.celery_app.tasks.transport.replay_transport_projections_batch",
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
         "src.celery_app.tasks.transport.submit_transport_tasks_batch",
     }

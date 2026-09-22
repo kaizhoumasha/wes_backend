@@ -514,7 +514,7 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
 
 
 @pytest.mark.asyncio
-async def test_batch_driver_checks_return_buffer_before_creating_next_rack_action() -> None:
+async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_next_rack_action() -> None:
     module = import_module("manual_picking.application.batch_driver")
 
     class Flow:
@@ -525,7 +525,7 @@ async def test_batch_driver_checks_return_buffer_before_creating_next_rack_actio
             return False
 
         async def face_progress(self, *_args):  # type: ignore[no-untyped-def]
-            raise AssertionError("return batch must be checked before face progress")
+            return SimpleNamespace(feed_complete=True)
 
         async def advance_in_session(self, _db, **kwargs):  # type: ignore[no-untyped-def]
             self.calls.append(kwargs)

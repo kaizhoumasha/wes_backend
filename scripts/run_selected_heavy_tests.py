@@ -39,6 +39,26 @@ def _junit_counts(junit_path: Path) -> tuple[int, int]:
     )
 
 
+def _attach_worker_evidence(junit_path: Path) -> None:
+    evidence_root = os.getenv("HEAVY_WORKER_EVIDENCE_DIR")
+    if not evidence_root or not junit_path.is_file():
+        return
+    root = ET.parse(junit_path).getroot()  # noqa: S314 - 本进程刚生成的 JUnit XML。
+    evidence_path = Path(evidence_root)
+    directories = sorted(path for path in evidence_path.glob("*") if path.is_dir()) if evidence_path.is_dir() else []
+    if not directories:
+        return
+    locations = "\n".join(str(path) for path in directories)
+    for testcase in root.iter("testcase"):
+        if testcase.find("failure") is None and testcase.find("error") is None:
+            continue
+        system_out = testcase.find("system-out")
+        if system_out is None:
+            system_out = ET.SubElement(testcase, "system-out")
+        system_out.text = f"worker evidence directories:\n{locations}\n"
+    ET.ElementTree(root).write(junit_path, encoding="utf-8", xml_declaration=True)
+
+
 def run_selected_heavy_tests(*, manifest_path: Path, junit_path: Path, repo_root: Path) -> int:
     """运行已选择测试；pytest 失败、零执行或任一跳过均返回非零。"""
     try:
@@ -87,6 +107,7 @@ def run_selected_heavy_tests(*, manifest_path: Path, junit_path: Path, repo_root
         check=False,
         env=pytest_environment,
     )
+    _attach_worker_evidence(junit_path)
     if result.returncode != 0:
         return result.returncode
 

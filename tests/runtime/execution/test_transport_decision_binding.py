@@ -31,6 +31,22 @@ def test_binding_identity_uses_only_neutral_decision_fields() -> None:
     assert {"rack_replacement_id", "leg", "current_rack_id"}.isdisjoint(binding_type.model_fields)
 
 
+def test_binding_freezes_one_causal_token_for_replay() -> None:
+    binding = execution_models.TransportDecisionBinding(
+        correlation_id="operation-001",
+        step="PRIMARY_MOVE",
+        workline_id=11,
+        resource_fence_id="resource-001",
+        client_request_id="019cd8ce-34b7-7000-8000-000000000001",
+        source_evidence_id=31,
+        causal_token=17,
+    )
+
+    assert binding.causal_token == 17
+    assert "generation" not in execution_models.TransportDecisionBinding.model_fields
+    assert "retry_count" not in execution_models.TransportDecisionBinding.model_fields
+
+
 def test_binding_metadata_scopes_decision_identity_without_business_cardinality() -> None:
     table = execution_models.TransportDecisionBinding.__table__
     constraints = {constraint.name: constraint for constraint in table.constraints}
@@ -61,9 +77,15 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     class Bindings:
         def __init__(self) -> None:
             self.rows = {}
+            self.object_locks = []
+            self.events = []
+
+        async def lock_object_authority(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+            self.object_locks.append((kwargs["object_type"], kwargs["object_id"]))
+            self.events.append("object")
 
         async def lock_decision_identity(self, _db, **_kwargs):  # type: ignore[no-untyped-def]
-            pass
+            self.events.append("decision")
 
         async def get_by_decision_identity_for_update(self, _db, **kwargs):  # type: ignore[no-untyped-def]
             return self.rows.get((kwargs["workline_id"], kwargs["correlation_id"], kwargs["step"]))
@@ -100,6 +122,8 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     assert [call["client_request_id"] for call in transport.rotates] == ["rotate-request", "rotate-request"]
     assert all(call["position"] == RackPosition("FIVE-POS") for call in transport.rotates)
     assert all(call["rcs_template_id"] == RcsTemplateId.CTU02 for call in transport.rotates)
+    assert binding_repo.object_locks[:2] == [("RACK", "R1"), ("RACK", "R1")]
+    assert binding_repo.events[:2] == ["object", "decision"]
 
     source_return = {
         "workline_id": 7,

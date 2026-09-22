@@ -95,7 +95,7 @@ async def test_duplicate_wakes_create_one_root_and_one_wait_successor(rack_datab
                 ).all()
                 assert len(rows) == 2
                 assert rows[1].operation_id != rows[0].operation_id
-                assert rows[1].request_payload["data"]["previous_operation_id"] == rows[0].operation_id
+                assert rows[1].request_payload["data"] == rows[0].request_payload["data"]
     finally:
         server.close()
 
@@ -335,11 +335,12 @@ async def test_ctu03_acceptance_releases_window_and_success_closes_fence(rack_da
                 assert len(bindings) == (3 if released else 2)
                 assert len(await BatchRepository().occupied_source_rack_ids(db, line.id)) == 2
                 departure = await db.get(TransportTask, departure.id)
-                assert departure.status == ("SUCCEEDED" if released else "RECONCILING")
+                expected_status = "SUCCEEDED" if released else "RECONCILING" if reply == "CONFLICT" else "PENDING"
+                assert departure.status == expected_status
                 assert (departure.result_deadline_at is not None) == released
                 if not released:
                     assert departure.reason_code == (
-                        "TRANSPORT_SUBMIT_CONFLICT" if reply == "CONFLICT" else "TRANSPORT_DELIVERY_UNKNOWN"
+                        "TRANSPORT_SUBMIT_CONFLICT" if reply == "CONFLICT" else "SUBMIT_DELIVERY_UNKNOWN"
                     )
     finally:
         server.close()
@@ -383,7 +384,7 @@ async def test_completed_drain_reader_does_not_lock_confirmation_under_workline(
                     await locked.wait()
                     await wait_for_block(sessions, writer_pid, blocker)
                     current = await DrainRepository().current(db, line.id)
-                    assert current.result.rack_id == server.drain_result["rack_id"]
+                    assert current.result.racks[0].rack_id == server.drain_rack_id
                 except BaseException:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)

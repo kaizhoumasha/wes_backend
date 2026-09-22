@@ -3,13 +3,17 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import delete, func, select, text
 
 from src.app.execution.models import PositionProjection
-from src.app.execution.services.position_projection_service import PositionProjectionService
+from src.app.execution.services.position_projection_service import (
+    PositionProjectionService,
+    ProjectionEffectPhase,
+)
 from src.app.transport.contracts import (
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
     BinMove,
@@ -350,7 +354,7 @@ class _RotationProjectionPort:
     def __init__(self) -> None:
         self.read = asyncio.Event()
         self.release = asyncio.Event()
-        self._delegate = PositionProjectionService()
+        self._delegate = PositionProjectionService(binding_repository=_RuntimeBindingRepository())
 
     async def admit_transport_member(self, db: AsyncSession, **kwargs: object) -> None:
         await self._delegate.admit_transport_member(db, **kwargs)
@@ -376,6 +380,20 @@ class _RotationProjectionPort:
 
     async def apply_transport_result(self, db: object, **kwargs: object) -> object | None:
         return await self._delegate.apply_transport_result(db, **kwargs)
+
+
+class _RuntimeBindingRepository:
+    def __init__(self, *, causal_token: int | None = None) -> None:
+        self._causal_token = causal_token
+
+    async def get_by_client_request_id(self, db: AsyncSession, client_request_id: str) -> object | None:
+        task = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == client_request_id))
+        if task is None or task.authority_workline_id is None:
+            return None
+        return SimpleNamespace(
+            workline_id=task.authority_workline_id,
+            causal_token=self._causal_token if self._causal_token is not None else (task.id or 1),
+        )
 
 
 class _BlockedEvidenceReadRepository(TransportRepository):
@@ -542,6 +560,7 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     await record_valid_callback(
         setup_service,
@@ -617,6 +636,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     authority = await ensure_projection_authority_with_sessions(integration_session_factory)
     handle = await service.move_rack(
@@ -691,6 +711,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-concurrent": "90"})
     handle = await setup_service.move_bins(
@@ -940,6 +961,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     rack_id = f"rack-callback-before-reject-{uuid.uuid4().hex}"
     authority = await ensure_projection_authority_with_sessions(integration_session_factory)
@@ -994,7 +1016,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
 
     assert (await callback_task)["code"] == "RECEIVED"
     assert await submit_task == 0
-    assert await submit_service.submit_pending_tasks(1) == 1
+    assert await submit_service.submit_pending_tasks(1) == 0
     async with integration_session_factory() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
@@ -1039,6 +1061,7 @@ async def test_later_ctu03_result_supersedes_completed_arrival_position_fact(
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     rack_id = f"rack-ordered-return-{uuid.uuid4().hex}"
     authority = await ensure_projection_authority_with_sessions(integration_session_factory)
@@ -1146,6 +1169,8 @@ async def test_unordered_result_keeps_existing_projection_source_and_marks_it_un
                 arrival_face="90",
                 source_operation_id="projection-source-initial",
                 source_transport_task_id="projection-source-initial",
+                source_causal_token=1,
+                source_effect_phase=ProjectionEffectPhase.FINAL_RESULT,
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -1185,7 +1210,14 @@ async def test_unordered_result_keeps_existing_projection_source_and_marks_it_un
             projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == rack_id))
         assert projection is not None
         assert projection.source_transport_task_id == "projection-source-initial"
-        assert projection.position_unknown is True
+        assert projection.position_unknown is False
+        async with integration_session_factory() as db:
+            evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+            task = await db.scalar(
+                select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id)
+            )
+        assert evidence is not None and evidence.status == "CONFLICT"
+        assert task is not None and task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(
@@ -1306,6 +1338,7 @@ async def test_rotate_creation_freezes_explicit_position_despite_concurrent_move
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
     )
     rack_id = f"rack-rotate-race-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
@@ -1320,6 +1353,8 @@ async def test_rotate_creation_freezes_explicit_position_despite_concurrent_move
                 arrival_face="90",
                 source_operation_id="rotate-race-initial",
                 source_transport_task_id="rotate-race-initial",
+                source_causal_token=0,
+                source_effect_phase=ProjectionEffectPhase.FINAL_RESULT,
                 updated_at=timezone.now_for_db(),
             )
         )

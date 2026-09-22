@@ -1405,6 +1405,8 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260916_2253_4ce43f66c610_add_workline_operation_tail_index_to_.py",
         "migrations/versions/20260917_1436_e881b50b63b1_add_picking_task_cancellation_and_links.py",
         "migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_face_completions_table.py",
+        "migrations/versions/20260921_0724_106825879f00_冻结_transport_binding_causal_token.py",
+        "migrations/versions/20260921_0742_1d298eb00cc4_增加_projection_causal_provenance.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

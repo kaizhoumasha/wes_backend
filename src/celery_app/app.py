@@ -4,7 +4,10 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
+import logging
+import multiprocessing
 import os
+import socket
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
@@ -21,6 +24,8 @@ from src.core.logger import setup_logger
 
 from . import config
 from .async_runtime import celery_async_runtime
+
+_logger = logging.getLogger(__name__)
 
 # ============================================
 # Celery 应用实例
@@ -100,15 +105,35 @@ def on_worker_init(sender: Any | None = None, **kwargs: Any) -> None:
 def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
     """Worker 子进程启动时初始化基础设施（fork 后独立初始化）"""
     try:
-        # 子进程 fork 后 _initialized 标志被继承为 True，需要重置以重新配置日志
-        import src.core.logger as _logger_module
+        _logger.info(
+            "worker_process_init.start",
+            extra={
+                "event": "worker_process_init.start",
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "task_name": None,
+                "queue": next(iter(_frozen_worker_queues or ()), None),
+                "key_prefix": os.getenv("TRANSPORT_BROKER_KEY_PREFIX", ""),
+            },
+        )
+        # Prefork children inherit the configured logger; rebuilding loguru after
+        # fork can deadlock on a lock held by the parent during fork. Solo has
+        # no inherited logger and still initializes it normally.
+        if not multiprocessing.current_process().name.startswith("ForkPoolWorker"):
+            import src.core.logger as _logger_module
 
-        _logger_module._initialized = False
-        setup_logger()
+            _logger_module._initialized = False
+            setup_logger()
+        _logger.info("celery_app.imports.loaded", extra={"event": "celery_app.imports.loaded", "pid": os.getpid()})
         celery_async_runtime.initialize()
         if _frozen_worker_queues is None:
             raise RuntimeError("worker consume queues were not frozen before fork")
+        _logger.info("celery.worker_process.ready", extra={"event": "celery.worker_process.ready"})
     except Exception as exc:
+        _logger.exception(
+            "worker_process_init.failed",
+            extra={"event": "worker_process_init.failed", "pid": os.getpid(), "error_type": type(exc).__name__},
+        )
         raise WorkerTerminate("worker process initialization rejected") from exc
 
 

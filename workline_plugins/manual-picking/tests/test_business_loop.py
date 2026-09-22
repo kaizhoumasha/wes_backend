@@ -132,7 +132,7 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         arrival = {
             "kind": "RACK_MOVE",
             "outcome_revision": 1,
-            "rack_id": server.drain_result["rack_id"],
+            "rack_id": server.drain_rack_id,
             "status": "SUCCEEDED",
             "final_position": {
                 "kind": "RACK_POSITION",
@@ -198,6 +198,9 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         await callback(transport.service, returned, result)
         run(worker, APPLY)
         run(worker, PUBLISH)
+        run(worker, EXECUTE)
+        run(worker, ACTIVATE)
+        run(worker, DISPATCH)
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
@@ -361,6 +364,9 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
         run(worker, DISPATCH)  # WMS 权威空面决定 RACK_FACE_DONE，正常业务路径创建 CTU03。
+        run(worker, EXECUTE)
+        run(worker, ACTIVATE)
+        run(worker, DISPATCH)
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
         departure = await bound_transport(sessions, line.id, SOURCE_RACK_OUT_STEP)

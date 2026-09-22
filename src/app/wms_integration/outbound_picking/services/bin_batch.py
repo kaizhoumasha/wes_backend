@@ -217,6 +217,34 @@ class BinBatchResultReader:
         _, outcome = await self.read_return(db, evidence, workline_id=workline_id)
         return outcome, completed_at
 
+    async def has_unclosed_return(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+    ) -> bool:
+        confirmations = cast("Any", WmsConfirmation).__table__.c
+        confirmation_id = await db.scalar(
+            select(confirmations.id)
+            .where(
+                confirmations.workline_id == workline_id,
+                confirmations.operation == BIN_RETURN_BATCH_OPERATION,
+                confirmations.status.in_(
+                    (
+                        WmsConfirmationStatus.PENDING,
+                        WmsConfirmationStatus.DISPATCHING,
+                        WmsConfirmationStatus.RECONCILING,
+                    )
+                ),
+                confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
+            )
+            .limit(1)
+        )
+        return confirmation_id is not None
+
     async def latest_inbound(self, db: AsyncSession, *, workline_id: int, task_id: str, rack_id: str, rack_face: str):
         detail = await self.latest_inbound_detail(
             db, workline_id=workline_id, task_id=task_id, rack_id=rack_id, rack_face=rack_face

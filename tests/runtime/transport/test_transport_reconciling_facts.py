@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
+from src.app.execution.services.position_projection_service import PositionProjectionService
 from src.app.transport.contracts import (
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
     BinMove,
@@ -41,7 +42,7 @@ from tests.support.transport_projections import confirm_rack_faces, ensure_proje
 
 
 @pytest.mark.asyncio
-async def test_projection_port_fake_can_invalidate_existing_normal_projection(reconciling_service):
+async def test_normal_projection_invalidation_is_owned_by_position_projection_service(reconciling_service):
     service = reconciling_service
     handle = await service.move_rack(
         new_uuid7(), TransportCaller("SORTER"), "port-rack", RackPosition("A"), RackPosition("B"), "90"
@@ -55,9 +56,9 @@ async def test_projection_port_fake_can_invalidate_existing_normal_projection(re
         member = (await service._repository.list_members(db, handle.transport_task_id))[0]
         await service._repository.lock_position_result(db, member.object_type, member.object_id)
         await service._invalidate_other_task_positions(db, task, member)
-        assert projection.position_unknown is True
+        assert projection.position_unknown is False
         assert projection.source_transport_task_id == "other-task"
-        port.get_current.assert_awaited_once_with(db, "RACK", "port-rack", for_update=True)
+        port.get_current.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -124,7 +125,7 @@ async def test_position_fact_without_final_result_invalidates_other_task_aggrega
 async def test_projection_domains_remain_isolated_for_debug_transport(reconciling_service, monkeypatch, directions):
     from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
 
-    monkeypatch.setattr(PositionProjectionRepository, "lock_projection", AsyncMock())
+    monkeypatch.setattr(PositionProjectionRepository, "lock_object_authority", AsyncMock())
     service = reconciling_service
     authority = await ensure_projection_authority_with_sessions(service._sessions)
     handles = []
@@ -159,7 +160,7 @@ async def test_projection_domains_remain_isolated_for_debug_transport(reconcilin
             for model in (PositionProjection, TransportDebugPositionProjection):
                 projection = await db.scalar(select(model).where(model.object_id == "mixed-rack"))
                 if projection is not None:
-                    expected_unknown = (model is PositionProjection and directions[1] == "no_owner" and index == 1) or (
+                    expected_unknown = (
                         model is TransportDebugPositionProjection and directions == ("normal", "debug") and index == 1
                     )
                     assert projection.position_unknown is expected_unknown
@@ -338,6 +339,14 @@ class FakeProvider:
 @pytest_asyncio.fixture
 async def reconciling_service(db_engine: object) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    class RuntimeBindingRepository:
+        async def get_by_client_request_id(self, db: AsyncSession, client_request_id: str) -> object | None:
+            task = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == client_request_id))
+            if task is None or task.authority_workline_id is None:
+                return None
+            return SimpleNamespace(workline_id=task.authority_workline_id, causal_token=1)
+
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
@@ -348,7 +357,13 @@ async def reconciling_service(db_engine: object) -> TransportService:
             TransportTask,
         ):
             await db.execute(delete(model))
-    return TransportService(sessions, TransportRepository(), FakeProvider(), result_timeout=timedelta(seconds=420))
+    return TransportService(
+        sessions,
+        TransportRepository(),
+        FakeProvider(),
+        result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=RuntimeBindingRepository()),
+    )
 
 
 @pytest.mark.asyncio

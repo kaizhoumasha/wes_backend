@@ -29,16 +29,19 @@ def _line():
     return SimpleNamespace(id=7, line_code="LINE-1", position_bindings={"OUTLET": {"location_id": "OUTLET"}})
 
 
-def _flow(*, current=None, rows=()):
+def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
     repository = SimpleNamespace(
-        current=AsyncMock(return_value=current), has_completed_task=AsyncMock(return_value=True)
+        current=AsyncMock(return_value=current), has_completed_task=AsyncMock(return_value=completed_task)
     )
     passages = SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=list(rows)))
     prepare = SimpleNamespace(prepare_next_in_session=AsyncMock(return_value=SimpleNamespace(prepared=False)))
     scheduler = SimpleNamespace(create_in_session=AsyncMock())
     batch_scheduler = SimpleNamespace(create_in_session=AsyncMock())
-    history = SimpleNamespace(latest_return=AsyncMock(return_value=None))
-    tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=False))
+    history = SimpleNamespace(
+        has_unclosed_return=AsyncMock(return_value=False),
+        latest_return=AsyncMock(return_value=None),
+    )
+    tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=active_task))
     flow = ManualPickingDrainFlow(
         repository,
         passages,
@@ -63,6 +66,26 @@ async def test_decide_freezes_only_workline_and_required_slot_count() -> None:
         workline_code="LINE-1",
         required_slot_count=2,
     )
+
+
+@pytest.mark.asyncio
+async def test_decide_allows_ready_bins_to_drain_during_active_task_when_workstation_is_empty() -> None:
+    flow, scheduler, _, _ = _flow(
+        rows=(SimpleNamespace(bin_code="B1"),),
+        active_task=True,
+        completed_task=False,
+    )
+
+    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=True) == (1, None)
+    scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decide_keeps_active_task_gate_when_workstation_has_rack() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
+
+    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=False) == (0, None)
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -93,7 +116,47 @@ async def test_no_batch_advances_to_the_next_ordered_face() -> None:
         None,
     ]
 
-    assert await flow.active_rack_face(object(), _line(), decision) == ("R1", "270")
+    assert await flow.active_rack_face(object(), _line(), decision, "R1") == ("R1", "270", False)
+
+
+@pytest.mark.asyncio
+async def test_no_batch_on_all_reserved_faces_exhausts_the_last_rack() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)), sdk.RackFaceSequence("R2", ("270",))))
+    decision = SimpleNamespace(result=ready)
+    flow, _, _, history = _flow(rows=(SimpleNamespace(bin_code="B1"),))
+    history.latest_return.return_value = (sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000)), NOW)
+
+    assert await flow.active_rack_face(object(), _line(), decision, "R2") == ("R2", "270", True)
+
+
+@pytest.mark.asyncio
+async def test_no_batch_is_terminal_and_never_retries_return_batch() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
+    current = decision(ready)
+    flow, _, scheduler, history = _flow(current=current, rows=(SimpleNamespace(bin_code="B1"),))
+    flow.active_rack_face = AsyncMock(return_value=("R1", "90", True))
+
+    assert not await flow.return_in_session(object(), _line(), current, "R1", "OUTLET", NOW)
+    history.latest_return.assert_not_awaited()
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unclosed_return_obligation_keeps_original_identity() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
+    current = decision(ready)
+    flow, _, scheduler, history = _flow(current=current, rows=(SimpleNamespace(bin_code="B1"),))
+    history.has_unclosed_return.return_value = True
+    db = object()
+
+    assert not await flow.return_in_session(db, _line(), current, "R1", "OUTLET", NOW)
+    history.has_unclosed_return.assert_awaited_once_with(
+        db,
+        workline_id=7,
+        rack_id="R1",
+        rack_face="90",
+    )
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -103,7 +166,7 @@ async def test_ready_return_batch_allows_departure_after_passage_is_closed() -> 
     flow, _, _, history = _flow(rows=())
     history.latest_return.return_value = (SimpleNamespace(result=object()), NOW)
 
-    assert await flow.active_rack_face(object(), _line(), decision) == ("R1", "90")
+    assert await flow.active_rack_face(object(), _line(), decision, "R1") == ("R1", "90", False)
 
 
 @pytest.mark.asyncio
@@ -132,7 +195,7 @@ async def test_return_batch_uses_current_reserved_face_and_fifo_candidates() -> 
     decision = SimpleNamespace(result=ready)
     flow, _, scheduler, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),))
 
-    assert await flow.return_in_session(object(), _line(), decision, "OUTLET", NOW)
+    assert await flow.return_in_session(object(), _line(), decision, "R1", "OUTLET", NOW)
     intent = scheduler.create_in_session.await_args.args[1]
     assert (intent.rack_id, intent.rack_face) == ("R1", "90")
     assert [candidate.bin_code for candidate in intent.return_candidates] == ["B1"]

@@ -39,6 +39,18 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": 100},
         "options": {"expires": 30.0},
     },
+    "replay-transport-projections-batch": {
+        "task": "src.celery_app.tasks.transport.replay_transport_projections_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
+    "replay-transport-ack-invalidations-batch": {
+        "task": "src.celery_app.tasks.transport.replay_transport_ack_invalidations_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
     "publish-transport-outcomes-batch": {
         "task": "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
         "schedule": 10.0,
@@ -112,6 +124,8 @@ task_routes = {
     "src.celery_app.tasks.transport.submit_transport_tasks_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.process_transport_evidence_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.replay_transport_projections_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.replay_transport_ack_invalidations_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.publish_transport_outcomes_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.advance_transport_debug_runs_batch": {"queue": "wms-fulfillment"},
     # 核心任务 -> default 队列

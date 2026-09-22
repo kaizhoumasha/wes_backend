@@ -18,6 +18,7 @@ from src.app.execution.models import (
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
 from .batch_result import INBOUND_STEP
@@ -48,7 +49,7 @@ class BatchRepository:
         self._history = history or BinBatchResultReader()
 
     async def occupied_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """CTU01 按货架占窗；更晚的同架 CTU03 接纳后释放准入名额。"""
+        """CTU01 按当前活动任务/Drain 货架占窗；历史任务不冻结后续任务。"""
         bindings = TransportDecisionBinding.__table__
         transports = TransportTask.__table__
         departures = bindings.alias("departures")
@@ -79,6 +80,16 @@ class BatchRepository:
             .where(
                 bindings.c.workline_id == workline_id,
                 bindings.c.step.in_((SOURCE_RACK_IN_STEP, DRAIN_RACK_IN_STEP)),
+                or_(
+                    bindings.c.picking_task_id.is_(None),
+                    select(PickingTask.id)
+                    .where(
+                        PickingTask.id == bindings.c.picking_task_id,
+                        PickingTask.workline_id == workline_id,
+                        PickingTask.status.in_((PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING)),
+                    )
+                    .exists(),
+                ),
                 transports.c.status.in_(("PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED", "FAILED")),
                 ~accepted_departure,
             )
@@ -87,7 +98,7 @@ class BatchRepository:
         return set(rows.all())
 
     async def fenced_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """同架复用只等待最近离场的权威成功回调与精确最终位置。"""
+        """当前活动任务/Drain 的同架复用等待权威离场；历史任务不冻结后续任务。"""
         bindings = TransportDecisionBinding.__table__
         departures = TransportTask.__table__
         members = TransportMember.__table__.c
@@ -124,6 +135,16 @@ class BatchRepository:
             .where(
                 bindings.c.workline_id == workline_id,
                 bindings.c.step.in_(departure_steps),
+                or_(
+                    bindings.c.picking_task_id.is_(None),
+                    select(PickingTask.id)
+                    .where(
+                        PickingTask.id == bindings.c.picking_task_id,
+                        PickingTask.workline_id == workline_id,
+                        PickingTask.status.in_((PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING)),
+                    )
+                    .exists(),
+                ),
                 ~has_newer,
                 ~known_departure,
             )

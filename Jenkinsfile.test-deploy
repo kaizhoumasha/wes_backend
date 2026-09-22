@@ -513,8 +513,10 @@ try:
     celery_app.loader.import_default_modules()
     transport_required = {
         "src.celery_app.tasks.transport.advance_transport_debug_runs_batch",
+        "src.celery_app.tasks.transport.replay_transport_ack_invalidations_batch",
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
         "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+        "src.celery_app.tasks.transport.replay_transport_projections_batch",
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
         "src.celery_app.tasks.transport.submit_transport_tasks_batch",
     }

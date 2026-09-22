@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.3.0] - 2026-09-22
+
+### Added
+
+- 增加 Transport projection provenance、causal token、final-result/ACK-invalidation 独立恢复分支，以及 taskless drain recovery candidate。
+- 增加 prefork worker 生命周期诊断、失败日志归档、projection recovery 指标和 AC1-AC42 验收 owner 清单。
+
 ### Changed
 
 - 将 WMS 确认调度与 Transport 执行拆分到独立队列；人工拣料只阻塞同一货架面未闭合动作，并保留未闭合 BIN_MOVE 的执行围栏。
+- 统一 picking/drain/Transport projection 的 WorkLine authority guard、因果顺序和当前 owner 重验。
+
+### Fixed
+
+- 修复历史 PickingTask Binding 占用当前 FIVE_RACK 窗口、task 与 drain 并发取得 authority、重复 return-batch obligation 和 `NO_BATCH` 后无法继续离场的问题。
+- 修复 Celery prefork child 初始化、confirmation worker queue/result backend wiring，以及 PostgreSQL fixture 外键清理顺序。
+- 修复多货架 drain 被 WMS 返回顺序阻塞的问题；各 reservation 按自身权威到位事实独立推进，已到位货架不再等待列表中尚未到位的前序货架。
+- `outbound.picking_task.cancel@v1` 的 `PLAN_MEMBERS` 不再受 PickingTask 当前状态限制；WES 保存匹配成员的取消事实，最终业务结果由 WMS 对账。
 
 ## [0.48.1.0] - 2026-09-18
 

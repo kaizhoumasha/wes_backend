@@ -63,6 +63,14 @@ class TransportSubmitCode(StrEnum):
     DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
 
 
+class TransportRecoveryCapability(StrEnum):
+    """供应商对 pre-ACK ambiguous submit 的同 identity 恢复能力。"""
+
+    SAFE_SAME_IDENTITY_RESUBMIT = "SAFE_SAME_IDENTITY_RESUBMIT"
+    QUERY_BEFORE_RESUBMIT = "QUERY_BEFORE_RESUBMIT"
+    NO_SAFE_AUTOMATIC_RECOVERY = "NO_SAFE_AUTOMATIC_RECOVERY"
+
+
 class TransportIngressDisposition(StrEnum):
     RECEIVED = "RECEIVED"
     DUPLICATE = "DUPLICATE"
@@ -436,6 +444,8 @@ class TransportSubmitResult:
 
 
 class TransportProviderPort(Protocol):
+    recovery_capability: TransportRecoveryCapability
+
     async def submit(
         self,
         *,
@@ -509,6 +519,7 @@ __all__ = [
     "TransportPort",
     "TransportPosition",
     "TransportProviderPort",
+    "TransportRecoveryCapability",
     "TransportRequest",
     "TransportSubmitCode",
     "TransportSubmitResult",

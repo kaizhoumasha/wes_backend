@@ -38,6 +38,20 @@ async def sessions():
 
 
 async def issued(sessions, task_id="QUEUE-1", sequence=100):
+    async with sessions.begin() as db:
+        workline = await db.scalar(select(WorkLine).where(WorkLine.line_code == "QUEUE-LINE"))
+        if workline is None:
+            workline = WorkLine(
+                line_code="QUEUE-LINE",
+                line_name="Queue test",
+                line_type=LineType.MANUAL,
+                run_mode=WorkLineRunMode.AUTO,
+                is_active=True,
+                plugin_key="manual-picking",
+                plugin_version="0.1.0",
+            )
+            db.add(workline)
+            await db.flush()
     event = PickingTaskIssuedEvent.model_validate(
         {
             "operation_id": new_uuid7(),
@@ -46,13 +60,17 @@ async def issued(sessions, task_id="QUEUE-1", sequence=100):
             "data": {
                 "task_id": task_id,
                 "task_type": "MANUAL",
+                "workline_code": "QUEUE-LINE",
                 "queue_revision": 1,
                 "dispatch_sequence": sequence,
                 "not_before": 1000,
             },
         }
     )
-    result = await PickingTaskIssuedService(sessions).record(event, received_at=NOW)
+    result = await PickingTaskIssuedService(
+        sessions,
+        prepare_plugin_identities=(("manual-picking", "0.1.0"),),
+    ).record(event, received_at=NOW)
     assert result.code == "RECEIVED"
 
 
@@ -181,16 +199,8 @@ async def test_claimed_task_rejects_new_queue_update_but_replays_accepted_identi
     accepted = await service.record(accepted_event, received_at=NOW)
     assert accepted.code == "RECEIVED"
     async with sessions.begin() as db:
-        line = WorkLine(
-            line_code="QUEUE-LINE",
-            line_name="Queue test",
-            line_type=LineType.MANUAL,
-            run_mode=WorkLineRunMode.AUTO,
-            is_active=True,
-        )
-        db.add(line)
-        await db.flush()
-        await db.flush()
+        line = await db.scalar(select(WorkLine).where(WorkLine.line_code == "QUEUE-LINE").with_for_update())
+        assert line is not None
         task = await db.scalar(select(PickingTask).with_for_update())
         task.status = status
         task.workline_id = line.id
@@ -286,7 +296,13 @@ async def test_queue_update_and_issued_share_the_same_dispatch_sequence_fence(se
             "operation_id": new_uuid7(),
             "operation": "outbound.picking_task.issued@v1",
             "timestamp": 1,
-            "data": {"task_id": "COMPETING", "task_type": "MANUAL", "queue_revision": 1, "dispatch_sequence": 90},
+            "data": {
+                "task_id": "COMPETING",
+                "task_type": "MANUAL",
+                "workline_code": "QUEUE-LINE",
+                "queue_revision": 1,
+                "dispatch_sequence": 90,
+            },
         }
     )
     results = await asyncio.wait_for(

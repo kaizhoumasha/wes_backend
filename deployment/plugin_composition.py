@@ -135,7 +135,7 @@ def build_deployment_runtime(
         drains = DrainRepository(drain_reader)
 
         async def prepare_workline_reserved(db: AsyncSession, workline_id: int) -> bool:
-            return await workline_reserved(db, workline_id)
+            return await workline_reserved(db, workline_id) or await drains.is_reserved(db, workline_id)
 
         batch_scheduler = BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner))
         rack_creator = ReliableRackTransportCreator(transport_runtime.service)

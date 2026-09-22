@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sqlalchemy import ForeignKeyConstraint, Index, UniqueConstraint
+from sqlalchemy import BigInteger, Column, ForeignKeyConstraint, Index, UniqueConstraint, text
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -13,7 +13,7 @@ from src.database.schema_conf import SchemaType
 
 
 class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
-    """冻结一个插件 Transport Decision 对应的全局 client identity。"""
+    """冻结一个插件 Transport Decision 的 client identity 与因果 token。"""
 
     __tablename__: ClassVar[str] = "transport_decision_bindings"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
@@ -46,6 +46,15 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
         ),
         Index("ix_transport_decision_bindings_picking_task", "picking_task_id"),
         {"schema": SchemaType.BIZ.value},
+    )
+
+    causal_token: int = Field(
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            # PostgreSQL migration replaces this SQLite metadata fallback with its sequence default.
+            server_default=text("0"),
+        )
     )
 
     correlation_id: str = Field(min_length=1, max_length=160)

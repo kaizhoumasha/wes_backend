@@ -35,6 +35,7 @@ register_required_sqlmodel_metadata()
 _CONTEXT_KEYS = {
     "transport.submit.batch_completed": {"event", "processed_count", "requested_limit"},
     "transport.task.reconciling": {"event", "transport_task_id", "operation_id", "reason"},
+    "transport.task.submit_delivery_unknown": {"event", "transport_task_id", "reason"},
     "transport.submit.late_writeback": {"event", "transport_task_id", "operation_id", "reason"},
     "transport.submit.lease_replaced": {"event", "transport_task_id", "operation_id", "reason"},
     "transport.outcome.publish_failed": {"event", "transport_task_id", "outcome_version", "reason"},
@@ -159,7 +160,7 @@ async def test_submit_batch_completed_log_has_stable_summary(
 
 
 @pytest.mark.asyncio
-async def test_reconciling_log_has_task_operation_and_reason_context(
+async def test_pre_ack_ambiguity_log_has_task_and_reason_context(
     db_engine: object,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -177,9 +178,9 @@ async def test_reconciling_log_has_task_operation_and_reason_context(
 
     assert await service.reconcile_overdue_tasks(1) == 1
 
-    record = _event(caplog, "transport.task.reconciling")
+    record = _event(caplog, "transport.task.submit_delivery_unknown")
     assert record.transport_task_id == task_id
-    assert record.reason == "TRANSPORT_DELIVERY_UNKNOWN"
+    assert record.reason == "SUBMIT_DELIVERY_UNKNOWN"
 
 
 @pytest.mark.asyncio

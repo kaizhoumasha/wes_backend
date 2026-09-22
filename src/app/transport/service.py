@@ -18,6 +18,10 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from sqlalchemy.exc import IntegrityError
 from wes_plugin_sdk.validation import is_persistable_text
 
+from src.app.execution.services.position_projection_service import (
+    PositionProjectionInvariantViolation,
+    PositionProjectionRetryableError,
+)
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
 from src.app.transport.callback_json import canonical_callback_json
@@ -65,6 +69,7 @@ from src.app.transport.models import (
     TransportMember,
     TransportTask,
 )
+from src.app.transport.projection_metrics import record_batch, record_retryable, record_stale_suppressed
 from src.app.transport.submit_snapshot import (
     SUBMIT_OPERATION,
     build_submit_data,
@@ -202,6 +207,7 @@ class PositionProjectionPort(Protocol):
         authority: TransportExecutionAuthority | None,
         object_type: str,
         object_id: str,
+        client_request_id: str,
         position: dict[str, Any] | None,
         position_unknown: bool,
         arrival_face: str | None,
@@ -217,6 +223,7 @@ class PositionProjectionPort(Protocol):
         authority: TransportExecutionAuthority | None,
         object_type: str,
         object_id: str,
+        client_request_id: str,
         operation_id: str,
         transport_task_id: str,
         updated_at: datetime,
@@ -730,6 +737,39 @@ class TransportService:
                 request_body = task.submit_request_body.encode("utf-8")
                 frozen_request_body_digest = task.submit_request_body_digest
 
+            # The candidate query is only the first fence.  Recheck the
+            # authoritative ACK/evidence immediately before the adapter call;
+            # a callback may have committed after the claim transaction.
+            async with self._sessions.begin() as db:
+                current = await self._get_task_for_projection_update(db, task_id)
+                check_now = timezone.now_for_db()
+                claim_matches = (
+                    current is not None
+                    and current.status == TransportTaskStatus.PENDING.value
+                    and current.reason_code is None
+                    and current.submit_claim_token == token
+                    and current.submit_claim_until is not None
+                    and current.submit_claim_until >= check_now
+                )
+                if not claim_matches or await self._repository.has_evidence(db, task_id):
+                    if claim_matches and current is not None:
+                        await self._repository.release_unsent_claim(db, current, token=token)
+                    processed += 1
+                    if time.monotonic() - started >= _SUBMIT_CONTINUE_BUDGET_SECONDS:
+                        break
+                    continue
+                task = current
+                # Count only an actual physical-submit attempt.  Claiming a
+                # candidate is not itself a provider call and must not consume
+                # the pre-ACK retry budget.
+                current.submit_attempt_count += 1
+                current.send_started_at = check_now
+                current.updated_at = check_now
+                await db.flush()
+                operation_id = current.submit_operation_id
+                request_body = current.submit_request_body.encode("utf-8")
+                frozen_request_body_digest = current.submit_request_body_digest
+
             diagnostics = None
             observation = None
             with suppress(Exception):
@@ -807,21 +847,13 @@ class TransportService:
                     has_evidence=has_evidence,
                     operation_id=operation_id,
                 )
-                may_have_started = current.status == TransportTaskStatus.ACCEPTED.value or (
-                    current.status == TransportTaskStatus.RECONCILING.value
-                    and current.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+                await self._invalidate_submission_positions_if_current(
+                    db,
+                    current,
+                    previous_outcome=previous_outcome,
+                    operation_id=operation_id,
+                    updated_at=writeback_now,
                 )
-                if may_have_started and (current.status, current.reason_code) != previous_outcome:
-                    for member in await self._repository.list_members(db, current.transport_task_id):
-                        _ = await self._position_projections.invalidate_transport_member(
-                            db,
-                            authority=_execution_authority_from_task(current),
-                            object_type=member.object_type,
-                            object_id=member.object_id,
-                            operation_id=operation_id,
-                            transport_task_id=current.transport_task_id,
-                            updated_at=writeback_now,
-                        )
                 if self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     if current.outcome_version > current.published_outcome_version:
@@ -861,7 +893,7 @@ class TransportService:
                 candidate = await self._repository.get_evidence(db, evidence_id)
                 if candidate is None or candidate.status != "PENDING" or candidate.claim_token != token:
                     continue
-                task = await self._repository.get_task(db, candidate.transport_task_id, for_update=True)
+                task = await self._get_task_for_projection_update(db, candidate.transport_task_id)
                 evidence = await self._repository.get_evidence(db, evidence_id, for_update=True)
                 if evidence is None or evidence.status != "PENDING" or evidence.claim_token != token:
                     continue
@@ -882,7 +914,7 @@ class TransportService:
                                 continue
                         else:
                             raise TransportContractError("unsupported evidence operation")
-                    except TransportContractError:
+                    except (TransportContractError, PositionProjectionInvariantViolation):
                         _mark_evidence_conflict(evidence, "TRANSPORT_EVIDENCE_CONFLICT", timezone.now_for_db())
                         if task.status not in {
                             TransportTaskStatus.REJECTED.value,
@@ -1085,10 +1117,226 @@ class TransportService:
             remaining = limit - len(ambiguous)
             overdue = await self._repository.claim_overdue_tasks(db, limit=remaining, now=now) if remaining > 0 else []
             for task in ambiguous:
-                self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_DELIVERY_UNKNOWN", now)
+                # Pre-ACK uncertainty stays in the physical-submit domain.  We
+                # cannot prove that the provider did not accept this identity,
+                # so never turn it into the post-ACK reconciliation state.
+                _mark_submit_delivery_unknown(task, now)
             for task in overdue:
                 self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_RESULT_TIMEOUT", now)
         return len(ambiguous) + len(overdue)
+
+    async def _is_current_projection_authority(self, db: AsyncSession, task: TransportTask) -> bool:
+        """Revalidate the typed business owner before any current projection mutation."""
+
+        from sqlalchemy import select
+
+        from src.app.execution.models import TransportDecisionBinding
+        from src.app.wms_integration.outbound_picking.models.picking_task import PickingTask, PickingTaskStatus
+
+        binding = await db.scalar(
+            select(TransportDecisionBinding).where(
+                TransportDecisionBinding.client_request_id == task.client_request_id,
+                TransportDecisionBinding.workline_id == task.authority_workline_id,
+            )
+        )
+        if binding is None:
+            # Explicit core callers can own a WorkLine-scoped Transport without
+            # a plugin Binding. Plugin-owned taskless actions always persist one.
+            return True
+        if binding.picking_task_id is not None:
+            picking = await db.get(PickingTask, binding.picking_task_id)
+            current = bool(
+                picking is not None and picking.status in {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}
+            )
+            if not current:
+                record_stale_suppressed()
+            return current
+        current = bool(binding.id is not None and await self._repository.is_current_drain_binding(db, binding.id))
+        if not current:
+            record_stale_suppressed()
+        return current
+
+    async def _lock_projection_authority_root(self, db: AsyncSession, task: TransportTask) -> None:
+        """Acquire the WorkLine root before any projection/object fence."""
+        if task.authority_workline_id is None:
+            return
+        from src.app.workline.repositories import WorkLineRepository
+
+        line = await WorkLineRepository().get_for_authority_update(db, task.authority_workline_id)
+        if line is None:
+            raise PositionProjectionInvariantViolation("projection authority WorkLine is missing")
+
+    async def _get_task_for_projection_update(self, db: AsyncSession, task_id: str) -> TransportTask | None:
+        """Acquire the frozen WorkLine authority before the mutable task row."""
+
+        snapshot = await self._repository.get_task(db, task_id)
+        if snapshot is None:
+            return None
+        frozen_workline_id = snapshot.authority_workline_id
+        await self._lock_projection_authority_root(db, snapshot)
+        task = await self._repository.get_task(db, task_id, for_update=True)
+        if task is not None and task.authority_workline_id != frozen_workline_id:
+            raise PositionProjectionInvariantViolation("Transport projection authority changed during lock acquisition")
+        return task
+
+    async def _invalidate_submission_positions_if_current(
+        self,
+        db: AsyncSession,
+        task: TransportTask,
+        *,
+        previous_outcome: tuple[str, str | None],
+        operation_id: str,
+        updated_at: datetime,
+    ) -> None:
+        may_have_started = task.status == TransportTaskStatus.ACCEPTED.value or (
+            task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+        )
+        if not may_have_started or (task.status, task.reason_code) == previous_outcome:
+            return
+        await self._lock_projection_authority_root(db, task)
+        if not await self._is_current_projection_authority(db, task):
+            return
+        for member in await self._repository.list_members(db, task.transport_task_id):
+            _ = await self._position_projections.invalidate_transport_member(
+                db,
+                authority=_execution_authority_from_task(task),
+                object_type=member.object_type,
+                object_id=member.object_id,
+                client_request_id=task.client_request_id,
+                operation_id=operation_id,
+                transport_task_id=task.transport_task_id,
+                updated_at=updated_at,
+            )
+
+    async def replay_final_result_projections(self, limit: int) -> int:
+        _validate_limit(limit)
+        async with self._sessions.begin() as db:
+            candidates = await self._repository.list_final_result_projection_candidates(db, limit=limit)
+        replayed = 0
+        for task_id, object_type, object_id, operation_id in candidates:
+            try:
+                async with self._sessions.begin() as db:
+                    task = await self._get_task_for_projection_update(db, task_id)
+                    if task is None or task.authority_workline_id is None:
+                        continue
+                    from sqlalchemy import select
+
+                    from src.app.execution.models import TransportDecisionBinding
+
+                    binding = await db.scalar(
+                        select(TransportDecisionBinding).where(
+                            TransportDecisionBinding.client_request_id == task.client_request_id,
+                            TransportDecisionBinding.workline_id == task.authority_workline_id,
+                        )
+                    )
+                    if binding is None or not await self._is_current_projection_authority(db, task):
+                        continue
+                    member = next(
+                        (
+                            item
+                            for item in await self._repository.list_members(db, task_id)
+                            if item.object_type == object_type and item.object_id == object_id
+                        ),
+                        None,
+                    )
+                    if (
+                        member is None
+                        or member.last_operation_id != operation_id
+                        or member.status not in {"SUCCEEDED", "FAILED"}
+                    ):
+                        continue
+                    await self._position_projections.apply_transport_result(
+                        db,
+                        authority=_execution_authority_from_task(task),
+                        object_type=object_type,
+                        object_id=object_id,
+                        client_request_id=task.client_request_id,
+                        position=member.final_position_json,
+                        position_unknown=member.position_unknown,
+                        arrival_face=member.arrival_face,
+                        operation_id=operation_id,
+                        transport_task_id=task.transport_task_id,
+                        updated_at=member.updated_at,
+                    )
+                    replayed += 1
+            except PositionProjectionRetryableError:
+                record_retryable()
+                logger.warning(
+                    "transport.projection_replay.retryable branch=final_result task_id=%s object_type=%s",
+                    task_id,
+                    object_type,
+                )
+                continue
+        logger.info(
+            "transport.projection_replay.batch branch=final_result candidates=%s replayed=%s",
+            len(candidates),
+            replayed,
+        )
+        record_batch(candidate_count=len(candidates), replayed_count=replayed)
+        return replayed
+
+    async def replay_ack_invalidations(self, limit: int) -> int:
+        """Apply durable ACK-success uncertainty without resubmitting physical work."""
+        _validate_limit(limit)
+        async with self._sessions.begin() as db:
+            candidates = await self._repository.list_ack_invalidation_projection_candidates(db, limit=limit)
+        replayed = 0
+        for task_id, object_type, object_id, operation_id in candidates:
+            try:
+                async with self._sessions.begin() as db:
+                    task = await self._get_task_for_projection_update(db, task_id)
+                    if task is None or task.status != TransportTaskStatus.ACCEPTED.value:
+                        continue
+                    if task.authority_workline_id is None or task.submit_operation_id != operation_id:
+                        continue
+                    from sqlalchemy import select
+
+                    from src.app.execution.models import TransportDecisionBinding
+
+                    binding = await db.scalar(
+                        select(TransportDecisionBinding).where(
+                            TransportDecisionBinding.client_request_id == task.client_request_id,
+                            TransportDecisionBinding.workline_id == task.authority_workline_id,
+                        )
+                    )
+                    if binding is None or not await self._is_current_projection_authority(db, task):
+                        continue
+                    member = next(
+                        (
+                            item
+                            for item in await self._repository.list_members(db, task_id)
+                            if item.object_type == object_type and item.object_id == object_id
+                        ),
+                        None,
+                    )
+                    if member is None:
+                        continue
+                    await self._position_projections.invalidate_transport_member(
+                        db,
+                        authority=_execution_authority_from_task(task),
+                        object_type=object_type,
+                        object_id=object_id,
+                        client_request_id=task.client_request_id,
+                        operation_id=operation_id,
+                        transport_task_id=task.transport_task_id,
+                        updated_at=task.updated_at,
+                    )
+                    replayed += 1
+            except PositionProjectionRetryableError:
+                record_retryable()
+                logger.warning(
+                    "transport.projection_replay.retryable branch=ack_invalidation task_id=%s object_type=%s",
+                    task_id,
+                    object_type,
+                )
+                continue
+        logger.info(
+            "transport.projection_replay.batch branch=ack_invalidation candidates=%s replayed=%s",
+            len(candidates),
+            replayed,
+        )
+        record_batch(candidate_count=len(candidates), replayed_count=replayed)
+        return replayed
 
     async def publish_pending_outcomes(self, limit: int, publisher: TransportOutcomePublisher) -> int:
         _validate_limit(limit)
@@ -1236,47 +1484,23 @@ class TransportService:
         updated_at: datetime,
     ) -> None:
         is_debug = task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID
-        position_unknown = position_unknown or await self._repository.has_other_position_facts(
-            db,
-            object_type=member.object_type,
-            object_id=member.object_id,
-            transport_task_id=task.transport_task_id,
-            current_created_at=task.created_at,
-            ordered_authority_workline_id=None if is_debug else task.authority_workline_id,
-            current_caller_workline_id=task.caller_json.get("workline_id", ""),
-        )
-        previous = (
-            await self._repository.get_debug_position_projection(
+        if is_debug:
+            previous = await self._repository.get_debug_position_projection(
                 db, member.object_type, member.object_id, for_update=True
             )
-            if is_debug
-            else await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True)
-        )
-        if previous is not None and previous.source_transport_task_id != task.transport_task_id:
-            source_task = await self._repository.get_task(db, previous.source_transport_task_id)
-            if source_task is not None and source_task.created_at >= task.created_at:
-                # 旧任务迟到回写不能推翻较新任务已确认的位置事实。
-                return
-        await self._invalidate_other_task_positions(db, task, member)
-        allow_replacement = bool(
-            not is_debug
-            and task.authority_workline_id is not None
-            and previous is not None
-            and previous.source_transport_task_id != task.transport_task_id
-            and previous.source_operation_id
-            and not position_unknown
-            and await self._repository.previous_position_fact_closed_before(
+            if previous is not None and previous.source_transport_task_id != task.transport_task_id:
+                source_task = await self._repository.get_task(db, previous.source_transport_task_id)
+                if source_task is not None and source_task.created_at >= task.created_at:
+                    return
+            position_unknown = position_unknown or await self._repository.has_other_position_facts(
                 db,
                 object_type=member.object_type,
                 object_id=member.object_id,
-                previous_transport_task_id=previous.source_transport_task_id,
-                previous_operation_id=previous.source_operation_id,
+                transport_task_id=task.transport_task_id,
                 current_created_at=task.created_at,
-                current_authority_workline_id=task.authority_workline_id,
+                ordered_authority_workline_id=None,
                 current_caller_workline_id=task.caller_json.get("workline_id", ""),
             )
-        )
-        if is_debug:
             _ = await self._repository.apply_debug_position_projection(
                 db,
                 object_type=member.object_type,
@@ -1289,18 +1513,25 @@ class TransportService:
                 updated_at=updated_at,
             )
             return
+        if not await self._is_current_projection_authority(db, task):
+            logger.info(
+                "transport.projection_mutation.stale_suppressed task_id=%s object_type=%s",
+                task.transport_task_id,
+                member.object_type,
+            )
+            return
         _ = await self._position_projections.apply_transport_result(
             db,
             authority=_execution_authority_from_task(task),
             object_type=member.object_type,
             object_id=member.object_id,
+            client_request_id=task.client_request_id,
             position=position_json,
             position_unknown=position_unknown,
             arrival_face=arrival_face,
             operation_id=evidence.operation_id,
             transport_task_id=task.transport_task_id,
             updated_at=updated_at,
-            allow_replacement=allow_replacement,
         )
 
     async def _invalidate_other_task_positions(
@@ -1308,16 +1539,12 @@ class TransportService:
     ) -> None:
         # 调用方持有同一对象事务锁。联调事实只影响联调投影，不能污染业务投影。
         is_debug = task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID
+        if not is_debug:
+            return
         projections = (
-            (
-                await self._repository.get_debug_position_projection(
-                    db, member.object_type, member.object_id, for_update=True
-                ),
-            )
-            if is_debug
-            else (
-                await self._position_projections.get_current(db, member.object_type, member.object_id, for_update=True),
-            )
+            await self._repository.get_debug_position_projection(
+                db, member.object_type, member.object_id, for_update=True
+            ),
         )
         for projection in projections:
             if projection is not None and projection.source_transport_task_id != task.transport_task_id:
@@ -1423,7 +1650,10 @@ class TransportService:
                 return
             task.next_submit_at = now + _RETRY_DELAY
             return
-        self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_DELIVERY_UNKNOWN", now)
+        # A submit response without authoritative ACK is still pre-ACK
+        # ambiguity.  Keep the original identity in PENDING; only a later
+        # accepted fact may cross into post-ACK reconciliation.
+        _mark_submit_delivery_unknown(task, now)
 
     def _set_outcome(self, task: TransportTask, status: TransportTaskStatus, reason_code: str, now: Any) -> None:
         task.status = status.value
@@ -1480,6 +1710,7 @@ class TransportService:
             if milestone == "TARGET_PLACED" and payload.get("final_position") == member.final_position_json:
                 return
             raise TransportContractError("position evidence contradicts definite terminal fact")
+        await self._lock_projection_authority_root(db, task)
         await self._repository.lock_position_result(db, member.object_type, member.object_id)
         now = timezone.now_for_db()
         if milestone == "POSITION_UNKNOWN":
@@ -1569,6 +1800,8 @@ class TransportService:
         )
         if required_members and not _has_applied_exact_target_position_evidence(required_members, positions):
             return False
+
+        await self._lock_projection_authority_root(db, task)
 
         now = timezone.now_for_db()
         validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome]] = []
@@ -2035,17 +2268,34 @@ def _clear_submit_claim(task: TransportTask) -> None:
 
 
 def _accept_position_fact(task: TransportTask, now: datetime, result_timeout: timedelta) -> None:
-    can_converge_delivery_unknown = task.status == TransportTaskStatus.RECONCILING.value and task.reason_code in {
-        "TRANSPORT_DELIVERY_UNKNOWN",
-        "TRANSPORT_EVIDENCE_PENDING",
-    }
+    can_converge_delivery_unknown = (
+        task.status == TransportTaskStatus.RECONCILING.value
+        and task.reason_code in {"TRANSPORT_DELIVERY_UNKNOWN", "TRANSPORT_EVIDENCE_PENDING"}
+    ) or (task.status == TransportTaskStatus.PENDING.value and task.reason_code == "SUBMIT_DELIVERY_UNKNOWN")
     if task.status != TransportTaskStatus.PENDING.value and not can_converge_delivery_unknown:
         return
     if can_converge_delivery_unknown:
         _discard_stale_delivery_unknown(task)
+        _clear_submit_claim(task)
     task.status = TransportTaskStatus.ACCEPTED.value
     task.reason_code = None
     task.result_deadline_at = task.result_deadline_at or now + result_timeout
+
+
+def _mark_submit_delivery_unknown(task: TransportTask, now: datetime) -> None:
+    """Record pre-ACK ambiguity without opening a resend path."""
+
+    task.status = TransportTaskStatus.PENDING.value
+    task.reason_code = "SUBMIT_DELIVERY_UNKNOWN"
+    task.updated_at = now
+    logger.warning(
+        "transport.task.submit_delivery_unknown",
+        extra={
+            "event": "transport.task.submit_delivery_unknown",
+            "transport_task_id": task.transport_task_id,
+            "reason": task.reason_code,
+        },
+    )
 
 
 def _callback_receipt(

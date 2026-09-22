@@ -71,7 +71,7 @@ class _WorkLines:
             role: {"location_id": location} for role, location in self.line.config["position_bindings"].items()
         }
 
-    async def get_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
+    async def get_for_authority_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return self.line if workline_id == 7 else None
 
     async def get_binding_for_command_creation(self, db, *, workline_id, device_code):  # type: ignore[no-untyped-def]
@@ -131,7 +131,16 @@ class _Projections:
             source_transport_task_id=f"MOVE-{object_id}",
         )
 
+    async def get_workline_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(id=workline_id) if workline_id == 7 else None
+
     async def flush(self, db):  # type: ignore[no-untyped-def]
+        return None
+
+    async def get_for_update(self, db, object_type, object_id):  # type: ignore[no-untyped-def]
+        return await self.get(db, object_type, object_id, for_update=True)
+
+    async def lock_object_authority(self, db, object_type, object_id):  # type: ignore[no-untyped-def]
         return None
 
 
@@ -1267,19 +1276,58 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
         transport=AsyncMock(return_value=None if case == "no_ingress" else object()),
         arrival_matches=AsyncMock(return_value=case != "wrong_member"),
     )
-    # 原 source face 即使存在也不能越过已经打开的 drain 分支。
-    flow._source_racks.has_applied_source_face = AsyncMock(return_value=True)
+    flow._source_racks.has_source_face = AsyncMock(return_value=True)
     evidence = _wms(31, InboundEvidenceKind.WMS_RESULT, "return-1", {})
     evidence.operation = "outbound.bin.return_batch@v1"
     evidences.rows[31] = evidence
     applied = await flow.apply_in_session(object(), 31, workline_id=7)
     assert applied.disposition is (
         BusinessEvidenceDisposition.APPLIED
-        if case in {"valid", "different_position_codes"}
+        if case in {"valid", "different_position_codes", "wrong_rack", "pending"}
         else BusinessEvidenceDisposition.RECONCILING
     )
-    assert result.apply_return_in_session.await_count == int(case in {"valid", "different_position_codes"})
-    flow._source_racks.has_applied_source_face.assert_not_awaited()
+    assert result.apply_return_in_session.await_count == int(
+        case in {"valid", "different_position_codes", "wrong_rack", "pending"}
+    )
+    if case in {"wrong_rack", "pending"}:
+        flow._source_racks.has_source_face.assert_awaited_once()
+    else:
+        flow._source_racks.has_source_face.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_return_no_batch_applies_when_current_drain_reserves_a_different_rack() -> None:
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="return-source",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_NO_BATCH"))
+    flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(
+            return_value=SimpleNamespace(
+                result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("DRAIN-RACK", ("270",)),))
+            )
+        ),
+        transport=AsyncMock(),
+        arrival_matches=AsyncMock(),
+    )
+    flow._source_racks.has_source_face = AsyncMock(return_value=True)
+    evidence = _wms(32, InboundEvidenceKind.WMS_RESULT, "return-source", {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[32] = evidence
+
+    db = object()
+    applied = await flow.apply_in_session(db, 32, workline_id=7)
+
+    assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    flow._source_racks.has_source_face.assert_awaited_once_with(db, 7, "RACK-1", "90")
+    flow._drains.transport.assert_not_awaited()
+    result.apply_return_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio

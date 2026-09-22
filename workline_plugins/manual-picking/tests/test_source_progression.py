@@ -14,9 +14,10 @@ from src.utils.timezone import timezone
 
 class Positions:
     async def count(self, _db, *, where_clauses):
-        return 1
+        return self.count_value
 
     def __init__(self):  # type: ignore[no-untyped-def]
+        self.count_value = 1
         self.source = SimpleNamespace(
             object_id="R1",
             workline_id=7,
@@ -136,7 +137,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     departure_scheduler = SimpleNamespace(create_in_session=AsyncMock())
     transports = SimpleNamespace(get_task=AsyncMock(return_value=SimpleNamespace(status="SUCCEEDED")))
-    tasks = SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task))
+    tasks = SimpleNamespace(
+        get_by_task_id_for_update=AsyncMock(return_value=task),
+        get_active_for_workline=AsyncMock(return_value=task),
+    )
     driver = ManualPickingBatchDriver(
         flow,
         plans=plans,
@@ -158,6 +162,183 @@ def setup_driver():  # type: ignore[no-untyped-def]
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000001",
     )
     return driver, line, task, positions, plans, flow, creator, departure_reader, departure_scheduler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rack_count", "occupied", "fenced", "allow_active_task"),
+    [
+        (0, set(), set(), True),
+        (1, set(), set(), False),
+        (2, set(), set(), False),
+        (0, {"IN-FLIGHT"}, set(), False),
+        (0, set(), {"DEPARTING"}, False),
+    ],
+)
+async def test_drain_only_bypasses_active_task_gate_when_workstation_and_source_window_are_empty(
+    rack_count: int, occupied: set[str], fenced: set[str], allow_active_task: bool
+) -> None:
+    driver, line, _, positions, _, _, _, _, _ = setup_driver()
+    positions.count_value = rack_count
+    driver._rack_cycles.occupied_source_rack_ids.return_value = occupied
+    driver._rack_cycles.fenced_source_rack_ids.return_value = fenced
+    drain = SimpleNamespace(decide_in_session=AsyncMock(return_value=(0, None)))
+    driver._drain = drain
+
+    assert await driver._advance_drain(object(), line) == 0
+    assert drain.decide_in_session.await_args.kwargs["allow_active_task"] is allow_active_task
+
+
+@pytest.mark.asyncio
+async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain() -> None:
+    driver, line, _, positions, _, _, _, _, departure_scheduler = setup_driver()
+    row = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)),
+        evidence_id=91,
+    )
+    ingress = SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1")
+    repository = SimpleNamespace(
+        has_unclosed_rack_action=AsyncMock(return_value=False),
+        transport=AsyncMock(side_effect=[ingress]),
+        arrival_matches=AsyncMock(return_value=True),
+    )
+    drain = SimpleNamespace(
+        decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(return_value=("R1", "90", True)),
+        return_in_session=AsyncMock(),
+        repository=repository,
+    )
+    driver._drain = drain
+    driver._passages.has_bin_before_return_buffer.return_value = True
+    driver._passages.unfinished_return_prefix_for_update = AsyncMock(return_value=(SimpleNamespace(),))
+    positions.source.source_transport_task_id = "arrival-1"
+
+    assert await driver._advance_drain(object(), line) == 1
+    drain.return_in_session.assert_not_awaited()
+    driver._passages.has_bin_before_return_buffer.assert_not_awaited()
+    driver._passages.unfinished_return_prefix_for_update.assert_not_awaited()
+    departure_scheduler.create_in_session.assert_awaited_once()
+    intent = departure_scheduler.create_in_session.await_args.args[1]
+    assert intent.task_id is None and intent.rack_id == "R1"
+
+
+@pytest.mark.asyncio
+async def test_drain_uses_authoritatively_arrived_rack_instead_of_wms_list_order() -> None:
+    driver, line, _, positions, _, _, _, _, _ = setup_driver()
+    row = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady(
+            (
+                sdk.RackFaceSequence("R1", ("90",)),
+                sdk.RackFaceSequence("R2", ("90",)),
+            )
+        ),
+        evidence_id=91,
+    )
+    ingresses = {
+        "R1": SimpleNamespace(status="ACCEPTED", transport_task_id="arrival-r1"),
+        "R2": SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-r2"),
+    }
+
+    async def transport(_db, _decision, step, rack_id, face=None):
+        assert step == "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
+        assert face is None
+        return ingresses[rack_id]
+
+    repository = SimpleNamespace(
+        has_unclosed_rack_action=AsyncMock(return_value=False),
+        transport=transport,
+        arrival_matches=AsyncMock(return_value=True),
+    )
+    drain = SimpleNamespace(
+        decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(side_effect=lambda _db, _line, _decision, rack_id: (rack_id, "90", False)),
+        return_in_session=AsyncMock(return_value=True),
+        repository=repository,
+    )
+    driver._drain = drain
+    driver._fill_drain_window = AsyncMock(return_value=0)
+    positions.source.object_id = "R2"
+    positions.source.source_transport_task_id = "arrival-r2"
+    db = object()
+
+    assert await driver._advance_drain(db, line) == 1
+    drain.return_in_session.assert_awaited_once()
+    assert drain.return_in_session.await_args.args[3] == "R2"
+    repository.arrival_matches.assert_awaited_once_with(
+        db,
+        ingresses["R2"],
+        positions.source,
+        "R2",
+        "90",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capacity", "occupied", "fenced", "expected"),
+    [
+        (1, set(), set(), ["R1"]),
+        (2, set(), set(), ["R1", "R2"]),
+        (2, {"OLD"}, set(), ["R1"]),
+        (3, set(), {"R1"}, ["R2", "R3"]),
+    ],
+)
+async def test_drain_window_fills_capacity_from_reserved_racks(capacity, occupied, fenced, expected) -> None:
+    driver, line, _, positions, _, _, creator, _, _ = setup_driver()
+    row = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady(
+            (
+                sdk.RackFaceSequence("R1", ("90",)),
+                sdk.RackFaceSequence("R2", ("270",)),
+                sdk.RackFaceSequence("R3", ("90",)),
+            )
+        ),
+        evidence_id=91,
+    )
+    decided: set[str] = set()
+
+    async def transport(_db, _decision, step, rack_id, face=None):
+        assert step == "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
+        assert face is None
+        return SimpleNamespace() if rack_id in decided else None
+
+    repository = SimpleNamespace(
+        has_unclosed_rack_action=AsyncMock(return_value=False),
+        transport=transport,
+    )
+    driver._drain = SimpleNamespace(
+        decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(return_value=None),
+        repository=repository,
+    )
+    positions.count = AsyncMock(return_value=0)
+    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=capacity))
+    driver._rack_cycles = SimpleNamespace(
+        occupied_source_rack_ids=AsyncMock(side_effect=lambda *_: set(occupied)),
+        fenced_source_rack_ids=AsyncMock(return_value=fenced),
+    )
+    calls = []
+
+    async def create(_db, **kwargs):
+        calls.append(kwargs)
+        decided.add(kwargs["resource_fence_id"])
+        occupied.add(kwargs["resource_fence_id"])
+
+    creator.create = create
+
+    assert await driver._advance_drain(object(), line) == len(expected)
+    assert [call["intent"].rack_id for call in calls] == expected
+    assert await driver._advance_drain(object(), line) == 0
+    assert len(calls) == len(expected)
+    for call in calls:
+        rack = next(rack for rack in row.result.racks if rack.rack_id == call["intent"].rack_id)
+        assert call["intent"].target_face == rack.rack_faces[0]
+        assert call["intent"].rcs_template_id == sdk.TransportRcsTemplateId.CTU01
+        assert call["intent"].target == sdk.TransportRackPosition("FIVE-POS")
+        assert call["correlation_id"] == f"drain:drain-1:rack:{call['resource_fence_id']}"
 
 
 @pytest.mark.asyncio
@@ -279,6 +460,7 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
     positions.target = None
     flow.complete.clear()
     flow.created = True
+    driver._passages.ready_return_prefix_for_update.return_value = (SimpleNamespace(bin_code="RETURN-1"),)
 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["rack_id"] == "R1"

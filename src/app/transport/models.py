@@ -15,7 +15,7 @@ from src.database.schema_conf import SchemaType
 RUNTIME_SCHEMA = SchemaType.RUNTIME.value
 
 # 六态只描述可靠搬运事实：PENDING 经权威 ACK 进入 ACCEPTED，经结果 evidence 进入确定终态；
-# DELIVERY_UNKNOWN/冲突/超时进入 RECONCILING，匹配不可变身份的迟到权威事实仍可单调收敛。
+# pre-ACK SUBMIT_DELIVERY_UNKNOWN 仍保持 PENDING，ACK 后结果未知/冲突/超时进入 RECONCILING。
 _TASK_STATUS_CHECK = "status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'SUCCEEDED', 'FAILED', 'RECONCILING')"
 _EVIDENCE_STATUS_CHECK = "status IN ('PENDING', 'APPLIED', 'CONFLICT')"
 _EVIDENCE_REVISION_OPERATION_CHECK = (

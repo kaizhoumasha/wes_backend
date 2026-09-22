@@ -153,6 +153,9 @@ class _TransportBindings:
         self.bindings: dict[tuple[int, str, str], object] = {}
         self.locked: list[tuple[int, str, str]] = []
 
+    async def lock_object_authority(self, db: object, **kwargs: object) -> None:
+        del db, kwargs
+
     async def lock_decision_identity(self, db: object, **kwargs: object) -> None:
         del db
         self.locked.append((int(kwargs["workline_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))

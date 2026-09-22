@@ -48,6 +48,14 @@ class RackTransportIntent(Protocol):
 
 
 class TransportBindingRepositoryPort(Protocol):
+    async def lock_object_authority(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+    ) -> None: ...
+
     async def lock_decision_identity(
         self,
         db: AsyncSession,
@@ -67,6 +75,21 @@ class TransportBindingRepositoryPort(Protocol):
     ) -> TransportDecisionBinding | None: ...
 
     async def add(self, db: AsyncSession, binding: TransportDecisionBinding) -> TransportDecisionBinding: ...
+
+
+async def _lock_object_authority(
+    db: AsyncSession,
+    repository: TransportBindingRepositoryPort,
+    objects: tuple[tuple[str, str], ...],
+) -> None:
+    """Acquire shared object fences before creating bindings.
+
+    The repository method uses the same advisory identity as
+    PositionProjectionRepository.
+    """
+
+    for object_type, object_id in sorted(set(objects)):
+        await repository.lock_object_authority(db, object_type=object_type, object_id=object_id)
 
 
 class TransportServicePort(Protocol):
@@ -121,7 +144,9 @@ async def _binding_for(
     correlation_id: str,
     step: str,
     resource_fence_id: str,
+    object_authority: tuple[tuple[str, str], ...],
 ) -> TransportDecisionBinding:
+    await _lock_object_authority(db, repository, object_authority)
     await repository.lock_decision_identity(db, workline_id=workline_id, correlation_id=correlation_id, step=step)
     binding = await repository.get_by_decision_identity_for_update(
         db, workline_id=workline_id, correlation_id=correlation_id, step=step
@@ -185,6 +210,7 @@ class ReliableRackTransportCreator:
             correlation_id=correlation_id,
             step=step,
             resource_fence_id=resource_fence_id,
+            object_authority=(("RACK", intent.rack_id),),
         )
         return await self._transport.move_rack_in_session(
             db,
@@ -221,6 +247,7 @@ class ReliableRackTransportCreator:
             correlation_id=correlation_id,
             step=step,
             resource_fence_id=rack_id,
+            object_authority=(("RACK", rack_id),),
         )
         return await self._transport.rotate_rack_in_session(
             db,
@@ -304,6 +331,7 @@ class ReliableRackTransportCreator:
             correlation_id=correlation_id,
             step=step,
             resource_fence_id=rack_id,
+            object_authority=(("RACK", rack_id),),
         )
         return await self._transport.move_rack_in_session(
             db,
@@ -364,6 +392,7 @@ class ReliableBinTransportCreator:
             correlation_id=correlation_id,
             step=step,
             resource_fence_id=resource_fence_id,
+            object_authority=tuple(("BIN", move.bin_code) for move in moves),
         )
         return await self._transport.move_bins_in_session(
             db,

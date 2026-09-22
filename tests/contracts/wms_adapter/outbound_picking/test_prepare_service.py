@@ -37,6 +37,8 @@ class _Worklines:
         self.order.append("lock_workline")
         return self.workline
 
+    get_for_authority_update = get_for_update
+
     async def get_unfinished_workload_summary(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         self.calls.append("read_unfinished")
         return self.unfinished

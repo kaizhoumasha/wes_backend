@@ -115,8 +115,11 @@ async def test_task_cancel_rejects_disallowed_state_or_existing_plan(status, pla
     evidences.record_conflict.assert_awaited_once()
 
 
-async def test_member_cancel_marks_all_matches_and_finalizes_each_unsent_transport() -> None:
-    service, task, evidence, _, _, cancellations, transport = setup_service(task_status=PickingTaskStatus.EXECUTING)
+@pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
+async def test_member_cancel_marks_all_matches_in_any_task_state_and_finalizes_each_unsent_transport(
+    task_status: PickingTaskStatus,
+) -> None:
+    service, task, evidence, _, _, cancellations, transport = setup_service(task_status=task_status)
     cancellations.cancel_members.return_value = (True, ("TRANSPORT-1", "TRANSPORT-2"))
 
     result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)

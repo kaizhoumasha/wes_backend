@@ -178,7 +178,7 @@ class WorkLineConfigurationService:
 
     async def base_configuration(self, db: Any, *, workline_id: int) -> WorkLineBaseConfigurationResponse:
         # 锁住工作线，避免读取到并发保存前的版本号与保存后的资源集合。
-        workline = await self._worklines.get_for_update(db, workline_id)
+        workline = await self._worklines.get_for_authority_update(db, workline_id)
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         devices = await self._devices.get_by_work_line_id(db, workline_id)

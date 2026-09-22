@@ -939,7 +939,9 @@ async def test_timeout_is_unknown_and_never_retried(db_engine: object) -> None:
     )
 
     assert await service.submit_pending_tasks(1) == 1
-    assert (await _load_task(db_engine, handle.transport_task_id)).status == "RECONCILING"
+    task = await _load_task(db_engine, handle.transport_task_id)
+    assert task.status == "PENDING"
+    assert task.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
     assert await service.submit_pending_tasks(1) == 0
     assert provider.calls == 1
 

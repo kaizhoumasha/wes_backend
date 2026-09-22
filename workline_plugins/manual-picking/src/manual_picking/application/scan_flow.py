@@ -17,6 +17,11 @@ from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidence
 from src.app.execution.plugin_binding import BusinessEvidenceApplication, BusinessEvidenceDisposition
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
+from src.app.execution.services.position_projection_service import (
+    PositionProjectionInvariantViolation,
+    PositionProjectionService,
+    position_projection_service,
+)
 from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
@@ -63,6 +68,7 @@ class ManualPickingScanFlow:
         transport_reader: Any = None,
         source_racks: Any = None,
         position_reader: Any = position_projection_repository,
+        position_service: Any = None,
         batch_reader: Any = None,
         batch_result: Any = None,
         drain_repository: Any = None,
@@ -81,6 +87,11 @@ class ManualPickingScanFlow:
         self._transport_reader = transport_reader or TransportRepository()
         self._source_racks = source_racks or PickingTaskPlanDeltaRepository()
         self._positions = position_reader
+        self._position_service = position_service or (
+            position_projection_service
+            if position_reader is position_projection_repository
+            else PositionProjectionService(repository=position_reader)
+        )
         self._batch_reader = batch_reader
         self._batch_result = batch_result
         self._scan1 = Scan1Handler()
@@ -89,8 +100,8 @@ class ManualPickingScanFlow:
         self._scan4 = Scan4Handler()
 
     async def apply_in_session(self, db: Any, evidence_id: int, *, workline_id: int) -> BusinessEvidenceApplication:
+        workline = await self._worklines.get_for_authority_update(db, workline_id)
         evidence = await self._evidences.get_by_id_for_update(db, evidence_id)
-        workline = await self._worklines.get_for_update(db, workline_id)
         if (
             evidence is None
             or evidence.workline_id != workline_id
@@ -160,12 +171,12 @@ class ManualPickingScanFlow:
                 return None
             source = await self._positions.get(db, "RACK", intent.rack_id)
             drain = await self._drains.current(db, workline.id) if self._drains is not None else None
-            if drain is not None:
-                if not isinstance(drain.result, ReturnBufferDrainReady) or (
-                    intent.rack_id,
-                    intent.rack_face,
-                ) not in {(rack.rack_id, face) for rack in drain.result.racks for face in rack.rack_faces}:
-                    return None
+            drain_faces = (
+                {(rack.rack_id, face) for rack in drain.result.racks for face in rack.rack_faces}
+                if drain is not None and isinstance(drain.result, ReturnBufferDrainReady)
+                else set()
+            )
+            if (intent.rack_id, intent.rack_face) in drain_faces:
                 ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP, intent.rack_id)
                 if (
                     source is None
@@ -501,13 +512,20 @@ class ManualPickingScanFlow:
         if passage.scan4_command_code == command_code:
             if passage.return_state != "MOVE_PENDING" or command.status != CommandStatus.SUCCEEDED:
                 return None
-            projection = await self._positions.get(db, "BIN", passage.bin_code, for_update=True)
+            projection = await self._positions.get(db, "BIN", passage.bin_code)
             if projection is None or projection.workline_id != workline_id:
                 return None
-            projection.position_json = {"kind": "HANDOFF_POSITION", "location_code": outlet_location}
-            projection.position_unknown = False
-            projection.arrival_face = None
-            await self._positions.flush(db)
+            try:
+                await self._position_service.apply_device_position_result(
+                    db,
+                    workline_id=workline_id,
+                    object_type="BIN",
+                    object_id=passage.bin_code,
+                    position={"kind": "HANDOFF_POSITION", "location_code": outlet_location},
+                    updated_at=timezone.now_for_db(),
+                )
+            except PositionProjectionInvariantViolation:
+                return None
             passage.return_state = "READY"
             return "RETURN_BUFFER_READY"
         if passage.scan3_command_code == command_code and passage.scan3_route == "MOVE_LEFT":

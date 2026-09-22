@@ -193,6 +193,11 @@ class _BusinessHandler(BaseHTTPRequestHandler):
                     for candidate in data["return_candidates"]
                 ],
             }
+        elif operation == "outbound.rack.departure_decide@v1":
+            result = {
+                "result": "READY",
+                "rack_destination": {"type": "ZONE", "location_code": "WH01"},
+            }
         elif operation == "outbound.picking_task.prepare@v1":
             status, code, result = 202, "PREPARE_ACCEPTED", {}
         else:
@@ -223,10 +228,11 @@ class BusinessServer(MockWmsHttpServer):
         super().__init__()
         self.RequestHandlerClass = _BusinessHandler
         self.transport_code = transport_code
+        self.drain_rack_id = rack_id or f"RACK-{new_uuid7()[-12:]}"
         self.drain_result = (
             {"result": "WAIT", "reason_code": "NO_DRAIN_RACK_AVAILABLE", "retry_after_ms": 1}
             if wait
-            else {"result": "READY", "rack_id": rack_id or f"RACK-{new_uuid7()[-12:]}", "rack_face": "90"}
+            else {"result": "READY", "racks": [{"rack_id": self.drain_rack_id, "rack_face": ["90"]}]}
         )
 
 

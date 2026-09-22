@@ -32,6 +32,18 @@ from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str
 
 
+async def _lock_object_authority(
+    db: AsyncSession,
+    repository: Any,
+    objects: Sequence[tuple[str, str]],
+) -> None:
+    lock = getattr(repository, "lock_object_authority", None)
+    if lock is None:
+        return
+    for object_type, object_id in sorted(set(objects)):
+        await lock(db, object_type=object_type, object_id=object_id)
+
+
 class ResourceProjectionStatus(str, Enum):
     """资源事实投影处理状态。"""
 
@@ -85,6 +97,8 @@ class ResourceRelationService:
         workline_session_id: int | None = None,
     ) -> ResourceProjectionResult:
         """记录货架到达事实，并在无冲突时创建 active placement 投影。"""
+
+        await _lock_object_authority(db, self.rack_placement_repo, (("RACK", rack_code),))
 
         existing_event = await self.state_event_repo.get_by_source_event_id(
             db,
@@ -171,6 +185,7 @@ class ResourceRelationService:
         """记录 ECS 验空事实，并投影空架上的 4 个 active 料箱挂载关系。"""
 
         source_system = ResourceSourceSystem.ECS
+        normalized_mounts = _extract_bin_mounts({"rack_code": rack_code, "bin_mounts": list(bin_mounts)})
         existing_event = await self.state_event_repo.get_by_source_event_id(
             db,
             source_system=source_system,
@@ -178,6 +193,10 @@ class ResourceRelationService:
         )
         if existing_event is not None:
             return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+
+        authority_objects = [("RACK", rack_code)]
+        authority_objects.extend(("BIN", str(mount["bin_code"])) for mount in normalized_mounts)
+        await _lock_object_authority(db, self.rack_bin_mount_repo, tuple(authority_objects))
 
         event = await self.state_event_repo.create(
             db,
@@ -201,7 +220,6 @@ class ResourceRelationService:
             },
         )
 
-        normalized_mounts = _extract_bin_mounts({"rack_code": rack_code, "bin_mounts": list(bin_mounts)})
         if len(normalized_mounts) != 4:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,

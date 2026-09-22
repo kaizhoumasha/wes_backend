@@ -43,7 +43,15 @@ class ManualPickingDrainFlow:
         self._tasks = tasks or picking_task_repository
         self._uuid_factory = uuid_factory
 
-    async def decide_in_session(self, db: Any, line: Any, now: Any, *, limit: int = 4) -> tuple[int, Any]:
+    async def decide_in_session(
+        self,
+        db: Any,
+        line: Any,
+        now: Any,
+        *,
+        limit: int = 4,
+        allow_active_task: bool = False,
+    ) -> tuple[int, Any]:
         current = await self.repository.current(db, line.id)
         if current is not None:
             if current.intent.workline_code != line.line_code:
@@ -54,13 +62,13 @@ class ManualPickingDrainFlow:
                 return 0, None
             if now < current.completed_at + timedelta(milliseconds=current.result.retry_after_ms):
                 return 0, None
-        elif not await self.repository.has_completed_task(db, line.id):
+        elif not allow_active_task and not await self.repository.has_completed_task(db, line.id):
             return 0, None
         rows = await self._passages.ready_return_prefix_for_update(db, line.id, limit=limit)
         if not rows:
             return 0, None
         if current is None:
-            if await self._tasks.has_active_for_workline(db, line.id):
+            if not allow_active_task and await self._tasks.has_active_for_workline(db, line.id):
                 return 0, None
             prepared = await self._prepare.prepare_next_in_session(db, line, now=now)
             if prepared.prepared:
@@ -77,17 +85,24 @@ class ManualPickingDrainFlow:
         """停线前主动排空：不等待下一次 tick，一次性纳入当前全部待回库料箱。"""
         await self.decide_in_session(db, line, now, limit=FULL_DRAIN_LIMIT)
 
-    async def return_in_session(self, db: Any, line: Any, decision: Any, location: str, now: Any) -> bool:
-        rack_face = await self.active_rack_face(db, line, decision)
+    async def return_in_session(self, db: Any, line: Any, decision: Any, rack_id: str, location: str, now: Any) -> bool:
+        rack_face = await self.active_rack_face(db, line, decision, rack_id)
         if rack_face is None:
             return False
-        rack_id, face = rack_face
+        rack_id, face, exhausted = rack_face
+        if exhausted:
+            return False
+        if await self._history.has_unclosed_return(
+            db,
+            workline_id=line.id,
+            rack_id=rack_id,
+            rack_face=face,
+        ):
+            return False
         latest = await self._history.latest_return(db, workline_id=line.id, rack_id=rack_id, rack_face=face)
         if latest is not None:
-            outcome, completed_at = latest
-            if isinstance(outcome.result, BinBatchNoBatch) and now < completed_at + timedelta(
-                milliseconds=outcome.result.retry_after_ms
-            ):
+            outcome, _ = latest
+            if isinstance(outcome.result, BinBatchNoBatch):
                 return False
         rows = await self._passages.ready_return_prefix_for_update(db, line.id)
         if not rows:
@@ -102,11 +117,14 @@ class ManualPickingDrainFlow:
         await self._batch_scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
         return True
 
-    async def active_rack_face(self, db: Any, line: Any, decision: Any) -> tuple[str, str] | None:
+    async def active_rack_face(self, db: Any, line: Any, decision: Any, rack_id: str) -> tuple[str, str, bool] | None:
         if not isinstance(decision.result, ReturnBufferDrainReady):
             return None
         rows = await self._passages.ready_return_prefix_for_update(db, line.id)
+        last_exhausted: tuple[str, str] | None = None
         for rack in decision.result.racks:
+            if rack.rack_id != rack_id:
+                continue
             for face in rack.rack_faces:
                 latest = await self._history.latest_return(
                     db,
@@ -115,11 +133,13 @@ class ManualPickingDrainFlow:
                     rack_face=face,
                 )
                 if latest is None:
-                    return (rack.rack_id, face) if rows else None
+                    if rows:
+                        return rack.rack_id, face, False
+                    return (*last_exhausted, True) if last_exhausted is not None else None
                 outcome, _ = latest
                 if isinstance(outcome.result, BinBatchNoBatch):
+                    last_exhausted = rack.rack_id, face
                     continue
-                return rack.rack_id, face
-        if rows:
-            raise ValueError("drain READY 容量未闭合但所有货架面均已耗尽")
-        return None
+                return rack.rack_id, face, False
+            return (*last_exhausted, True) if last_exhausted is not None else None
+        raise ValueError("rack is not reserved by drain decision")

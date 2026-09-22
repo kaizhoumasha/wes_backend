@@ -35,6 +35,10 @@ class RecordingPlacementRepo:
     def __init__(self, active_placement: RackPlacement | None = None) -> None:
         self.active_placement = active_placement
         self.created: list[dict[str, Any]] = []
+        self.authority_locks: list[tuple[str, str]] = []
+
+    async def lock_object_authority(self, _db: object, *, object_type: str, object_id: str) -> None:
+        self.authority_locks.append((object_type, object_id))
 
     async def get_active_by_rack_code(self, _db: object, rack_code: str) -> RackPlacement | None:
         assert rack_code == "RACK-001"
@@ -50,6 +54,10 @@ class RecordingBinMountRepo:
         self.created: list[dict[str, Any]] = []
         self.slot_lookups: list[tuple[str, str]] = []
         self.bin_lookups: list[str] = []
+        self.authority_locks: list[tuple[str, str]] = []
+
+    async def lock_object_authority(self, _db: object, *, object_type: str, object_id: str) -> None:
+        self.authority_locks.append((object_type, object_id))
 
     async def get_active_by_rack_slot(
         self,
@@ -166,6 +174,7 @@ async def test_record_rack_arrived_appends_fact_and_creates_active_placement() -
     assert placements.created[0]["rack_code"] == "RACK-001"
     assert placements.created[0]["location_code"] == "LOC-001"
     assert placements.created[0]["ended_at"] is None
+    assert placements.authority_locks == [("RACK", "RACK-001")]
 
 
 @pytest.mark.asyncio
@@ -237,6 +246,13 @@ async def test_record_empty_rack_verified_projects_four_bin_mounts() -> None:
     assert state_events.created[0]["source_system"] == ResourceSourceSystem.ECS
     assert state_events.created[0]["payload_json"]["source_task_id"] == "ecs-task-001"
     assert len(bin_mounts.created) == 4
+    assert bin_mounts.authority_locks == [
+        ("BIN", "BIN-ECS-001"),
+        ("BIN", "BIN-ECS-002"),
+        ("BIN", "BIN-ECS-003"),
+        ("BIN", "BIN-ECS-004"),
+        ("RACK", "RACK-ECS-001"),
+    ]
     assert [mount["rack_slot_code"] for mount in bin_mounts.created] == ["A01", "A02", "A03", "A04"]
     assert [mount["bin_code"] for mount in bin_mounts.created] == [
         "BIN-ECS-001",

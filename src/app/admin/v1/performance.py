@@ -16,6 +16,7 @@ import psutil
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.transport.projection_metrics import snapshot as projection_metrics_snapshot
 from src.core.conf import settings
 from src.core.exceptions import PermissionException
 from src.core.logger import logger
@@ -113,6 +114,7 @@ async def get_performance_metrics(
         "database": db_metrics,
         "redis": redis_metrics,
         "cache": cache_metrics,
+        "transport_projection_recovery": projection_metrics_snapshot(),
     }
 
 

@@ -8,22 +8,24 @@ from manual_picking.definition import FIVE_RACK
 from src.app.execution.models import PositionProjection
 
 
+async def current_rack_count(db: Any, workline_id: int, location: str, *, positions: Any) -> int:
+    """返回 FIVE_RACK 作业位上位置明确的 current rack 数量；调用方持有工作线锁。"""
+    columns = PositionProjection.__table__.c
+    return await positions.count(
+        db,
+        where_clauses=[
+            columns.workline_id == workline_id,
+            columns.object_type == "RACK",
+            columns.position_unknown.is_(False),
+            columns.position_json["kind"].as_string() == "RACK_POSITION",
+            columns.position_json["location_code"].as_string() == location,
+        ],
+    )
+
+
 async def has_single_current_rack(db: Any, workline_id: int, location: str, *, positions: Any) -> bool:
     """FIVE_RACK 作业位只允许一个位置明确的 current rack；调用方持有工作线锁。"""
-    columns = PositionProjection.__table__.c
-    return (
-        await positions.count(
-            db,
-            where_clauses=[
-                columns.workline_id == workline_id,
-                columns.object_type == "RACK",
-                columns.position_unknown.is_(False),
-                columns.position_json["kind"].as_string() == "RACK_POSITION",
-                columns.position_json["location_code"].as_string() == location,
-            ],
-        )
-        == 1
-    )
+    return await current_rack_count(db, workline_id, location, positions=positions) == 1
 
 
 async def ready_rack_projection(
@@ -74,4 +76,4 @@ async def rack_ready(
     )
 
 
-__all__ = ["has_single_current_rack", "rack_ready", "ready_rack_projection"]
+__all__ = ["current_rack_count", "has_single_current_rack", "rack_ready", "ready_rack_projection"]

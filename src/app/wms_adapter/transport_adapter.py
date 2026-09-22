@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING
 
-from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
+from src.app.transport.contracts import (
+    TransportRecoveryCapability,
+    TransportSubmitCode,
+    TransportSubmitResult,
+)
 from src.app.transport.submit_snapshot import SUBMIT_OPERATION
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTooLargeError
 from src.app.wms_adapter.strict_json import (
@@ -31,9 +35,24 @@ _REJECTED_REASON_CODES = frozenset(
 class WmsTransportAdapter:
     """把一个类型化搬运请求转换成一次固定 WMS 调用。"""
 
-    def __init__(self, client: WmsClient, *, submit_path: str) -> None:
+    def __init__(
+        self,
+        client: WmsClient,
+        *,
+        submit_path: str,
+        recovery_capability: TransportRecoveryCapability = TransportRecoveryCapability.NO_SAFE_AUTOMATIC_RECOVERY,
+    ) -> None:
         self._client = client
         self._submit_path = submit_path
+        if type(recovery_capability) is not TransportRecoveryCapability:
+            raise TypeError("recovery_capability must be TransportRecoveryCapability")
+        self._recovery_capability = recovery_capability
+
+    @property
+    def recovery_capability(self) -> TransportRecoveryCapability:
+        """当前 WMS 合同允许的 pre-ACK 恢复策略；默认 fail closed。"""
+
+        return self._recovery_capability
 
     async def submit(
         self,

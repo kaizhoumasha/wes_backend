@@ -110,7 +110,8 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
                 "AND constraint_name = 'ux_line_run_epoch_device_bindings_epoch_device_role')"
             )
         )
-        assert retired_role_constraint is False
+    assert retired_role_constraint is False
+    async with integration_session_factory() as db:
         retired_binding_table = await db.scalar(
             text("SELECT to_regclass('wes_biz.inbound_evidence_execution_bindings')")
         )
@@ -179,6 +180,47 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
             )
         )
     assert nullable == "YES"
+
+
+@pytest.mark.asyncio
+async def test_transport_binding_causal_token_is_database_allocated_and_monotonic(integration_session_factory) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 8)
+    async with integration_session_factory.begin() as db:
+        workline = await _claim_workline(db, f"CAUSAL-{identity}", now)
+        evidence = _claim_evidence(f"CAUSAL-EVIDENCE-{identity}", received_at=now, workline_id=workline.id)
+        db.add(evidence)
+        await db.flush()
+        bindings = [
+            TransportDecisionBinding(
+                correlation_id=f"CAUSAL-{identity}-{index}",
+                step="MOVE_IN",
+                workline_id=workline.id,
+                resource_fence_id=f"R-{index}",
+                client_request_id=f"CAUSAL-REQUEST-{identity}-{index}",
+                source_evidence_id=evidence.id,
+            )
+            for index in (1, 2)
+        ]
+        db.add_all(bindings)
+        await db.flush()
+        assert bindings[0].causal_token is not None
+        assert bindings[1].causal_token > bindings[0].causal_token
+        token_row = await db.execute(
+            text(
+                "SELECT is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_schema = 'wes_biz' AND table_name = 'transport_decision_bindings' "
+                "AND column_name = 'causal_token'"
+            )
+        )
+        assert token_row.one() == (
+            "NO",
+            "nextval('transport_decision_binding_causal_token_seq'::regclass)",
+        )
+        await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == workline.id))
+        await db.flush()
+        await db.delete(evidence)
+        await db.delete(workline)
 
 
 @pytest.mark.asyncio

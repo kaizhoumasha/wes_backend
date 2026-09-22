@@ -157,6 +157,18 @@ def _occupancy_status_value(value: Any) -> str:
     return str(raw or "").upper()
 
 
+async def _lock_object_authority(
+    db: AsyncSession,
+    repository: Any,
+    objects: Sequence[tuple[str, str]],
+) -> None:
+    lock = getattr(repository, "lock_object_authority", None)
+    if lock is None:
+        return
+    for object_type, object_id in sorted(set(objects)):
+        await lock(db, object_type=object_type, object_id=object_id)
+
+
 class ResourceProjectionService:
     """统一处理资源事实写入、active 投影和冲突结果。"""
 
@@ -246,6 +258,9 @@ class ResourceProjectionService:
             for released_rack_code in _normalized_text_list(released_rack_codes)
             if released_rack_code != rack_code
         ]
+        authority_objects = [("RACK", rack_code)]
+        authority_objects.extend(("RACK", code) for code in normalized_released_rack_codes)
+        await _lock_object_authority(db, self.rack_placement_repo, tuple(authority_objects))
         try:
             position, capacity = await self.position_service.require_position_capacity_for_update(
                 db,
@@ -556,6 +571,14 @@ class ResourceProjectionService:
         workline_session_id: int | None = None,
     ) -> ResourceProjectionResult:
         """记录货架槽位挂载料箱事实，并创建 active RackBinMount。"""
+
+        authority_objects = [("RACK", rack_code)]
+        authority_objects.extend(("BIN", str(item["bin_code"])) for item in bin_mounts)
+        await _lock_object_authority(
+            db,
+            self.rack_bin_mount_repo,
+            tuple(authority_objects),
+        )
 
         existing_event = await self._get_duplicate_event(db, idempotency_key=idempotency_key)
         if existing_event is not None:

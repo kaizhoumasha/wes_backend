@@ -39,11 +39,88 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
             TransportTask.__table__,
             TransportMember.__table__,
             PositionProjection.__table__,
+            PickingTask.__table__,
             TransportDecisionBinding.__table__,
             ManualPickingPassage.__table__,
         ):
             await connection.run_sync(table.create)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.mark.asyncio
+async def test_source_rack_windows_ignore_historical_tasks_and_keep_current_and_taskless_authority() -> None:
+    from manual_picking.application.batch_repository import BatchRepository
+    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 21, 12)
+    try:
+        async with sessions.begin() as db:
+            historical = PickingTask(
+                task_id="PICK-HISTORICAL",
+                task_type="MANUAL",
+                status="EXECUTION_COMPLETED",
+                queue_revision=1,
+                dispatch_sequence=1,
+                issued_at_ms=1,
+                issued_evidence_id=1,
+                workline_id=7,
+            )
+            current = PickingTask(
+                task_id="PICK-CURRENT",
+                task_type="MANUAL",
+                status="EXECUTING",
+                queue_revision=1,
+                dispatch_sequence=2,
+                issued_at_ms=1,
+                issued_evidence_id=2,
+                workline_id=7,
+            )
+            db.add_all((historical, current))
+            await db.flush()
+            for identity, rack_id, step, task_id in (
+                ("historical-in", "R-HISTORICAL", "PICKING_TASK_BIN_SOURCE_RACK_IN", historical.id),
+                ("current-in", "R-CURRENT", "PICKING_TASK_BIN_SOURCE_RACK_IN", current.id),
+                ("drain-in", "R-DRAIN", DRAIN_RACK_IN_STEP, None),
+                ("historical-out", "R-HISTORICAL", "MANUAL_PICKING_SOURCE_RACK_OUT", historical.id),
+                ("current-out", "R-CURRENT", "MANUAL_PICKING_SOURCE_RACK_OUT", current.id),
+                ("drain-out", "R-DRAIN", DRAIN_RACK_OUT_STEP, None),
+            ):
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        picking_task_id=task_id,
+                        correlation_id=identity,
+                        step=step,
+                        resource_fence_id=rack_id,
+                        source_evidence_id=10,
+                        client_request_id=identity,
+                    )
+                )
+                db.add(
+                    TransportTask(
+                        transport_task_id=identity,
+                        client_request_id=identity,
+                        request_digest="a" * 64,
+                        kind="RACK_MOVE",
+                        caller_json={"workline_id": "7"},
+                        request_json={},
+                        submit_operation_id=identity,
+                        submit_timestamp_ms=1,
+                        submit_request_body="{}",
+                        submit_request_body_digest="b" * 64,
+                        status="PENDING",
+                        authority_workline_id=7,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            await db.flush()
+            repository = BatchRepository()
+            assert await repository.occupied_source_rack_ids(db, 7) == {"R-CURRENT", "R-DRAIN"}
+            assert await repository.fenced_source_rack_ids(db, 7) == {"R-CURRENT", "R-DRAIN"}
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -892,7 +969,7 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
     row = decision(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)))
     driver._drain = SimpleNamespace(
         decide_in_session=AsyncMock(return_value=(0, row)),
-        active_rack_face=AsyncMock(return_value=("R1", "90")),
+        active_rack_face=AsyncMock(return_value=("R1", "90", False)),
         repository=SimpleNamespace(
             transport=AsyncMock(return_value=None), has_unclosed_rack_action=AsyncMock(return_value=False)
         ),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,15 @@ from uuid import uuid4
 from src.core.logger import logger
 from src.database.db import close_db, init_db
 from src.database.redis_client import redis_manager
+
+_std_logger = logging.getLogger(__name__)
+
+
+def _log_worker_stage(stage: str) -> None:
+    payload = {"event": "celery.worker_process.stage", "stage": stage}
+    logger.info(f"celery.worker_process.stage stage={stage}", **payload)
+    _std_logger.info("celery.worker_process.stage stage=%s", stage, extra=payload)
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -177,33 +187,40 @@ class CeleryAsyncRuntime:
         from src.database import db as db_module
 
         database_budget = max(deadline - time.monotonic(), 0.0)
+        _log_worker_stage("database_start")
         await CeleryAsyncRuntime._wait_task_without_cancel_wait(init_db(), database_budget)
         progress["database"] = True
+        _log_worker_stage("database_ready")
         if db_module.AsyncSessionLocal is None:
             raise RuntimeError("Database session factory is unavailable after initialization")
+        _log_worker_stage("transport_start")
         transport_runtime = await build_transport_runtime(
             wms_base_url=settings.WMS_BASE_URL,
             transport_submit_path=settings.TRANSPORT_SUBMIT_PATH,
             session_factory=db_module.AsyncSessionLocal,
         )
         progress["transport_runtime"] = transport_runtime
+        _log_worker_stage("transport_ready")
 
         from src.core.task_queue_gateway import task_queue_gateway
 
-        fulfillment_only = _configured_worker_queues() == frozenset({"wms-fulfillment"})
-        if not fulfillment_only:
+        worker_queues = _configured_worker_queues()
+        device_command_worker = worker_queues not in {frozenset({"celery"}), frozenset({"wms-fulfillment"})}
+        if device_command_worker:
             from src.app.device.composition import (
                 build_device_command_runtime,
                 resolve_device_command_runtime_config,
             )
 
             device_config = resolve_device_command_runtime_config()
+            _log_worker_stage("device_start")
             progress["device_command_runtime"] = build_device_command_runtime(
                 session_factory=db_module.AsyncSessionLocal,
                 timeout_seconds=device_config.timeout_seconds,
                 task_queue_gateway=task_queue_gateway,
                 event_debug_mode_policy=transport_runtime.debug_run_service,
             )
+            _log_worker_stage("device_ready")
 
         from deployment.plugin_composition import build_deployment_runtime
         from src.app.device.services import DeviceCommandService
@@ -215,6 +232,7 @@ class CeleryAsyncRuntime:
                 session_factory=db_module.AsyncSessionLocal, task_queue_gateway=task_queue_gateway
             )
         )
+        _log_worker_stage("execution_start")
         progress["execution_runtime"] = build_deployment_runtime(
             enabled_plugin_keys=settings.ENABLED_WORKLINE_PLUGINS,
             session_factory=db_module.AsyncSessionLocal,
@@ -226,6 +244,7 @@ class CeleryAsyncRuntime:
                 else None
             ),
         )
+        _log_worker_stage("execution_ready")
 
         remaining = max(deadline - time.monotonic(), 0.0)
         if remaining <= 0:
