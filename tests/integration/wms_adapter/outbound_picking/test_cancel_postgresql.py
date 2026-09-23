@@ -195,7 +195,7 @@ async def _cancel_evidence_id(db, *, task_name: str, operation_id: str) -> int:
 
 
 @pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
-async def test_plan_members_cancel_is_accepted_in_every_task_state(
+async def test_plan_members_cancel_respects_task_state(
     integration_session_factory,
     executing_task_with_members,
     task_status: PickingTaskStatus,
@@ -224,7 +224,9 @@ async def test_plan_members_cancel_is_accepted_in_every_task_state(
         received_at=NOW,
     )
 
-    assert result.code == "RECEIVED"
+    assert (result.code, result.reason_code) == (
+        ("RECEIVED", None) if task_status is PickingTaskStatus.EXECUTING else ("CONFLICT", "STATE_CONFLICT")
+    )
     async with integration_session_factory() as db:
         rack = await db.scalar(
             select(PickingTaskBinSourceRack).where(
@@ -234,8 +236,13 @@ async def test_plan_members_cancel_is_accepted_in_every_task_state(
             )
         )
         evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.operation_id == operation_id))
-    assert rack is not None and rack.cancelled_evidence_id == evidence.id
-    assert evidence.apply_status == Status.APPLIED
+    assert rack is not None and evidence is not None
+    if task_status is PickingTaskStatus.EXECUTING:
+        assert rack.cancelled_evidence_id == evidence.id
+        assert evidence.apply_status == Status.APPLIED
+    else:
+        assert rack.cancelled_evidence_id is None
+        assert evidence.apply_status == Status.RECONCILING
 
 
 async def test_cancel_members_matches_selectors_and_marks_rows(

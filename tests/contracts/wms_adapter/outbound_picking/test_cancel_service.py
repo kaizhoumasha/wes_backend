@@ -139,11 +139,8 @@ async def test_task_cancel_rejects_disallowed_state_or_existing_plan(status, pla
     evidences.record_conflict.assert_awaited_once()
 
 
-@pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
-async def test_member_cancel_marks_all_matches_in_any_task_state_and_finalizes_each_unsent_transport(
-    task_status: PickingTaskStatus,
-) -> None:
-    service, task, evidence, _, _, cancellations, transport = setup_service(task_status=task_status)
+async def test_member_cancel_marks_matches_and_finalizes_each_unsent_transport() -> None:
+    service, task, evidence, _, _, cancellations, transport = setup_service(task_status=PickingTaskStatus.EXECUTING)
     cancellations.cancel_members.return_value = (True, ("TRANSPORT-1", "TRANSPORT-2"))
 
     result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
@@ -159,6 +156,22 @@ async def test_member_cancel_marks_all_matches_in_any_task_state_and_finalizes_e
         call.kwargs == {"reason_code": "TRANSPORT_WITHDRAWN_BEFORE_SEND"}
         for call in transport.finalize_unsent_task_in_session.await_args_list
     )
+
+
+@pytest.mark.parametrize(
+    "task_status", [status for status in PickingTaskStatus if status != PickingTaskStatus.EXECUTING]
+)
+async def test_member_cancel_rejects_non_executing_task(task_status: PickingTaskStatus) -> None:
+    service, task, evidence, evidences, _, cancellations, transport = setup_service(task_status=task_status)
+
+    result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
+
+    assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")
+    assert evidence.apply_status is Status.RECONCILING
+    evidences.record_conflict.assert_awaited_once()
+    task.increment_version.assert_not_called()
+    cancellations.cancel_members.assert_not_awaited()
+    transport.finalize_unsent_task_in_session.assert_not_awaited()
 
 
 async def test_member_cancel_skips_selectors_that_do_not_match() -> None:

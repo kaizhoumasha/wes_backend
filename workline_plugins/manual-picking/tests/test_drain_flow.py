@@ -130,6 +130,26 @@ async def test_no_batch_on_all_reserved_faces_exhausts_the_last_rack() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reserved_rack_waits_when_another_rack_empties_return_buffer() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)), sdk.RackFaceSequence("R2", ("270",))))
+    decision = SimpleNamespace(result=ready, completed_at=NOW - timedelta(seconds=1))
+    flow, _, _, history = _flow(rows=())
+    history.latest_return.return_value = None
+
+    assert await flow.active_rack_face(object(), _line(), decision, "R2") == ("R2", "270", False)
+
+
+@pytest.mark.asyncio
+async def test_untried_face_waits_after_prior_no_batch_when_return_buffer_has_no_ready_bins() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90", "270")),))
+    decision = SimpleNamespace(result=ready, completed_at=NOW - timedelta(seconds=1))
+    flow, _, _, history = _flow(rows=())
+    history.latest_return.side_effect = [(sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000)), NOW), None]
+
+    assert await flow.active_rack_face(object(), _line(), decision, "R1") == ("R1", "90", False)
+
+
+@pytest.mark.asyncio
 async def test_return_history_before_current_drain_does_not_exhaust_reserved_face() -> None:
     ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
     current = decision(ready)

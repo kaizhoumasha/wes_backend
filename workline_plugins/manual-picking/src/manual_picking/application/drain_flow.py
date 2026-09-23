@@ -130,7 +130,7 @@ class ManualPickingDrainFlow:
                 if latest is None:
                     if rows:
                         return rack.rack_id, face, False
-                    return (*last_exhausted, True) if last_exhausted is not None else None
+                    return (*last_exhausted, False) if last_exhausted is not None else (rack.rack_id, face, False)
                 outcome, _ = latest
                 if isinstance(outcome.result, BinBatchNoBatch):
                     last_exhausted = rack.rack_id, face

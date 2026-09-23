@@ -88,6 +88,14 @@ async def test_bin_code_gets_retained_position_without_bin_execution():
 
 
 @pytest.mark.asyncio
+async def test_legacy_binding_cannot_create_unordered_position_projection():
+    repo = Repository()
+
+    assert await apply(repo, causal_token=0) is None
+    assert repo.projection is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("unknown,occupied", [(True, False), (False, True)])
 async def test_unordered_other_task_retains_position_and_marks_it_unconfirmed(unknown, occupied):
     repo = Repository()

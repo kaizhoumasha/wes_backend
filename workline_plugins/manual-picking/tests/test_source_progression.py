@@ -224,6 +224,38 @@ async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain
 
 
 @pytest.mark.asyncio
+async def test_empty_reserved_drain_rack_waits_for_bins_before_departure() -> None:
+    driver, line, _, positions, _, _, _, _, departure_scheduler = setup_driver()
+    row = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)),
+        evidence_id=91,
+    )
+    ingress = SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1")
+    driver._drain = SimpleNamespace(
+        decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(return_value=("R1", "90", False)),
+        return_in_session=AsyncMock(return_value=False),
+        repository=SimpleNamespace(
+            has_unclosed_rack_action=AsyncMock(return_value=False),
+            transport=AsyncMock(return_value=ingress),
+            arrival_matches=AsyncMock(return_value=True),
+        ),
+    )
+    positions.source.source_transport_task_id = "arrival-1"
+    driver._passages.has_bin_before_return_buffer.return_value = True
+    driver._passages.unfinished_return_prefix_for_update = AsyncMock(return_value=())
+
+    assert await driver._advance_drain(object(), line) == 0
+    departure_scheduler.create_in_session.assert_not_awaited()
+
+    driver._passages.has_bin_before_return_buffer.return_value = False
+    driver._passages.unfinished_return_prefix_for_update.return_value = ()
+    assert await driver._advance_drain(object(), line) == 1
+    departure_scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_drain_uses_authoritatively_arrived_rack_instead_of_wms_list_order() -> None:
     driver, line, _, positions, _, _, _, _, _ = setup_driver()
     row = SimpleNamespace(

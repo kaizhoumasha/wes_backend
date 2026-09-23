@@ -6,6 +6,7 @@ import hashlib
 import os
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -64,7 +65,6 @@ from src.app.wms_adapter.return_buffer_drain.wire import (
 )
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.core.uuid7 import is_uuid7
-from src.utils.timezone import timezone
 from tests.mock.wms_transport_mock_openapi import (
     MOCK_DEBUG_TAG,
     OPENAPI_TAGS,
@@ -530,7 +530,7 @@ def reset_mock_wms_state() -> None:
 
 
 def _now_ms() -> int:
-    return int(timezone.now_utc().timestamp() * 1000)
+    return int(datetime.now(UTC).timestamp() * 1000)
 
 
 def _ack(

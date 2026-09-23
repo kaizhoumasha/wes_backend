@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """为每个 immutable decision 分配可比较的因果 token。"""
+    """历史 Binding 保持不可比较；新 decision 才分配因果 token。"""
     op.execute(
         "CREATE SEQUENCE wes_biz.transport_decision_binding_causal_token_seq AS BIGINT START WITH 1 INCREMENT BY 1"
     )
@@ -30,8 +30,14 @@ def upgrade() -> None:
             "causal_token",
             sa.BigInteger(),
             nullable=False,
-            server_default=sa.text("nextval('wes_biz.transport_decision_binding_causal_token_seq'::regclass)"),
+            server_default=sa.text("0"),
         ),
+        schema="wes_biz",
+    )
+    op.alter_column(
+        "transport_decision_bindings",
+        "causal_token",
+        server_default=sa.text("nextval('wes_biz.transport_decision_binding_causal_token_seq'::regclass)"),
         schema="wes_biz",
     )
 

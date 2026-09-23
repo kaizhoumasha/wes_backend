@@ -192,6 +192,7 @@ class TransportRepository:
             .where(
                 task.authority_workline_id.is_not(None),
                 binding.workline_id == task.authority_workline_id,
+                binding.causal_token > 0,
                 or_(
                     and_(
                         binding.picking_task_id.is_not(None),
@@ -222,10 +223,21 @@ class TransportRepository:
                 member.last_operation_id.is_not(None),
                 or_(
                     projection.id.is_(None),
-                    projection.source_transport_task_id.is_distinct_from(task.transport_task_id),
-                    projection.source_operation_id.is_distinct_from(member.last_operation_id),
-                    projection.source_causal_token.is_(None),
-                    projection.source_effect_phase.is_(None),
+                    and_(
+                        projection.source_causal_token.is_not(None),
+                        projection.source_effect_phase.is_not(None),
+                        or_(
+                            projection.source_causal_token < binding.causal_token,
+                            and_(
+                                projection.source_causal_token == binding.causal_token,
+                                or_(
+                                    projection.source_transport_task_id.is_distinct_from(task.transport_task_id),
+                                    projection.source_operation_id.is_distinct_from(member.last_operation_id),
+                                    projection.source_effect_phase.is_distinct_from("FINAL_RESULT"),
+                                ),
+                            ),
+                        ),
+                    ),
                 ),
             )
             .order_by(member.updated_at.asc(), member.id.asc())
@@ -303,6 +315,7 @@ class TransportRepository:
                 task.submit_operation_id.is_not(None),
                 task.authority_workline_id.is_not(None),
                 binding.workline_id == task.authority_workline_id,
+                binding.causal_token > 0,
                 or_(
                     and_(
                         binding.picking_task_id.is_not(None),
@@ -329,12 +342,19 @@ class TransportRepository:
                         ),
                     ),
                 ),
+                projection.id.is_not(None),
+                projection.source_causal_token.is_not(None),
+                projection.source_effect_phase.is_not(None),
                 or_(
-                    projection.id.is_(None),
-                    ~and_(
-                        projection.source_transport_task_id == task.transport_task_id,
-                        projection.source_operation_id == task.submit_operation_id,
-                        projection.source_effect_phase == "ACK_INVALIDATION",
+                    projection.source_causal_token < binding.causal_token,
+                    and_(
+                        projection.source_causal_token == binding.causal_token,
+                        projection.source_effect_phase.is_distinct_from("FINAL_RESULT"),
+                        or_(
+                            projection.source_transport_task_id.is_distinct_from(task.transport_task_id),
+                            projection.source_operation_id.is_distinct_from(task.submit_operation_id),
+                            projection.source_effect_phase.is_distinct_from("ACK_INVALIDATION"),
+                        ),
                     ),
                 ),
             )

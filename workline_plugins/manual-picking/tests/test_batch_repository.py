@@ -97,7 +97,7 @@ async def test_drain_unclosed_transport_is_scoped_to_its_reserved_rack() -> None
 
 
 @pytest.mark.asyncio
-async def test_source_rack_windows_ignore_historical_tasks_and_keep_current_and_taskless_authority() -> None:
+async def test_source_rack_windows_keep_unclosed_archived_and_current_authority() -> None:
     from manual_picking.application.batch_repository import BatchRepository
     from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
 
@@ -108,7 +108,8 @@ async def test_source_rack_windows_ignore_historical_tasks_and_keep_current_and_
             historical = PickingTask(
                 task_id="PICK-HISTORICAL",
                 task_type="MANUAL",
-                status="EXECUTION_COMPLETED",
+                status="ARCHIVED",
+                archived_at=now,
                 queue_revision=1,
                 dispatch_sequence=1,
                 issued_at_ms=1,
@@ -166,8 +167,8 @@ async def test_source_rack_windows_ignore_historical_tasks_and_keep_current_and_
                 )
             await db.flush()
             repository = BatchRepository()
-            assert await repository.occupied_source_rack_ids(db, 7) == {"R-CURRENT", "R-DRAIN"}
-            assert await repository.fenced_source_rack_ids(db, 7) == {"R-CURRENT", "R-DRAIN"}
+            assert await repository.occupied_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
+            assert await repository.fenced_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
     finally:
         await engine.dispose()
 

@@ -114,6 +114,8 @@ class PickingTaskCancelService:
                     task.increment_version()
             elif not isinstance(envelope.data, PickingTaskCancelMembersData):
                 raise RuntimeError("PLAN_MEMBERS 取消缺少成员合同")
+            elif task.status != PickingTaskStatus.EXECUTING:
+                reason = "STATE_CONFLICT"
             else:
                 matched, transport_task_ids = await self._cancel.cancel_members(
                     db,

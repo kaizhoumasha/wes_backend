@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -16,6 +16,7 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
+from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.models.transport_decision_binding import TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
@@ -141,6 +142,7 @@ async def test_mixed_picking_and_drain_candidates_are_stable_and_aba_fenced(
             )
             db.add(line)
             await db.flush()
+
             issued = InboundEvidence(
                 kind=InboundEvidenceKind.DEVICE_EVENT,
                 source_identity=f"T5-PG-ISSUED-{identity}",
@@ -207,6 +209,27 @@ async def test_mixed_picking_and_drain_candidates_are_stable_and_aba_fenced(
                         expected.append((branch, task.transport_task_id))
             await db.flush()
 
+            for branch, suffix, offset in (("final", "current-drain", 1), ("ack", "picking", -1)):
+                stale_task = authority_tasks[(branch, suffix)]
+                binding = await db.scalar(
+                    select(TransportDecisionBinding).where(
+                        TransportDecisionBinding.client_request_id == stale_task.client_request_id
+                    )
+                )
+                assert binding is not None
+                db.add(
+                    PositionProjection(
+                        object_type="RACK",
+                        object_id=stale_task.request_json["rack_id"],
+                        workline_id=line.id,
+                        source_operation_id=new_uuid7(),
+                        source_transport_task_id=f"newer-{branch}",
+                        source_causal_token=binding.causal_token + offset,
+                        source_effect_phase="FINAL_RESULT",
+                    )
+                )
+            await db.flush()
+
             authority_service = object.__new__(TransportService)
             authority_service._repository = repository
             assert not await authority_service._is_current_projection_authority(
@@ -256,15 +279,19 @@ async def test_mixed_picking_and_drain_candidates_are_stable_and_aba_fenced(
 
             final_capture = _CaptureExecute(db)
             final_rows = await repository.list_final_result_projection_candidates(final_capture, limit=100)
-            assert [row[0] for row in final_rows] == [task_id for branch, task_id in expected if branch == "final"]
+            assert [row[0] for row in final_rows] == [
+                task_id for branch, task_id in expected if branch == "final" and "current-drain" not in task_id
+            ]
             ack_capture = _CaptureExecute(db)
             ack_rows = await repository.list_ack_invalidation_projection_candidates(ack_capture, limit=100)
-            assert [row[0] for row in ack_rows] == [task_id for branch, task_id in expected if branch == "ack"]
+            assert [row[0] for row in ack_rows] == [
+                task_id for branch, task_id in expected if branch == "ack" and "current-drain" not in task_id
+            ]
 
             for statement in (final_capture.statement, ack_capture.statement):
                 compiled = statement.compile(dialect=db.bind.dialect, compile_kwargs={"literal_binds": True})
                 plan = await db.scalar(text(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {compiled}"))
-                assert plan[0]["Plan"]["Actual Rows"] == 2
+                assert plan[0]["Plan"]["Actual Rows"] == 1
                 assert plan[0]["Execution Time"] >= 0
         finally:
             await transaction.rollback()

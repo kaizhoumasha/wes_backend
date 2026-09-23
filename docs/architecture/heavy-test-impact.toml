@@ -19,6 +19,10 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+[[mapping]]
+source_glob = "scripts/check_runtime_toggle_release_gate.py"
+heavy_tests = []
+
 # 已退役工具只在删除 diff 中出现；FAST 治理 owner 验证 CI/selector 收敛。
 
 [[mapping]]
@@ -806,6 +810,10 @@ heavy_tests = [
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
 ]
+
+[[mapping]]
+source_glob = "tests/mock/camera_mock_server.py"
+heavy_tests = []
 
 [[mapping]]
 source_glob = "tests/mock/robot_arm_mock_server.py"

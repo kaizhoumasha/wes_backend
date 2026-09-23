@@ -187,6 +187,8 @@ class PositionProjectionService:
             effect_phase=ProjectionEffectPhase.FINAL_RESULT,
         )
         projection = await self._repository.get_for_update(db, object_type, object_id)
+        if projection is None and incoming_source.causal_token == 0:
+            return None
         if projection is not None:
             relation = compare_projection_sources(incoming_source, self._projection_source(projection))
             if relation is ProjectionCausalRelation.INCOMPARABLE:
