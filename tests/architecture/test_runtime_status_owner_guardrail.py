@@ -202,7 +202,7 @@ def test_runtime_status_projection_uses_shared_schema_owner() -> None:
     source = _source(Path("src/app/runtime/orchestration/workline_runtime_status_projection.py"))
 
     assert "from src.database.schema_conf import SchemaType" in source
-    assert "RUNTIME_SCHEMA = SchemaType.RUNTIME.value" in source
+    assert "BIZ_SCHEMA = SchemaType.BIZ.value" in source
     assert "execution_session import RUNTIME_SCHEMA" not in source
 
 

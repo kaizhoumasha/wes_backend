@@ -48,9 +48,9 @@ def _step(run_id: str, ordinal: int, client_request_id: str | None = None) -> Tr
     )
 
 
-async def test_debug_run_model_metadata_declares_runtime_schema_and_fences() -> None:
-    assert TransportDebugRun.__table__.schema == "wes_runtime"
-    assert TransportDebugRunStep.__table__.schema == "wes_runtime"
+async def test_debug_run_model_metadata_declares_biz_schema_and_fences() -> None:
+    assert TransportDebugRun.__table__.schema == "wes_biz"
+    assert TransportDebugRunStep.__table__.schema == "wes_biz"
     run_constraints = {constraint.name for constraint in TransportDebugRun.__table__.constraints}
     step_constraints = {constraint.name for constraint in TransportDebugRunStep.__table__.constraints}
     assert {
@@ -97,7 +97,7 @@ async def test_debug_run_migration_declares_stable_recent_index(
     definition = await integration_db_session.scalar(
         text(
             "SELECT indexdef FROM pg_indexes "
-            "WHERE schemaname = 'wes_runtime' AND indexname = 'ix_transport_debug_runs_recent'"
+            "WHERE schemaname = 'wes_biz' AND indexname = 'ix_transport_debug_runs_recent'"
         )
     )
 
@@ -125,7 +125,7 @@ async def test_callback_receipt_conflict_marker_is_persisted_by_the_migration(
     rows = await integration_db_session.execute(
         text(
             "SELECT column_name, is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'wes_runtime' AND table_name = 'transport_callback_receipts' "
+            "WHERE table_schema = 'wes_biz' AND table_name = 'transport_callback_receipts' "
             "AND column_name IN ('conflict_code', 'conflict_detected_at')"
         )
     )
@@ -139,7 +139,7 @@ async def test_debug_run_operator_ids_are_postgresql_bigint(
     rows = await integration_db_session.execute(
         text(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = 'wes_runtime' AND table_name = 'transport_debug_runs' "
+            "WHERE table_schema = 'wes_biz' AND table_name = 'transport_debug_runs' "
             "AND column_name IN ('created_by_user_id', 'aborted_by_user_id')"
         )
     )

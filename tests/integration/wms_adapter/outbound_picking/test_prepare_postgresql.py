@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
-from src.app.device.models import Device, DeviceStatusObservation
+from src.app.device.models import Device
 from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -175,20 +175,6 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
             "location_type": "MANUAL_WORK_STATION",
         }
     }
-    observation = DeviceStatusObservation(
-        device_code=device.device_code,
-        contract_key="manual.conveyor",
-        contract_version="1.0",
-        mode="AUTO",
-        status="IDLE",
-        current_command_code=None,
-        device_timestamp=int(timezone.to_utc(now).timestamp() * 1000),
-        received_at=now,
-        payload_digest="c" * 64,
-        raw_payload={},
-    )
-    db.add(observation)
-    await db.flush()
     return workline, device
 
 
@@ -275,9 +261,6 @@ async def test_prepare_batch_enumerates_active_exact_plugin_workline_and_creates
         )
         await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
-        await db.execute(
-            delete(DeviceStatusObservation).where(DeviceStatusObservation.device_code == device.device_code)
-        )
         await db.execute(delete(Device).where(Device.id == ids[1]))
         await db.execute(delete(WorkLine).where(WorkLine.id == ids[0]))
 
@@ -416,9 +399,6 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         )
         await db.execute(delete(PickingTask).where(PickingTask.id.in_(ids["tasks"])))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
-        await db.execute(
-            delete(DeviceStatusObservation).where(DeviceStatusObservation.device_code == device.device_code)
-        )
         await db.execute(delete(Device).where(Device.id == ids["device"]))
         await db.execute(delete(WorkLine).where(WorkLine.id == ids["workline"]))
 
@@ -442,7 +422,6 @@ async def test_prepare_skip_locked_allows_only_one_workline_to_claim_one_task(
         )
         workline_ids = (first_line.id, second_line.id)
         device_ids = (first_device.id, second_device.id)
-        device_codes = (first_device.device_code, second_device.device_code)
         task_id = task.id
         evidence_id = task.issued_evidence_id
 
@@ -477,7 +456,6 @@ async def test_prepare_skip_locked_allows_only_one_workline_to_claim_one_task(
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == task_id))
         await db.execute(delete(PickingTask).where(PickingTask.id == task_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
-        await db.execute(delete(DeviceStatusObservation).where(DeviceStatusObservation.device_code.in_(device_codes)))
         await db.execute(delete(Device).where(Device.id.in_(device_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(workline_ids)))
 
@@ -548,9 +526,6 @@ async def test_prepare_rolls_back_task_binding_when_confirmation_creation_fails(
         )
         await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
-        await db.execute(
-            delete(DeviceStatusObservation).where(DeviceStatusObservation.device_code == device.device_code)
-        )
         await db.execute(delete(Device).where(Device.id == ids[1]))
         await db.execute(delete(WorkLine).where(WorkLine.id == ids[0]))
 

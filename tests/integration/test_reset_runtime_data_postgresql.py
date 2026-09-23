@@ -38,7 +38,7 @@ async def _seed_master_and_runtime(session: AsyncSession) -> None:
 async def _seed_transport_task(session: AsyncSession, transport_task_id: str, resource_id: str) -> None:
     await session.execute(
         text(
-            "INSERT INTO wes_runtime.transport_tasks ("
+            "INSERT INTO wes_biz.transport_tasks ("
             "transport_task_id, client_request_id, request_digest, kind, caller_json, request_json, "
             "submit_operation_id, submit_timestamp_ms, submit_request_body, submit_request_body_digest, "
             "status, submit_attempt_count, outcome_version, published_outcome_version, "
@@ -58,7 +58,7 @@ async def _seed_transport_task(session: AsyncSession, transport_task_id: str, re
     )
     await session.execute(
         text(
-            "INSERT INTO wes_runtime.transport_members ("
+            "INSERT INTO wes_biz.transport_members ("
             "transport_task_id, ordinal, object_type, object_id, source_json, target_json, "
             "status, position_unknown, updated_at"
             ") VALUES ("
@@ -70,7 +70,7 @@ async def _seed_transport_task(session: AsyncSession, transport_task_id: str, re
     )
     await session.execute(
         text(
-            "INSERT INTO wes_runtime.transport_debug_position_projections ("
+            "INSERT INTO wes_biz.transport_debug_position_projections ("
             "object_type, object_id, position_json, position_unknown, source_operation_id, "
             "source_transport_task_id, updated_at"
             ") VALUES ("
@@ -193,15 +193,15 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
                         transport_task_id="transport-delete",
                         apply=False,
                     )
-                    assert dry_summary.rows_before["wes_runtime.transport_tasks"] == 1
-                    assert dry_summary.rows_before["wes_runtime.transport_debug_position_projections"] == 1
+                    assert dry_summary.rows_before["wes_biz.transport_tasks"] == 1
+                    assert dry_summary.rows_before["wes_biz.transport_debug_position_projections"] == 1
 
                     summary = await reset_transport_task_data(
                         session,
                         transport_task_id="transport-delete",
                         apply=True,
                     )
-                    assert summary.deleted["wes_runtime.transport_tasks"] == 1
+                    assert summary.deleted["wes_biz.transport_tasks"] == 1
 
                     for table, task_column in (
                         ("transport_debug_position_projections", "source_transport_task_id"),
@@ -210,14 +210,14 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
                     ):
                         assert (
                             await session.scalar(
-                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {task_column} = :task_id"),
+                                text(f"SELECT count(*) FROM wes_biz.{table} WHERE {task_column} = :task_id"),
                                 {"task_id": "transport-delete"},
                             )
                             == 0
                         )
                         assert (
                             await session.scalar(
-                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {task_column} = :task_id"),
+                                text(f"SELECT count(*) FROM wes_biz.{table} WHERE {task_column} = :task_id"),
                                 {"task_id": "transport-keep"},
                             )
                             == 1
@@ -239,7 +239,7 @@ def test_targeted_transport_reset_rejects_task_linked_to_active_debug_run() -> N
                     await _seed_transport_task(session, "transport-active-run", "RACK-ACTIVE-RUN")
                     await session.execute(
                         text(
-                            "INSERT INTO wes_runtime.transport_debug_runs ("
+                            "INSERT INTO wes_biz.transport_debug_runs ("
                             "run_id, status, active_scope, rack_id, configuration_json, current_group_index, "
                             "current_phase, current_step_ordinal, version, created_by_user_id, created_at, updated_at"
                             ") VALUES ("
@@ -250,7 +250,7 @@ def test_targeted_transport_reset_rejects_task_linked_to_active_debug_run() -> N
                     )
                     await session.execute(
                         text(
-                            "INSERT INTO wes_runtime.transport_debug_run_steps ("
+                            "INSERT INTO wes_biz.transport_debug_run_steps ("
                             "run_id, ordinal, phase, status, client_request_id, transport_task_id, "
                             "observed_bins_json, created_at, updated_at"
                             ") VALUES ("
@@ -272,7 +272,7 @@ def test_targeted_transport_reset_rejects_task_linked_to_active_debug_run() -> N
                     assert (
                         await session.scalar(
                             text(
-                                "SELECT count(*) FROM wes_runtime.transport_tasks "
+                                "SELECT count(*) FROM wes_biz.transport_tasks "
                                 "WHERE transport_task_id = 'transport-active-run'"
                             )
                         )
@@ -295,7 +295,7 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome
                     await _seed_transport_task(session, "transport-evidence", "RACK-EVIDENCE")
                     await session.execute(
                         text(
-                            "INSERT INTO wes_runtime.transport_evidence ("
+                            "INSERT INTO wes_biz.transport_evidence ("
                             "operation_id, transport_task_id, operation, outcome_revision, event_timestamp_ms, "
                             "message_digest, payload_json, ack_timestamp_ms, ack_data_json, status, received_at"
                             ") VALUES ("
@@ -308,7 +308,7 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome
                     )
                     await session.execute(
                         text(
-                            "INSERT INTO wes_runtime.transport_callback_receipts ("
+                            "INSERT INTO wes_biz.transport_callback_receipts ("
                             "operation_id, operation, message_digest, message_json, response_http_status, "
                             "response_code, response_timestamp_ms, response_data_json, received_at"
                             ") VALUES ("
@@ -322,7 +322,7 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome
                     await _seed_transport_task(session, "transport-outcome", "RACK-OUTCOME")
                     await session.execute(
                         text(
-                            "UPDATE wes_runtime.transport_tasks SET outcome_version = 1, outcome_json = '{}'::json "
+                            "UPDATE wes_biz.transport_tasks SET outcome_version = 1, outcome_json = '{}'::json "
                             "WHERE transport_task_id = 'transport-outcome'"
                         )
                     )
@@ -332,10 +332,7 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome
                         await reset_transport_task_data(session, transport_task_id=task_id, apply=True)
                         assert (
                             await session.scalar(
-                                text(
-                                    "SELECT count(*) FROM wes_runtime.transport_tasks "
-                                    "WHERE transport_task_id = :task_id"
-                                ),
+                                text("SELECT count(*) FROM wes_biz.transport_tasks WHERE transport_task_id = :task_id"),
                                 {"task_id": task_id},
                             )
                             == 0
@@ -343,7 +340,7 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome
                     assert (
                         await session.scalar(
                             text(
-                                "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
+                                "SELECT count(*) FROM wes_biz.transport_callback_receipts "
                                 "WHERE response_data_json ->> 'transport_task_id' = 'transport-evidence'"
                             )
                         )

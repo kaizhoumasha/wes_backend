@@ -12,7 +12,6 @@ from src.app.resource.models import RackKind
 from src.app.workline.rack_position_role import WorklineRackPositionRole
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
-from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 
@@ -80,25 +79,8 @@ class WorkLinePosition(WorkLinePositionBase, DataTableMixin, table=True):
     )
 
 
-class WorkLinePositionCreate(ModelFactory(WorkLinePositionBase).for_create()):
-    """工作线工作位创建 Schema。"""
-
-
-class WorkLinePositionUpdate(ModelFactory(WorkLinePositionBase).for_update()):
-    """工作线工作位更新 Schema。"""
-
-
-class WorkLinePositionResponse(WorkLinePositionBase):
-    """工作线工作位响应 Schema。"""
-
-    id: int
-
-
 __all__ = [
     "WorkLinePosition",
     "WorkLinePositionBase",
-    "WorkLinePositionCreate",
-    "WorkLinePositionResponse",
-    "WorkLinePositionUpdate",
     "WorklineRackPositionRole",
 ]

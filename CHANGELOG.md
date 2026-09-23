@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.4.0] - 2026-09-22
+
+### Changed
+
+- 将运行时持久化表归入 `wes_biz`，数据库仅保留 `wes_sys` 与 `wes_biz` 两个业务相关 schema。
+
+### Removed
+
+- 移除人工出库联调台的专属后台接口、运行记录和编排代码；历史联调 run 非空时迁移会拒绝删表。
+- 清理不再使用的设备状态观察、运行位置事件模型及旧诊断 DTO；对应事实表非空时迁移会拒绝删表。
+
 ## [0.48.3.0] - 2026-09-22
 
 ### Added

@@ -278,17 +278,17 @@ def idempotent_retry(self: Any, operation_key: str, countdown: int = 5) -> dict[
         async with get_db_context() as db:
             await db.execute(
                 text(
-                    "INSERT INTO wes_runtime.celery_prefork_acceptance(operation_key, attempts, completed) "
+                    "INSERT INTO wes_biz.celery_prefork_acceptance(operation_key, attempts, completed) "
                     "VALUES (:key, 1, :completed) "
                     "ON CONFLICT (operation_key) DO UPDATE "
-                    "SET attempts = wes_runtime.celery_prefork_acceptance.attempts + 1, "
-                    "completed = wes_runtime.celery_prefork_acceptance.completed OR EXCLUDED.completed"
+                    "SET attempts = wes_biz.celery_prefork_acceptance.attempts + 1, "
+                    "completed = wes_biz.celery_prefork_acceptance.completed OR EXCLUDED.completed"
                 ),
                 {"key": operation_key, "completed": final},
             )
             await db.commit()
             attempts = await db.scalar(
-                text("SELECT attempts FROM wes_runtime.celery_prefork_acceptance WHERE operation_key = :key"),
+                text("SELECT attempts FROM wes_biz.celery_prefork_acceptance WHERE operation_key = :key"),
                 {"key": operation_key},
             )
             return int(attempts or 0)
@@ -315,7 +315,7 @@ def transaction_probe(operation_key: str, hold_seconds: float = 2.0) -> dict[str
         async with get_db_context() as db:
             await db.execute(
                 text(
-                    "INSERT INTO wes_runtime.celery_prefork_acceptance(operation_key, attempts, completed) "
+                    "INSERT INTO wes_biz.celery_prefork_acceptance(operation_key, attempts, completed) "
                     "VALUES (:key, 1, FALSE) ON CONFLICT (operation_key) DO NOTHING"
                 ),
                 {"key": operation_key},
@@ -324,7 +324,7 @@ def transaction_probe(operation_key: str, hold_seconds: float = 2.0) -> dict[str
         async with get_db_context() as db:
             await db.execute(text("SELECT pg_sleep(:seconds)"), {"seconds": hold_seconds})
             await db.execute(
-                text("UPDATE wes_runtime.celery_prefork_acceptance SET completed = TRUE WHERE operation_key = :key"),
+                text("UPDATE wes_biz.celery_prefork_acceptance SET completed = TRUE WHERE operation_key = :key"),
                 {"key": operation_key},
             )
             await db.commit()
@@ -392,7 +392,7 @@ def prefork_services() -> Iterator[dict[str, str]]:
             connection = await asyncpg.connect(connection_url.render_as_string(hide_password=False))
             try:
                 await connection.execute(
-                    "CREATE TABLE wes_runtime.celery_prefork_acceptance ("
+                    "CREATE TABLE wes_biz.celery_prefork_acceptance ("
                     "operation_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, completed BOOLEAN NOT NULL)"
                 )
             finally:
@@ -465,7 +465,7 @@ def _acceptance_row(database_url: str, operation_key: str) -> dict[str, object] 
         connection = await asyncpg.connect(url.render_as_string(hide_password=False))
         try:
             row = await connection.fetchrow(
-                "SELECT operation_key, attempts, completed FROM wes_runtime.celery_prefork_acceptance "
+                "SELECT operation_key, attempts, completed FROM wes_biz.celery_prefork_acceptance "
                 "WHERE operation_key = $1",
                 operation_key,
             )

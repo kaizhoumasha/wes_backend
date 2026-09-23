@@ -127,7 +127,6 @@ PLUGIN_SDK_REVIEWED_NONE_PATHS = (
 RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
     "src/app/runtime/orchestration/services/_text.py",
     "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py",
-    "src/app/runtime/orchestration/services/runtime_location_event_service.py",
 )
 TRACE_REVIEWED_NONE_PATHS = (
     "src/app/callback/contracts/__init__.py",
@@ -1387,6 +1386,9 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py",
         "migrations/versions/20260909_0319_bebf575cca2b_widen_device_topology_foreign_keys_to_.py",
         "migrations/versions/20260909_0624_133712f6a89a_add_manual_outbound_integration_runs.py",
+        "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py",
+        "migrations/versions/20260923_1154_510f5006d385_合并运行时表到业务schema.py",
+        "migrations/versions/20260923_1219_398b9ace6c7b_清理过期设备观察与位置事件表.py",
         "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py",
         "migrations/versions/20260909_0517_a7e8ad4339e5_add_return_and_transfer_workline_rack_.py",
         "migrations/versions/20260909_0915_d11f8c6fdb0d_support_generic_workline_position_slots.py",
@@ -1410,6 +1412,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260923_1033_9b440473b03d_放宽_transport_请求重提计数约束.py",
         "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py",
         "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
+        "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

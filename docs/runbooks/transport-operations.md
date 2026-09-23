@@ -3,7 +3,7 @@
 > 当前状态：Phase 6 基础能力诊断入口。生产运维只读取 WES 本地 API、日志和 PostgreSQL 事实，不执行状态修改或重提；
 > 数据可丢弃的联调环境可以使用诊断页面/API 或项目脚本，按 `transport_task_id` 清理单个任务的完整本地 Transport 链路。
 
-适用对象是 `wes_runtime` schema 中的 Transport 基础对象。查询应使用只读数据库账号，
+适用对象是 `wes_biz` schema 中的 Transport 基础对象。查询应使用只读数据库账号，
 时间统一按数据库 UTC 解释；不应为了让结果“消失”而直接改表。以下命令在 `psql` 中执行，
 连接字符串由环境中的只读凭据提供：
 
@@ -57,7 +57,7 @@ SELECT
     submit_attempt_count,
     outcome_version,
     published_outcome_version
-FROM wes_runtime.transport_tasks
+FROM wes_biz.transport_tasks
 WHERE status = 'RECONCILING'
 ORDER BY updated_at ASC, id ASC
 LIMIT 100;
@@ -76,7 +76,7 @@ SELECT
     received_at,
     processed_at,
     now() AT TIME ZONE 'UTC' - received_at AS age
-FROM wes_runtime.transport_evidence
+FROM wes_biz.transport_evidence
 WHERE transport_task_id = :'transport_task_id'
 ORDER BY received_at ASC, id ASC;
 ```
@@ -96,7 +96,7 @@ SELECT
     status,
     submit_claim_until AS claim_until,
     now() AT TIME ZONE 'UTC' - submit_claim_until AS overdue_age
-FROM wes_runtime.transport_tasks
+FROM wes_biz.transport_tasks
 WHERE submit_claim_until < (now() AT TIME ZONE 'UTC')
 
 UNION ALL
@@ -107,7 +107,7 @@ SELECT
     status,
     claim_until,
     now() AT TIME ZONE 'UTC' - claim_until AS overdue_age
-FROM wes_runtime.transport_evidence
+FROM wes_biz.transport_evidence
 WHERE claim_until < (now() AT TIME ZONE 'UTC')
 
 UNION ALL
@@ -118,7 +118,7 @@ SELECT
     status,
     outcome_claim_until AS claim_until,
     now() AT TIME ZONE 'UTC' - outcome_claim_until AS overdue_age
-FROM wes_runtime.transport_tasks
+FROM wes_biz.transport_tasks
 WHERE outcome_claim_until < (now() AT TIME ZONE 'UTC')
 ORDER BY claim_until ASC
 LIMIT 100;
@@ -140,7 +140,7 @@ SELECT
     received_at,
     claim_until,
     conflict_code
-FROM wes_runtime.transport_evidence
+FROM wes_biz.transport_evidence
 WHERE status = 'PENDING'
 ORDER BY received_at ASC, id ASC
 LIMIT 100;
@@ -160,7 +160,7 @@ SELECT
     published_outcome_version,
     now() AT TIME ZONE 'UTC' - updated_at AS age,
     outcome_claim_until
-FROM wes_runtime.transport_tasks
+FROM wes_biz.transport_tasks
 WHERE outcome_json IS NOT NULL
   AND outcome_version > published_outcome_version
 ORDER BY updated_at ASC, id ASC

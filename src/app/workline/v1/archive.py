@@ -79,7 +79,6 @@ async def archive_workline_open_work(
         version=result.version,
         archived_picking_tasks=result.archived_picking_tasks,
         archived_plugin_tasks=result.archived_plugin_tasks,
-        archived_integration_runs=result.archived_integration_runs,
         archived_total=result.archived_total,
     )
     return cast(
@@ -155,7 +154,6 @@ async def archive_workline_picking_task(
         version=result.version,
         archived_picking_tasks=result.archived_picking_tasks,
         archived_plugin_tasks=result.archived_plugin_tasks,
-        archived_integration_runs=result.archived_integration_runs,
         archived_total=result.archived_total,
         archived_single_picking_task=result.archived_single_picking_task,
         archived_single_picking_task_id=result.archived_single_picking_task_id,

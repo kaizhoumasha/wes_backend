@@ -42,13 +42,17 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_face_completions_table.py",
         "migrations/versions/20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py",
         "migrations/versions/20260923_1033_9b440473b03d_放宽_transport_请求重提计数约束.py",
+        "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py",
+        "migrations/versions/20260923_1154_510f5006d385_合并运行时表到业务schema.py",
+        "migrations/versions/20260923_1219_398b9ace6c7b_清理过期设备观察与位置事件表.py",
         "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py",
         "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
+        "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "e5120e17cfea3aafa26ef51d1e4429a2c09117c7443f3cc316b01e6c55cc291a"
-FROZEN_PHASE10_HISTORICAL_SPEC_COUNT = 315
-FROZEN_PHASE10_HISTORICAL_SPEC_SHA256 = "50d862a49c132b37069fb52973393cb74fac26d6face0ee9735daf47968c0712"
+FROZEN_PHASE10_HISTORICAL_SPEC_COUNT = 312
+FROZEN_PHASE10_HISTORICAL_SPEC_SHA256 = "c45b5611bb3ffb13bd1edeebbfc5b8e1e12b7e609b211904d2001b41c6b20669"
 FROZEN_ALLOWED_MISSING_READS: frozenset[tuple[str, str]] = frozenset()
 
 LEGACY_ROUTE_PATHS = frozenset(

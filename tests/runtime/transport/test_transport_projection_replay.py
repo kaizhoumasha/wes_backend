@@ -195,7 +195,7 @@ async def test_final_projection_candidate_scan_uses_causal_identity_without_busi
     assert "transport_decision_bindings" in sql
     assert "picking_tasks" not in sql
     assert "source_causal_token" in sql
-    assert "ORDER BY wes_runtime.transport_members.updated_at ASC" in sql
+    assert "ORDER BY wes_biz.transport_members.updated_at ASC" in sql
 
 
 @pytest.mark.asyncio

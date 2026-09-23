@@ -30,7 +30,6 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
     @event.listens_for(engine.sync_engine, "connect")
     def attach_schemas(connection, _record):  # type: ignore[no-untyped-def]
         connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
-        connection.execute("ATTACH DATABASE ':memory:' AS wes_runtime")
 
     async with engine.begin() as connection:
         for table in (

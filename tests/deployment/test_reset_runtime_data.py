@@ -94,11 +94,11 @@ class _TransportResetSession(_FakeSession):
             raise RuntimeError(f"simulated failure: {self.fail_on_sql}")
         if sql.startswith("SELECT transport_task_id, status"):
             return _Rows([self.task_row] if self.task_row is not None else [])
-        if sql.startswith("SELECT count(*) FROM wes_runtime.transport_evidence"):
+        if sql.startswith("SELECT count(*) FROM wes_biz.transport_evidence"):
             return _Rows(scalar=self.evidence_count)
-        if sql.startswith("SELECT count(*) FROM wes_runtime.transport_"):
+        if sql.startswith("SELECT count(*) FROM wes_biz.transport_"):
             return _Rows(scalar=1)
-        if sql.startswith("DELETE FROM wes_runtime.transport_tasks"):
+        if sql.startswith("DELETE FROM wes_biz.transport_tasks"):
             rowcount = self.task_delete_rowcount
             if rowcount is None:
                 rowcount = 1 if self.task_row is not None else 0
@@ -120,9 +120,8 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
         ("wes_biz", "position_projections"),
         ("wes_biz", "transport_decision_bindings"),
         ("wes_biz", "wms_confirmations"),
-        ("wes_runtime", "transport_tasks"),
-        ("wes_runtime", "workline_integration_runs"),
-        ("wes_runtime", "workline_runtime_status_projections"),
+        ("wes_biz", "transport_tasks"),
+        ("wes_biz", "workline_runtime_status_projections"),
         ("wes_sys", "api_access_logs"),
     }.issubset(identities)
     assert {
@@ -140,7 +139,7 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
             ("wes_biz", "workline_bin_cell_reservations"),
             ("wes_biz", "workline_diagnostics"),
             ("wes_biz", "workline_dispatch_attempts"),
-            ("wes_runtime", "runtime_inbox"),
+            ("wes_biz", "runtime_inbox"),
         }
     )
     assert all(target.schema and target.table for target in reset_module.RUNTIME_TABLES)
@@ -371,7 +370,7 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     ("fail_on_sql", "fail_commit"),
     (
         ("TRUNCATE ", False),
-        ("INSERT INTO wes_runtime.workline_runtime_status_projections", False),
+        ("INSERT INTO wes_biz.workline_runtime_status_projections", False),
         (None, True),
     ),
 )
@@ -456,11 +455,11 @@ async def test_transport_task_reset_dry_run_reports_exact_aggregate_without_muta
     assert summary.transport_task_id == "transport-test"
     assert summary.status == "RECONCILING"
     assert summary.rows_before == {
-        "wes_runtime.transport_callback_receipts": 1,
-        "wes_runtime.transport_evidence": 0,
-        "wes_runtime.transport_debug_position_projections": 1,
-        "wes_runtime.transport_members": 1,
-        "wes_runtime.transport_tasks": 1,
+        "wes_biz.transport_callback_receipts": 1,
+        "wes_biz.transport_evidence": 0,
+        "wes_biz.transport_debug_position_projections": 1,
+        "wes_biz.transport_members": 1,
+        "wes_biz.transport_tasks": 1,
     }
     assert not any(_is_mutation(statement) for statement in session.statements)
     assert session.commits == 0
@@ -478,22 +477,22 @@ async def test_transport_task_reset_apply_deletes_children_then_task_in_one_comm
 
     deletes = [statement for statement in session.statements if statement.startswith("DELETE FROM")]
     assert deletes == [
-        "DELETE FROM wes_runtime.transport_callback_receipts WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
-        "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
-        "DELETE FROM wes_runtime.transport_debug_position_projections WHERE source_transport_task_id = :transport_task_id",
-        "DELETE FROM wes_runtime.transport_members WHERE transport_task_id = :transport_task_id",
-        "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_biz.transport_callback_receipts WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
+        "DELETE FROM wes_biz.transport_evidence WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_biz.transport_debug_position_projections WHERE source_transport_task_id = :transport_task_id",
+        "DELETE FROM wes_biz.transport_members WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_biz.transport_tasks WHERE transport_task_id = :transport_task_id",
     ]
     assert summary.mode == "apply"
     active_run_queries = [statement for statement in session.statements if "transport_debug_runs" in statement]
     assert len(active_run_queries) == 1
     assert "FOR SHARE" not in active_run_queries[0]
     assert summary.deleted == {
-        "wes_runtime.transport_callback_receipts": 1,
-        "wes_runtime.transport_evidence": 1,
-        "wes_runtime.transport_debug_position_projections": 1,
-        "wes_runtime.transport_members": 1,
-        "wes_runtime.transport_tasks": 1,
+        "wes_biz.transport_callback_receipts": 1,
+        "wes_biz.transport_evidence": 1,
+        "wes_biz.transport_debug_position_projections": 1,
+        "wes_biz.transport_members": 1,
+        "wes_biz.transport_tasks": 1,
     }
     assert session.commits == 1
     assert session.rollbacks == 0
@@ -510,13 +509,13 @@ async def test_transport_task_reset_allows_any_status_and_existing_evidence() ->
     )
 
     assert summary.status == "ACCEPTED"
-    assert summary.deleted["wes_runtime.transport_evidence"] == 1
+    assert summary.deleted["wes_biz.transport_evidence"] == 1
     assert session.commits == 1
 
 
 @pytest.mark.asyncio
 async def test_transport_task_reset_rolls_back_delete_failure() -> None:
-    session = _TransportResetSession(fail_on_sql="DELETE FROM wes_runtime.transport_members")
+    session = _TransportResetSession(fail_on_sql="DELETE FROM wes_biz.transport_members")
 
     with pytest.raises(RuntimeError, match="simulated"):
         await reset_module.reset_transport_task_data(

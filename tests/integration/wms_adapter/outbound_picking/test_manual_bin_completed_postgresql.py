@@ -8,8 +8,6 @@ from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import parse
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services.manual_bin_completed import ManualBinCompletedService
 from src.app.workline.models import LineType, WorkLine
-from src.app.workline_integration_debug.models import IntegrationRun
-from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.postgresql_heavy import migrated_database
@@ -62,8 +60,7 @@ async def test_manual_bin_completion_is_persisted_before_received_ack() -> None:
                 )
 
 
-@pytest.mark.parametrize("debug_owned", [False, True])
-async def test_manual_bin_completion_freezes_executing_task_workline_for_plugin(debug_owned: bool) -> None:
+async def test_manual_bin_completion_freezes_executing_task_workline_for_plugin() -> None:
     operation_id = new_uuid7()
     issued_operation_id = new_uuid7()
     event = parse_manual_bin_completed_event(
@@ -114,26 +111,7 @@ async def test_manual_bin_completion_freezes_executing_task_workline_for_plugin(
                 workline_id=workline.id,
             )
             db.add(task)
-            if debug_owned:
-                db.add(
-                    IntegrationRun(
-                        run_id=f"debug-{operation_id}",
-                        workline_id=workline.id,
-                        workline_code=workline.line_code,
-                        scenario_key="manual_outbound_picking@v1",
-                        expected_plugin_key="manual-picking",
-                        profile="DEVICE_INTEGRATION",
-                        environment_label="test",
-                        operator_user_id=1,
-                        active_scope=f"WORKLINE:{workline.id}",
-                        status="WAITING_EXTERNAL",
-                        current_phase="WORK_COMPLETION",
-                        task_id="PICK-001",
-                        bin_code="A000000001",
-                    )
-                )
-
-        service = ManualBinCompletedService(sessions, completion_owner=IntegrationRunWorkLineOwner())
+        service = ManualBinCompletedService(sessions)
         received = await service.record(event, received_at=timezone.now_for_db())
         duplicate = await service.record(event, received_at=timezone.now_for_db())
         async with sessions() as db:
@@ -143,6 +121,4 @@ async def test_manual_bin_completion_freezes_executing_task_workline_for_plugin(
         assert duplicate.code == "DUPLICATE"
         assert evidence is not None
         assert evidence.workline_id == workline.id
-        assert evidence.apply_status == (
-            InboundEvidenceApplyStatus.PENDING if debug_owned else InboundEvidenceApplyStatus.APPLIED
-        )
+        assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED

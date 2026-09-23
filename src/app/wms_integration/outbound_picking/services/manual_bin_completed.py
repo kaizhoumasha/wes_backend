@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.services import InboundEvidenceConflictResult, InboundEvidenceService
@@ -24,10 +24,6 @@ if TYPE_CHECKING:
     from src.core.task_queue_gateway import TaskQueueGateway
 
 
-class CompletionOwnerPort(Protocol):
-    async def owns_completion(self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str) -> bool: ...
-
-
 class ManualBinCompletedService:
     def __init__(
         self,
@@ -36,13 +32,11 @@ class ManualBinCompletedService:
         evidence_service: InboundEvidenceService | None = None,
         picking_tasks: PickingTaskRepository | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
-        completion_owner: CompletionOwnerPort | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = picking_tasks or PickingTaskRepository()
         self._queue = task_queue_gateway
-        self._completion_owner = completion_owner
 
     async def record(
         self,
@@ -62,16 +56,6 @@ class ManualBinCompletedService:
                 and task.status == PickingTaskStatus.EXECUTING
                 else None
             )
-            debug_owned = (
-                workline_id is not None
-                and self._completion_owner is not None
-                and await self._completion_owner.owns_completion(
-                    db,
-                    workline_id=workline_id,
-                    task_id=envelope.data.task_id,
-                    bin_code=envelope.data.bin_code,
-                )
-            )
             acceptance = await self._evidence.accept(
                 db,
                 kind=InboundEvidenceKind.WMS_EVENT,
@@ -86,8 +70,6 @@ class ManualBinCompletedService:
                 apply_status=(
                     InboundEvidenceApplyStatus.IGNORED
                     if invalid
-                    else InboundEvidenceApplyStatus.PENDING
-                    if debug_owned
                     else InboundEvidenceApplyStatus.APPLIED
                     if workline_id is not None
                     else InboundEvidenceApplyStatus.RECONCILING

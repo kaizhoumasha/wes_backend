@@ -31,7 +31,6 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
     @event.listens_for(engine.sync_engine, "connect")
     def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
         connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
-        connection.execute("ATTACH DATABASE ':memory:' AS wes_runtime")
 
     async with engine.begin() as connection:
         for table in (
@@ -338,7 +337,6 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
     @event.listens_for(engine.sync_engine, "connect")
     def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
         connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
-        connection.execute("ATTACH DATABASE ':memory:' AS wes_runtime")
 
     async with engine.begin() as connection:
         for table in (

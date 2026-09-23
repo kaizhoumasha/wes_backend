@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from deployment.plugin_definitions import load_plugin_definitions
 from src.app.device.services import device_service
@@ -11,7 +11,10 @@ from src.app.execution.composition import ExecutionRuntime, build_execution_runt
 from src.app.execution.plugin_binding import StaticPluginBinding
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.execution.services.reliable_rack_transport import ReliableBinTransportCreator, ReliableRackTransportCreator
-from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
+from src.app.execution.services.wms_confirmation_service import (
+    WmsConfirmationLifecycleService,
+    WorkLineConfirmationOwnerPort,
+)
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
@@ -53,13 +56,12 @@ from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePubli
 from src.app.workline.services.workline_archive_service import WorkLineArchiveService
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
-from src.app.workline_integration_debug.composition import CombinedWorkLineConfirmationOwner
-from src.app.workline_integration_debug.repository import integration_run_repository
-from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.device.composition import DeviceEndpointAdapterProvider
@@ -82,6 +84,17 @@ class DeploymentRuntime:
     picking_task_plan_activation_service: PickingTaskPlanActivationService
 
 
+class CombinedWorkLineConfirmationOwner:
+    def __init__(self, first: WorkLineConfirmationOwnerPort, second: WorkLineConfirmationOwnerPort) -> None:
+        self._first = first
+        self._second = second
+
+    async def validate_owner(self, db: AsyncSession, *, workline_id: int, request_payload: dict[str, Any]) -> bool:
+        if await self._first.validate_owner(db, workline_id=workline_id, request_payload=request_payload):
+            return True
+        return await self._second.validate_owner(db, workline_id=workline_id, request_payload=request_payload)
+
+
 def build_deployment_runtime(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -93,14 +106,10 @@ def build_deployment_runtime(
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
-    debug_owner = IntegrationRunWorkLineOwner()
-    workline_reserved = debug_owner.is_reserved
-    prepare_workline_reserved = workline_reserved
+    prepare_workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None
     workline_owner = CombinedWorkLineConfirmationOwner(
-        CombinedWorkLineConfirmationOwner(
-            CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
-            ReturnBufferDrainOwnerService(),
-        )
+        CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
+        ReturnBufferDrainOwnerService(),
     )
     workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, RackDepartureOwnerService())
     workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, BinInboundBatchOwnerService())
@@ -132,8 +141,7 @@ def build_deployment_runtime(
         drain_reader = ReturnBufferDrainResultReader()
         drains = DrainRepository(drain_reader)
 
-        async def prepare_workline_reserved(db: AsyncSession, workline_id: int) -> bool:
-            return await workline_reserved(db, workline_id) or await drains.is_reserved(db, workline_id)
+        prepare_workline_reserved = drains.is_reserved
 
         batch_scheduler = BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner))
         rack_creator = ReliableRackTransportCreator(transport_runtime.service)
@@ -211,8 +219,6 @@ def build_deployment_runtime(
         task_queue_gateway=task_queue_gateway,
         picking_task_owner=PickingTaskConfirmationOwnerService(),
         workline_owner=workline_owner,
-        workline_reserved=workline_reserved,
-        direct_result_owner=debug_owner.owns_operation,
     )
     return DeploymentRuntime(
         execution=execution,
@@ -234,7 +240,6 @@ def build_deployment_runtime(
         ),
         workline_archive_service=WorkLineArchiveService(
             plugins=plugins,
-            reservation_archiver=integration_run_repository,
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),
         wms_recovery_event_handler=None,
@@ -248,7 +253,6 @@ def build_deployment_runtime(
             session_factory,
             plugins=plugins,
             transport_creator=ReliableRackTransportCreator(transport_runtime.service),
-            workline_reserved=workline_reserved,
         ),
     )
 

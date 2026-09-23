@@ -585,7 +585,7 @@ async def test_received_response_is_preserved_when_owner_changes_during_http(own
         (WmsDispatchCode.RECONCILING, WmsConfirmationStatus.RECONCILING),
     ],
 )
-async def test_debug_owned_wms_response_is_not_replayed_to_plugin_after_run_closes(
+async def test_workline_owned_wms_response_reaches_plugin(
     response_code: WmsDispatchCode, expected_status: WmsConfirmationStatus
 ) -> None:
     now = datetime(2026, 9, 7, tzinfo=UTC)
@@ -596,7 +596,6 @@ async def test_debug_owned_wms_response_is_not_replayed_to_plugin_after_run_clos
     confirmation.request_payload["operation"] = confirmation.operation
     confirmation.request_digest = _digest(confirmation.request_payload)
     evidence = _EvidenceService()
-    debug_owner = AsyncMock(return_value=True)
     queue = _TaskQueue()
     service = WmsConfirmationService(
         repository=_ConfirmationRepository([confirmation]),
@@ -615,15 +614,13 @@ async def test_debug_owned_wms_response_is_not_replayed_to_plugin_after_run_clos
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
         workline_owner=SimpleNamespace(validate_owner=AsyncMock(return_value=True)),
-        direct_result_owner=debug_owner,
         task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
     assert await service.dispatch_batch(now=now) == 1
     assert confirmation.status == expected_status
-    debug_owner.assert_awaited_once()
-    assert evidence.accepted.processed_at == now
-    assert queue.execution_wakes == 0
+    assert evidence.accepted.processed_at is None
+    assert queue.execution_wakes == (1 if response_code is WmsDispatchCode.DETERMINATE else 0)
 
 
 @pytest.mark.asyncio

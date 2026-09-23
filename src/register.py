@@ -35,7 +35,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     transport_runtime = None
     device_command_runtime = None
     deployment_runtime = None
-    workline_integration_debug_runtime = None
     primary_error: BaseException | None = None
     try:
         logger.info("Initializing application resources...")
@@ -47,7 +46,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
-        _app.state.workline_integration_debug_runtime = None
         _app.state.workline_start_service = None
         _app.state.workline_configuration_service = None
         _app.state.workline_archive_service = None
@@ -102,7 +100,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_configuration_service = deployment_runtime.workline_configuration_service
         _app.state.workline_archive_service = deployment_runtime.workline_archive_service
         from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
-        from src.app.workline_integration_debug.service import IntegrationRunWorkLineOwner
 
         plan_admission_policies = {
             (plugin.definition.plugin_key, plugin.definition.plugin_version): plugin.picking_task_plan_admission_policy
@@ -117,7 +114,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             ),
             plan_admission_policies=plan_admission_policies,
             task_queue_gateway=task_queue_gateway,
-            completion_owner=IntegrationRunWorkLineOwner(),
             transport_service=transport_runtime.service,
         )
         _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
@@ -126,15 +122,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_picking_task_queue_changed_handler = outbound_picking_runtime.picking_task_queue_changed_handler
         _app.state.wms_manual_bin_completed_handler = outbound_picking_runtime.manual_bin_completed_handler
         _app.state.wms_manual_rack_direct_pick_handler = outbound_picking_runtime.manual_rack_direct_pick_handler
-        from src.app.workline_integration_debug.composition import build_integration_debug_runtime
-
-        workline_integration_debug_runtime = build_integration_debug_runtime(
-            session_factory=db_module.AsyncSessionLocal,
-            confirmations=deployment_runtime.execution.wms_confirmation_service,
-            transport=transport_runtime.service,
-            device_commands=device_command_runtime.command_service,
-        )
-        _app.state.workline_integration_debug_runtime = workline_integration_debug_runtime
         await init_redis()
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
@@ -164,7 +151,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_archive_service = None
         _app.state.task_queue_gateway = None
         _app.state.wms_recovery_event_handler = None
-        _app.state.workline_integration_debug_runtime = None
         _app.state.wms_picking_task_issued_handler = None
         _app.state.wms_picking_task_cancel_handler = None
         _app.state.wms_picking_task_plan_delta_handler = None
@@ -253,7 +239,6 @@ def register_routers(app: FastAPI) -> None:
     from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.wms_diagnostics.v1 import router as wms_diagnostics_router
     from src.app.workline import router_v1 as workline_router
-    from src.app.workline_integration_debug.v1 import router as workline_integration_debug_router
 
     app.include_router(auth_router, prefix=settings.API_PATH)
     app.include_router(admin_router, prefix=settings.API_PATH)
@@ -267,7 +252,6 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
     app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
-    app.include_router(workline_integration_debug_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:
