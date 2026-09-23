@@ -2,7 +2,7 @@
 
 > **STATUS: NEEDS REBASE AGAINST WES RESPONSIBILITY CONVERGENCE — NOT CURRENT IMPLEMENTATION AUTHORITY**
 >
-> **DO NOT IMPLEMENT STAGE 1 UNTIL PREREQUISITES ARE REVALIDATED.** 本文保留作历史分析；下方任务清单、代码示例、四项前置假设和 merge SHA 门禁均不得直接执行。当前依据是 [SRS 第 0 章](../../architecture/SRS.md)、[WES 职责收敛账本](../../architecture/wes-responsibility-convergence-ledger.md)、[人工出库 WMS 合同](../../contracts/wms-manual-outbound-picking-integration-requirements.md)和 [Transport 合同](../../contracts/transport-fulfillment-contract.md)。每项前置能力先证明即使取消共享包抽取也仍为 WES 正确运行所必需，再分别闭合能力、合同、架构不变量和聚焦测试；merge SHA 只记录落地位置。完成职责收敛后重新比较两个插件，再决定是否抽取及抽取范围。
+> **DO NOT IMPLEMENT STAGE 1 UNTIL PREREQUISITES ARE REVALIDATED.** 本文保留作历史分析；下方任务清单、代码示例、四项前置假设和 merge SHA 门禁均不得直接执行。原文将 SCAN1 路线判断延续为 SCAN3 授权、按 `(task_id, bin_code)` 判 Passage 终态、用 `plan_revision` 区分 Passage，以及按设备未闭合命令围栏其他料箱，均已撤回。当前依据是 [SRS 第 0 章](../../architecture/SRS.md)、[WES 职责收敛账本](../../architecture/wes-responsibility-convergence-ledger.md)、[人工出库 WMS 合同](../../contracts/wms-manual-outbound-picking-integration-requirements.md)和 [Transport 合同](../../contracts/transport-fulfillment-contract.md)。每项前置能力先证明即使取消共享包抽取也仍为 WES 正确运行所必需，再分别闭合能力、合同、架构不变量和聚焦测试；merge SHA 只记录落地位置。完成职责收敛后重新比较两个插件，再决定是否抽取及抽取范围。
 
 **Goal:** 把 `workline_plugins/manual-picking/` 里与业务无关的入线段、货架循环、回程段代码（约 2500 行）抽取为独立
 的 `workline_plugins/bin-line-common/` 共享包，让 `automatic-picking` 插件后续可以复用同一套代码，不重复实现。
@@ -92,8 +92,8 @@ git merge-base --is-ancestor <EVIDENCE_DRIVEN_RACK_MERGE_SHA> develop
    `plan_delta` 是增量下发的，同一货架、同一料箱可能在后续 revision 里被再次选中，走完整的
    SCAN1→SCAN2→WMS 准入→WMS 完成全流程。原有的 `(task_id, bin_code) WHERE wms_result IS NOT NULL` 单终态约束
    和 `uniquely_completed_for_update` 判重逻辑都假设"一个 (task_id, bin_code) 组合整个任务只终结一次"，这个假设
-   是错的。此问题必须在前置 revision identity 计划中通过显式 `plan_revision` 修正；本计划不得用 `id DESC`、时间顺序
-   或单终态业务围栏替代权威 revision。
+   是错的。`plan_revision` 区分来源 Requirement Member；同任务同箱多次 Passage 则由独立 `passage_id` 和原准入 `admission_operation_id` 区分，不能用 revision 代替 Passage 身份。本计划不得用 `id DESC`、时间顺序
+   或单终态业务围栏猜测本次经过。
 8. **到位货架只按当前物理事实推进，不读取来源货架业务历史投影**：当前工作位货架的任务 owner 来自把它送到位的
    `TransportDecisionBinding.picking_task_id/source_evidence_id`，到位由 `PositionProjection` 证明。有任务 owner 时，
    `inbound_batch` 与 `return_batch` 公平交替；优先方向明确无候选时，同一 tick 可尝试另一方向。没有任务 owner 时只

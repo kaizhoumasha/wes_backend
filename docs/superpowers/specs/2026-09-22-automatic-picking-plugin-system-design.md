@@ -1,9 +1,9 @@
 ---
 title: 自动拣料插件系统设计
-status: Proposed
+status: NeedsRebase
 created_at: 2026-09-22
 audience: WES 架构、WMS 对接开发、ECS 供应商、插件二次开发人员
-scope: 新增 automatic-picking 业务插件；抽取 bin-line-common 共享包；修正回程段"决定一次即冻结"限制过严问题
+scope: 历史自动拣料插件与 bin-line-common 方案；待按当前 SRS 和合同重写，不作为实施依据
 related:
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-manual-outbound-picking-integration-requirements.md
@@ -14,7 +14,6 @@ related:
   - docs/contracts/transport-fulfillment-contract.md
   - docs/superpowers/specs/2026-09-22-bin-line-scan-retry-fix.md
   - docs/plugin_development_guide.md
-supersedes: docs/design/automatic-picking-plugin-system-design.docx（评审通过后归档到项目外）
 ---
 
 # 自动拣料插件系统设计
@@ -37,6 +36,7 @@ supersedes: docs/design/automatic-picking-plugin-system-design.docx（评审通�
 自动出库合同（`wms-outbound-picking-task-integration-requirements.md`）当前仍为 `ReviewRequired`，设备附录
 （[device-annex-automatic-picking-arms.md](../../integration/device-annex-automatic-picking-arms.md)）为 `Draft`。
 本设计是这两份合同冻结前的实现前设计，不把代码就绪当作业务验收。
+原稿引用的 WMS 联合确认清单 §C 已重整为[主合同修订提案](../../integration/wms-joint-confirmation-automatic-picking.md)第 2–6 节；其中来源成员跨 revision、同箱多次 Passage 身份和 wire 均待逐项确认。**以下旧表结构、路线状态机、`(task_id, bin_code)` 唯一约束和 common 搬迁清单均已撤回，不是实施依据。** 当前语义以 [SRS 第 0 章](../../architecture/SRS.md)、[出库主合同](../../contracts/wms-outbound-picking-task-integration-requirements.md)及[人工拣选合同](../../contracts/wms-manual-outbound-picking-integration-requirements.md)为准。
 
 ## 2. Goals / Non-Goals
 
@@ -151,11 +151,9 @@ bin_line_passages.disposition 状态机
 
 ### 5.3 手工插件私有表（Mixin 同 §5.2）
 
-`manual_picking_works`：`passage_id`（唯一）、`task_id`、`bin_code`（索引用副本）、`admission_operation_id/result/scanned_at`、
-`wms_result/completed_at/completed_evidence_id`。`(task_id, bin_code) WHERE wms_result IS NOT NULL` 部分唯一索引
-（合同 §9.1 单终态保证）随字段一起迁移到这张表。
+本节原拟将手工工作字段迁移到 `manual_picking_works`，该拆表方案已撤回。同任务同箱可以多次经过；本次 Passage 通过唯一的 `admission_operation_id` 关联完成结果，不能保留跨 Passage 的 `(task_id, bin_code)` 终态唯一约束。当前实现与合同以[人工拣选合同](../../contracts/wms-manual-outbound-picking-integration-requirements.md)为准。
 
-### 5.4 自动插件私有表 —— **TBD，等 [WMS 联合确认清单](../../integration/wms-joint-confirmation-automatic-picking.md) §C 的 4 处提议合同变更书面确认后设计**
+### 5.4 自动插件私有表 —— **TBD，等 [主合同修订提案](../../integration/wms-joint-confirmation-automatic-picking.md)第 2–6 节逐项书面确认后设计**
 
 自动插件需要一张私有表，通过 `material_execution_id` 外键挂在宿主 `MaterialExecution` 下（§5.1 的关联身份不变），
 承接 WMS 通过 `work_plan`/`material.decide` 返回的 Cell、六合一码、目标储位等字段。**具体字段列表在此不给出**：
@@ -166,9 +164,7 @@ Cell 由每次 `material.decide.ACCEPT.next_source_action` 增量给出、六合
 
 重新设计时需要遵守的两条教训（本轮评审已经踩过）：
 
-1. **"Cell 完成互斥"不是 LIFO/FIFO。** 不管最终字段怎么定，"同一个 Cell 同时只允许一条未闭合记录"是一个纯粹的
-   互斥约束，不涉及排序——跨盘顺序完全由 WMS 逐盘给出，WES 不维护栈或队列。设计文档和代码注释都不要用
-   "LIFO" 这个词，避免让实现者去找一个不存在的排序逻辑。
+1. **Cell 工作幂等与物理堆叠顺序是两件事。** 原文“不要用 LIFO”已撤回；当前出库合同明确 `BIN_CELL` 按物理栈顶 LIFO 逐盘抓取。WES 不代替 ECS/PLC 做物理互斥，也不能用同一 Cell 的未闭合 Action 越过尚未确认的栈顶。
 2. **唯一索引必须按 `(passage_id, cell_id)` 或等价的复合键限定范围。** `cell_id` 取值是 `1..7` 的数字字符串
    （O16），在不同 Bin 之间会重复；只写 `cell_id` 会让两个不同 Bin 各自的"Cell 3"互相阻塞，这是一个真实会在
    多 Bin 并行时发生的数据完整性问题，不是边界情况。
@@ -182,7 +178,7 @@ Mixin 组合和 ENUM 约定同 §5.2（`EnterpriseMixin, DataTableMixin`，状�
 宿主 `MaterialExecutionService.assert_fifo_head`（[material_execution_service.py:139](../../../src/app/execution/services/material_execution_service.py:139)）
 按 `workline_id` 找队头，粒度与自动线"按 Cell 分组"的互斥不同，**不复用**，插件自己实现。
 
-## 6. `bin-line-common` 文件级归属与接缝设计
+## 6. `bin-line-common` 原文件归属提案（已撤回，不实施）
 
 ### 6.1 文件归属表
 
@@ -321,7 +317,7 @@ or_command`、`test_scan4_rescan_preserves_first_fifo_order_and_command` 当前�
 
 - 设备附录 O1~O17（见 [device-annex-automatic-picking-arms.md](../../integration/device-annex-automatic-picking-arms.md) §9）。
 - 自动出库合同 `plan_delta` J01~J11 联合验收是否关闭（该合同当前仍 `ReviewRequired`）。
-- [WMS 联合确认清单](../../integration/wms-joint-confirmation-automatic-picking.md) §C 的 4 处提议合同变更需 WMS
+- [主合同修订提案](../../integration/wms-joint-confirmation-automatic-picking.md)第 2–6 节的身份与 wire 提议需 WMS
   书面回复；回复前 §5.4 保持 TBD，不得据此开始编码。
 - `bin-line-common` 真实代码抽取的起始时间取决于 §9 依赖的基础层改动、以及[回程段扫码重试修正](2026-09-22-bin-line-scan-retry-fix.md)何时先合入 `manual-picking`。
 - **`workline_code` 已确定为 `KT11`**（内部已分配，不是 WMS 待给值）；M1 前置项是把它送进联合确认清单让 WMS
@@ -370,9 +366,9 @@ Critical gap 判定（无测试 AND 无错误处理 AND 静默失败三者同时
 | --- | --- | --- |
 | §8 回程重试修正落地 | `workline_plugins/manual-picking/` | — |
 | M2 骨架占位（definition.py、静态 composition、包目录） | `workline_plugins/bin-line-common/`（新）、`workline_plugins/automatic-picking/`（新） | — |
-| 设备附录 O1~O17 / 联合确认清单 A~E 外部沟通 | `docs/integration/`（文档） | — |
+| 设备附录 O1~O17 / 主合同修订提案逐项外部沟通 | `docs/integration/`（文档） | — |
 | `bin-line-common` 真实代码抽取 | `workline_plugins/manual-picking/`、`workline_plugins/bin-line-common/` | §8 修正已合入 且 可靠恢复基础层已合入 |
-| §5.4/§7 工作段 schema 与状态流设计 | `docs/superpowers/specs/`（新文档） | WMS 回复联合确认清单 §C 变更1~4 |
+| §5.4/§7 工作段 schema 与状态流设计 | `docs/superpowers/specs/`（新文档） | WMS 逐项确认主合同修订提案第 2–6 节 |
 | 自动插件真实执行代码（M3） | `workline_plugins/automatic-picking/` | 抽取完成 且 工作段设计完成 且 设备附录确认 |
 
 Lane A（§8 修正）、Lane B（M2 骨架）、Lane C（外部沟通）三条独立并行；Lane A 合入后解锁抽取，抽取完成 + Lane C
@@ -403,7 +399,7 @@ Synthesized from this review's findings.
   - Surfaced by: spec M2 退出条件
   - Files: `workline_plugins/automatic-picking/src/automatic_picking/definition.py`（待建）
   - Verify: 插件骨架 FAST 测试通过，静态 composition 可启动
-- [ ] **T6（P3，human:~1h / CC:~10min）** — spec — WMS 回复联合确认清单 §C 后重写 §5.4
+- [ ] **T6（P3，human:~1h / CC:~10min）** — spec — WMS 逐项确认主合同修订提案后重写 §5.4
   - Surfaced by: 架构问题 1A
   - Files: `docs/superpowers/specs/2026-09-22-automatic-picking-plugin-system-design.md`
   - Verify: 新 schema 与 §6.4 改名清单、device annex §4.2 字段对齐

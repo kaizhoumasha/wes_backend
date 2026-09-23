@@ -2575,7 +2575,7 @@ Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 
 
 ### WMS 逐盘决定目标，WES 上报实际位置
 
-料盘到达扫码位后，WES 以 `task_id + source_locator + PkgID` 调用 `outbound.material.decide@v1`。
+料盘到达扫码位后，WES 调用 `outbound.material.decide@v1`。现行 wire 包含 `task_id + source_locator + PkgID`，但这不足以区分跨 revision 再次安排的 `RACK_SLOT` 成员，或同任务同箱多次经过的 `BIN_CELL` 工作。目标关联分别需要成员 `plan_revision` 与本次 Passage/Work 身份；完整字段、示例和待决状态见[出库主合同 §6.1、§9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)及[修订提案](wms-joint-confirmation-automatic-picking.md)，提案字段尚非现行 wire。
 `PkgID` 来自硬件扫码结果，在本项目中是料盘的唯一编号。请求同时携带六合一码和扫码时间，但不再生成
 `scan_evidence_id`、`source_lock_generation` 或 `face_window_generation`。
 
@@ -2585,7 +2585,7 @@ WMS 返回精确的目标货架、货架面和目标格。物理放置完成后�
 ### 设备确认来源没有料盘
 
 `空取` 是指设备按计划到来源位置取料，但设备的确定结果表明该位置没有料盘。WES 以
-`task_id + source_locator + observed_at` 调用 `outbound.source.empty_decide@v1`。WMS 根据库存主账返回
+现行 wire 的 `task_id + source_locator + observed_at` 调用 `outbound.source.empty_decide@v1`；来源成员和 Passage/Work 的关联缺口同上，不能以物理来源的历史记录代替当前业务身份。WMS 根据库存主账返回
 `RETRY`、`WAIT` 或 `SOURCE_DONE`。设备结果不确定时不能按空取处理。
 
 ### Bin NG 分支
