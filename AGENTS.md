@@ -33,7 +33,9 @@ DO NOT send optional commentary
 - 先确认任务类型和成功标准，再选择 Skill、测试与交付流程。不要把所有任务都套入同一套重流程。
 - 坚持 KISS、YAGNI 和手术式修改：每个变更行都应能追溯到用户目标，不顺手重构、格式化或清理无关代码。
 - 保留有价值的业务注释、设计理由和 `TODO` / `FIXME` / `HACK`；行为变化时同步更新对应注释。
-- 只读 Review、诊断、实施、Commit、Push、创建 PR、Merge、Deploy 是不同授权。前一步授权不得自动扩大到后一步。
+- 按用户表达的交付目标授权并连续执行：只读 Review 和诊断不授权修改；“实施”包含工作区修改与验证；“Commit”包含暂存、门禁和提交；
+  “创建 PR”或“Ship”包含验证、Commit、Push 及创建或更新 PR。Merge、Deploy、发布、破坏性操作和超出任务边界的变更须由当前目标明确
+  授权；平台 sandbox、approval policy 和工具安全门禁始终生效。
 - 项目命令统一使用 `uv run ...`，不要依赖其它 Shell 已激活的虚拟环境。
 - 开始写操作前检查 `git status --short`，保护用户已有的 staged、unstaged、untracked 和其他 worktree 现场。
 - 不使用 `--no-verify` 绕过质量门禁；不使用破坏性 Git 或目录清理命令处理不属于本任务的内容。
@@ -44,7 +46,8 @@ DO NOT send optional commentary
 
 - 用户点名的 Skill 必须使用；未点名时只选择覆盖任务所需的最小 Skill 集合。
 - Skill 提供通用能力，本文件定义项目边界。Skill 的通用模板与本项目冲突时，保留 Skill 的核心方法，但按本文件裁剪测试、QA、提交、部署和 Subagent 行为；不要修改本机 Skill 来解决项目差异。
-- 不要机械串联多个含义重叠的 Skill。一次交付只保留一个主要实施流程、一个主要 Review 流程和一个完成验证入口。
+- 不要机械串联多个含义重叠的 Skill。一次交付只保留一个主要实施流程、一个最终 full Review 和一个完成验证入口；所选实施 Skill 明确
+  要求的任务级 scoped review 与反馈闭环 re-review 不算重复 full Review。
 - GStack 保持其默认自动升级行为，本项目不增加单独开关或升级步骤。
 
 ### 3.2 推荐路由
@@ -77,9 +80,11 @@ Subagent 仅用于用户、Skill 或批准计划明确要求的独立、边界�
 计划获批即进入 **Execution Lock**，以计划及其当前合同为执行真源；除非实际矛盾、缺失决策或变更面扩大，不重新设计、重读原始需求/
 同义 Skill 或逐文件重论证。
 
-首个生产代码补丁前必须输出并冻结变更面清单：生产符号/调用点、共享 helper 消费者、规范化/摘要身份、各消费者域测试/fixture、
-HEAVY mapping、migration/生成物/索引归档、验证和无关 dirty 指纹。随后批量完成影响分析和必要确认；同一 base、符号和意图不重复查询。用户对本任务的
-HIGH / CRITICAL 影响链作出范围授权后，清单内相同风险不再次暂停；出现清单外的新高风险影响时仍须报告。
+大型、高风险、共享合同、schema 或跨模块变更在首个生产代码补丁前输出并冻结变更面清单：生产符号/调用点、共享 helper 消费者、
+规范化/摘要身份、各消费者域测试/fixture、HEAVY mapping、migration/生成物/索引归档、验证和无关 dirty 指纹。小型低风险任务只需确认
+目标文件、直接调用点、聚焦验证和 dirty 状态。随后批量完成影响分析；同一 base、符号和意图不重复查询。GitNexus 的 HIGH / CRITICAL
+表示代码影响范围，不自动构成新的授权门槛；影响仍在已授权任务边界内时说明风险并继续，只有超出边界、涉及不可逆或安全敏感操作、
+关键决策缺失时才暂停确认。
 
 流程按当前内聚切片推进：
 
@@ -252,8 +257,9 @@ uv run scripts/select_heavy_tests.py --scope staged
 执行规则：
 
 - 完整 QUALITY、同组 HEAVY 和同一迁移链在同一有效快照各运行一次；失败无证据，聚焦通过不替代最终必选门禁。
-- 小型/低风险未授权 Commit/PR/Merge 时可止于 `IMPLEMENTED - FOCUSED VERIFIED`；出现意外影响须先重新分类，不得自行扩面。
-- 已授权 Commit 时先做聚焦验证，由 hook 产生完整 QUALITY。hook 失败后单独复现失败阶段，修复并确认 staged fingerprint 和 Git 元数据未漂移再重试；不得用反复 Commit 诊断。
+- 交付目标止于实施且未包含 Commit、Ship 或 Merge 时，小型/低风险任务可止于 `IMPLEMENTED - FOCUSED VERIFIED`；出现意外影响须先重新分类，
+  不得自行扩面。
+- 交付目标包含 Commit 时先做聚焦验证，由 hook 产生完整 QUALITY。hook 失败后单独复现失败阶段，修复并确认 staged fingerprint 和 Git 元数据未漂移再重试；不得用反复 Commit 诊断。
 - 可执行树（生产、测试、脚本、配置、迁移）或验证环境变化会使相关证据失效；仅创建 Commit 不会自动失效。纯文档或 Release 元数据变化不会使 QUALITY、HEAVY、迁移证据失效。
 - HEAVY 只执行 selector 输出的 manifest；`NONE` 是有效结果。不得把全量 HEAVY 当作默认安心检查。
 - 失败后先重跑失败项或受修复影响集合做诊断；生产、测试、脚本、配置或环境修复完成后，最终快照必须重新完整通过被失效的必选门禁。未变化的绿色快照不重复全量。
@@ -265,7 +271,9 @@ uv run scripts/select_heavy_tests.py --scope staged
 
 ### 8.1 Review
 
-- 开始前固定 base、head 和 staged/unstaged/untracked 范围；Review 前闭合适用的 3.4 清单、聚焦验证和 `git diff --check`，不得把 Reviewer 当遗漏清单生成器。只读 Review 不写文件、不提交、不推送。
+- Review 开始前固定 base、head 和 staged/unstaged/untracked 范围。实施完成后的 pre-landing Review 应先闭合适用的 3.4 清单、聚焦验证和
+  `git diff --check`，不得把 Reviewer 当遗漏清单生成器；用户直接要求的独立只读 Review 则审查当前现状，把缺失实现、测试和验证证据作为
+  finding。只读 Review 不写文件、不提交、不推送。
 - Reviewer 从 diff manifest、生产符号和合同缩窄读取，独立枚举直接/间接测试、QA/回归及 HEAVY mapping；不得凭实施者绿灯清单宣布闭合，也不重复其测试。
 - 首轮做完整 Review。生产代码、机器合同或运行时配置修复后，原 Reviewer 用一轮评审同时完成旧意见闭环和当前 diff 的 fresh full Review，禁止拆成两轮。
 - 只有断言语义、测试所有者和可观察行为均不变，且残留扫描闭合时，fixture/期望/调用点传播才算机械变更并做定向 Review；否则升级为完整 Review。纯文档或 Release 元数据只核对对应 diff。
@@ -283,11 +291,11 @@ uv run scripts/select_heavy_tests.py --scope staged
 推荐顺序：
 
 1. 固定最终代码/测试快照并完成聚焦验证。
-2. 完成唯一一次主 Review 与反馈闭环。
+2. 完成最终 full Review 与反馈闭环；复用所选实施流程已要求的 scoped review，不重复同范围 full Review。
 3. 对该快照运行 QUALITY、selector 选中的 HEAVY 和必要迁移验证。
 4. 最后修改 `VERSION`、`CHANGELOG`、PR 文案等 Release 元数据。
 5. 只运行 release-metadata 门禁并复用第 3 步证据。
-6. Commit、Push、PR、Merge、Deploy 分别确认授权和结果。
+6. 按第 2 节的目标级授权连续执行并核对结果；遇到安全门槛、任务边界扩大或阻塞时暂停。
 
 PR 描述保持精炼，只包含行为变化、合同/配置/迁移影响、验证命令与结果、未验证边界。除非用户明确要求，不做全仓文档盘点，不为消灭零散 TODO 扩大变更范围。
 
@@ -304,14 +312,15 @@ GitHub-only、无需部署或仓库没有部署能力时，Merge 后报告 `MERG
 - `pyproject.toml`、`uv.lock` 或环境 profile 变化后重新初始化环境和依赖。
 - 创建临时仓库的测试或工具必须从子进程环境中删除 `git rev-parse --local-env-vars` 返回的全部变量，不得只维护单个变量白名单。
 - Commit、hook 和嵌套 Git 测试前后核对 worktree 判定、`core.bare`、`.git/config`、index 和 status 指纹；发生漂移时，只恢复本次工具造成的 Git 元数据变化，再继续实施。
-- Commit 使用 Conventional Commits，主题简洁、中文，schema 变化必须说明 migration。Commit 与 Push 是两次独立授权。
+- Commit 使用 Conventional Commits，主题简洁、中文，schema 变化必须说明 migration；Commit 与 Push 是否包含在当前任务中按第 2 节判断。
 
 ## 10. GitNexus 与影响分析
 
 本项目使用 GitNexus 导航和控制符号级变更风险：
 
 - 修改生产代码中的函数、类或方法前，必须对计划内目标符号运行 upstream impact analysis，并查看直接调用者、执行流程和风险级别；同一批次应并行查询并缓存结果。
-- HIGH / CRITICAL 风险必须在修改前向用户说明影响范围并确认；LOW / MEDIUM 可按既定任务继续。任务范围授权和重新确认规则见 3.4。
+- HIGH / CRITICAL 风险必须在修改前说明影响范围；LOW / MEDIUM 可按既定任务继续。风险等级决定分析与验证强度，不自动触发二次授权；
+  任务范围和暂停条件见 3.4。
 - 探索陌生代码优先按概念查询执行流程；需要完整上下文时查询 symbol context。
 - 生产符号重命名使用图谱感知的 rename。协议字段、测试数据和字符串字面量使用限定路径的机械替换，并以旧值残留扫描和聚焦测试收口；禁止无边界全仓替换。
 - Worktree 中先运行 `npx gitnexus status`；仅在索引 stale 时运行一次 `npx gitnexus analyze`。Commit 前固定使用 `npx gitnexus detect-changes --scope staged --repo "$PWD"`，不临时探索 `--help` 或其它变体。
@@ -357,7 +366,7 @@ uv run bandit -r src/
 - 当前最终快照要求的必选门禁均已通过；必选门禁被阻塞只能报告未完成，非必选或未触发验证须说明边界；
 - GitNexus 影响与变更范围检查按触发条件完成；
 - 未把 Merge、Deploy、健康检查或历史绿灯夸大为业务验收；
-- 未在无授权情况下 Commit、Push、创建 PR、Merge 或 Deploy。
+- Git 与外部系统动作符合第 2 节的目标授权和平台 approval policy。
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
