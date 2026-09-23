@@ -162,7 +162,7 @@ class TransportRepository:
 
     async def list_final_result_projection_candidates(
         self, db: AsyncSession, *, limit: int
-    ) -> list[tuple[str, str, str, str]]:
+    ) -> list[tuple[str, str, str, str, datetime]]:
         task_table, member_table = TransportTask.__table__, TransportMember.__table__
         projection_table = PositionProjection.__table__
         binding_table, picking_table = TransportDecisionBinding.__table__, PickingTask.__table__
@@ -172,7 +172,13 @@ class TransportRepository:
         projection = projection_table.c
         binding, picking = binding_table.c, picking_table.c
         statement = (
-            select(task.transport_task_id, member.object_type, member.object_id, member.last_operation_id)
+            select(
+                task.transport_task_id,
+                member.object_type,
+                member.object_id,
+                member.last_operation_id,
+                member.updated_at,
+            )
             .select_from(task_table)
             .join(member_table, member.transport_task_id == task.transport_task_id)
             .join(binding_table, binding.client_request_id == task.client_request_id)
@@ -263,7 +269,7 @@ class TransportRepository:
 
     async def list_ack_invalidation_projection_candidates(
         self, db: AsyncSession, *, limit: int
-    ) -> list[tuple[str, str, str, str]]:
+    ) -> list[tuple[str, str, str, str, datetime]]:
         """Return accepted-task members whose ACK fact may have left position unknown.
 
         This scan is deliberately independent from final-result replay: the durable
@@ -275,7 +281,13 @@ class TransportRepository:
         newer_confirmation = WmsConfirmation.__table__.alias("newer_drain_confirmation").c
         projection = PositionProjection.__table__.c
         statement = (
-            select(task.transport_task_id, member.object_type, member.object_id, task.submit_operation_id)
+            select(
+                task.transport_task_id,
+                member.object_type,
+                member.object_id,
+                task.submit_operation_id,
+                task.updated_at,
+            )
             .select_from(TransportTask.__table__)
             .join(TransportMember.__table__, member.transport_task_id == task.transport_task_id)
             .join(TransportDecisionBinding.__table__, binding.client_request_id == task.client_request_id)

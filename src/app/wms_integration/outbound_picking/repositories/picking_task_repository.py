@@ -40,6 +40,14 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         columns = cast("Any", PickingTask).__table__.c
         return await db.scalar(select(PickingTask).where(columns.id == picking_task_id).with_for_update())
 
+    async def get_workline_id(self, db: AsyncSession, picking_task_id: int) -> int | None:
+        columns = cast("Any", PickingTask).__table__.c
+        return await db.scalar(select(columns.workline_id).where(columns.id == picking_task_id))
+
+    async def get_workline_id_by_task_id(self, db: AsyncSession, task_id: str) -> int | None:
+        columns = cast("Any", PickingTask).__table__.c
+        return await db.scalar(select(columns.workline_id).where(columns.task_id == task_id))
+
     async def get_queued_by_dispatch_sequence_for_update(
         self,
         db: AsyncSession,

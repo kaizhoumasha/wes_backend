@@ -114,7 +114,7 @@ async def get_performance_metrics(
         "database": db_metrics,
         "redis": redis_metrics,
         "cache": cache_metrics,
-        "transport_projection_recovery": projection_metrics_snapshot(),
+        "transport_projection_recovery": await projection_metrics_snapshot(),
     }
 
 

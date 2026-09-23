@@ -392,6 +392,7 @@ RCS/ECS 明确 `REJECTED/FAILED` 时，WES 保存该终态并交给业务插件�
 
 - QUALITY：`4192 passed, 5 skipped`；skip 为需要 live WES/API credentials 或已构建 production image 的非默认本地验收。
 - staged HEAVY：`495 passed, 0 failed, 0 errors, 0 skipped`，JUnit 为 `reports/heavy-local-wes-heavy-local-50825.xml`；selector 当前为 57 个 owner。
+- checkpoint 后 T6 durable metrics 增量快照：QUALITY `4216 passed, 5 skipped`；staged selector 16 个 owner；HEAVY `108 passed, 0 skipped`，JUnit 为 `reports/heavy-local-wes-heavy-local-83873.xml`。
 - worker lifecycle 已看到 prefork child ready、confirmation `task.body.start/task.body.done` 和 result backend 返回；失败运行会把 worker metadata/log 归档到 `reports/heavy-worker/<run_id>/`。
 - manual-picking 在 fresh PostgreSQL/Redis 与真实 prefork worker 下：`401 passed, 0 skipped`；覆盖 historical task 不再冻结当前 source window、task 与 drain authority 原子互斥、drain reservation 阻止新 prepare、未闭合 return-batch 保留原 identity，以及 departure wiring。
 
@@ -567,11 +568,11 @@ manual-picking/plugin 另增加 fact-driven outcome consumer 回归测试，冻�
 | Task | 状态 | 已有证据 | 剩余闭合条件 |
 |---|---|---|---|
 | T1 | PARTIAL | mutation authority guardrail、生产残留扫描、GitNexus impact 与 QUALITY | 补齐 Evidence/FACT/projection 日志与 metrics 术语审计 |
-| T2 | PARTIAL | prepare、plan activation、deactivate/full drain、drain owner、ScanFlow、ACK writeback、position/result callback、final/ACK replay 遵守 root-first；historical Drain A/current Drain B 三路径 zero-write；PostgreSQL concurrency/missing-row/evidence tests 通过 | WMS Confirmation dispatcher 先锁 Confirmation；return/departure owner 只能持 WorkLine key-share，否则与 authority transition 形成反向等待，需单独重构 Confirmation claim/owner lock order |
+| T2 | PARTIAL | prepare、plan activation、plan delta、cancel、deactivate/full drain、drain owner、ScanFlow、ACK writeback、position/result callback、final/ACK replay 遵守 root-first；Confirmation pre-dispatch/response-save 均为 `WorkLine -> PickingTask/drain fact -> Confirmation`；historical Drain A/current Drain B 三路径 zero-write；PostgreSQL lock-order/concurrency/missing-row/evidence tests 通过 | 补 AC36 的 picking/drain authority switch 胜出后旧 Tx2 只能 deterministic stale/no-write 的双会话 production 证明，并冻结静态 transition owner 清单 |
 | T3 | VERIFIED FOR TRANSPORT-DERIVED PAIRS | causal token/provenance migration、FAST comparator `34 passed`、隔离 PostgreSQL domain ordering `1 passed`，覆盖 drain/BIN/multi-member；不可比 zero-write/fail-closed | 若新增非 Transport-derived authority domain，必须先冻结其 provenance/order contract |
 | T4 | BLOCKED-EXTERNAL | phase fence、typed capability、默认 `NO_SAFE_AUTOMATIC_RECOVERY` | 真实 ECS/RCS/WMS duplicate-submit 与 identity-query 合同或供应商实验 |
 | T5 | VERIFIED | picking/taskless-drain `FINAL_RESULT` / `ACK_INVALIDATION` 独立 bounded branch、Tx2 current-drain revalidation、Drain ABA、混合 backlog stable ordering、zero-submit 与 production SQL EXPLAIN | 新 authority domain 必须扩展 typed Evidence/Confirmation join，不得解析插件 step/correlation |
-| T6 | PARTIAL | FAST、QUALITY、migration、Tx1/Tx2、production query-plan、manual-picking PostgreSQL/Celery `401 passed`、per-candidate continuation、commit-unknown、worker interruption、oldest-first tests；`/performance/metrics` 暴露六个低基数字段 | `superseded_total` 与 `oldest_candidate_age` 尚缺完整 production 更新源；进程内 metrics 不跨重启持久化 |
+| T6 | VERIFIED | FAST、QUALITY、migration、Tx1/Tx2、production query-plan、manual-picking PostgreSQL/Celery `401 passed`、per-candidate continuation、commit-unknown、worker interruption、oldest-first tests；六个低基数字段均有 production 更新源并保存于 Redis Hash，Redis 不可用时降级为进程内 snapshot | 新 outcome/branch 必须同步扩展 Redis metrics 和 fault-injection owner |
 | T7 | PARTIAL | selector mapping、QUALITY 与 staged HEAVY 当前快照通过 | AC1-AC42 唯一测试 owner 清单、外部阻塞解除、现场重验 |
 
 - [ ] **T1 — PARTIAL (P1, human: ~1 day / CC: ~20 min)** — 事实与调用点清单 — 完成 `TransportService`、`PositionProjectionService`、`invalidate_transport_member()`、`_invalidate_other_task_positions()`、manual-picking scan/handoff、所有 PositionProjection Repository/SQL mutation 的 upstream impact 和残留扫描；确认 Evidence processing、`FACT_COMMITTED`、projection outcome 的日志/metrics 命名边界。
@@ -582,7 +583,7 @@ manual-picking/plugin 另增加 fact-driven outcome consumer 回归测试，冻�
   - Surfaced by: Architecture / D21 fencing-root review
   - Files: `src/app/workline/repositories/workline_repository.py`, `src/app/wms_integration/outbound_picking/services/`, `src/app/wms_integration/return_buffer_drain/`, `workline_plugins/manual-picking/src/manual_picking/application/drain_flow.py`
   - Verify: two-session PostgreSQL authority-switch/projection-mutation concurrency tests, including missing-row insert race
-- [ ] **T3 — PARTIAL (P1, human: ~1 day / CC: ~20 min)** — 证明 causal comparator domain — 逐对象验证同一 projection identity 的 source pair 是否能由现有 Transport outcome version、plan/binding/resource-fence、drain history 或 multi-member provenance 得出 `SAME/BEFORE/AFTER`；合法但 `INCOMPARABLE` 必须 fail closed，只有证据不足时才提出最小 fencing/order metadata migration。
+- [x] **T3 — VERIFIED FOR TRANSPORT-DERIVED PAIRS** — 证明 causal comparator domain — 已逐对象验证当前 Transport-derived projection identity 的 picking、drain、BIN 与 multi-member source pair；合法但不可比较的 source fail closed 且 zero-write。新增非 Transport-derived authority domain 时必须重新冻结 ordering contract。
   - Surfaced by: Architecture / D22 causal-order review
   - Files: `src/app/execution/services/position_projection_service.py`, `src/app/transport/contracts.py`, `workline_plugins/manual-picking/src/manual_picking/application/transport_outcome.py`
   - Verify: FAST comparator truth-table plus PostgreSQL same-execution out-of-order replay
@@ -590,11 +591,11 @@ manual-picking/plugin 另增加 fact-driven outcome consumer 回归测试，冻�
   - Surfaced by: Architecture / D23–D24 ACK fence and provider capability review
   - Files: `src/app/transport/service.py`, `src/app/wms_adapter/transport_adapter.py`, `src/app/device/ecs_adapter.py`, `src/app/device/services/device_dispatch_service.py`
   - Verify: provider-contract FAST/integration matrix with fail-fast physical-submit sentinel
-- [ ] **T5 — PARTIAL (P1, human: ~2 days / CC: ~30 min)** — 独立 projection branches — 以 `ACK_INVALIDATION` 和 `FINAL_RESULT` 两个 branch 做 bounded set-based discovery；分别验证 invalidation provenance/cleanup authority，进入统一 typed `PositionProjectionService`，禁止 bulk projection update 或将 Evidence state 当 gap predicate。
+- [x] **T5 — VERIFIED** — 独立 projection branches — `ACK_INVALIDATION` 和 `FINAL_RESULT` 使用独立 bounded set-based discovery、独立 Tx2 replay 与 current-authority/ABA guard，并进入统一 `PositionProjectionService`；replay 不触发 physical submit。
   - Surfaced by: Architecture / D26–D27 projection-gap recovery review
   - Files: `src/app/transport/repository.py`, `src/app/execution/services/position_projection_service.py`, `src/app/transport/service.py`, `tests/integration/`
   - Verify: fresh-session Tx1/Tx2 crash-replay tests; Evidence `APPLIED` with both final-result and ACK-invalidation gaps remains discoverable
-- [ ] **T6 — PARTIAL (P1, human: ~2 days / CC: ~30 min)** — 测试与 query-plan 门禁 — 增加 FAST mutation truth-table、QUALITY architecture guardrail、manual-picking fact-driven consumer tests、真实 PostgreSQL Tx1/Tx2 crash/replay/concurrency/candidate SQL tests；在 representative dataset 上完成 `EXPLAIN (ANALYZE, BUFFERS)` before/after 证据后才决定 recovery index/migration。
+- [x] **T6 — VERIFIED** — 测试、query-plan 与 recovery observability 门禁 — FAST/QUALITY、真实 PostgreSQL Tx1/Tx2 crash/replay/candidate SQL、production `EXPLAIN (ANALYZE, BUFFERS)`、per-candidate continuation、commit-outcome-unknown、oldest-first 和 Redis-backed 六项低基数 metrics 已闭合。
   - Surfaced by: Test / Performance review and D12, D14, D15, D16, D19, D25 acceptance criteria
   - Files: `tests/architecture/`, `tests/integration/`, `workline_plugins/manual-picking/tests/`, `docs/architecture/heavy-test-impact.toml`
   - Verify: `uv run pytest <focused tests> -q`, PostgreSQL plan artifacts, selector-driven HEAVY and migration validation
@@ -613,7 +614,7 @@ manual-picking/plugin 另增加 fact-driven outcome consumer 回归测试，冻�
 |---|---|---|---:|---|---|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | not run in this phase | no CEO gate requested |
 | Outside Review | prior `codex-plan-review` / Claude Code | Independent second opinion | 1 | completed | findings incorporated through D27 |
-| Eng Review | `/plan-eng-review` + 2026-09-21 field acceptance review | Architecture, data flow, failure modes and tests | 2 | implementation partially verified | T2/T3/T5/T6/T7 remain partial; T4 external-blocked |
+| Eng Review | `/plan-eng-review` + 2026-09-21 field acceptance review | Architecture, data flow, failure modes and tests | 2 | implementation partially verified | T3/T5/T6 verified；T1/T2/T7 partial；T4 external-blocked |
 | Design Review | — | UI/UX gaps | 0 | skipped | backend SPEC only |
 | DX Review | — | Developer experience gaps | 0 | skipped | not in scope |
 

@@ -16,7 +16,7 @@ class RackDepartureOwnerService:
             request = parse_rack_departure_request(request_payload)
         except (ValueError, TypeError):
             return False
-        workline = await self._worklines.get_for_update(db, workline_id, populate_existing=True)
+        workline = await self._worklines.get_for_authority_update(db, workline_id, populate_existing=True)
         if workline is None or not workline.is_active:
             return False
         if request.data.task_id is None:

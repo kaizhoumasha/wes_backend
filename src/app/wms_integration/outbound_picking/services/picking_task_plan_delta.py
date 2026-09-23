@@ -82,7 +82,7 @@ class PickingTaskPlanDeltaService:
                 # 身份归属只来自首次通过严格 DTO 的正文，不信任冲突正文中的 task_id。
                 if ApplyStatus(evidence.apply_status) is not ApplyStatus.IGNORED:
                     original = PickingTaskPlanDeltaEvent.model_validate(evidence.normalized_payload)
-                    task = await self._tasks.get_by_task_id_for_update(db, original.data.task_id)
+                    task = await self._lock_task_authority(db, original.data.task_id)
                     self._block(task, cast("int", evidence.id))
                 return self._result(evidence, "CONFLICT", "IDEMPOTENCY_CONFLICT")
             if invalid:
@@ -90,7 +90,7 @@ class PickingTaskPlanDeltaService:
                 return self._result(evidence, "REJECTED", "INVALID_DATA")
             if ApplyStatus(evidence.apply_status) is ApplyStatus.APPLIED:
                 return self._result(evidence, "DUPLICATE")
-            task = await self._tasks.get_by_task_id_for_update(db, envelope.data.task_id)
+            task = await self._lock_task_authority(db, envelope.data.task_id)
             if task is not None:
                 evidence.picking_task_id = task.id
             reason = await self.validate_plan(db, task, envelope.data, received_at=received_at)
@@ -118,6 +118,14 @@ class PickingTaskPlanDeltaService:
             await self.apply_plan(db, task, envelope.data, evidence, received_at=received_at)
             await self._defer_activation_if_enabled(db, task)
             return self._result(evidence, "RECEIVED")
+
+    async def _lock_task_authority(self, db: Any, task_id: str) -> Any:
+        workline_id = await self._tasks.get_workline_id_by_task_id(db, task_id)
+        if workline_id is not None:
+            workline = await self._worklines.get_for_authority_update(db, workline_id)
+            if workline is None:
+                return None
+        return await self._tasks.get_by_task_id_for_update(db, task_id)
 
     @staticmethod
     def _result(evidence: Any, code: str, reason: str | None = None) -> Result:

@@ -69,7 +69,12 @@ from src.app.transport.models import (
     TransportMember,
     TransportTask,
 )
-from src.app.transport.projection_metrics import record_batch, record_retryable, record_stale_suppressed
+from src.app.transport.projection_metrics import (
+    record_batch,
+    record_retryable,
+    record_stale_suppressed,
+    record_superseded,
+)
 from src.app.transport.submit_snapshot import (
     SUBMIT_OPERATION,
     build_submit_data,
@@ -1149,11 +1154,11 @@ class TransportService:
                 picking is not None and picking.status in {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}
             )
             if not current:
-                record_stale_suppressed()
+                await record_stale_suppressed()
             return current
         current = bool(binding.id is not None and await self._repository.is_current_drain_binding(db, binding.id))
         if not current:
-            record_stale_suppressed()
+            await record_stale_suppressed()
         return current
 
     async def _lock_projection_authority_root(self, db: AsyncSession, task: TransportTask) -> None:
@@ -1197,7 +1202,7 @@ class TransportService:
         if not await self._is_current_projection_authority(db, task):
             return
         for member in await self._repository.list_members(db, task.transport_task_id):
-            _ = await self._position_projections.invalidate_transport_member(
+            projection = await self._position_projections.invalidate_transport_member(
                 db,
                 authority=_execution_authority_from_task(task),
                 object_type=member.object_type,
@@ -1207,13 +1212,14 @@ class TransportService:
                 transport_task_id=task.transport_task_id,
                 updated_at=updated_at,
             )
+            await _record_superseded_projection(projection, task.transport_task_id)
 
     async def replay_final_result_projections(self, limit: int) -> int:
         _validate_limit(limit)
         async with self._sessions.begin() as db:
             candidates = await self._repository.list_final_result_projection_candidates(db, limit=limit)
         replayed = 0
-        for task_id, object_type, object_id, operation_id in candidates:
+        for task_id, object_type, object_id, operation_id, _candidate_updated_at in candidates:
             try:
                 async with self._sessions.begin() as db:
                     task = await self._get_task_for_projection_update(db, task_id)
@@ -1245,7 +1251,7 @@ class TransportService:
                         or member.status not in {"SUCCEEDED", "FAILED"}
                     ):
                         continue
-                    await self._position_projections.apply_transport_result(
+                    projection = await self._position_projections.apply_transport_result(
                         db,
                         authority=_execution_authority_from_task(task),
                         object_type=object_type,
@@ -1258,9 +1264,10 @@ class TransportService:
                         transport_task_id=task.transport_task_id,
                         updated_at=member.updated_at,
                     )
+                    await _record_superseded_projection(projection, task.transport_task_id)
                     replayed += 1
             except PositionProjectionRetryableError:
-                record_retryable()
+                await record_retryable()
                 logger.warning(
                     "transport.projection_replay.retryable branch=final_result task_id=%s object_type=%s",
                     task_id,
@@ -1272,7 +1279,11 @@ class TransportService:
             len(candidates),
             replayed,
         )
-        record_batch(candidate_count=len(candidates), replayed_count=replayed)
+        await record_batch(
+            candidate_count=len(candidates),
+            replayed_count=replayed,
+            oldest_candidate_age=_oldest_candidate_age(candidates, timezone.now_for_db()),
+        )
         return replayed
 
     async def replay_ack_invalidations(self, limit: int) -> int:
@@ -1281,7 +1292,7 @@ class TransportService:
         async with self._sessions.begin() as db:
             candidates = await self._repository.list_ack_invalidation_projection_candidates(db, limit=limit)
         replayed = 0
-        for task_id, object_type, object_id, operation_id in candidates:
+        for task_id, object_type, object_id, operation_id, _candidate_updated_at in candidates:
             try:
                 async with self._sessions.begin() as db:
                     task = await self._get_task_for_projection_update(db, task_id)
@@ -1311,7 +1322,7 @@ class TransportService:
                     )
                     if member is None:
                         continue
-                    await self._position_projections.invalidate_transport_member(
+                    projection = await self._position_projections.invalidate_transport_member(
                         db,
                         authority=_execution_authority_from_task(task),
                         object_type=object_type,
@@ -1321,9 +1332,10 @@ class TransportService:
                         transport_task_id=task.transport_task_id,
                         updated_at=task.updated_at,
                     )
+                    await _record_superseded_projection(projection, task.transport_task_id)
                     replayed += 1
             except PositionProjectionRetryableError:
-                record_retryable()
+                await record_retryable()
                 logger.warning(
                     "transport.projection_replay.retryable branch=ack_invalidation task_id=%s object_type=%s",
                     task_id,
@@ -1335,7 +1347,11 @@ class TransportService:
             len(candidates),
             replayed,
         )
-        record_batch(candidate_count=len(candidates), replayed_count=replayed)
+        await record_batch(
+            candidate_count=len(candidates),
+            replayed_count=replayed,
+            oldest_candidate_age=_oldest_candidate_age(candidates, timezone.now_for_db()),
+        )
         return replayed
 
     async def publish_pending_outcomes(self, limit: int, publisher: TransportOutcomePublisher) -> int:
@@ -1520,7 +1536,7 @@ class TransportService:
                 member.object_type,
             )
             return
-        _ = await self._position_projections.apply_transport_result(
+        projection = await self._position_projections.apply_transport_result(
             db,
             authority=_execution_authority_from_task(task),
             object_type=member.object_type,
@@ -1533,6 +1549,7 @@ class TransportService:
             transport_task_id=task.transport_task_id,
             updated_at=updated_at,
         )
+        await _record_superseded_projection(projection, task.transport_task_id)
 
     async def _invalidate_other_task_positions(
         self, db: AsyncSession, task: TransportTask, member: TransportMember
@@ -2036,6 +2053,17 @@ def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAut
     return TransportExecutionAuthority(
         workline_id=task.authority_workline_id,
     )
+
+
+def _oldest_candidate_age(candidates: list[tuple[Any, ...]], now: datetime) -> float:
+    timestamps = [row[4] for row in candidates if len(row) > 4 and isinstance(row[4], datetime)]
+    return max((now - min(timestamps)).total_seconds(), 0.0) if timestamps else 0.0
+
+
+async def _record_superseded_projection(projection: object | None, incoming_task_id: str) -> None:
+    current_source = getattr(projection, "source_transport_task_id", None)
+    if isinstance(current_source, str) and current_source != incoming_task_id:
+        await record_superseded()
 
 
 def _matches_submit_snapshot(

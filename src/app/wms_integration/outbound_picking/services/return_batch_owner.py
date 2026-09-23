@@ -13,5 +13,5 @@ class ReturnBatchOwnerService:
             request = parse_bin_return_batch_request(request_payload)
         except (ValueError, TypeError):
             return False
-        workline = await self._worklines.get_for_update(db, workline_id, populate_existing=True)
+        workline = await self._worklines.get_for_authority_update(db, workline_id, populate_existing=True)
         return bool(workline is not None and workline.is_active and workline.line_code == request.data.workline_code)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +8,8 @@ import pytest
 
 from src.app.execution.services import PositionProjectionRetryableError
 from src.app.transport.repository import TransportRepository
+
+CANDIDATE_TIME = datetime(2026, 9, 22)
 
 
 class _Rows:
@@ -46,7 +48,7 @@ class _Sessions:
 class _ReplayRepository:
     async def list_ack_invalidation_projection_candidates(self, _db, *, limit):
         assert limit == 100
-        return [("task-1", "BIN", "bin-1", "submit-op-1")]
+        return [("task-1", "BIN", "bin-1", "submit-op-1", CANDIDATE_TIME)]
 
     async def get_task(self, _db, task_id, *, for_update=False):
         assert task_id == "task-1"
@@ -72,7 +74,7 @@ class _DrainReplayRepository(_ReplayRepository):
 
     async def list_final_result_projection_candidates(self, _db, *, limit):
         assert limit == 100
-        return [("task-1", "RACK", "rack-1", "result-op-1")]
+        return [("task-1", "RACK", "rack-1", "result-op-1", CANDIDATE_TIME)]
 
     async def get_task(self, _db, task_id, *, for_update=False):
         task = await super().get_task(_db, task_id, for_update=for_update)
@@ -102,7 +104,7 @@ class _DrainReplayRepository(_ReplayRepository):
 class _DrainAckReplayRepository(_DrainReplayRepository):
     async def list_ack_invalidation_projection_candidates(self, _db, *, limit):
         assert limit == 100
-        return [("task-1", "RACK", "rack-1", "submit-op-1")]
+        return [("task-1", "RACK", "rack-1", "submit-op-1", CANDIDATE_TIME)]
 
     async def get_task(self, _db, task_id, *, for_update=False):
         return await _ReplayRepository.get_task(self, _db, task_id, for_update=for_update)
@@ -112,8 +114,8 @@ class _BatchReplayRepository(_ReplayRepository):
     async def list_ack_invalidation_projection_candidates(self, _db, *, limit):
         assert limit == 100
         return [
-            ("task-retry", "BIN", "bin-retry", "submit-retry"),
-            ("task-ok", "BIN", "bin-ok", "submit-ok"),
+            ("task-retry", "BIN", "bin-retry", "submit-retry", CANDIDATE_TIME),
+            ("task-ok", "BIN", "bin-ok", "submit-ok", CANDIDATE_TIME),
         ]
 
     async def get_task(self, _db, task_id, *, for_update=False):
@@ -136,8 +138,8 @@ class _FinalBatchReplayRepository(_ReplayRepository):
     async def list_final_result_projection_candidates(self, _db, *, limit):
         assert limit == 100
         return [
-            ("task-retry", "BIN", "bin-retry", "op-retry"),
-            ("task-ok", "BIN", "bin-ok", "op-ok"),
+            ("task-retry", "BIN", "bin-retry", "op-retry", CANDIDATE_TIME),
+            ("task-ok", "BIN", "bin-ok", "op-ok", CANDIDATE_TIME),
         ]
 
     async def get_task(self, _db, task_id, *, for_update=False):
@@ -336,16 +338,87 @@ async def test_direct_result_suppresses_historical_taskless_drain_projection_wri
     position_port.apply_transport_result.assert_not_awaited()
 
 
-def test_projection_recovery_metrics_snapshot_has_stable_low_cardinality_shape():
+@pytest.mark.asyncio
+async def test_direct_result_records_superseded_projection(monkeypatch):
+    import src.app.transport.service as service_module
+    from src.app.transport.service import TransportService
+
+    superseded = AsyncMock()
+    monkeypatch.setattr(service_module, "record_superseded", superseded)
+    position_port = SimpleNamespace(
+        apply_transport_result=AsyncMock(return_value=SimpleNamespace(source_transport_task_id="task-newer"))
+    )
+    repository = _DrainReplayRepository(current=True)
+    service = TransportService(
+        _Sessions(_DbForDrainReplay()),
+        repository,
+        object(),
+        result_timeout=timedelta(seconds=1),
+        position_projections=position_port,
+    )
+    task = await repository.get_task(_DbForDrainReplay(), "task-1", for_update=True)
+    member = (await repository.list_members(_DbForDrainReplay(), "task-1"))[0]
+
+    await service._apply_member_position_projection(
+        _DbForDrainReplay(),
+        task,
+        member,
+        SimpleNamespace(operation_id="result-op-1"),
+        position_json=member.final_position_json,
+        position_unknown=False,
+        arrival_face="A",
+        updated_at=member.updated_at,
+    )
+
+    superseded.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_projection_recovery_metrics_snapshot_has_stable_low_cardinality_shape():
     from src.app.transport.projection_metrics import snapshot
 
-    assert set(snapshot()) == {
+    assert set(await snapshot()) == {
         "candidate_count",
         "replayed_count",
         "stale_suppressed_total",
         "superseded_total",
         "retryable_total",
         "oldest_candidate_age",
+    }
+
+
+@pytest.mark.asyncio
+async def test_projection_recovery_metrics_round_trip_through_redis(monkeypatch):
+    from src.app.transport import projection_metrics
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+
+        async def hset(self, _key, *, mapping):
+            self.values.update({name: str(value) for name, value in mapping.items()})
+
+        async def hincrby(self, _key, name, amount):
+            self.values[name] = str(int(self.values.get(name, "0")) + amount)
+
+        async def hgetall(self, _key):
+            return dict(self.values)
+
+    redis = FakeRedis()
+    monkeypatch.setattr(projection_metrics, "get_redis", lambda: redis)
+
+    await projection_metrics.record_batch(candidate_count=4, replayed_count=2, oldest_candidate_age=12.5)
+    await projection_metrics.record_retryable()
+    await projection_metrics.record_stale_suppressed()
+    await projection_metrics.record_superseded()
+
+    assert await projection_metrics.snapshot() == {
+        "candidate_count": 4,
+        "replayed_count": 2,
+        "stale_suppressed_total": 1,
+        "superseded_total": 1,
+        "retryable_total": 1,
+        "oldest_candidate_age": 12.5,
     }
 
 

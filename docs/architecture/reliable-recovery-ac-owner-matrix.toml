@@ -28,8 +28,8 @@ owner = ""
 
 [[acceptance]]
 id = "AC6"
-status = "PARTIAL"
-owner = "tests/runtime/execution/test_transport_decision_binding.py"
+status = "VERIFIED"
+owner = "workline_plugins/manual-picking/tests/test_batch_repository.py::test_source_rack_windows_ignore_historical_tasks_and_keep_current_and_taskless_authority"
 
 [[acceptance]]
 id = "AC7"
@@ -163,8 +163,8 @@ owner = "tests/integration/transport/test_transport_projection_candidate_postgre
 
 [[acceptance]]
 id = "AC33"
-status = "UNVERIFIED"
-owner = ""
+status = "VERIFIED"
+owner = "tests/integration/transport/test_transport_projection_candidate_postgresql.py"
 
 [[acceptance]]
 id = "AC34"
@@ -198,7 +198,7 @@ owner = ""
 
 [[acceptance]]
 id = "AC40"
-status = "PARTIAL"
+status = "VERIFIED"
 owner = "tests/runtime/transport/test_transport_projection_replay.py::test_ack_replay_rolls_back_retryable_candidate_and_continues_batch"
 
 [[acceptance]]

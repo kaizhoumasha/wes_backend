@@ -13,13 +13,30 @@ from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERA
 from src.app.wms_adapter.outbound_picking.work_plan_wire import BIN_WORK_PLAN_OPERATION
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
+from src.app.workline.repositories import WorkLineRepository
 
 
 class PickingTaskConfirmationOwnerService:
     """供中立 WmsConfirmation dispatcher 校验 PickingTask owner，不处理业务状态推进。"""
 
-    def __init__(self, repository: PickingTaskRepository | None = None) -> None:
+    def __init__(
+        self, repository: PickingTaskRepository | None = None, *, worklines: WorkLineRepository | None = None
+    ) -> None:
         self._tasks = repository or picking_task_repository
+        self._worklines = worklines or WorkLineRepository()
+
+    async def lock_authority_root(self, db: object, *, picking_task_id: int) -> bool:
+        workline_id = await self._tasks.get_workline_id(db, picking_task_id)  # type: ignore[arg-type]
+        if workline_id is None:
+            task = await self._tasks.get_by_id_for_update(db, picking_task_id)  # type: ignore[arg-type]
+            return task is None or task.workline_id is None
+        if not isinstance(workline_id, int) or isinstance(workline_id, bool) or workline_id <= 0:
+            return False
+        workline = await self._worklines.get_for_authority_update(db, workline_id)  # type: ignore[arg-type]
+        if workline is None:
+            return False
+        task = await self._tasks.get_by_id_for_update(db, picking_task_id)  # type: ignore[arg-type]
+        return task is None or task.workline_id == workline_id
 
     async def validate_dispatch_owner(
         self,

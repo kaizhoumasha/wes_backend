@@ -11,6 +11,46 @@ from src.app.wms_integration.outbound_picking.services.picking_task_confirmation
 
 
 @pytest.mark.asyncio
+async def test_authority_root_locks_workline_before_reloading_picking_task():
+    events = []
+    snapshot = SimpleNamespace(workline_id=11)
+    locked_task = SimpleNamespace(workline_id=11)
+
+    async def get_workline_id(_db, _picking_task_id):
+        events.append("snapshot")
+        return snapshot.workline_id
+
+    async def get_workline(_db, _workline_id):
+        events.append("workline")
+        return SimpleNamespace(id=11)
+
+    async def get_task_for_update(_db, _picking_task_id):
+        events.append("task")
+        return locked_task
+
+    repository = SimpleNamespace(get_workline_id=get_workline_id, get_by_id_for_update=get_task_for_update)
+    worklines = SimpleNamespace(get_for_authority_update=get_workline)
+
+    assert await PickingTaskConfirmationOwnerService(repository, worklines=worklines).lock_authority_root(
+        object(), picking_task_id=1
+    )
+    assert events == ["snapshot", "workline", "task"]
+
+
+@pytest.mark.asyncio
+async def test_authority_root_rejects_task_rebound_after_workline_lock():
+    repository = SimpleNamespace(
+        get_workline_id=AsyncMock(return_value=11),
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(workline_id=12)),
+    )
+    worklines = SimpleNamespace(get_for_authority_update=AsyncMock(return_value=SimpleNamespace(id=11)))
+
+    assert not await PickingTaskConfirmationOwnerService(repository, worklines=worklines).lock_authority_root(
+        object(), picking_task_id=1
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "operation",
     [
