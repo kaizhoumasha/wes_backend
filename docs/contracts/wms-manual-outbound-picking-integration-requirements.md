@@ -5,7 +5,7 @@ related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: ReviewRequired
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-09-18
+updated_at: 2026-09-23
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -87,7 +87,7 @@ flowchart TD
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
 | — | PDA（黑盒） | 人工按 WMS 指示拣料 | 具体拣了哪个 Cell，WES 不知道、不查询 | — |
-| 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `task_id + bin_code=A000000001`，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
+| 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `admission_operation_id` 指向 7A 的准入请求，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
 | 9A | WES 本地执行 | 应用完成事实并释放 point2 | 匹配原 completion evidence | 按稳定命令身份执行 `MOVE_FORWARD`，分别记录应用与物理结果 |
 | 10A | 设备 → WES | 点3 SCAN | `A000000001-B`，本次正常授权 | `MOVE_FORWARD`，放行 |
 | 11A | 设备 → WES | 点4 SCAN | `A000000001-B`，前序正常放行 | `MOVE_FORWARD` 匹配 ECS `SUCCESS` 后入队尾 |
@@ -96,10 +96,8 @@ flowchart TD
 
 上述表格按业务节点编号，不表示回架后才可换面。`feed_complete` 只要求冻结面全部 inbound 分段及成员权威成功、结果发布、
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
-绑定 FIVE_LAYER/FIVE_RACK 点位的 `workline_positions.capacity` 控制 CTU01 准入窗口，物理当前架最多一个，RCS 负责排队与自主进位。
-CTU01 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占；CTU02 不释放窗口。
-同线同架的更晚 CTU03 接纳即释放名额；提交前未知仍占窗。该释放只开放其他货架准入，同架复用仍须等待
-CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`。
+`workline_positions.capacity` 不作为 WES 的 CTU01 物理准入窗口。WES 对已确定来源架按业务步骤身份最多创建一次 CTU01；RCS 负责排队、自主进位和工作位互斥。某架未到位只暂停依赖该架的后续 SOP，不阻止其他独立货架提交。真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认。
+同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员、CTU01 与 `inbound_batch` 义务处理；当前 wire/实现尚未完成该联合优化，不能以旧成员的动作或结果为新成员结案。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
@@ -213,8 +211,8 @@ WES 在点2的唯一职责是：
 2. 调用 `outbound.manual_bin.work_admission_decide@v1` 请求 WMS 判断当前 `bin_code` 在指定 `task_id` 下是否有人工任务；
 3. `WORK_REQUIRED` 时校验 WMS 返回的 `task_id` 与请求一致并保存绑定，保持料箱停留并等待 Bin 级最终释放决定；`NO_WORK` 时把该 Bin 标记为正常直通并
    创建 point2 释放命令；`WAIT` 或响应未知时保持 point2 占用并按第 5 节重试；
-4. 收到 `WORK_REQUIRED` 对应的完成决定后，把业务结果和释放权限原子绑定到当前 WorkLine 内正在 point2 等待的唯一
-   `task_id + bin_code`；绑定成功后才向 point2
+4. 收到 `WORK_REQUIRED` 对应的完成决定后，按原准入 `operation_id` 把业务结果和释放权限原子绑定到本次 Passage；
+   校验 `task_id + bin_code` 与冻结请求一致，绑定成功后才向 point2
    下发 `MOVE_FORWARD` 释放当前料箱。料箱由滚筒线自动流向点3，后一个料箱自动进入 point2 并重新触发扫码上报。
 
 点2不可读、后缀错误、箱码无效或与当前 FIFO 身份不符时，先要求队首点1方向命令取得匹配 ECS `SUCCESS`；否则只留证对账、零命令。
@@ -224,15 +222,17 @@ WES 在点2的唯一职责是：
 
 ### 3\.3 点3：NG 判定 {#33-3ng}
 
-点3独立校验实际扫码的 `-B` 后缀，并用正常箱码唯一关联本线尚未闭合的本次经过及前序确定放行结果；不按点1→点2 FIFO 队首猜测身份。
-已标记 NG、不可读、后缀错误、身份不唯一或缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
+点3独立校验实际扫码的 `-B` 后缀，并用正常箱码唯一关联本线尚未闭合的本次经过；不按点1→点2 FIFO 队首猜测身份。未经过点2且能唯一关联的直达箱，以点3当前有效 `-B` 决定正常向前；点1的非 `-B` 分流决定不能永久标记该箱为 NG。经过点2的箱仍须按其 WMS 确定结果决定方向。
+不可读、后缀错误、身份不唯一或经过点2但缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
 若无法关联任何经过且本点已有未闭合方向命令，新扫码先留证对账，不另下发第二条物理命令；“不停箱”不允许越过结果未知的原命令。
-同点命令围栏也适用于后一个能关联经过的料箱；各扫码设备的新方向命令均不能越过该设备未闭合的旧命令。
+已关联当前经过的料箱只等待自身因果前置；另一料箱在同设备的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
+已识别正常料箱的点2方向命令尚未取得确定结果时，点3 Evidence 留存并等待原结果，不能把未决状态解释为 NG 或下发 `MOVE_LEFT`。
 
 | 当前处置 | 决定来源 | point3 动作 |
 | --- | --- | --- |
 | point2 `WORK_REQUIRED` 且人工任务完成 | 与当前待处理动作匹配的 WMS 完成结果 | NG → `MOVE_LEFT`；NORMAL → `MOVE_FORWARD` |
 | point2 `NO_WORK` 正常直通 | 当前任务准入决定 | `MOVE_FORWARD` |
+| 未经过 point2 的已识别直达箱，point3 当前扫码有效 `-B` | point3 本次实际扫码及唯一料箱身份 | `MOVE_FORWARD`；不沿用 point1 的历史 NG 判断 |
 | point2 条码不可读且未进入人工业务 | 本次不可读码证据及已保存 NG 决定；实际 bin\_code 可空 | `MOVE_LEFT` |
 | 当前到位无法唯一关联已有正常处置 | 原始扫码和关联检查结果 | `MOVE_LEFT`；保留异常证据供对账 |
 
@@ -248,6 +248,7 @@ WES 在点2的唯一职责是：
 本线 `RETURN_BUFFER` FIFO。ACK 和本地命令创建都不是入队事实。队首未闭合时不得跳过，后续候选不能越序进入
 `outbound.bin.return_batch@v1`；目标货架分配及搬回货架仍按出库合同 §9.2.2 执行。
 点4首次扫码冻结入队顺序与命令；重扫只留证对账，不更换原命令或重复放行。
+**SCAN4 首次实际到位决定 FIFO 顺序；匹配的 `MOVE_FORWARD` ECS `SUCCESS` 决定入队资格。** `return_batch` 先按首次到位顺序排列全部未退出的候选，再从队首取连续已具备资格的前缀；不得先筛 `READY` 再排序，也不得按命令完成顺序重排。队首命令仍未闭合、可重试或结果无法安全解释时，队首保持原位，后项不得越过；只有合同明确该箱不再进入 `RETURN_BUFFER`，并形成相应确定事实后，才能将它从候选序列移出。
 
 ### 3\.5 退料货架直接取料 {#35-direct-pick}
 
@@ -349,6 +350,7 @@ ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-�
   "operation": "outbound.manual_bin.work_completed@v1",
   "timestamp": 1788390000000,
   "data": {
+    "admission_operation_id": "<原 work_admission_decide operation_id>",
     "task_id": "PICK-20260902-001",
     "bin_code": "A000000001",
     "result": "NORMAL",
@@ -359,19 +361,20 @@ ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-�
 
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
+| `data.admission_operation_id` | 是 | UUIDv7 | 对应本次 Passage 获得 `WORK_REQUIRED` 的 `work_admission_decide` 请求身份；不同于信封顶层的完成事件 `operation_id` |
 | `data.task_id` | 是 | 出库合同 Identifier | 必须等于 point2 `WORK_REQUIRED` 响应冻结的 PickingTask |
 | `data.bin_code` | 是 | 出库合同 Identifier | 必须等于该 `WORK_REQUIRED` 请求中的实际扫码 Bin；应用时还必须命中当前 WorkLine 内正在 point2 等待的同一 task 和料箱 |
 | `data.result` | 是 | enum | `NORMAL \| NG`；`NORMAL` 授权离开点2进入正常回库路径，`NG` 授权离开点2进入 NG 路径 |
 | `data.completed_at` | 是 | positive integer / UTC Unix 毫秒 | 人工拣料任务形成最终决定的时间；不得早于该 Bin 的 point2 `work_admission.scanned_at`，也不得晚于同一信封的 `timestamp` |
 
-`data` 读取上述四个必填字段，忽略冗余字段；已定义字段不接受非法 `null`、空字符串、错误类型或枚举外取值。`task_id` 和
+`data` 读取上述五个必填字段，忽略冗余字段；已定义字段不接受非法 `null`、空字符串、错误类型或枚举外取值。`task_id` 和
 `bin_code` 复用出库合同 §4.4 的 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}` 约束，不得为人工线放宽或定义别名。
-`completed_at` 必须保存到第 9.1 节的 per\-Bin 最终结果记录，只用于审计和对账；不得用远端业务时间决定消息处理顺序、
+`completed_at` 必须保存到第 9.1 节的本次 Passage 最终结果记录，只用于审计和对账；不得用远端业务时间决定消息处理顺序、
 DeviceCommand deadline 或自动超时。
 
-WES 收到后先把原始消息持久化为 `InboundEvidence`，再按出库合同公共协议 ACK。全局唯一的 `operation_id` 是消息重试身份，完整
-请求内容用于检测同一 ID 的内容冲突；
-`task_id + bin_code` 是本 operation 的业务终态身份，同一业务身份只能形成一个最终结果，后到消息不得覆盖。
+WES 收到后先把原始消息持久化为 `InboundEvidence`，再按出库合同公共协议 ACK。信封顶层的 `(operation, operation_id)` 是本条
+完成事件的重试身份，完整请求内容用于检测同一 ID 的内容冲突；`data.admission_operation_id` 唯一关联原准入 Action 及其 Passage。
+同一 `task_id + bin_code` 可以经历多个 Passage，每个 Passage 只能形成一个最终结果，后到消息不得覆盖。
 
 `work_completed` 同时表示业务完成和物理释放授权，不是“PDA 步骤已操作”的进度通知。WMS 不得在相关子任务与业务
 结果持久化事务提交前发送该消息。WES 返回 `202 / RECEIVED` 只证明 evidence 已可靠接收，不证明料箱已移动；只有该决定成功
@@ -384,11 +387,12 @@ SLA 告警或停止新料箱策略。已进入点1至点2缓存的料箱保持�
 WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operation 的完整业务决定。WES 将该决定持久化为人工拣料 NG
 证据，原因记为 `MANUAL_PICK_NG`，由独立 NG 分支执行设备分流。
 
-应用 evidence 时，人工业务模块必须先按 `(task_id, bin_code)` 查询既有最终结果。若相同 `result` 已成功应用，新 evidence 直接标记为
+应用 evidence 时，人工业务模块按 `data.admission_operation_id` 精确查询 Passage，并校验 WorkLine、`task_id`、`bin_code` 与原请求一致。
+若该 Passage 的相同 `result` 已成功应用，新 evidence 直接标记为
 已应用的业务幂等 no\-op，不再检查料箱是否仍在 point2，也不再创建设备命令；若既有结果不同，则 evidence 与受影响执行进入
 `RECONCILING`。只有尚无最终结果的首次应用才继续在同一事务中锁定 WorkLine 生命周期、当前 point2 待处理动作及位置，确认
-其 `task_id + bin_code` 与消息一致且仍在等待 WMS 结果，验证通过后保存结果并创建设备命令。首次消息早到或晚到、找不到唯一当前
-等待、料箱不在 point2 或 WorkLine 已停用时进入 `RECONCILING`，不得暂存后自动补绑，也不得下发默认方向命令。
+其原准入结果为 `WORK_REQUIRED` 且仍在等待 WMS 结果，验证通过后保存结果并创建设备命令。首次消息早到或晚到、找不到匹配准入 Action、
+本次 Passage 不再等待、料箱不在 point2 或 WorkLine 已停用时进入 `RECONCILING`，不得暂存后自动补绑，也不得下发默认方向命令。
 
 ### 5\.3 完成通知的接收、重试与应用边界 {#53}
 
@@ -403,7 +407,7 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 | 当前无法可靠持久化 | `503 / UNAVAILABLE` | WMS 使用原 `operation_id` 和原请求重试 |
 
 共享 HTTP 入口不读取人工线当前工位或任务等待来同步判定业务冲突。换新 `operation_id` 的合法消息仍先返回
-`202 / RECEIVED`；`task_id + bin_code` 单终态和当前执行状态由人工业务模块在异步应用 evidence 时判定。
+`202 / RECEIVED`；原准入 Action 的单终态和当前执行状态由人工业务模块在异步应用 evidence 时判定。
 
 ### 5.4 完成事实的本地应用 {#54-completion-local-application}
 
@@ -463,11 +467,11 @@ Evidence/Confirmation。
 | `timestamp` | 是 | positive integer，UTC Unix 毫秒 | 信封生成时间；必须为正整数，且不得早于 `data.completed_at` |
 
 `data` 是严格对象，只接受上述四个字段；未知字段、缺失字段、`null`、空字符串和错误类型均拒绝，不忽略额外字段。`task_id`、
-`rack_id`、`rack_face` 必须满足出库合同 Identifier 约束。未来获批后的业务终态身份为 `task_id + rack_id + rack_face`；同一物理
-货架面被多个不同 `task_id` 引用时，各自独立上报和收敛，不得因货架面相同而互相视为已完成。
+`rack_id`、`rack_face` 必须满足出库合同 Identifier 约束。跨 revision 复用同一货架面时，业务终态身份须包含该来源成员的 `plan_revision`；同一物理
+货架面在不同 `task_id` 或不同 revision 中分别上报和收敛。当前 DTO 尚未携带成员 revision，属于[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)的待实施联合优化，不能将现有 `task_id + rack_id + rack_face` 当作跨 revision 的终态身份。
 
 本 operation 不携带逐 slot 取货结果：退料货架没有 NG 出口，缺料、损耗等业务异常完全由 WMS/PDA 内部处理，对 WES 保持
-黑盒（对照 §2.2、§4）。WES 应用该事实后，只把 `task_id + rack_id + rack_face` 标记为本地明细已结清，供既有
+黑盒（对照 §2.2、§4）。完成事件只能结清其明确指向的 revision 成员，供既有
 `outbound.rack.departure_decide@v1` 的发起条件和换面（`RACK_ROTATE`）判断复用；换面还是彻底退场仍由 WES 按出库合同
 §9.2.1/§9.4 既有逻辑自主决定，本 operation 不参与、不影响该决定本身。
 
@@ -661,18 +665,19 @@ ECS 在该 E2E 中使用 WES 公共 wire mock，不引入供应商私有协议�
 
 ## 9. 性能与并发边界
 
-### 9.1 Bin 级最终结果的有界查找
+### 9.1 Passage 级最终结果的有界查找
 
-Task 2 必须在 `manual-picking` 业务所有权内建立一条窄的 per-Bin 最终结果记录，至少显式保存：
+Task 2 必须在 `manual-picking` 业务所有权内建立一条窄的 Passage 最终结果记录，至少显式保存：
 
 - `task_id`；
 - `bin_code`；
+- 原准入 `admission_operation_id`；
 - `result`；
 - WMS 形成最终决定的 `completed_at`；
 - 首次成功应用的 `source_evidence_id`；
 - 当前 WorkLine 和首次到位 Evidence，以及原释放命令关联。
 
-数据库必须在 `wms_result IS NOT NULL` 时使用 `(task_id, bin_code)` 部分唯一索引直接保证单终态，并通过该索引完成重复与冲突查找。不得扫描
+数据库以唯一 `admission_operation_id` 关联本次 Passage 并保证单终态；不得保留跨 Passage 的 `(task_id, bin_code)` 终态唯一约束。不得扫描
 `InboundEvidence.normalized_payload` JSON 重建当前业务状态，人工任务字段只存于插件，也不为该单行索引查询增加缓存。
 
 该记录的 SQLModel、Repository 和业务查询位于 `workline_plugins/manual-picking/` 应用层。建表、唯一约束和索引仍通过根仓库
@@ -707,6 +712,9 @@ evidence 的业务应用事务只允许数据库操作：
 
 未关联任何当前 Passage 或 DeviceCommand 的历史扫码 Evidence 仅供诊断。无论其 `published_at` 是否为空，都不构成
 `SCAN1`～`SCAN4`、批次推进或任务完成门禁；当前 Passage、明确 FIFO 队首和已冻结未闭合命令仍按原顺序规则处理。
+SCAN3 已识别料箱的后继动作只等待该料箱自身的因果前置；同设备其他料箱的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
+SCAN4 已识别料箱的首次到位 Evidence 同样不等待其他料箱的设备命令；首次到位时间和 Evidence 身份按实际 SCAN4 事实冻结。
+若本料箱点3方向命令仍未确定，首次 SCAN4 到位时间仍须先冻结；仅后继方向 Action 等待原 Evidence 重领后的重新判断，重复扫码或重领不得改写首次时间或重复建命令。
 同样，未被当前 `WmsConfirmation.response_evidence_id` 精确引用的历史 WMS batch Evidence 不构成批次门禁；匹配当前确认的
 未应用结果、当前确认义务和当前 Transport 仍必须闭合。
 
@@ -726,7 +734,7 @@ PickingTask 保存业务状态和 WorkLine 绑定，不复制 operation、payloa
 将旧 WmsConfirmation 标记为 `SUPERSEDED`，并使用新的 UUIDv7 `operation_id` 发送当前完整正文；即使参数未变化也不得复用旧身份。
 C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接受不同正文。
 
-共享模型不增加人工结果、point2 或 PDA 字段。当前工位等待、`task_id + bin_code` 最终结果和动作关联仍由插件拥有，
+共享模型不增加人工结果、point2 或 PDA 字段。当前工位等待、按原准入 Action 关联的 Passage 最终结果仍由插件拥有，
 数据库约束和事务验证由共享 owner 测试承接，人工业务测试不重复基础可靠机制矩阵。
 
 ## What already exists
@@ -754,7 +762,7 @@ C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接�
 | completion ingress | DTO 非法或 evidence 无法落库 | `test_manual_bin_wire.py`、`test_manual_bin_completed_handler.py`、`test_manual_bin_completed_postgresql.py` | 返回确定 4xx 或 `503`；不产生虚假 `202`，WMS 可见 |
 | completion 应用 | 准入响应前收到同一经过的完成事实 | `test_scan_flow.py` | 先持久保存结果，待 `WORK_REQUIRED` 与当前任务一致后才向前；扫描前完成、冲突或绑定不唯一仍进入 `RECONCILING` 且零命令 |
 | completion 重放 | 已成功应用后料箱已离开 point2 | `test_scan_flow.py`、`test_completion_flow.py`、`test_completion_repository.py` | 相同业务结果为 no-op；不同结果进入对账，不重复命令 |
-| DeviceCommand | ACK/结果未知或重复扫码 | `test_scan_flow.py`、计划中的 `test_business_loop.py` | 保留原命令身份和资源围栏，等待权威终态；禁止换 ID 重发 |
+| DeviceCommand | ACK/结果未知或重复扫码 | `test_scan_flow.py`、计划中的 `test_business_loop.py` | 保留原命令身份、证据和当前步骤的依赖，等待权威终态；禁止换 ID 重发 |
 | point3 分流 | 当前处置关联无法证明 | `test_scan_handlers.py`、`test_scan_flow.py` | 保存异常证据，创建一次 `MOVE_LEFT`，不停箱 |
 | point3 正常路径 | 关联匹配但缺少确定业务处置 | `test_scan_handlers.py` | 不能授予正常放行，创建一次 `MOVE_LEFT` |
 | NG 分支 | WMS 已形成 NG 结果但分流命令未闭合 | 插件命令关联测试、E2E | 正常业务退出，原物理命令和资源保留至权威结果 |

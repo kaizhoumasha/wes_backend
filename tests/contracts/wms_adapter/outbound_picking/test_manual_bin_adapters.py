@@ -117,6 +117,7 @@ def test_manual_bin_persisted_wire_becomes_strict_typed_plugin_facts() -> None:
             "operation": "outbound.manual_bin.work_completed@v1",
             "timestamp": 1_788_390_000_000,
             "data": {
+                "admission_operation_id": OPERATION_ID,
                 "task_id": "PICK-001",
                 "bin_code": "A000000001",
                 "result": "NORMAL",
@@ -127,7 +128,11 @@ def test_manual_bin_persisted_wire_becomes_strict_typed_plugin_facts() -> None:
 
     assert admission == sdk.ManualBinAdmissionOutcome(operation_id=OPERATION_ID, result="WAIT", retry_after_ms=1000)
     assert completed == sdk.ManualBinCompletedFact(
-        task_id="PICK-001", bin_code="A000000001", result="NORMAL", completed_at=1_788_389_999_000
+        admission_operation_id=OPERATION_ID,
+        task_id="PICK-001",
+        bin_code="A000000001",
+        result="NORMAL",
+        completed_at=1_788_389_999_000,
     )
     with pytest.raises(ValueError):
         decode_admission_outcome({"operation_id": OPERATION_ID, "code": "DECIDED", "data": {"result": "NO_WORK"}})

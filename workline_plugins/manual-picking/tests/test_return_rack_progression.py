@@ -117,7 +117,11 @@ def setup_driver():  # type: ignore[no-untyped-def]
         plans=plans,
         positions=positions,
         transports=SimpleNamespace(
-            get_task=AsyncMock(return_value=SimpleNamespace(status="SUCCEEDED", published_outcome_version=3))
+            get_task=AsyncMock(
+                return_value=SimpleNamespace(
+                    status="SUCCEEDED", published_outcome_version=3, created_at=timezone.now_for_db()
+                )
+            )
         ),
         rack_creator=creator,
         departure_scheduler=departure_scheduler,
@@ -125,10 +129,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         arrival_scheduler=arrival_scheduler,
         arrival_reader=arrival_reader,
         tasks=SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task)),
-        position_service=SimpleNamespace(require_position_capacity=AsyncMock(return_value=0)),
-        rack_cycles=SimpleNamespace(
-            occupied_source_rack_ids=AsyncMock(return_value=set()), fenced_source_rack_ids=AsyncMock(return_value=set())
-        ),
+        bindings=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000009",
     )
     return driver, line, task, positions, plans, creator, arrival_reader, arrival_scheduler, departure_scheduler
@@ -303,10 +304,9 @@ async def test_unbound_return_rack_position_leaves_the_five_rack_subflow_untouch
 @pytest.mark.asyncio
 async def test_five_rack_admission_and_return_rack_arrival_progress_together_in_one_call() -> None:
     """合同 §1.1 示例场景：任务同时含五层架来源与 RETURN-RACK-01 直接取料，两条子流程物理上
-    并行、互不阻塞；一次 advance_in_session 必须同时推进子流程 A（五层架窗口准入）与子流程 B
+    并行、互不阻塞；一次 advance_in_session 必须同时推进子流程 A（五层架进场）与子流程 B
     （退料货架到位上报），而不是其中一条阻塞另一条。"""
     driver, line, task, _, plans, creator, _, arrival_scheduler, departure = setup_driver()
-    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=1))
     driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
     plans.list_active_bin_source_racks = AsyncMock(  # type: ignore[method-assign]
         return_value=[SimpleNamespace(rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1)]

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
 from src.app.device.models import Device, DeviceStatusObservation
@@ -26,6 +27,9 @@ from src.app.wms_integration.outbound_picking.services import (
     PickingTaskPrepareBatchService,
     PickingTaskPrepareCoordinator,
 )
+from src.app.wms_integration.outbound_picking.services.picking_task_plan_activation import (
+    PickingTaskPlanActivationService,
+)
 from src.app.workline.models import (
     LineType,
     WorkLine,
@@ -37,6 +41,71 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
 pytest_plugins = ("tests.integration.conftest",)
+
+
+@pytest.mark.asyncio
+async def test_prepare_and_plan_scanners_reach_worklines_after_first_page(integration_session_factory, monkeypatch):
+    from src.app.wms_integration.outbound_picking.services import picking_task_prepare_batch as prepare_module
+
+    suffix = new_uuid7()[-12:]
+    async with integration_session_factory.begin() as db:
+        lines = [
+            WorkLine(
+                line_code=f"PAG-{suffix}-{index:03d}",
+                line_name="Scanner pagination",
+                line_type=LineType.MANUAL,
+                run_mode=WorkLineRunMode.AUTO,
+                is_active=True,
+                plugin_key=f"scan-pagination-{suffix}",
+                plugin_version="1.0.0",
+            )
+            for index in range(102)
+        ]
+        db.add_all(lines)
+        await db.flush()
+        line_ids = [line.id for line in lines]
+
+    prepared: list[int] = []
+
+    async def prepare(workline_id: int):
+        prepared.append(workline_id)
+        return SimpleNamespace(prepared=False)
+
+    monkeypatch.setattr(
+        prepare_module,
+        "PickingTaskPrepareCoordinator",
+        lambda *_args, **_kwargs: SimpleNamespace(prepare_next_for_workline=prepare),
+    )
+    plugin = SimpleNamespace(
+        plugin_key=f"scan-pagination-{suffix}",
+        plugin_version="1.0.0",
+        picking_task_prepare_policy=object(),
+        picking_task_plan_applied_handler=lambda _fact: None,
+    )
+    prepare_service = PickingTaskPrepareBatchService(
+        integration_session_factory,
+        plugins=(plugin,),
+        task_queue_gateway=SimpleNamespace(),
+    )
+    plan_service = PickingTaskPlanActivationService(
+        integration_session_factory,
+        plugins=(plugin,),
+        transport_creator=SimpleNamespace(),
+    )
+    activated: list[int] = []
+
+    async def activate(workline_id: int, **_kwargs: object) -> int:
+        activated.append(workline_id)
+        return 0
+
+    monkeypatch.setattr(plan_service, "_activate_workline", activate)
+    try:
+        assert await prepare_service.prepare_batch() == 0
+        assert await plan_service.activate_batch() == 0
+        assert prepared == activated == line_ids
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
 
 
 class _Queue:

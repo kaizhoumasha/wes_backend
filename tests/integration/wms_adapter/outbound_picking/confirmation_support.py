@@ -12,7 +12,7 @@ import pytest_asyncio
 from sqlalchemy import delete, update
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmation
-from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskBinSourceRack, PickingTaskType
 from src.app.workline.models import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -119,6 +119,9 @@ async def picking_confirmation_worker(database, *, server, status):
         async with sessions.begin() as db:
             await db.execute(delete(WmsConfirmation).where(WmsConfirmation.operation_id == operation_id))
             if task is not None:
+                await db.execute(
+                    delete(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task.id)
+                )
                 await db.execute(
                     update(InboundEvidence)
                     .where(InboundEvidence.picking_task_id == task.id)

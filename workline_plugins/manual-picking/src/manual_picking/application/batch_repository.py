@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBatchRackFaceDone, BinInboundBatchReady
 
 from src.app.execution.models import (
@@ -21,7 +21,6 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BA
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
 from .batch_result import INBOUND_STEP
-from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, SOURCE_RACK_IN_STEP, SOURCE_RACK_OUT_STEP
 from .passage_model import ManualPickingPassage
 
 if TYPE_CHECKING:
@@ -46,107 +45,6 @@ class InboundFaceProgress:
 class BatchRepository:
     def __init__(self, history: BinBatchResultReader | None = None) -> None:
         self._history = history or BinBatchResultReader()
-
-    async def occupied_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """未取得权威离场结果的货架持续占窗，包括已归档任务。"""
-        bindings = TransportDecisionBinding.__table__
-        transports = TransportTask.__table__
-        members = TransportMember.__table__.c
-        departures = bindings.alias("departures")
-        departure_tasks = transports.alias("departure_tasks")
-        accepted_departure = (
-            select(departures.c.id)
-            .join(departure_tasks, departure_tasks.c.client_request_id == departures.c.client_request_id)
-            .where(
-                departures.c.workline_id == bindings.c.workline_id,
-                departures.c.resource_fence_id == bindings.c.resource_fence_id,
-                departures.c.id > bindings.c.id,
-                or_(
-                    (bindings.c.step == SOURCE_RACK_IN_STEP) & (departures.c.step == SOURCE_RACK_OUT_STEP),
-                    (bindings.c.step == DRAIN_RACK_IN_STEP) & (departures.c.step == DRAIN_RACK_OUT_STEP),
-                ),
-                departure_tasks.c.kind == "RACK_MOVE",
-                departure_tasks.c.authority_workline_id == bindings.c.workline_id,
-                or_(
-                    departure_tasks.c.status.in_(("ACCEPTED", "SUCCEEDED", "FAILED")),
-                    (departure_tasks.c.status == "RECONCILING") & departure_tasks.c.result_deadline_at.is_not(None),
-                ),
-            )
-            .exists()
-        )
-        failed_at_target = (
-            select(members.id)
-            .where(
-                members.transport_task_id == transports.c.transport_task_id,
-                members.object_type == "RACK",
-                members.object_id == bindings.c.resource_fence_id,
-                members.position_unknown.is_(False),
-                members.final_position_json.is_not(None),
-                members.final_position_json["kind"].as_string() == members.target_json["kind"].as_string(),
-                members.final_position_json["location_code"].as_string()
-                == members.target_json["location_code"].as_string(),
-            )
-            .exists()
-        )
-        rows = await db.scalars(
-            select(bindings.c.resource_fence_id)
-            .join(transports, transports.c.client_request_id == bindings.c.client_request_id)
-            .where(
-                bindings.c.workline_id == workline_id,
-                bindings.c.step.in_((SOURCE_RACK_IN_STEP, DRAIN_RACK_IN_STEP)),
-                or_(
-                    transports.c.status.in_(("PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED")),
-                    and_(transports.c.status == "FAILED", failed_at_target),
-                ),
-                ~accepted_departure,
-            )
-            .distinct()
-        )
-        return set(rows.all())
-
-    async def fenced_source_rack_ids(self, db: AsyncSession, workline_id: int) -> set[str]:
-        """同架复用等待权威离场，包括已归档任务的未闭合动作。"""
-        bindings = TransportDecisionBinding.__table__
-        departures = TransportTask.__table__
-        members = TransportMember.__table__.c
-        newer = bindings.alias("newer_departure")
-        departure_steps = (SOURCE_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP)
-        has_newer = (
-            select(newer.c.id)
-            .where(
-                newer.c.workline_id == bindings.c.workline_id,
-                newer.c.resource_fence_id == bindings.c.resource_fence_id,
-                newer.c.step.in_(departure_steps),
-                newer.c.id > bindings.c.id,
-            )
-            .exists()
-        )
-        known_departure = (
-            select(members.id)
-            .where(
-                departures.c.status == "SUCCEEDED",
-                departures.c.kind == "RACK_MOVE",
-                departures.c.authority_workline_id == bindings.c.workline_id,
-                members.transport_task_id == departures.c.transport_task_id,
-                members.object_type == "RACK",
-                members.object_id == bindings.c.resource_fence_id,
-                members.status == "SUCCEEDED",
-                members.position_unknown.is_(False),
-                members.final_position_json["kind"].as_string() == "RACK_POSITION",
-            )
-            .exists()
-        )
-        rows = await db.scalars(
-            select(bindings.c.resource_fence_id)
-            .outerjoin(departures, departures.c.client_request_id == bindings.c.client_request_id)
-            .where(
-                bindings.c.workline_id == workline_id,
-                bindings.c.step.in_(departure_steps),
-                ~has_newer,
-                ~known_departure,
-            )
-        )
-        return set(rows.all())
 
     async def has_unclosed_action_for_face(
         self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str

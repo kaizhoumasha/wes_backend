@@ -30,7 +30,6 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     parse_bin_return_batch_request,
     parse_bin_return_batch_response,
 )
-from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import PickingTaskRepository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.utils.timezone import timezone
@@ -88,13 +87,7 @@ class BinInboundBatchOwnerService:
         except (ValueError, TypeError):
             return False
         task = await self._tasks.get_by_task_id_for_update(db, request.data.task_id)
-        if (
-            task is None
-            or task.id is None
-            or task.workline_id != workline_id
-            or task.status != PickingTaskStatus.EXECUTING
-            or task.task_type != PickingTaskType.MANUAL
-        ):
+        if task is None or task.id is None or task.workline_id != workline_id:
             return False
         return any(
             row.rack_id == request.data.rack_id and row.rack_face == request.data.rack_face

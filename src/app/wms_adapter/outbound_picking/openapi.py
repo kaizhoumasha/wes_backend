@@ -208,8 +208,9 @@ MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA = _closed(
         "operation": {"type": "string", "enum": [MANUAL_BIN_COMPLETED_OPERATION]},
         "timestamp": _TIMESTAMP,
         "data": _closed(
-            ["task_id", "bin_code", "result", "completed_at"],
+            ["admission_operation_id", "task_id", "bin_code", "result", "completed_at"],
             {
+                "admission_operation_id": _UUIDV7,
                 "task_id": _BUSINESS_IDENTIFIER,
                 "bin_code": _BUSINESS_IDENTIFIER,
                 "result": {"type": "string", "enum": ["NORMAL", "NG"]},
@@ -228,6 +229,7 @@ MANUAL_BIN_COMPLETED_EVENT_EXAMPLE = {
             "operation": MANUAL_BIN_COMPLETED_OPERATION,
             "timestamp": 1786060807000,
             "data": {
+                "admission_operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e1",
                 "task_id": "PICK-SWAGGER-001",
                 "bin_code": "BIN-SWAGGER-001",
                 "result": "NORMAL",

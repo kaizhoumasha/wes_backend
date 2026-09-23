@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
-from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
+from wes_plugin_sdk import (
+    ReturnBufferDrainReady,
+    ReturnBufferDrainWait,
+    TransportRackPosition,
+    TransportRackReference,
+    TransportRcsTemplateId,
+    TransportZonePosition,
+    wms_operations,
+)
 
 from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET, TRANSFER_RACK
 from manual_picking.handlers import Scan1Handler, Scan2Handler, Scan3Handler, Scan4Handler
@@ -17,6 +26,7 @@ from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidence
 from src.app.execution.plugin_binding import BusinessEvidenceApplication, BusinessEvidenceDisposition
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
+from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.execution.services.position_projection_service import (
     PositionProjectionInvariantViolation,
     PositionProjectionService,
@@ -36,7 +46,13 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
-from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
+from .drain_repository import (
+    DRAIN_RACK_IN_STEP,
+    DRAIN_RACK_OUT_STEP,
+    DRAIN_RACK_ROTATE_STEP,
+    RETURN_RACK_OUT_STEP,
+    RETURN_RACK_ROTATE_STEP,
+)
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
@@ -73,9 +89,13 @@ class ManualPickingScanFlow:
         batch_result: Any = None,
         drain_repository: Any = None,
         drain_reader: Any = None,
+        rack_creator: Any = None,
+        transport_bindings: Any = transport_decision_binding_repository,
     ) -> None:
         self._drains = drain_repository
         self._drain_reader = drain_reader
+        self._rack_creator = rack_creator
+        self._transport_bindings = transport_bindings
         self._commands = commands
         self._admissions = admissions
         self._evidences = evidences
@@ -153,6 +173,8 @@ class ManualPickingScanFlow:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.IGNORED)
         if result == _WAIT_FOR_RESULT:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
+        if type(result) is int:
+            return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=result)
         if result is None:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
         return BusinessEvidenceApplication(
@@ -164,7 +186,6 @@ class ManualPickingScanFlow:
         if self._batch_reader is None or self._batch_result is None:
             return None
         positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
-        task = await self._tasks.get_executing_for_workline_for_update(db, workline.id)
         if evidence.operation == BIN_RETURN_BATCH_OPERATION:
             intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
             if intent.workline_code != workline.line_code:
@@ -200,14 +221,22 @@ class ManualPickingScanFlow:
                 confirmed_face=intent.rack_face,
                 return_location=positions["OUTLET"],
             )
-        if task is None:
-            return None
         intent, _ = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
-        if intent.task_id != task.task_id or not any(
-            source.rack_id == intent.rack_id and source.rack_face == intent.rack_face
-            for source in await self._source_racks.list_bin_source_racks(db, task.id)
-        ):
+        task = await self._tasks.get_by_task_id_for_update(db, intent.task_id)
+        if task is None or task.id is None or task.workline_id != workline.id:
             return None
+        source_member = next(
+            (
+                source
+                for source in await self._source_racks.list_bin_source_racks(db, task.id)
+                if source.rack_id == intent.rack_id and source.rack_face == intent.rack_face
+            ),
+            None,
+        )
+        if source_member is None:
+            return None
+        if source_member.cancelled_evidence_id is not None:
+            return "INBOUND_RESULT_AFTER_CANCEL"
         source = await self._positions.get(db, "RACK", intent.rack_id)
         readiness = await self._position_readiness(
             db, source, workline.id, "RACK_POSITION", positions[FIVE_RACK.slot_key], intent.rack_face
@@ -224,7 +253,7 @@ class ManualPickingScanFlow:
             inlet_location=positions[INLET.slot_key],
         )
 
-    async def _apply_transport_result(self, db: Any, evidence: Any, workline_id: int) -> str | None:
+    async def _apply_transport_result(self, db: Any, evidence: Any, workline_id: int) -> str | int | None:
         payload = evidence.normalized_payload
         if payload.get("step") in {"MANUAL_PICKING_INBOUND_BATCH", "MANUAL_PICKING_RETURN_BATCH"}:
             return await self._apply_batch_transport_result(db, evidence, workline_id)
@@ -238,7 +267,10 @@ class ManualPickingScanFlow:
                 SOURCE_RACK_ROTATE_STEP,
                 SOURCE_RACK_OUT_STEP,
                 TRANSFER_RACK_OUT_STEP,
+                RETURN_RACK_ROTATE_STEP,
+                RETURN_RACK_OUT_STEP,
                 DRAIN_RACK_IN_STEP,
+                DRAIN_RACK_ROTATE_STEP,
                 DRAIN_RACK_OUT_STEP,
             }
         ):
@@ -251,11 +283,13 @@ class ManualPickingScanFlow:
         ):
             return None
         status = payload.get("status")
+        if status == "FAILED" and payload.get("reason_code") == "RCS_TASK_CANCELLED":
+            return await self._retry_cancelled_rack(db, evidence, task, workline_id)
         if status == "SUCCEEDED":
             members = payload.get("members")
             expected_position = (
                 task.request_json.get("position")
-                if payload.get("step") == SOURCE_RACK_ROTATE_STEP
+                if payload.get("step") in {SOURCE_RACK_ROTATE_STEP, DRAIN_RACK_ROTATE_STEP, RETURN_RACK_ROTATE_STEP}
                 else task.request_json.get("target")
             )
             actual_position = (
@@ -275,7 +309,8 @@ class ManualPickingScanFlow:
                 or members[0].get("object_id") != payload["rack_id"]
                 or not matching_position
                 or (
-                    payload.get("step") not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP}
+                    payload.get("step")
+                    not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}
                     and members[0].get("arrival_face") != task.request_json.get("target_face")
                 )
             ):
@@ -283,6 +318,106 @@ class ManualPickingScanFlow:
         elif status not in {"FAILED", "REJECTED", "UNKNOWN"}:
             return None
         return status
+
+    async def _retry_cancelled_rack(  # noqa: PLR0911
+        self, db: Any, evidence: Any, task: Any, workline_id: int
+    ) -> str | int | None:
+        payload = evidence.normalized_payload
+        binding = await self._transport_bindings.get_by_client_request_id(db, task.client_request_id)
+        if (
+            binding is None
+            or binding.workline_id != workline_id
+            or binding.step != payload["step"]
+            or binding.source_evidence_id != payload["source_evidence_id"]
+            or binding.resource_fence_id != payload["rack_id"]
+        ):
+            return None
+        if binding.picking_task_id is not None:
+            current = await self._tasks.get_by_id_for_update(db, binding.picking_task_id)
+            if current is None:
+                return "IGNORED"
+            if payload["step"] == "PICKING_TASK_TARGET_RACK_IN" and (
+                current.target_rack_id != payload["rack_id"]
+                or current.target_rack_face != task.request_json.get("target_face")
+                or current.initial_plan_evidence_id != binding.source_evidence_id
+            ):
+                return "IGNORED"
+            if payload["step"] in {"PICKING_TASK_BIN_SOURCE_RACK_IN", SOURCE_RACK_ROTATE_STEP} and not any(
+                rack.rack_id == payload["rack_id"]
+                and rack.rack_face == task.request_json.get("target_face")
+                and rack.source_evidence_id == binding.source_evidence_id
+                for rack in await self._source_racks.list_active_bin_source_racks(db, current.id)
+            ):
+                return "IGNORED"
+            if payload["step"] == RETURN_RACK_ROTATE_STEP and not any(
+                rack.rack_id == payload["rack_id"]
+                and rack.rack_face == task.request_json.get("target_face")
+                and rack.source_evidence_id == binding.source_evidence_id
+                for rack in await self._source_racks.list_active_direct_picks(db, current.id)
+            ):
+                return "IGNORED"
+        elif payload["step"] in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
+            current = await self._drains.current(db, workline_id) if self._drains is not None else None
+            if current is None or current.evidence_id != binding.source_evidence_id:
+                return "IGNORED"
+        else:
+            return "IGNORED"
+        request = task.request_json
+        target = request.get("position") if task.kind == "RACK_ROTATE" else request.get("target")
+        if isinstance(target, dict) and target.get("kind") == "RACK_POSITION":
+            projection = await self._positions.get(db, "RACK", payload["rack_id"])
+            if (
+                projection is not None
+                and projection.workline_id == workline_id
+                and not projection.position_unknown
+                and projection.position_json == target
+                and (request.get("target_face") is None or projection.arrival_face == request["target_face"])
+            ):
+                return "IGNORED"
+        prior_attempt = 0
+        if binding.correlation_id.startswith("retry:"):
+            prior_attempt = int(binding.correlation_id.split(":", 2)[1])
+        if evidence.decision_next_attempt_at is None:
+            return min(1000 * 2 ** min(prior_attempt, 6), 60_000)
+        if self._rack_creator is None:
+            return None
+        correlation_id = f"retry:{prior_attempt + 1}:{task.transport_task_id}"
+        common = {
+            "workline_id": workline_id,
+            "picking_task_id": binding.picking_task_id,
+            "source_evidence_id": binding.source_evidence_id,
+            "correlation_id": correlation_id,
+            "step": binding.step,
+        }
+        if task.kind == "RACK_ROTATE":
+            await self._rack_creator.create_rotate(
+                db,
+                **common,
+                rack_id=payload["rack_id"],
+                position=TransportRackPosition(request["position"]["location_code"]),
+                target_face=request["target_face"],
+            )
+        else:
+            positions = {
+                "RACK": TransportRackReference,
+                "RACK_POSITION": TransportRackPosition,
+                "ZONE": TransportZonePosition,
+            }
+            source = request["source"]
+            target = request["target"]
+            await self._rack_creator.create(
+                db,
+                **common,
+                resource_fence_id=payload["rack_id"],
+                intent=SimpleNamespace(
+                    rack_id=payload["rack_id"],
+                    source=positions[source["kind"]](source["location_code"]),
+                    target=positions[target["kind"]](target["location_code"]),
+                    target_face=request.get("target_face"),
+                    rcs_template_id=TransportRcsTemplateId(request["rcs_template_id"]),
+                ),
+            )
+        return "RETRY_CREATED"
 
     async def _apply_batch_transport_result(self, db: Any, evidence: Any, workline_id: int) -> str | None:
         payload = evidence.normalized_payload
@@ -368,7 +503,7 @@ class ManualPickingScanFlow:
         if (outcome.result == "NO_WORK" or (outcome.result == "WORK_REQUIRED" and passage.wms_result is not None)) and (
             await self._device_has_unclosed(db, workline_id, bindings, "SCAN2")
         ):
-            return None
+            return _WAIT_FOR_RESULT
         passage.admission_result = outcome.result
         if outcome.result == "NO_WORK":
             passage.disposition = "NORMAL"
@@ -408,13 +543,20 @@ class ManualPickingScanFlow:
         )
         if passage is not None and passage.scan3_evidence_id is not None:
             return None
-        if await self._device_has_unclosed(db, workline_id, bindings, "SCAN3"):
-            return _WAIT_FOR_RESULT if passage is not None else None
-        normal_authorized = False
-        if passage is not None and passage.disposition == "NORMAL":
+        if passage is None and await self._device_has_unclosed(db, workline_id, bindings, "SCAN3"):
+            return None
+        if passage is not None and passage.disposition == "OPEN" and passage.scan2_evidence_id is not None:
+            return _WAIT_FOR_RESULT
+        # 直达箱在本点按当前 -B 扫码决定方向，不沿用 SCAN1 的分流结果。
+        normal_authorized = passage is not None and passage.scan2_evidence_id is None
+        if passage is not None and passage.disposition == "NORMAL" and passage.scan2_evidence_id is not None:
             preceding_code = passage.scan2_command_code
             command = await self._command_reader.get_by_command_code(db, preceding_code) if preceding_code else None
-            normal_authorized = command is not None and command.status == CommandStatus.SUCCEEDED
+            if command is None or command.status in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
+                return None
+            if command.status != CommandStatus.SUCCEEDED:
+                return _WAIT_FOR_RESULT
+            normal_authorized = True
         decision = self._scan3.decide(
             ScanFact(
                 "SCAN3",
@@ -422,7 +564,7 @@ class ManualPickingScanFlow:
                 raw_code,
                 PassageSnapshot(
                     bin_code=passage.bin_code,
-                    ng=passage.disposition == "NG",
+                    ng=passage.disposition == "NG" and passage.scan2_evidence_id is not None,
                     normal_authorized=normal_authorized,
                 )
                 if passage
@@ -437,13 +579,13 @@ class ManualPickingScanFlow:
             passage.scan3_route = decision.route
             if decision.route == "MOVE_LEFT":
                 passage.disposition = "NG"
+            elif passage.scan2_evidence_id is None:
+                passage.disposition = "NORMAL"
         return decision.route
 
     async def _apply_scan4(
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
-        if await self._device_has_unclosed(db, workline_id, bindings, "SCAN4"):
-            return None
         code = normal_bin_code(raw_code, "-B")
         passage = (
             await self._passages.unique_open_bin_for_update(
@@ -452,13 +594,22 @@ class ManualPickingScanFlow:
             if code is not None
             else None
         )
-        if passage is not None and passage.scan4_evidence_id is not None:
+        if passage is not None and passage.scan4_evidence_id not in (None, evidence.id):
             return None
+        if passage is not None and passage.scan4_command_code is not None:
+            return "SCAN4_COMMAND_ALREADY_CREATED"
         scan3_forward = False
+        preceding_command = None
         if passage is not None and passage.scan3_route == "MOVE_FORWARD":
             preceding_code = passage.scan3_command_code
-            command = await self._command_reader.get_by_command_code(db, preceding_code) if preceding_code else None
-            scan3_forward = command is not None and command.status == CommandStatus.SUCCEEDED
+            preceding_command = (
+                await self._command_reader.get_by_command_code(db, preceding_code) if preceding_code else None
+            )
+            scan3_forward = preceding_command is not None and preceding_command.status == CommandStatus.SUCCEEDED
+            if passage.disposition == "NORMAL" and passage.scan4_evidence_id is None:
+                passage.scan4_evidence_id = evidence.id
+                passage.scan4_received_at = evidence.received_at
+                passage.return_state = "MOVE_PENDING"
         decision = self._scan4.decide(
             ScanFact(
                 "SCAN4",
@@ -476,10 +627,19 @@ class ManualPickingScanFlow:
             )
         )
         if decision.route == "HOLD" or passage is None:
+            if (
+                passage is not None
+                and passage.scan4_evidence_id == evidence.id
+                and preceding_command is not None
+                and preceding_command.status
+                not in (CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT)
+            ):
+                return _WAIT_FOR_RESULT
             return None
-        passage.scan4_evidence_id = evidence.id
-        passage.scan4_received_at = evidence.received_at
-        passage.return_state = "MOVE_PENDING"
+        if passage.scan4_evidence_id is None:
+            passage.scan4_evidence_id = evidence.id
+            passage.scan4_received_at = evidence.received_at
+            passage.return_state = "MOVE_PENDING"
         passage.scan4_command_code = await self._move(db, workline_id, bindings, "SCAN4", evidence.id, decision.route)
         return decision.route
 
@@ -543,18 +703,16 @@ class ManualPickingScanFlow:
 
     async def _apply_completed(self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str]) -> str | None:
         completed = self._wms_reader.decode_completed_fact(evidence.normalized_payload)
-        passage = await self._passages.waiting_for_completion_for_update(
-            db, workline_id=workline_id, task_id=completed.task_id, bin_code=completed.bin_code
-        )
-        if passage is None:
-            completed_passage = await self._passages.uniquely_completed_for_update(
-                db, workline_id=workline_id, task_id=completed.task_id, bin_code=completed.bin_code
-            )
-            return (
-                "DUPLICATE_COMPLETION"
-                if completed_passage and completed_passage.wms_result == completed.result
-                else None
-            )
+        passage = await self._passages.by_admission_operation_for_update(db, completed.admission_operation_id)
+        if (
+            passage is None
+            or passage.workline_id != workline_id
+            or passage.task_id != completed.task_id
+            or passage.bin_code != completed.bin_code
+        ):
+            return None
+        if passage.wms_result is not None:
+            return "DUPLICATE_COMPLETION" if passage.wms_result == completed.result else None
         if (
             passage.scan2_evidence_id is None
             or passage.admission_scanned_at is None
@@ -563,7 +721,7 @@ class ManualPickingScanFlow:
         ):
             return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
-            return None
+            return _WAIT_FOR_RESULT
         passage.wms_result = completed.result
         passage.wms_completed_at = timezone.to_utc(completed.completed_at / 1000).replace(tzinfo=None)
         passage.wms_completed_evidence_id = evidence.id

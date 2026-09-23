@@ -830,7 +830,7 @@ async def export_run(request: Request, run_id: Annotated[_RUN_ID, Path()]) -> Re
                     "method": "POST",
                     "path": "/api/v1/wms/events",
                     "operation": "outbound.manual_bin.work_completed@v1",
-                    "wms_action": "PDA 子任务与 Bin 最终结果同事务提交后发送；503 使用原 identity 和原 body 重试。",
+                    "wms_action": "PDA 子任务与 Bin 最终结果同事务提交后发送；data.admission_operation_id 回传原准入请求身份，503 保持本事件 identity 和原 body 重试。",
                 },
                 {
                     "direction": "WES_TO_WMS",

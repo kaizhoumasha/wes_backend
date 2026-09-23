@@ -71,7 +71,13 @@ def test_admission_request_rejects_contract_drift(data: dict[str, object]) -> No
                 "operation_id": OPERATION_ID,
                 "operation": "outbound.manual_bin.work_completed@v1",
                 "timestamp": 1,
-                "data": {"task_id": "PICK-001", "bin_code": "BIN-001", "result": "NORMAL", "completed_at": 0},
+                "data": {
+                    "admission_operation_id": OPERATION_ID,
+                    "task_id": "PICK-001",
+                    "bin_code": "BIN-001",
+                    "result": "NORMAL",
+                    "completed_at": 0,
+                },
             },
         ),
     ],
@@ -123,6 +129,7 @@ def test_work_completed_accepts_final_bin_decision(result: str) -> None:
             "operation": "outbound.manual_bin.work_completed@v1",
             "timestamp": 1_788_390_000_000,
             "data": {
+                "admission_operation_id": OPERATION_ID,
                 "task_id": "PICK-001",
                 "bin_code": "BIN-001",
                 "result": result,
@@ -132,6 +139,24 @@ def test_work_completed_accepts_final_bin_decision(result: str) -> None:
     )
 
     assert event.data.result == result
+    assert event.data.admission_operation_id == OPERATION_ID
+
+
+def test_work_completed_requires_admission_operation_id() -> None:
+    with pytest.raises(ValidationError):
+        parse_manual_bin_completed_event(
+            {
+                "operation_id": OPERATION_ID,
+                "operation": "outbound.manual_bin.work_completed@v1",
+                "timestamp": 1_788_390_000_000,
+                "data": {
+                    "task_id": "PICK-001",
+                    "bin_code": "BIN-001",
+                    "result": "NORMAL",
+                    "completed_at": 1_788_389_999_000,
+                },
+            }
+        )
 
 
 def test_work_completed_rejects_future_completion_time() -> None:
@@ -142,6 +167,7 @@ def test_work_completed_rejects_future_completion_time() -> None:
                 "operation": "outbound.manual_bin.work_completed@v1",
                 "timestamp": 1_788_390_000_000,
                 "data": {
+                    "admission_operation_id": OPERATION_ID,
                     "task_id": "PICK-001",
                     "bin_code": "BIN-001",
                     "result": "NORMAL",

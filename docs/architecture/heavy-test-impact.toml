@@ -3003,6 +3003,17 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "migrations/versions/20260923_1033_9b440473b03d_放宽_transport_请求重提计数约束.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py"]
+
+[[mapping]]
 source_glob = "src/database/base_repository.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",

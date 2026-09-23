@@ -30,12 +30,12 @@
 | 声明、资源槽位和静态装配 | `definition.py`、`application/plugin.py`、`tests/test_declaration.py` | 人工合同 §2.1；插件顶层设计 | `PASS` |
 | prepare、plan_delta、取消和 Transport 可靠接收 | `prepare_policy.py`、`handlers/picking_task_plan_applied.py`、`application/transport_outcome.py` | 人工合同 §2.1；出库合同任务/Transport章节 | `PASS` |
 | `target_rack` → `TRANSFER_RACK` + F01 | `handlers/picking_task_plan_applied.py` 产出 F01 intent；`picking_task_plan_activation.py` 派发到 `TARGET_RACK_IN_STEP` | 人工合同 §3.1；出库合同 §9.1 | `PASS` |
-| `added_bin_source_racks` → `FIVE_RACK` + CTU01 | `_pending_bin_racks` 拉取；activation 派发到 `BIN_SOURCE_RACK_IN_STEP`；`batch_driver` 维护 CTU01 窗口 | 出库合同 §9.1、§9.2.1 | `PASS` |
+| `added_bin_source_racks` → `FIVE_RACK` + CTU01 | `_pending_bin_racks` 拉取；activation 派发到 `BIN_SOURCE_RACK_IN_STEP`；`batch_driver` 按业务步骤去重 | 出库合同 §9.1、§9.2.1 | `PASS` |
 | `added_direct_picks` → `RETURN_RACK` + F01 入线 Transport | SDK `PickingTaskPlanAppliedFact.pending_return_racks`；`picking_task_plan_activation._pending_return_racks` + `RETURN_RACK_IN_STEP` 常量；插件 handler 产出 F01 intent；下游 `_advance_return_rack` 自然消费 `PositionProjection` | 人工合同 §3.5、§5.5；合同 §3.1 入线 Transport 形态 | `PASS`（已闭合"退料货架入线 Transport 缺口"，对应 `TODOS.md` 已删除条目） |
-| CTU01 窗口、同架换面、CTU03 离场 | `application/batch_driver.py`、`batch_repository.py`、`tests/test_batch_*`、`tests/test_source_progression.py` | 出库合同 §9.1、§9.2.1、§9.4 | `PASS` |
+| CTU01 步骤幂等、同架换面、CTU03 离场 | `application/batch_driver.py`、`batch_repository.py`、`tests/test_batch_*`、`tests/test_source_progression.py` | 出库合同 §9.1、§9.2.1、§9.4 | `PASS` |
 | SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（C4/C5：现有行为与局部测试一致，不替代现场物理验收） |
 | `MANUAL_PICK_NG` 持久化 | `passage_model.reason_code VARCHAR(64)`；`scan_flow._apply_completed` 在 `result=NG` 时写入 `MANUAL_PICK_NG`；新 migration `20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py` | 人工合同 §5.2 | `PASS` |
-| per-Bin 终态唯一索引 | `passage_model.py:27-34` `ux_manual_picking_passages_wms_terminal`：`(task_id, bin_code) WHERE wms_result IS NOT NULL` 部分唯一索引 | 人工合同 §9.1 | `PASS` |
+| Passage 完成身份 | `admission_operation_id` 唯一关联本次经过；同一任务同一料箱可形成多个独立终态 | 人工合同 §9.1 | `PASS` |
 | point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | 宿主 `src/app/wms_adapter/outbound_picking/manual_bin_*` + 插件 `scan_flow.py`；FastTests 覆盖；真实 worker owner 为 `tests/test_business_loop.py`，统一入口为 `scripts/run-integration-tests.sh` | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准；人工 Bin `NORMAL/NG` 纵向 owner 待补，自动化验收依赖 `RUN_WORKLINE_INTEGRATION=1`） |
 | 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py`；集成 `test_rack_cycle_postgresql.py` 覆盖 PostgreSQL 路径 | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（C6：行为与局部测试一致；真实 PG 由集成测试契约承担） |
 | 退料货架直接取料 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` + `manual_rack_direct_pick_completed.py`；插件通过 `completion_repository` 消费面级完成事实推进 `_advance_return_rack` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地；现场物理验收仍 `NOT ACCEPTED`） |
@@ -48,7 +48,7 @@
 | 合同要求 | 插件承接 | 结论 |
 | --- | --- | --- |
 | 复用 PickingTask、plan_delta、取消、arrival、inbound/return batch、departure、completion_confirm | 宿主 operation + 插件 typed facade/业务 driver；插件未复制 HTTP、Evidence 或重试 | `PASS` |
-| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 只按 `task_id + bin_code` 绑定 | `PASS`（实现闭合；自动化 owner 由 `test_manual_bin_completed_postgresql.py`、`test_business_loop.py` 等覆盖） |
+| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 按原 `admission_operation_id` 绑定并核对 task/bin | `PASS`（聚焦测试覆盖；真实 worker 路径仍按集成契约验收） |
 | `work_completed` 先可靠接收，应用时才绑定当前 point2 等待 | `manual_bin_completed_event_handler.py` + `scan_flow.py`；早到/冲突进入 `RECONCILING` | `PASS`（实现闭合；FastTests + 既有 `test_manual_bin_completed_postgresql.py` 覆盖幂等与冲突） |
 | 点3不能由 FIFO 猜测正常授权，点4须等 ECS `SUCCESS` 才入队 | `scan3.py`、`scan4.py`、`test_scan_flow.py`、`test_scan_handlers.py` | `PARTIAL`（C4/C5：现有行为与局部测试一致；不替代 ECS 设备验收） |
 | 来源架按精确 rack/face、原 Transport 和 READY evidence 推进 | `batch_repository.py`、`transport_outcome.py`、`source_progression.py` | `PASS` |
@@ -60,7 +60,7 @@
 双向验证的收敛结论（2026-09-19 重新对账）：
 
 - `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`），不引入新窗口表、不维护占用计数器，capacity 解释完全交给 ECS/RCS。
-- `MANUAL_PICK_NG` 与 per-Bin 终态唯一索引均已落地（迁移 `20260919_0409_1d3045ea8e62` + 既有 `ux_manual_picking_passages_wms_terminal`）；合同 §6 现场物理验收仍 `NOT ACCEPTED`。
+- `MANUAL_PICK_NG` 持久化已落地；Passage 完成身份改为原准入 `admission_operation_id`，取消跨 Passage 的 `(task_id, bin_code)` 终态唯一索引；合同 §6 现场物理验收仍 `NOT ACCEPTED`。
 - 集成测试通过 `scripts/run-integration-tests.sh` + `RUN_WORKLINE_INTEGRATION=1` 统一入口接入，不依赖旧的"本机通过代表现场"假设。
 
 ## 声明与装配
@@ -69,9 +69,8 @@
 设备角色为 `SCAN1`、`SCAN2`、`SCAN3`、`SCAN4`；工作位为 `FIVE_RACK`、`RETURN_RACK`、
 `TRANSFER_RACK`、`INLET`、`OUTLET`，每个插槽绑定一个本线实际资源。
 
-五层货架区对 WES 只有一个绑定工作位。绑定 FIVE_LAYER/FIVE_RACK 点位的 `workline_positions.capacity` 是
-CTU01 准入义务窗口，按配置 `position_code` 读取；运输目标使用冻结绑定的实际 `location_id`。同一物理工作位最多有一个权威当前货架。
-RCS 负责 AGV 排队、互斥和自主进位；WES 不保存排队位或队尾状态。实际工作位编码与货架编号是不同身份。
+五层货架区对 WES 只有一个绑定工作位；运输目标使用冻结绑定的实际 `location_id`。
+`workline_positions.capacity` 不用于 CTU01 物理准入。RCS 负责 AGV 接纳、排队、互斥和自主进位；WES 只按实际到位事实推进相应货架的 SOP。实际工作位编码与货架编号是不同身份。
 
 后续业务直接引用具名对象，例如 `from manual_picking.definition import SCAN2, FIVE_RACK`；
 需要字符串的现有端口使用 `SCAN2.role_key` 或 `FIVE_RACK.slot_key`。
@@ -93,17 +92,14 @@ RCS 负责 AGV 排队、互斥和自主进位；WES 不保存排队位或队尾�
 
 `PickingTaskPlanAppliedHandler` 只消费宿主从已提交计划和位置绑定构造的 typed fact，不解析 WMS JSON。
 它只把转运架映射为 `F01 → TRANSFER_RACK`；`ManualPickingBatchDriver` 是来源架 CTU01/CTU02/CTU03 的唯一 owner，
-按 `plan_revision / id` 稳定选取窗口内来源架，每架只创建一次 CTU01，多面仍保留在同一货架上下文。宿主校验返回意图是冻结 fact 的合法子集。
+按已应用 WMS 计划为每个来源架创建一次 CTU01，多面仍保留在同一货架上下文。宿主校验返回意图是冻结 fact 的合法子集。
 `added_direct_picks` 对应的退料货架进场由宿主创建 `RETURN_RACK_IN_STEP` 的 F01 可靠 Transport，目标位置来自冻结的 `RETURN_RACK` 绑定。
 宿主通过静态 Celery 任务只扫描精确匹配的活动工作线，调用该 handler 并在同一事务内创建可靠 TransportTask；插件未启用时不执行其业务决策。
 
 Transport 结果按原 binding 及对应计划或 drain READY Evidence 校验后，由插件适配器保存为 `APPLIED` 的
 `TRANSPORT_RESULT` Evidence；只有该事务提交成功，宿主才推进结果发布游标。插件消费时再次核对原
-Transport 身份和成功终点；`UNKNOWN` 只留证，不推定货架到位或解除任务占用。
-CTU01 在 `PENDING | ACCEPTED | RECONCILING | SUCCEEDED | FAILED` 占窗，`REJECTED` 不占窗；CTU02 不释放名额。
-同一 WorkLine、同一货架且晚于该进场 binding 的 CTU03 接纳即释放名额；不要求离场与进场使用相同 Evidence。
-已接纳后的失败或对账不重新占窗，提交前 delivery-unknown/conflict 仍占窗。该释放只允许补充其他货架；同架复用仍等待
-CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`，实际库位不要求等于请求中的动态 `ZONE`。
+Transport 身份和成功终点；未知结果只留证，不推定货架到位。同一货架的后续步骤仍等待该架所需的明确终态和实际位置事实，
+不据此阻止其他无依赖货架向 RCS 提交 CTU01。
 当前架按原 CTU01/CTU02 成功、成员结果和绑定工作位的精确 rack/face 投影确定，不按计划顺序选取；CTU02 成功表示旋转后已返回工作位。
 
 `feed_complete` 只要求当前面最终冻结清单的全部 inbound 分段 Transport 与成员权威成功、结果已发布且终点为绑定 HANDOFF_POSITION；
@@ -115,7 +111,7 @@ RETURN_BUFFER 是 WorkLine 级跨任务 FIFO，正常回架使用当前权威 ra
 PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务；已有绑定的 `PREPARING | EXECUTING` 或成功 claim 的任务优先承接 FIFO。
 只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`。请求只携带
 `workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回无序 `racks[]` reservation，各 rack 内
-`rack_face[]` 有序；WAIT 到期以新 identity 和当前数量重求值。已创建 drain 链不被后来任务取消：在 CTU01 窗口内提交各 reservation
+`rack_face[]` 有序；WAIT 到期以新 identity 和当前数量重求值。已创建 drain 链不被后来任务取消：按业务步骤身份提交各 reservation
 货架，任一货架精确权威到位后即可独立使用普通 `return_batch`，不等待其它 AGV；同架按面顺序复用 CTU02，保留 FIFO 及未闭合义务直到
 排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。

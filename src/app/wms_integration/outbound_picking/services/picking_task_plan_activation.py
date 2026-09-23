@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from wes_plugin_sdk import (
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 
 _PLAN_BATCH_LIMIT = 100
+logger = logging.getLogger(__name__)
 TARGET_RACK_IN_STEP = "PICKING_TASK_TARGET_RACK_IN"
 BIN_SOURCE_RACK_IN_STEP = "PICKING_TASK_BIN_SOURCE_RACK_IN"
 RETURN_RACK_IN_STEP = "PICKING_TASK_RETURN_RACK_IN"
@@ -80,15 +82,27 @@ class PickingTaskPlanActivationService:
         identities = self.plugin_identities
         if not identities:
             return 0
-        async with self._sessions.begin() as db:
-            worklines = await self._worklines.list_active_for_plugin_identities(db, identities, limit=limit)
         created = 0
-        for workline_id, plugin_key, plugin_version in worklines:
-            created += await self._activate_workline(
-                workline_id,
-                handler=self._handlers[(plugin_key, plugin_version)],
-                plugin_identity=(plugin_key, plugin_version),
-            )
+        after_id = 0
+        while True:
+            async with self._sessions.begin() as db:
+                worklines = await self._worklines.list_active_for_plugin_identities(
+                    db, identities, limit=limit, after_id=after_id
+                )
+            if not worklines:
+                break
+            after_id = worklines[-1][0]
+            for workline_id, plugin_key, plugin_version in worklines:
+                try:
+                    created += await self._activate_workline(
+                        workline_id,
+                        handler=self._handlers[(plugin_key, plugin_version)],
+                        plugin_identity=(plugin_key, plugin_version),
+                    )
+                except Exception:
+                    logger.exception("picking_task.plan_activation_workline_failed workline_id=%s", workline_id)
+            if len(worklines) < limit:
+                break
         return created
 
     async def _activate_workline(self, workline_id: int, *, handler: Any, plugin_identity: tuple[str, str]) -> int:

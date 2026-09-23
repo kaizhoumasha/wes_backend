@@ -470,6 +470,9 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
             return transports.get(task_id)
 
     class Plans:
+        async def list_active_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
+            return []
+
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
             return [SimpleNamespace(id=1, rack_id="R1", rack_face="90", source_evidence_id=11)]
 
@@ -492,15 +495,11 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         plans=Plans(),
         positions=Positions(),
         transports=TransportReader(),
-        position_service=SimpleNamespace(require_position_capacity=AsyncMock(return_value=1)),
-        rack_cycles=SimpleNamespace(
-            occupied_source_rack_ids=AsyncMock(return_value={"R1"}),
-            fenced_source_rack_ids=AsyncMock(return_value=set()),
-        ),
         rack_creator=object(),
         departure_scheduler=object(),
         departure_reader=object(),
         passages=SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=())),
+        bindings=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value={"R1"})),
     )
     line = SimpleNamespace(
         id=7,

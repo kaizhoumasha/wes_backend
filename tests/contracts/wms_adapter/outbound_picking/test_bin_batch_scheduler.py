@@ -68,14 +68,26 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
 
 
 @pytest.mark.asyncio
-async def test_inbound_batch_owner_requires_current_task_and_planned_face() -> None:
+@pytest.mark.parametrize(
+    ("status", "cancelled_evidence_id", "task_type"),
+    [
+        ("EXECUTING", None, "MANUAL"),
+        ("EXECUTION_COMPLETED", None, "MANUAL"),
+        ("EXECUTION_COMPLETED", 91, "MANUAL"),
+        ("ARCHIVED", 91, "MANUAL"),
+        ("EXECUTING", None, "AUTO"),
+    ],
+)
+async def test_inbound_batch_owner_keeps_existing_face_obligation_after_parent_transition(
+    status: str, cancelled_evidence_id: int | None, task_type: str
+) -> None:
     class Tasks:
         async def get_by_task_id_for_update(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return SimpleNamespace(id=31, workline_id=7, status="EXECUTING", task_type="MANUAL")
+            return SimpleNamespace(id=31, workline_id=7, status=status, task_type=task_type)
 
     class Plans:
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return [SimpleNamespace(rack_id="R1", rack_face="90")]
+            return [SimpleNamespace(rack_id="R1", rack_face="90", cancelled_evidence_id=cancelled_evidence_id)]
 
     owner = bin_batch.BinInboundBatchOwnerService(tasks=Tasks(), plans=Plans())
     payload = {

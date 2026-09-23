@@ -60,24 +60,24 @@ class DrainRepository:
         rack_id: str,
         face: str | None = None,
     ) -> Any:
-        correlation_id = f"drain:{decision.intent.operation_id}:rack:{rack_id}"
-        if face is not None:
-            correlation_id = f"{correlation_id}:face:{face}"
-        row = (
+        rows = (
             await db.execute(
                 select(TransportDecisionBinding, TransportTask)
                 .outerjoin(TransportTask, TransportTask.client_request_id == TransportDecisionBinding.client_request_id)
                 .where(
                     TransportDecisionBinding.workline_id == decision.workline_id,
                     TransportDecisionBinding.picking_task_id.is_(None),
-                    TransportDecisionBinding.correlation_id == correlation_id,
+                    TransportDecisionBinding.source_evidence_id == decision.evidence_id,
+                    TransportDecisionBinding.resource_fence_id == rack_id,
                     TransportDecisionBinding.step == step,
                 )
+                .order_by(TransportDecisionBinding.id.desc())
             )
-        ).one_or_none()
-        if row is None:
-            return None
-        return self._validate_transport(decision, rack_id, correlation_id, *row)
+        ).all()
+        for binding, task in rows:
+            if task is not None and (face is None or task.request_json.get("target_face") == face):
+                return self._validate_transport(decision, rack_id, binding.correlation_id, binding, task)
+        return None
 
     @staticmethod
     def _validate_transport(
@@ -92,7 +92,7 @@ class DrainRepository:
             or binding.source_evidence_id != decision.evidence_id
             or binding.resource_fence_id != rack_id
             or task.authority_workline_id != decision.workline_id
-            or task.kind != "RACK_MOVE"
+            or task.kind != ("RACK_ROTATE" if binding.step == DRAIN_RACK_ROTATE_STEP else "RACK_MOVE")
             or task.request_json.get("rack_id") != rack_id
         ):
             raise ValueError("drain Transport identity/evidence/owner mismatch")
@@ -119,7 +119,6 @@ class DrainRepository:
     async def has_unclosed_rack_action(self, db: Any, decision: ReturnBufferDrainRecord, rack_id: str) -> bool:
         bindings = TransportDecisionBinding.__table__.c
         transports = TransportTask.__table__.c
-        correlation_id = f"drain:{decision.intent.operation_id}:rack:{rack_id}"
         return (
             await db.scalar(
                 select(transports.id)
@@ -127,10 +126,8 @@ class DrainRepository:
                 .where(
                     bindings.workline_id == decision.workline_id,
                     bindings.picking_task_id.is_(None),
-                    or_(
-                        bindings.correlation_id == correlation_id,
-                        bindings.correlation_id.startswith(f"{correlation_id}:face:", autoescape=True),
-                    ),
+                    bindings.source_evidence_id == decision.evidence_id,
+                    bindings.resource_fence_id == rack_id,
                     bindings.step.in_((DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP)),
                     or_(
                         transports.status.in_(("PENDING", "RECONCILING")),
@@ -144,8 +141,10 @@ class DrainRepository:
 
     @staticmethod
     def _accepted_or_terminal(task: Any) -> bool:
-        return task.status in {"ACCEPTED", "SUCCEEDED", "FAILED"} or (
-            task.status == "RECONCILING" and task.result_deadline_at is not None
+        return (
+            task.status in {"ACCEPTED", "SUCCEEDED"}
+            or (task.status == "FAILED" and getattr(task, "reason_code", None) != "RCS_TASK_CANCELLED")
+            or (task.status == "RECONCILING" and task.result_deadline_at is not None)
         )
 
 

@@ -16,6 +16,7 @@ Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTER
 
 
 class ManualBinCompletedData(StrictWireModel):
+    admission_operation_id: OperationId
     task_id: Identifier
     bin_code: Identifier
     result: Literal["NORMAL", "NG"]

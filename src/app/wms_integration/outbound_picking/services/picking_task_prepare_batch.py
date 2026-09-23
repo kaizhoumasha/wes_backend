@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareCoordinator
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from src.core.task_queue_gateway import TaskQueueGateway
 
 _PREPARE_BATCH_LIMIT = 100
+logger = logging.getLogger(__name__)
 
 
 class PickingTaskPrepareBatchService:
@@ -51,26 +53,37 @@ class PickingTaskPrepareBatchService:
         identities = self.plugin_identities
         if not identities:
             return 0
-        async with self._sessions.begin() as db:
-            worklines = await self._worklines.list_active_for_plugin_identities(db, identities, limit=limit)
-
         coordinators: dict[tuple[str, str], PickingTaskPrepareCoordinator] = {}
         prepared = 0
-        for workline_id, plugin_key, plugin_version in worklines:
-            identity = (plugin_key, plugin_version)
-            policy = self._policies[identity]
-            coordinator = coordinators.get(identity)
-            if coordinator is None:
-                coordinator = PickingTaskPrepareCoordinator(
-                    self._sessions,
-                    policy=policy,
-                    workline_repository=self._worklines,
-                    task_queue_gateway=self._task_queue,
-                    workline_reserved=self._workline_reserved,
+        after_id = 0
+        while True:
+            async with self._sessions.begin() as db:
+                worklines = await self._worklines.list_active_for_plugin_identities(
+                    db, identities, limit=limit, after_id=after_id
                 )
-                coordinators[identity] = coordinator
-            result = await coordinator.prepare_next_for_workline(workline_id)
-            prepared += int(result.prepared)
+            if not worklines:
+                break
+            after_id = worklines[-1][0]
+            for workline_id, plugin_key, plugin_version in worklines:
+                identity = (plugin_key, plugin_version)
+                policy = self._policies[identity]
+                coordinator = coordinators.get(identity)
+                if coordinator is None:
+                    coordinator = PickingTaskPrepareCoordinator(
+                        self._sessions,
+                        policy=policy,
+                        workline_repository=self._worklines,
+                        task_queue_gateway=self._task_queue,
+                        workline_reserved=self._workline_reserved,
+                    )
+                    coordinators[identity] = coordinator
+                try:
+                    result = await coordinator.prepare_next_for_workline(workline_id)
+                    prepared += int(result.prepared)
+                except Exception:
+                    logger.exception("picking_task.prepare_workline_failed workline_id=%s", workline_id)
+            if len(worklines) < limit:
+                break
         return prepared
 
 
