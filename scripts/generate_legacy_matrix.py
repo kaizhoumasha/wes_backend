@@ -774,18 +774,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
     ),
     (
         "runtime",
-        "src/app/runtime/orchestration/models/runtime_location_event.py",
-        "RuntimeLocationEvent",
-        "model",
-        "runtime",
-        "retain",
-        "src/app/runtime/orchestration/models/runtime_location_event.py",
-        "RuntimeLocationEvent",
-        "tests/runtime/orchestration/",
-        "MEDIUM",
-    ),
-    (
-        "runtime",
         "src/app/runtime/orchestration/models/session.py",
         "WorklineSession",
         "model",
@@ -1464,12 +1452,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "tests/architecture/test_execution_correlation_boundary_guardrail.py",
             ),
             (
-                "src/app/runtime/orchestration/repositories/runtime_location_event_repository.py",
-                "RuntimeLocationEventRepository",
-                "repository",
-                "tests/runtime/orchestration/",
-            ),
-            (
                 "src/app/runtime/orchestration/repositories/session_repository.py",
                 "WorklineSessionRepository",
                 "repository",
@@ -1480,12 +1462,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "TimelineSequenceRepository",
                 "repository",
                 "tests/contracts/workline/test_runtime_timeline_query_contract.py",
-            ),
-            (
-                "src/app/runtime/orchestration/services/runtime_location_event_service.py",
-                "RuntimeLocationEventService",
-                "service",
-                "tests/runtime/orchestration/",
             ),
         )
     ),
@@ -1533,7 +1509,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "src/app/runtime/orchestration/repositories/__init__.py",
                 "runtime",
                 "switch",
-                "RuntimeLocationEventRepository",
+                "WorklineSessionRepository",
             ),
             (
                 "src/app/runtime/orchestration/services/__init__.py",
@@ -2292,7 +2268,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "src/app/runtime/orchestration/workline_runtime_status_projection.py",
                 "WorklineRuntimeStatusProjection",
                 "runtime",
-                "wes_runtime.workline_runtime_status_projections",
+                "wes_biz.workline_runtime_status_projections",
                 "tests/workline_runtime/test_workline_runtime_status_projection_service.py",
             ),
             (

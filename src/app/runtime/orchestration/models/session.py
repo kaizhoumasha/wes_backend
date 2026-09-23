@@ -24,7 +24,6 @@ from sqlmodel import Field, Relationship
 from src.app.workline.models.workline import WorkLine  # noqa: TC001
 from src.core.mixins import BaseMixin, DataTableMixin, OptimisticLockMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
-from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 # ==================== 枚举定义 ====================
@@ -406,14 +405,6 @@ def _sync_generated_workline_session_version(_mapper: Any, _connection: Any, tar
 # ==================== 自动生成的 Schema ====================
 
 
-class WorklineSessionCreate(ModelFactory(WorklineSessionBase).for_create()):
-    """会话创建 Schema"""
-
-
-class WorklineSessionUpdate(ModelFactory(WorklineSessionBase).for_update()):
-    """会话更新 Schema"""
-
-
 # ==================== 导出 ====================
 
 
@@ -426,6 +417,4 @@ __all__ = [
     "SessionStatus",
     "WorklineSession",
     "WorklineSessionBase",
-    "WorklineSessionCreate",
-    "WorklineSessionUpdate",
 ]

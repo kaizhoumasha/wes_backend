@@ -14,7 +14,6 @@ from src.app.device.composition import DeviceEndpointAdapterProvider
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
 from src.app.workline.activation import WorkLineDeviceBinding
@@ -65,9 +64,6 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
             evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
             await db.execute(
                 delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
-            )
-            await db.execute(
-                delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
             )
             await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
@@ -197,9 +193,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 await db.execute(
                     delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
                 )
-                await db.execute(
-                    delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
-                )
                 await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
                 await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
             if device_id is not None:
@@ -299,20 +292,10 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
         async with integration_session_factory() as db:
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
             evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.command_code == command_code))
-            observations = list(
-                (
-                    await db.execute(
-                        select(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
-                    )
-                )
-                .scalars()
-                .all()
-            )
 
         assert command is not None and command.status == CommandStatus.SUCCEEDED
         assert evidence is not None and evidence.apply_status == "APPLIED"
         assert command.result_evidence_id == evidence.id
-        assert observations == []
         assert ecs_server.status_requests == []
         assert len(ecs_server.command_requests) == 1
         assert ecs_server.callback_errors == []

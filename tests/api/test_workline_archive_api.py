@@ -43,7 +43,6 @@ async def test_archive_open_work_commits_then_invalidates_workline_cache(monkeyp
                 version=5,
                 archived_picking_tasks=1,
                 archived_plugin_tasks=3,
-                archived_integration_runs=1,
             )
         )
     )
@@ -77,8 +76,7 @@ async def test_archive_open_work_commits_then_invalidates_workline_cache(monkeyp
         "version": 5,
         "archived_picking_tasks": 1,
         "archived_plugin_tasks": 3,
-        "archived_integration_runs": 1,
-        "archived_total": 5,
+        "archived_total": 4,
         "archived_single_picking_task": False,
         "archived_single_picking_task_id": None,
         "picking_task_status_before": None,
@@ -98,7 +96,6 @@ async def test_archive_picking_task_commits_then_invalidates_workline_cache(
                 version=5,
                 archived_picking_tasks=0,
                 archived_plugin_tasks=0,
-                archived_integration_runs=0,
                 archived_single_picking_task=True,
                 archived_single_picking_task_id=99,
                 picking_task_status_before=PickingTaskStatus.EXECUTING,

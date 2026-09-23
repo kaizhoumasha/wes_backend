@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.app.device.models import Device, DeviceCommand, DeviceStatusObservation
+from src.app.device.models import Device, DeviceCommand
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, WmsConfirmation
 from src.app.resource.models import (
     Bin,
@@ -21,7 +21,6 @@ from src.app.workline.models import WorkLine
 def test_non_optional_json_columns_are_not_nullable() -> None:
     columns = (
         DeviceCommand.__table__.c.params,
-        DeviceStatusObservation.__table__.c.raw_payload,
         Device.__table__.c.diagnostic_profile,
         InboundEvidenceConflict.__table__.c.normalized_payload,
         InboundEvidence.__table__.c.normalized_payload,

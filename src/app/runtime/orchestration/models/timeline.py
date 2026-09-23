@@ -20,7 +20,6 @@ from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
-from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
@@ -307,10 +306,6 @@ class WorklineTimeline(
 # ==================== 自动生成的 Schema ====================
 
 
-class WorklineTimelineCreate(ModelFactory(WorklineTimelineBase).for_create()):
-    """时间线创建 Schema"""
-
-
 # ==================== 导出 ====================
 
 
@@ -321,5 +316,4 @@ __all__ = [
     "TimelineStatus",
     "WorklineTimeline",
     "WorklineTimelineBase",
-    "WorklineTimelineCreate",
 ]

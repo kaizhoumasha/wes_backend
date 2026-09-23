@@ -12,7 +12,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
 - ``--transport-task-id`` 按 ID 清理一个 TransportTask 的完整本地 Transport 链路，
   不重置其它运行数据或 Mock。
-- 清空后将 ``wes_runtime.workline_runtime_status_projections`` 重置为 ``STOPPED``，
+- 清空后将 ``wes_biz.workline_runtime_status_projections`` 重置为 ``STOPPED``，
   以便干净地重跑 START；Device 主数据不承载运行态，不做改写。
 - 全量 reset 仅在 ``APP_DEBUG=True`` 时允许执行；生产型配置可用 ``--force``
   显式覆盖，供数据可丢弃的联调服务器人工运维。
@@ -83,10 +83,6 @@ def _biz(table: str) -> TableTarget:
     return TableTarget("wes_biz", table)
 
 
-def _runtime(table: str) -> TableTarget:
-    return TableTarget("wes_runtime", table)
-
-
 def _sys(table: str) -> TableTarget:
     return TableTarget("wes_sys", table)
 
@@ -99,7 +95,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "callback_logs",
             "device_commands",
-            "device_status_observations",
             "direct_pick_executions",
             "inbound_evidence_conflicts",
             "inbound_evidences",
@@ -118,7 +113,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "resource_rack_bin_mounts",
             "resource_rack_placements",
             "resource_state_events",
-            "runtime_location_events",
             "transport_decision_bindings",
             "wms_confirmations",
             "workline_sessions",
@@ -126,7 +120,7 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         )
     ),
     *(
-        _runtime(table)
+        _biz(table)
         for table in (
             "transport_callback_receipts",
             "transport_debug_position_projections",
@@ -135,8 +129,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "transport_evidence",
             "transport_members",
             "transport_tasks",
-            "workline_integration_run_steps",
-            "workline_integration_runs",
             "workline_runtime_status_projections",
         )
     ),
@@ -404,7 +396,7 @@ async def _transport_task_row_count(
     id_column: str = "transport_task_id",
 ) -> int:
     result = await db.execute(
-        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {id_column} = :transport_task_id"),  # noqa: S608
+        text(f"SELECT count(*) FROM wes_biz.{table} WHERE {id_column} = :transport_task_id"),  # noqa: S608
         {"transport_task_id": transport_task_id},
     )
     return int(result.scalar_one())
@@ -421,11 +413,11 @@ async def reset_transport_task_data(
 
     task_query = (
         "SELECT transport_task_id, status "
-        "FROM wes_runtime.transport_tasks "
+        "FROM wes_biz.transport_tasks "
         "WHERE transport_task_id = :transport_task_id FOR UPDATE"
         if apply
         else "SELECT transport_task_id, status "
-        "FROM wes_runtime.transport_tasks "
+        "FROM wes_biz.transport_tasks "
         "WHERE transport_task_id = :transport_task_id"
     )
     result = await db.execute(
@@ -440,8 +432,8 @@ async def reset_transport_task_data(
     if apply:
         active_run = await db.scalar(
             text(
-                "SELECT run.run_id FROM wes_runtime.transport_debug_run_steps AS step "
-                "JOIN wes_runtime.transport_debug_runs AS run ON run.run_id = step.run_id "
+                "SELECT run.run_id FROM wes_biz.transport_debug_run_steps AS step "
+                "JOIN wes_biz.transport_debug_runs AS run ON run.run_id = step.run_id "
                 "WHERE step.transport_task_id = :transport_task_id "
                 "AND run.status IN ('RUNNING', 'NEEDS_ATTENTION') "
                 "LIMIT 1"
@@ -452,22 +444,22 @@ async def reset_transport_task_data(
             raise RuntimeError("TransportTask 正被活动 Transport 自动联调轮次引用，拒绝清理")
     receipt_result = await db.execute(
         text(
-            "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
+            "SELECT count(*) FROM wes_biz.transport_callback_receipts "
             "WHERE response_data_json ->> 'transport_task_id' = :transport_task_id"
         ),
         {"transport_task_id": task_id},
     )
     rows_before = {
-        "wes_runtime.transport_callback_receipts": int(receipt_result.scalar_one()),
-        "wes_runtime.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
-        "wes_runtime.transport_debug_position_projections": await _transport_task_row_count(
+        "wes_biz.transport_callback_receipts": int(receipt_result.scalar_one()),
+        "wes_biz.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
+        "wes_biz.transport_debug_position_projections": await _transport_task_row_count(
             db,
             "transport_debug_position_projections",
             task_id,
             id_column="source_transport_task_id",
         ),
-        "wes_runtime.transport_members": await _transport_task_row_count(db, "transport_members", task_id),
-        "wes_runtime.transport_tasks": 1,
+        "wes_biz.transport_members": await _transport_task_row_count(db, "transport_members", task_id),
+        "wes_biz.transport_tasks": 1,
     }
     summary = TransportTaskResetSummary(
         mode="apply" if apply else "dry-run",
@@ -482,25 +474,25 @@ async def reset_transport_task_data(
         delete_statements = (
             (
                 "transport_callback_receipts",
-                "DELETE FROM wes_runtime.transport_callback_receipts "
+                "DELETE FROM wes_biz.transport_callback_receipts "
                 "WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
             ),
             (
                 "transport_evidence",
-                "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
+                "DELETE FROM wes_biz.transport_evidence WHERE transport_task_id = :transport_task_id",
             ),
             (
                 "transport_debug_position_projections",
-                "DELETE FROM wes_runtime.transport_debug_position_projections "
+                "DELETE FROM wes_biz.transport_debug_position_projections "
                 "WHERE source_transport_task_id = :transport_task_id",
             ),
             (
                 "transport_members",
-                "DELETE FROM wes_runtime.transport_members WHERE transport_task_id = :transport_task_id",
+                "DELETE FROM wes_biz.transport_members WHERE transport_task_id = :transport_task_id",
             ),
             (
                 "transport_tasks",
-                "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
+                "DELETE FROM wes_biz.transport_tasks WHERE transport_task_id = :transport_task_id",
             ),
         )
         for table, statement in delete_statements:
@@ -508,9 +500,9 @@ async def reset_transport_task_data(
                 text(statement),
                 {"transport_task_id": task_id},
             )
-            summary.deleted[f"wes_runtime.{table}"] = int(delete_result.rowcount or 0)
-        if summary.deleted["wes_runtime.transport_tasks"] != 1:
-            raise RuntimeError(f"TransportTask 删除数量异常: {summary.deleted['wes_runtime.transport_tasks']}")
+            summary.deleted[f"wes_biz.{table}"] = int(delete_result.rowcount or 0)
+        if summary.deleted["wes_biz.transport_tasks"] != 1:
+            raise RuntimeError(f"TransportTask 删除数量异常: {summary.deleted['wes_biz.transport_tasks']}")
         await db.commit()
     except Exception:
         with suppress(Exception):
@@ -572,7 +564,7 @@ async def reset_runtime_data(
             # WorkLine runtime 投影回到 STOPPED，等待 START 校验并启用当前配置。
             wl_result = await db.execute(
                 text(
-                    "INSERT INTO wes_runtime.workline_runtime_status_projections ("
+                    "INSERT INTO wes_biz.workline_runtime_status_projections ("
                     "workline_id, runtime_status, source, stopped_at, stopped_reason, "
                     "resumed_at, evidence_json"
                     ") "

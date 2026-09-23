@@ -222,7 +222,7 @@ MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA = _closed(
 MANUAL_BIN_COMPLETED_EVENT_EXAMPLE = {
     "08_manual_bin_completed": {
         "summary": "8. 人工工作位 Bin 完成决定",
-        "description": "引用已进入手工出库联调的 MANUAL PickingTask；completed_at 不得晚于 timestamp。",
+        "description": "引用执行中的 MANUAL PickingTask；completed_at 不得晚于 timestamp。",
         "value": {
             "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e2",
             "operation": MANUAL_BIN_COMPLETED_OPERATION,
@@ -258,7 +258,7 @@ MANUAL_RACK_DIRECT_PICK_EVENT_REQUEST_SCHEMA = _closed(
 MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE = {
     "09_manual_rack_direct_pick_completed": {
         "summary": "9. 退料货架直接取料完成决定",
-        "description": "引用已进入手工出库联调的直接取料来源；completed_at 不得晚于 timestamp。",
+        "description": "引用已应用的直接取料来源；completed_at 不得晚于 timestamp。",
         "value": {
             "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e3",
             "operation": MANUAL_RACK_DIRECT_PICK_OPERATION,

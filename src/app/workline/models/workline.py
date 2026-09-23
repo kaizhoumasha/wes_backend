@@ -225,7 +225,6 @@ class WorkLineArchiveOpenWorkResponse(BaseModel):
     version: int
     archived_picking_tasks: int = Field(ge=0)
     archived_plugin_tasks: int = Field(ge=0)
-    archived_integration_runs: int = Field(ge=0)
     archived_total: int = Field(ge=0)
     archived_single_picking_task: bool = False
     archived_single_picking_task_id: int | None = None

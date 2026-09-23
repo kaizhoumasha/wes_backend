@@ -44,18 +44,17 @@ class WorkLineArchiveResult:
     version: int
     archived_picking_tasks: int
     archived_plugin_tasks: int
-    archived_integration_runs: int
     archived_single_picking_task: bool = False
     archived_single_picking_task_id: int | None = None
     picking_task_status_before: PickingTaskStatus | None = None
 
     @property
     def archived_total(self) -> int:
-        return self.archived_picking_tasks + self.archived_plugin_tasks + self.archived_integration_runs
+        return self.archived_picking_tasks + self.archived_plugin_tasks
 
 
 class WorkLineArchiveService:
-    """在 WorkLine 行锁内归档已绑定任务、插件业务与联调 run。"""
+    """在 WorkLine 行锁内归档已绑定任务与插件业务。"""
 
     def __init__(
         self,
@@ -63,12 +62,10 @@ class WorkLineArchiveService:
         plugins: tuple[InstalledWorkLinePlugin, ...],
         workline_repository: WorkLineRepository | Any = workline_repository,
         picking_task_repository: PickingTaskRepository | Any = picking_task_repository,
-        reservation_archiver: Any | None = None,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
         self._picking_tasks = picking_task_repository
-        self._reservation_archiver = reservation_archiver
 
     async def archive_open_work(
         self,
@@ -98,23 +95,13 @@ class WorkLineArchiveService:
             if archiver is not None
             else 0
         )
-        archived_integration_runs = (
-            await self._reservation_archiver.archive_active_for_workline(
-                db,
-                workline_id=workline_id,
-                archived_at=archived_at,
-            )
-            if self._reservation_archiver is not None
-            else 0
-        )
-        if archived_picking_tasks or archived_plugin_tasks or archived_integration_runs:
+        if archived_picking_tasks or archived_plugin_tasks:
             workline = await self._worklines.advance_version_for_archive(db, workline)
         return WorkLineArchiveResult(
             workline_id=workline_id,
             version=workline.version,
             archived_picking_tasks=archived_picking_tasks,
             archived_plugin_tasks=archived_plugin_tasks,
-            archived_integration_runs=archived_integration_runs,
         )
 
     def _resolve_business_archiver(self, workline: Any) -> Any | None:
@@ -189,7 +176,6 @@ class WorkLineArchiveService:
             version=workline.version,
             archived_picking_tasks=0,
             archived_plugin_tasks=0,
-            archived_integration_runs=0,
             archived_single_picking_task=True,
             archived_single_picking_task_id=task.id,
             picking_task_status_before=status_before,

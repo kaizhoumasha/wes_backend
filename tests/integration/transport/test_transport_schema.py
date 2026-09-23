@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import BigInteger, delete, text
+from sqlalchemy import BigInteger, text
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.exc import IntegrityError
 
@@ -43,14 +43,13 @@ async def test_transport_face_columns_use_nullable_varchar_ten(
         text(
             "SELECT table_schema, table_name, data_type, is_nullable, character_maximum_length FROM information_schema.columns "
             "WHERE column_name = 'arrival_face' AND "
-            "((table_schema = 'wes_runtime' AND table_name = 'transport_members') OR "
-            "(table_schema = 'wes_runtime' AND table_name = 'transport_debug_position_projections') OR "
-            "(table_schema = 'wes_biz' AND table_name = 'position_projections'))"
+            "table_schema = 'wes_biz' AND table_name IN "
+            "('transport_members', 'transport_debug_position_projections', 'position_projections')"
         )
     )
     assert {(row[0], row[1], row[2], row[3], row[4]) for row in columns} == {
-        ("wes_runtime", "transport_members", "character varying", "YES", 10),
-        ("wes_runtime", "transport_debug_position_projections", "character varying", "YES", 10),
+        ("wes_biz", "transport_members", "character varying", "YES", 10),
+        ("wes_biz", "transport_debug_position_projections", "character varying", "YES", 10),
         ("wes_biz", "position_projections", "character varying", "YES", 10),
     }
     constraints = await integration_db_session.execute(
@@ -58,7 +57,7 @@ async def test_transport_face_columns_use_nullable_varchar_ten(
             "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
             "JOIN pg_class t ON t.oid = c.conrelid "
             "JOIN pg_namespace n ON n.oid = t.relnamespace "
-            "WHERE n.nspname IN ('wes_runtime', 'wes_biz') "
+            "WHERE n.nspname = 'wes_biz' "
             "AND t.relname IN "
             "('transport_members', 'transport_debug_position_projections', 'position_projections') "
             "AND c.contype = 'c'"
@@ -87,9 +86,7 @@ async def test_transport_face_columns_use_nullable_varchar_ten(
     )
     await integration_db_session.flush()
     stored = await integration_db_session.execute(
-        text(
-            "SELECT arrival_face FROM wes_runtime.transport_members WHERE transport_task_id = :task_id ORDER BY ordinal"
-        ),
+        text("SELECT arrival_face FROM wes_biz.transport_members WHERE transport_task_id = :task_id ORDER BY ordinal"),
         {"task_id": task.transport_task_id},
     )
     assert [row[0] for row in stored] == list(faces)
@@ -152,18 +149,14 @@ async def test_transport_schema_retains_same_resource_members_for_independent_ta
         )
     await integration_db_session.flush()
     assert (
-        await integration_db_session.scalar(text("SELECT to_regclass('wes_runtime.transport_resource_bindings')"))
-        is None
+        await integration_db_session.scalar(text("SELECT to_regclass('wes_biz.transport_resource_bindings')")) is None
     )
     await integration_db_session.rollback()
 
 
 async def test_transport_schema_contains_required_claim_indexes(integration_db_session: AsyncSession) -> None:
     result = await integration_db_session.execute(
-        text(
-            "SELECT indexname, indexdef FROM pg_indexes "
-            "WHERE schemaname = 'wes_runtime' AND tablename LIKE 'transport_%'"
-        )
+        text("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'wes_biz' AND tablename LIKE 'transport_%'")
     )
     definitions = {row[0]: row[1] for row in result}
     assert {
@@ -186,45 +179,44 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
     result = await integration_db_session.execute(
         text(
             "SELECT table_schema, table_name, column_name, column_default FROM information_schema.columns "
-            "WHERE (table_schema = 'wes_runtime' AND table_name IN "
+            "WHERE table_schema = 'wes_biz' AND table_name IN "
             "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', 'transport_members', "
-            "'transport_debug_position_projections')) "
-            "OR (table_schema = 'wes_biz' AND table_name = 'position_projections')"
+            "'transport_debug_position_projections', 'position_projections')"
         )
     )
     columns = {(row[0], row[1], row[2]): row[3] for row in result}
     assert {
-        ("wes_runtime", "transport_tasks", "submit_operation_id"),
-        ("wes_runtime", "transport_tasks", "submit_timestamp_ms"),
-        ("wes_runtime", "transport_tasks", "submit_request_body"),
-        ("wes_runtime", "transport_tasks", "submit_request_body_digest"),
-        ("wes_runtime", "transport_tasks", "request_digest"),
-        ("wes_runtime", "transport_tasks", "authority_workline_id"),
-        ("wes_runtime", "transport_callback_receipts", "message_digest"),
-        ("wes_runtime", "transport_evidence", "operation_id"),
-        ("wes_runtime", "transport_evidence", "event_timestamp_ms"),
-        ("wes_runtime", "transport_evidence", "ack_timestamp_ms"),
-        ("wes_runtime", "transport_evidence", "ack_data_json"),
-        ("wes_runtime", "transport_members", "last_operation_id"),
-        ("wes_runtime", "transport_debug_position_projections", "source_operation_id"),
-        ("wes_runtime", "transport_debug_position_projections", "source_transport_task_id"),
+        ("wes_biz", "transport_tasks", "submit_operation_id"),
+        ("wes_biz", "transport_tasks", "submit_timestamp_ms"),
+        ("wes_biz", "transport_tasks", "submit_request_body"),
+        ("wes_biz", "transport_tasks", "submit_request_body_digest"),
+        ("wes_biz", "transport_tasks", "request_digest"),
+        ("wes_biz", "transport_tasks", "authority_workline_id"),
+        ("wes_biz", "transport_callback_receipts", "message_digest"),
+        ("wes_biz", "transport_evidence", "operation_id"),
+        ("wes_biz", "transport_evidence", "event_timestamp_ms"),
+        ("wes_biz", "transport_evidence", "ack_timestamp_ms"),
+        ("wes_biz", "transport_evidence", "ack_data_json"),
+        ("wes_biz", "transport_members", "last_operation_id"),
+        ("wes_biz", "transport_debug_position_projections", "source_operation_id"),
+        ("wes_biz", "transport_debug_position_projections", "source_transport_task_id"),
         ("wes_biz", "position_projections", "source_operation_id"),
         ("wes_biz", "position_projections", "source_transport_task_id"),
     } <= columns.keys()
     assert {
-        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
-        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
-        ("wes_runtime", "transport_evidence", "event_id"),
-        ("wes_runtime", "transport_evidence", "payload_digest"),
-        ("wes_runtime", "transport_tasks", "payload_digest"),
-        ("wes_runtime", "transport_tasks", "submit_payload_json"),
-        ("wes_runtime", "transport_tasks", "submit_payload_digest"),
-        ("wes_runtime", "transport_members", "last_event_id"),
+        ("wes_biz", "transport_tasks", "authority_line_run_epoch_id"),
+        ("wes_biz", "transport_tasks", "authority_bin_execution_id"),
+        ("wes_biz", "transport_evidence", "event_id"),
+        ("wes_biz", "transport_evidence", "payload_digest"),
+        ("wes_biz", "transport_tasks", "payload_digest"),
+        ("wes_biz", "transport_tasks", "submit_payload_json"),
+        ("wes_biz", "transport_tasks", "submit_payload_digest"),
+        ("wes_biz", "transport_members", "last_event_id"),
         ("wes_biz", "position_projections", "source_event_id"),
     }.isdisjoint(columns)
-    assert columns[("wes_runtime", "transport_tasks", "last_applied_wms_outcome_revision")] is None
+    assert columns[("wes_biz", "transport_tasks", "last_applied_wms_outcome_revision")] is None
     old_projection = await integration_db_session.execute(
-        text("SELECT to_regclass('wes_runtime.transport_position_projections')")
+        text("SELECT to_regclass('wes_biz.transport_position_projections')")
     )
     assert old_projection.scalar_one() is None
 
@@ -340,22 +332,33 @@ async def test_face_migration_rejects_invalid_history_without_truncation(invalid
         engine = create_async_engine(database_url)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         try:
-            now = timezone.now_for_db()
             task_id = f"face-migration-{uuid.uuid4().hex}"
             async with factory.begin() as db:
-                db.add(_task(task_id, f"req-{uuid.uuid4().hex}", "f" * 64, now))
-                await db.flush()
-                db.add(
-                    TransportDebugPositionProjection(
-                        object_type="RACK",
-                        object_id="MIGRATION-RACK",
-                        position_json=None,
-                        position_unknown=True,
-                        arrival_face=invalid_face,
-                        source_operation_id=new_uuid7(),
-                        source_transport_task_id=task_id,
-                        updated_at=now,
-                    )
+                await db.execute(
+                    text(
+                        "INSERT INTO wes_runtime.transport_tasks ("
+                        "transport_task_id, client_request_id, request_digest, kind, caller_json, request_json, "
+                        "submit_operation_id, submit_timestamp_ms, submit_request_body, submit_request_body_digest, "
+                        "status, submit_attempt_count, outcome_version, published_outcome_version, "
+                        "last_applied_wms_outcome_revision, created_at, updated_at) VALUES ("
+                        ":task_id, :request_id, :digest, 'RACK_MOVE', '{}'::json, '{}'::json, "
+                        ":operation_id, 1, '{}', :digest, 'PENDING', 0, 0, 0, 0, now(), now())"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "request_id": f"req-{uuid.uuid4().hex}",
+                        "digest": "f" * 64,
+                        "operation_id": new_uuid7(),
+                    },
+                )
+                await db.execute(
+                    text(
+                        "INSERT INTO wes_runtime.transport_debug_position_projections ("
+                        "object_type, object_id, position_unknown, arrival_face, source_operation_id, "
+                        "source_transport_task_id, updated_at) VALUES ("
+                        "'RACK', 'MIGRATION-RACK', true, :face, :operation_id, :task_id, now())"
+                    ),
+                    {"face": invalid_face, "operation_id": new_uuid7(), "task_id": task_id},
                 )
             with pytest.raises(CalledProcessError) as failure:
                 run_alembic("upgrade", "head", database_url=database_url)
@@ -374,7 +377,10 @@ async def test_face_migration_rejects_invalid_history_without_truncation(invalid
                     {"object_id": "MIGRATION-RACK"},
                 )
                 # 旧 face 迁移的故障数据已验证；后续退役迁移只接纳空执行基线。
-                await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
+                await db.execute(
+                    text("DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :task_id"),
+                    {"task_id": task_id},
+                )
             run_alembic("upgrade", "head", database_url=database_url)
             run_alembic("downgrade", "864351b8d0c6", database_url=database_url)
             run_alembic("upgrade", "head", database_url=database_url)

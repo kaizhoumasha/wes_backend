@@ -12,7 +12,6 @@ from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
-from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
 
@@ -84,22 +83,8 @@ class ObjectTransitionEvent(ObjectTransitionEventBase, DataTableMixin, table=Tru
     )
 
 
-class ObjectTransitionEventCreate(ModelFactory(ObjectTransitionEventBase).for_create()):
-    """对象迁移事件创建 Schema。"""
-
-
-class ObjectTransitionEventResponse(ObjectTransitionEventBase):
-    """对象迁移事件响应 Schema。"""
-
-    id: int
-    created_at: datetime
-    updated_at: datetime | None = None
-
-
 __all__ = [
     "ObjectTransitionDomain",
     "ObjectTransitionEvent",
     "ObjectTransitionEventBase",
-    "ObjectTransitionEventCreate",
-    "ObjectTransitionEventResponse",
 ]

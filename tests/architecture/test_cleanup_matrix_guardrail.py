@@ -605,7 +605,6 @@ _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
         "legacy:src/app/runtime/orchestration/repositories/runtime_hold_repository.py:RuntimeHoldRepository",
         "legacy:src/app/runtime/orchestration/repositories/runtime_inbox_repository.py:RuntimeInboxRepository",
         "legacy:src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py:RuntimeIntentLogRepository",
-        "legacy:src/app/runtime/orchestration/repositories/runtime_location_event_repository.py:RuntimeLocationEventRepository",
         "legacy:src/app/runtime/orchestration/repositories/session_repository.py:WorklineSessionRepository",
         "legacy:src/app/runtime/orchestration/repositories/timeline_sequence_repository.py:TimelineSequenceRepository",
         "legacy:src/app/runtime/orchestration/effect_bridges.py:<file>",
@@ -634,13 +633,11 @@ _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
         "legacy:src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py:RuntimeInboxProcessorBridge",
         "legacy:src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_validation_service.py:RuntimeInboxValidationService",
         "legacy:src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_writeback_service.py:RuntimeInboxWriteBackService",
-        "legacy:src/app/runtime/orchestration/services/runtime_location_event_service.py:RuntimeLocationEventService",
         "legacy:src/app/runtime/orchestration/services/runtime_snapshot_assembler.py:RuntimeSnapshotAssembler",
         "legacy:src/app/runtime/orchestration/services/trace/timeline_sequence_service.py:<file>",
         "legacy:src/app/runtime/orchestration/services/trace/trace_query_service.py:TraceQueryService",
         "legacy:src/app/runtime/orchestration/system_capability_effect_claim.py:<file>",
         "legacy:src/app/runtime/orchestration/models/object_transition_event.py:ObjectTransitionEvent",
-        "legacy:src/app/runtime/orchestration/models/runtime_location_event.py:RuntimeLocationEvent",
         "legacy:src/app/runtime/orchestration/models/session.py:WorklineSession",
         "legacy:src/app/runtime/orchestration/models/timeline.py:WorklineTimeline",
         "legacy:src/app/runtime/orchestration/__init__.py:<file>",
@@ -914,7 +911,7 @@ def test_phase10_prelock_registry_covers_frozen_categories_with_final_dispositio
     for category, actual_ids in actual_by_category.items():
         assert actual_ids <= _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY[category]
     assert actual_by_category["schema-deferred"] == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"]
-    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 71
+    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 68
     assert not any(entry.classification_status == "pending-review" for entry in parse_entries())
 
 

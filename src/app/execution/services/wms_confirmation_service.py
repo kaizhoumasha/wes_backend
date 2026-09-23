@@ -34,8 +34,6 @@ from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.execution.models.material_execution import MaterialExecution
@@ -440,7 +438,6 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         execution_repository: MaterialExecutionWorkLineRepositoryPort | None = None,
         picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
         workline_owner: WorkLineConfirmationOwnerPort | None = None,
-        direct_result_owner: Callable[[AsyncSession, int, str], Awaitable[bool]] | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         follow_up_planner: WmsConfirmationFollowUpPlanner | None = None,
         diagnostics: WmsDiagnosticsService | None = None,
@@ -450,7 +447,6 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
         self._picking_task_owner = picking_task_owner
-        self._direct_result_owner = direct_result_owner
         self._task_queue = task_queue_gateway
         self._follow_up_planner = follow_up_planner
         self._diagnostics = diagnostics
@@ -679,15 +675,8 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 if isinstance(evidence_result, InboundEvidenceConflictResult) or not owner_valid:
                     _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                     return
-                direct_owned = (
-                    confirmation.workline_id is not None
-                    and self._direct_result_owner is not None
-                    and await self._direct_result_owner(db, confirmation.workline_id, operation_id)
-                )
-                if direct_owned:
-                    evidence_result.evidence.processed_at = changed_at
                 wake_execution[0] = wake_material_execution or (
-                    code == "DETERMINATE" and confirmation.workline_id is not None and not direct_owned
+                    code == "DETERMINATE" and confirmation.workline_id is not None
                 )
                 if code == "DETERMINATE":
                     if evidence_result.evidence.id is None or result.response_result is None:

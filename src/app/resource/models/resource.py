@@ -1005,20 +1005,6 @@ class RackBinMountResponse(RackBinMountBase):
     id: int
 
 
-class BinPlacementCreate(ModelFactory(BinPlacementBase).for_create()):
-    """料箱位置投影创建 Schema。"""
-
-
-class BinPlacementUpdate(ModelFactory(BinPlacementBase).for_update()):
-    """料箱位置投影更新 Schema。"""
-
-
-class BinPlacementResponse(BinPlacementBase):
-    """料箱位置投响应 Schema。"""
-
-    id: int
-
-
 class BinMaterialMountCreate(ModelFactory(BinMaterialMountBase).for_create()):
     """物料料箱格位投影创建 Schema。"""
 
@@ -1104,10 +1090,7 @@ __all__ = [
     "BinMaterialMountUpdate",
     "BinPlacement",
     "BinPlacementBase",
-    "BinPlacementCreate",
-    "BinPlacementResponse",
     "BinPlacementStatus",
-    "BinPlacementUpdate",
     "BinResponse",
     "BinSlotSize",
     "BinSlotTemplate",

@@ -40,8 +40,6 @@ def _setup_service(*, plugin_archived: int = 3, picking_archived: int = 1):
     picking_tasks.archive_open_for_workline.return_value = picking_archived
     business_archiver = AsyncMock()
     business_archiver.archive_open_work.return_value = plugin_archived
-    reservation_archiver = AsyncMock()
-    reservation_archiver.archive_active_for_workline.return_value = 1
     plugin = SimpleNamespace(
         plugin_key="manual-picking",
         plugin_version="1.0.0",
@@ -52,19 +50,17 @@ def _setup_service(*, plugin_archived: int = 3, picking_archived: int = 1):
             plugins=(plugin,),
             workline_repository=worklines,
             picking_task_repository=picking_tasks,
-            reservation_archiver=reservation_archiver,
         ),
         workline,
         worklines,
         picking_tasks,
         business_archiver,
-        reservation_archiver,
     )
 
 
 @pytest.mark.asyncio
 async def test_archive_open_work_archives_current_task_and_plugin_work_in_one_locked_scope() -> None:
-    service, workline, worklines, picking_tasks, business_archiver, reservation_archiver = _setup_service()
+    service, workline, worklines, picking_tasks, business_archiver = _setup_service()
     db = object()
     archived_at = datetime(2026, 9, 15, 7, 30, tzinfo=UTC)
 
@@ -81,23 +77,16 @@ async def test_archive_open_work_archives_current_task_and_plugin_work_in_one_lo
         workline_id=7,
         archived_at=archived_at.replace(tzinfo=None),
     )
-    reservation_archiver.archive_active_for_workline.assert_awaited_once_with(
-        db,
-        workline_id=7,
-        archived_at=archived_at.replace(tzinfo=None),
-    )
     assert result.workline_id == 7
     assert result.version == 5
     assert result.archived_picking_tasks == 1
     assert result.archived_plugin_tasks == 3
-    assert result.archived_integration_runs == 1
     assert workline.version == 5
 
 
 @pytest.mark.asyncio
 async def test_archive_open_work_is_idempotent_when_nothing_is_open() -> None:
-    service, workline, _, _, _, reservation_archiver = _setup_service(plugin_archived=0, picking_archived=0)
-    reservation_archiver.archive_active_for_workline.return_value = 0
+    service, workline, _, _, _ = _setup_service(plugin_archived=0, picking_archived=0)
 
     result = await service.archive_open_work(object(), workline_id=7, version=4)
 
@@ -108,7 +97,7 @@ async def test_archive_open_work_is_idempotent_when_nothing_is_open() -> None:
 
 @pytest.mark.asyncio
 async def test_archive_open_work_rejects_missing_or_stale_workline() -> None:
-    service, _, worklines, picking_tasks, business_archiver, reservation_archiver = _setup_service()
+    service, _, worklines, picking_tasks, business_archiver = _setup_service()
     worklines.get_for_update.return_value = None
     with pytest.raises(WorkLineArchiveNotFoundError):
         await service.archive_open_work(object(), workline_id=7, version=4)
@@ -119,7 +108,6 @@ async def test_archive_open_work_rejects_missing_or_stale_workline() -> None:
 
     picking_tasks.archive_open_for_workline.assert_not_awaited()
     business_archiver.archive_open_work.assert_not_awaited()
-    reservation_archiver.archive_active_for_workline.assert_not_awaited()
 
 
 def _setup_single_task_service(
@@ -150,8 +138,6 @@ def _setup_single_task_service(
     picking_tasks.archive_single.return_value = None
     business_archiver = AsyncMock()
     business_archiver.archive_open_work.return_value = 0
-    reservation_archiver = AsyncMock()
-    reservation_archiver.archive_active_for_workline.return_value = 0
     plugin = SimpleNamespace(
         plugin_key="manual-picking",
         plugin_version="1.0.0",
@@ -161,19 +147,18 @@ def _setup_single_task_service(
         plugins=(plugin,),
         workline_repository=worklines,
         picking_task_repository=picking_tasks,
-        reservation_archiver=reservation_archiver,
     )
     task = SimpleNamespace(
         id=task_pk,
         workline_id=task_workline_id,
         status=task_status,
     )
-    return service, workline, worklines, picking_tasks, business_archiver, reservation_archiver, task
+    return service, workline, worklines, picking_tasks, business_archiver, task
 
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_archives_single_executing_task_and_bumps_version() -> None:
-    service, workline, worklines, picking_tasks, _, _, task = _setup_single_task_service()
+    service, workline, worklines, picking_tasks, _, task = _setup_single_task_service()
     picking_tasks.get_by_id_for_update.return_value = task
     db = object()
     archived_at = datetime(2026, 9, 19, 3, 30, tzinfo=UTC)
@@ -195,7 +180,7 @@ async def test_archive_picking_task_archives_single_executing_task_and_bumps_ver
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_by_business_task_id_uses_advisory_lock() -> None:
-    service, _, _, picking_tasks, _, _, task = _setup_single_task_service()
+    service, _, _, picking_tasks, _, task = _setup_single_task_service()
     picking_tasks.get_by_task_id_for_update.return_value = task
     db = object()
 
@@ -209,7 +194,7 @@ async def test_archive_picking_task_by_business_task_id_uses_advisory_lock() -> 
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_rejects_cross_workline_task_with_not_found() -> None:
-    service, _, _, picking_tasks, _, _, task = _setup_single_task_service(task_workline_id=999)
+    service, _, _, picking_tasks, _, task = _setup_single_task_service(task_workline_id=999)
     picking_tasks.get_by_id_for_update.return_value = task
     db = object()
 
@@ -231,7 +216,7 @@ async def test_archive_picking_task_rejects_cross_workline_task_with_not_found()
 async def test_archive_picking_task_rejects_invalid_status_with_invalid_state_error(
     status_value: PickingTaskStatus,
 ) -> None:
-    service, _, _, picking_tasks, _, _, task = _setup_single_task_service(task_status=status_value)
+    service, _, _, picking_tasks, _, task = _setup_single_task_service(task_status=status_value)
     picking_tasks.get_by_id_for_update.return_value = task
     db = object()
 
@@ -243,7 +228,7 @@ async def test_archive_picking_task_rejects_invalid_status_with_invalid_state_er
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_rejects_stale_workline_version() -> None:
-    service, _, worklines, picking_tasks, _, _, _ = _setup_single_task_service()
+    service, _, worklines, picking_tasks, _, _ = _setup_single_task_service()
     worklines.get_for_update.return_value = SimpleNamespace(version=5)
     db = object()
 
@@ -255,7 +240,7 @@ async def test_archive_picking_task_rejects_stale_workline_version() -> None:
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_rejects_missing_workline() -> None:
-    service, _, worklines, picking_tasks, _, _, _ = _setup_single_task_service()
+    service, _, worklines, picking_tasks, _, _ = _setup_single_task_service()
     worklines.get_for_update.return_value = None
     db = object()
 
@@ -276,7 +261,7 @@ async def test_archive_picking_task_rejects_missing_workline() -> None:
 async def test_archive_picking_task_rejects_ambiguous_or_missing_identifier(
     picking_task_id: int | None, task_id: str | None
 ) -> None:
-    service, _, _, picking_tasks, _, _, _ = _setup_single_task_service()
+    service, _, _, picking_tasks, _, _ = _setup_single_task_service()
     db = object()
 
     with pytest.raises(ValueError, match="二选一"):
@@ -289,7 +274,7 @@ async def test_archive_picking_task_rejects_ambiguous_or_missing_identifier(
 
 @pytest.mark.asyncio
 async def test_archive_picking_task_rejects_nonexistent_task_with_not_found() -> None:
-    service, _, _, picking_tasks, _, _, _ = _setup_single_task_service()
+    service, _, _, picking_tasks, _, _ = _setup_single_task_service()
     picking_tasks.get_by_id_for_update.return_value = None
     db = object()
 

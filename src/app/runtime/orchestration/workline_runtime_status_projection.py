@@ -13,7 +13,7 @@ from src.core.mixins.base import BaseMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
-RUNTIME_SCHEMA = SchemaType.RUNTIME.value
+BIZ_SCHEMA = SchemaType.BIZ.value
 
 
 class WorkLineRuntimeStatus(str, Enum):
@@ -29,7 +29,7 @@ class WorklineRuntimeStatusProjection(BaseMixin, table=True):
     """Runtime/orchestration-owned WorkLine status projection."""
 
     __tablename__ = "workline_runtime_status_projections"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__: ClassVar[tuple[Any, ...]] = (
         Index(
             "ux_wrt_status_proj_workline",
@@ -44,7 +44,7 @@ class WorklineRuntimeStatusProjection(BaseMixin, table=True):
             "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'RECONCILING')",
             name="ck_wrt_status_proj_status",
         ),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)

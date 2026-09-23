@@ -11,8 +11,6 @@ from src.app.wms_integration.outbound_picking.repositories.picking_task_reposito
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_archive_service import WorkLineArchiveService
-from src.app.workline_integration_debug.models import IntegrationRun
-from src.app.workline_integration_debug.repository import IntegrationRunRepository
 from src.utils.timezone import timezone
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
@@ -24,7 +22,6 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
         engine = create_async_engine(database_url)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         repository = PickingTaskRepository()
-        integration_runs = IntegrationRunRepository()
         try:
             async with sessions.begin() as db:
                 line = WorkLine(
@@ -80,20 +77,7 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
                     issued_evidence_id=evidences[2].id,
                     workline_id=line.id,
                 )
-                run = IntegrationRun(
-                    run_id="archive-active-run",
-                    workline_id=line.id,
-                    workline_code=line.line_code,
-                    scenario_key="manual_outbound_picking@v1",
-                    expected_plugin_key="manual-picking",
-                    profile="CONTRACT_SIMULATION",
-                    environment_label="test",
-                    operator_user_id=1,
-                    active_scope=f"WORKLINE:{line.id}",
-                    status="ACTIVE",
-                    current_phase="TASK_PREPARE",
-                )
-                db.add_all((active, completed, queued, run))
+                db.add_all((active, completed, queued))
                 await db.flush()
                 line_id, line_version, active_id, completed_id, queued_id = (
                     line.id,
@@ -106,17 +90,14 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
             async with sessions.begin() as db:
                 result = await WorkLineArchiveService(
                     plugins=(),
-                    reservation_archiver=integration_runs,
                 ).archive_open_work(
                     db,
                     workline_id=line_id,
                     version=line_version,
                 )
-                assert result.archived_total == 3
+                assert result.archived_total == 2
                 assert result.archived_picking_tasks == 2
-                assert result.archived_integration_runs == 1
                 assert not await repository.has_active_for_workline(db, line_id)
-                assert await integration_runs.get_active_for_workline(db, line_id) is None
                 summary = await WorkLineRepository().get_unfinished_workload_summary(db, line_id)
                 assert summary["by_type"]["picking_tasks"] == 0
                 claimed = await repository.claim_next_queued(
@@ -132,9 +113,5 @@ async def test_archive_releases_workline_for_next_queued_picking_task() -> None:
                 completed_persisted = await db.get(PickingTask, completed_id)
                 assert completed_persisted is not None
                 assert completed_persisted.status == PickingTaskStatus.ARCHIVED
-                archived_run = await integration_runs.get_run(db, "archive-active-run")
-                assert archived_run is not None
-                assert archived_run.status == "ARCHIVED"
-                assert archived_run.active_scope is None
         finally:
             await engine.dispose()
