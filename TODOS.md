@@ -34,29 +34,6 @@ PostgreSQL 并发验证通过。
 
 **Priority:** P1
 
----
-
----
-
-### workline_integration_debug 补充 drain operation 调试支持
-
-**What:** `IntegrationDebugService`（`src/app/workline_integration_debug/service.py`）已为
-`PICKING_TASK_PREPARE`、`BIN_INBOUND_BATCH`、`BIN_RETURN_BATCH`、`RACK_DEPARTURE`、
-`RETURN_RACK_ARRIVAL_REPORT`、`COMPLETION_CONFIRM` operation 提供专门的手工模拟/推进分支；
-`workline.return_buffer.drain_rack_decide@v1`（Issue #254）尚未接入，工程师无法用现有调试工具手工驱动排空决定。
-
-**Why:** 缺少调试面板支持不影响生产行为，但会让排空场景的人工验证、演示和现场排障只能依赖真实 WMS 对接或直接读写数据库。
-
-**Context:** 该工具及 `v1/runs.py` 在 Issue #254 中未改动；补充时需先读懂现有 `IntegrationDebugPhase`/`IntegrationRunStatus`
-状态机约定，复用而非新建一套调试状态机。
-
-**Effort:** S
-
-**Priority:** P3
-
-**Depends on:** Issue #254 的排空公共合同与任务完成分支已稳定（已满足）。
-
----
 
 ### WorkLine 角色与拓扑设备绑定向导
 

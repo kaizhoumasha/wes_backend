@@ -2763,17 +2763,20 @@ heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.p
 source_glob = "src/core/transaction_wakeup.py"
 heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py"]
 
-# 临时人工出库联调能力由运行记录 schema 与 WMS Evidence 事务分别承接。
 [[mapping]]
 source_glob = "src/app/workline_integration_debug/**"
 heavy_tests = [
-    "tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "migrations/versions/20260909_0624_133712f6a89a_add_manual_outbound_integration_runs.py"
-heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_retirement_schema_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_retirement_schema_postgresql.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py"
@@ -2897,7 +2900,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "migrations/versions/20260912_0600_b7da7ecdc74b_remove_manual_bin_completion_apply_.py"
-heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_retirement_schema_postgresql.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260912_1256_fa4f7c135230_remove_transport_resource_ownership.py"

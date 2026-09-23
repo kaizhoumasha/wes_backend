@@ -41,6 +41,7 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260918_1350_496bdbaaff26_restore_inbound_evidence_wms_and_device_.py",
         "migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_face_completions_table.py",
         "migrations/versions/20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py",
+        "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "e5120e17cfea3aafa26ef51d1e4429a2c09117c7443f3cc316b01e6c55cc291a"

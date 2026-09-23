@@ -1,14 +1,26 @@
 """空装配与显式插件选择的基础合同，不导入具体业务插件。"""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from deployment.plugin_composition import build_deployment_runtime
+from deployment.plugin_composition import CombinedWorkLineConfirmationOwner, build_deployment_runtime
 from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.dispatch import WmsDispatchCode
 from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
 from tests.contracts.wms_adapter.inbound_material.support import OPERATION_ID, _digest, _request, _response, _Transport
+
+
+@pytest.mark.asyncio
+async def test_combined_workline_owner_preserves_existing_owner_order() -> None:
+    first = SimpleNamespace(validate_owner=AsyncMock(return_value=False))
+    second = SimpleNamespace(validate_owner=AsyncMock(return_value=True))
+    owner = CombinedWorkLineConfirmationOwner(first, second)
+
+    assert await owner.validate_owner(object(), workline_id=7, request_payload={}) is True
+    first.validate_owner.assert_awaited_once()
+    second.validate_owner.assert_awaited_once()
 
 
 def test_empty_composition_builds_core_without_a_business_handler() -> None:

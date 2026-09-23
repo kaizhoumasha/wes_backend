@@ -88,3 +88,16 @@ async def test_retirement_migration_rejects_existing_evidence_without_changing_i
             assert await connection.fetchval("SELECT to_regclass('wes_biz.line_run_epochs')") is not None
         finally:
             await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_outbound_run_tables_are_retired() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "334c5ca5b81d", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, "334c5ca5b81d")
+            assert await connection.fetchval("SELECT to_regclass('wes_runtime.workline_integration_runs')") is None
+            assert await connection.fetchval("SELECT to_regclass('wes_runtime.workline_integration_run_steps')") is None
+        finally:
+            await connection.close()

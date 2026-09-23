@@ -26,13 +26,12 @@ related:
 | operation | 原身份自动重试 | 新业务身份与 supersession | 现行接收/应用路径 | T4 边界 |
 | --- | --- | --- | --- | --- |
 | outbound.bin.return_batch@v1 | 响应未知或 UNAVAILABLE 保持原 operation_id、timestamp 和冻结正文 | §9.2.2 的 NO_BATCH 已结束本次决策；到期/有效新事件后用新 operation_id、当前 FIFO 候选重新决策；不作废旧响应 | WES BinReturnBatchAdapter → WMS decisions；READY 后才建 Transport | NO_BATCH 持久退避及取消原槽位兜底可实现；确定 409/422 或已保存错误决策的机器纠正/作废合同未找到，相关子切片 BLOCKED |
-| outbound.picking_task.prepare@v1 | §7.2 响应未知/UNAVAILABLE 保持原 identity 与正文；重复成功重放首次 202/PREPARE_ACCEPTED | 同 task_id 只能成功准备一次，不能自行换 identity 或 WorkLine；现有联调 retry 依赖人工确认原 prepare 已被 WMS 作废 | PickingTaskPrepareCoordinator → WmsConfirmation → PickingTaskPrepareAdapter → WMS decisions；WMS 后续 plan_delta 进入唯一 events | 历史负载与新准入分离可实现；确定错误后的机器作废证据及新 identity 授权未找到，相关子切片 BLOCKED |
+| outbound.picking_task.prepare@v1 | §7.2 响应未知/UNAVAILABLE 保持原 identity 与正文；重复成功重放首次 202/PREPARE_ACCEPTED | 同 task_id 只能成功准备一次，不能自行换 identity 或 WorkLine | PickingTaskPrepareCoordinator → WmsConfirmation → PickingTaskPrepareAdapter → WMS decisions；WMS 后续 plan_delta 进入唯一 events | 历史负载与新准入分离可实现；确定错误后的机器作废证据及新 identity 授权未找到，相关子切片 BLOCKED |
 | outbound.picking_task.plan_delta@v1 | 同 identity 同正文按原 Evidence 状态重放，不允许改正文 | §8.2.1 使用“新 identity + 严格期望下一 revision”的修正形态；保持 task_id、来源及不可变业务字段 | 正常 record/replay 自动重新校验合法修正并原子应用；无管理员 apply-correction | 已实现并完成聚焦 FAST；不跳版本，不把 prepare/return_batch 缺口当已闭合，真实 PostgreSQL/WMS 验收仍待执行 |
 
 代码中的 WmsConfirmationLifecycleService.supersede_after_wms_void 只接受无确定响应的 RECONCILING；
 已有 response_evidence_id、response_result 或 completed_at 时拒绝替换。
-IntegrationDebugService.retry_wms_action 的 wms_original_prepare_voided_confirmed 是人工输入，
-不是 WMS machine callback，不可自动填 true，不可扩大为任意响应替换 API。
+人工输入不能充当 WMS 作废原请求的机器证据，不可扩大为任意响应替换 API。
 
 以上 BLOCKED 只约束缺失合同的确定响应纠正子切片及整体业务完成声明，不阻止 T1–T3、本节其余 T4 和 T5 的本地工作。
 503 安全续送、NO_BATCH 新请求、plan_delta 自动修正分别验证，互不代替。

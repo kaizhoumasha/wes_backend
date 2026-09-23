@@ -299,7 +299,7 @@ PDA 全部内部逻辑归属 WMS。
 
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
-| `data.task_id` | 是 | 出库合同 Identifier | 当前执行上下文已绑定的任务；联调台必须与 Run 的任务一致，不根据实际料箱猜测任务 |
+| `data.task_id` | 是 | 出库合同 Identifier | 当前执行上下文已绑定的任务；必须与 WorkLine/PickingTask 关联一致，不根据实际料箱猜测任务 |
 | `data.bin_code` | 是 | 出库合同 Identifier | point2 SCAN 读取的当前实际料箱；WES 不发送预期 Bin，也不在本地做错箱比较 |
 | `data.scanned_at` | 是 | positive integer / UTC Unix 毫秒 | point2 有效扫码和到位事实的设备发生时间；不得晚于信封 `timestamp` |
 
@@ -326,7 +326,7 @@ WES 不查询 Cell、不验证预期 Bin，也不把 `NO_WORK` 解释为 NG。
 
 联调升级：已冻结的不含 `task_id` 的旧请求不得原地补字段或沿用原 `operation_id` 发送新正文。先停止原可靠义务的重试，
 核对 WMS 原请求未形成有效业务决定；按明确的人工恢复流程保留原请求及响应证据、关联替换关系，再以新 identity
-发出包含 `task_id` 的请求。响应未知或已有有效决定时不得据此换 ID 重发；当前联调台不宣称已支持该替换入口。
+发出包含 `task_id` 的请求。响应未知或已有有效决定时不得据此换 ID 重发；该替换入口尚未实现。
 
 ### 5\.2 `outbound.manual_bin.work_completed@v1` {#52-outboundmanual_binwork_completedv1}
 
@@ -416,9 +416,7 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存本地应用状态。早到、绑定不匹配或结果冲突进入本地
 `RECONCILING`，保留原 identity 与证据，不下发方向命令，也不创建额外上报义务。
 
-联调台中，`WORK_REQUIRED` 的 point2 释放成功经原动作证据确认后，在同一事务把匹配的 completion evidence 标为
-`APPLIED`、保存处理时间并推进到 `POINT3_ROUTE`；`NO_WORK` 直接按释放结果推进，不要求完成通知。
-插件自动执行仍需分别记录完成事实应用、稳定命令创建和物理完成，不能用手工联调通过替代 handler 全流程验收。
+插件自动执行分别记录完成事实应用、稳定命令创建和物理完成；`NO_WORK` 按释放结果推进，不要求完成通知。
 
 已有旧阶段 Run 和未闭合上报义务应在升级前逐项核对；接口退役不允许覆盖历史证据或重新触发物理动作。
 
@@ -653,7 +651,7 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 - point2 扫描实际 Bin → `work_admission_decide`；`WORK_REQUIRED` 停留并开放人工操作，`NO_WORK` 正常直通，`WAIT` 停留重求值，响应未知时用原 identity 重试；
 - `NORMAL`：公共 WMS Event 入口 → evidence → worker → 插件应用 → 唯一 DeviceCommand → 正常返库路径；
 - `NG`：同一公共入口和 worker 链路 → `MANUAL_PICK_NG` 证据 → NG 物理路径，不提前关闭执行；
-- completion evidence 的 `APPLIED/RECONCILING` 保存在 WES；联调台释放确认与 `APPLIED`、阶段推进同事务提交，不创建 WMS 上报义务；
+- completion evidence 的 `APPLIED/RECONCILING` 保存在 WES；插件应用完成事实时不创建 WMS 上报义务；
 - 原 `operation_id` 重放与换新 ID 的同结果业务重复均不产生第二个 DeviceCommand；
 - worker 在 evidence 已提交后重启，仍使用原 evidence 和原执行身份继续收敛，不丢消息、不换身份重发。
 
@@ -720,11 +718,9 @@ WmsConfirmation 使用 `material_execution_id`、`picking_task_id` 或 `workline
 PickingTask 保存业务状态和 WorkLine 绑定，不复制 operation、payload、attempt 或 Evidence 字段；响应沿既有
 `WmsConfirmation.response_evidence_id` 追溯。所有未闭合义务及待应用 Evidence 阻止 WorkLine 停用或切换。
 
-当前临时联调台仅绑定 WorkLine `KT16`，发送 prepare 时 WES 工作线代码与 WMS 请求中的
-`data.workline_code` 均默认为 `KT16`。prepare 进入 `RECONCILING` 时，WMS 团队须先按原 `operation_id`
-作废或清理原请求，并确认该请求不会再计算或发送 `plan_delta`。管理员确认后，WES 保留旧请求及响应 Evidence，
-将旧 WmsConfirmation 标记为 `SUPERSEDED`，并使用新的 UUIDv7 `operation_id` 发送当前完整正文；即使参数未变化也不得复用旧身份。
-C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接受不同正文。
+prepare 进入 `RECONCILING` 时保留原请求与 Evidence，继续按原身份对账；未经 WMS 权威作废证据和新身份授权，
+不得将旧 WmsConfirmation 标记为 `SUPERSEDED` 或换 ID 重发。C# WMS 必须以 `(operation, operation_id)` 做幂等，
+同一身份不得接受不同正文。
 
 共享模型不增加人工结果、point2 或 PDA 字段。当前工位等待、`task_id + bin_code` 最终结果和动作关联仍由插件拥有，
 数据库约束和事务验证由共享 owner 测试承接，人工业务测试不重复基础可靠机制矩阵。

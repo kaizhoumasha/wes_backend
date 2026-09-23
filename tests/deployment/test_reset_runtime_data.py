@@ -121,7 +121,6 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
         ("wes_biz", "transport_decision_bindings"),
         ("wes_biz", "wms_confirmations"),
         ("wes_runtime", "transport_tasks"),
-        ("wes_runtime", "workline_integration_runs"),
         ("wes_runtime", "workline_runtime_status_projections"),
         ("wes_sys", "api_access_logs"),
     }.issubset(identities)

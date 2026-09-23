@@ -59,7 +59,6 @@ def build_execution_runtime(
     picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
     workline_owner: WorkLineConfirmationOwnerPort | None = None,
     workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None,
-    direct_result_owner: Callable[[AsyncSession, int, str], Awaitable[bool]] | None = None,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
 
@@ -78,7 +77,6 @@ def build_execution_runtime(
         follow_up_planner=wms_confirmation_follow_up_planner,
         picking_task_owner=picking_task_owner,
         workline_owner=workline_owner,
-        direct_result_owner=direct_result_owner,
     )
     applier = DecisionApplier(
         device_command_service=device_command_service,

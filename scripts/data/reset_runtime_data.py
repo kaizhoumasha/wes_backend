@@ -135,8 +135,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "transport_evidence",
             "transport_members",
             "transport_tasks",
-            "workline_integration_run_steps",
-            "workline_integration_runs",
             "workline_runtime_status_projections",
         )
     ),
