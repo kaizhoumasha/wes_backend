@@ -415,7 +415,10 @@ class TransportMemberOutcome:
         _ = require_transport_text(self.object_id, "object_id")
         if self.arrival_face is not None:
             validate_opaque_face(self.arrival_face, "arrival_face", error_type=TransportContractError)
-        if (self.final_position is None) == (self.position_unknown is False):
+        cancelled_without_position = (
+            self.failure_code == "RCS_TASK_REJECTED" and self.final_position is None and not self.position_unknown
+        )
+        if not cancelled_without_position and (self.final_position is None) == (self.position_unknown is False):
             raise TransportContractError("final_position xor position_unknown=true is required")
 
 

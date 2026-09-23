@@ -1506,6 +1506,67 @@ async def test_known_partial_failure_forms_failed_outcome_with_member_facts(db_e
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("final_position", [None, {"kind": "RACK_POSITION", "location_code": "KT16"}])
+async def test_cancelled_rack_result_maps_to_failed_with_optional_position(
+    db_engine: object, final_position: dict[str, str] | None
+) -> None:
+    publisher = RecordingPublisher()
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "510028",
+        RackPosition("WHE0710"),
+        RackPosition("KT16"),
+        "90",
+    )
+    payload = {
+        "kind": "RACK_MOVE",
+        "outcome_revision": 1,
+        "rack_id": "510028",
+        "status": "CANCELLED",
+    }
+    if final_position is not None:
+        payload["final_position"] = final_position
+    await record_valid_callback(
+        service,
+        operation_id=new_uuid7(),
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
+    )
+
+    assert await service.process_pending_evidence(1) == 1
+    assert await service.publish_pending_outcomes(1, publisher) == 1
+    task = await _load_task(db_engine, handle.transport_task_id)
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+        projection = await db.scalar(
+            select(PositionProjection).where(
+                PositionProjection.object_type == "RACK", PositionProjection.object_id == "510028"
+            )
+        )
+    assert (task.status, task.reason_code, task.last_applied_wms_outcome_revision) == (
+        "FAILED",
+        "RCS_TASK_REJECTED",
+        1,
+    )
+    assert member is not None
+    assert (member.status, member.final_position_json, member.position_unknown, member.failure_code) == (
+        "FAILED",
+        final_position,
+        False,
+        "RCS_TASK_REJECTED",
+    )
+    assert projection is None
+    assert publisher.outcomes[0].status.value == "FAILED"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("face_fields", [{}, {"arrival_face": None}, {"arrival_face": ""}, {"arrival_face": "270"}])
 @pytest.mark.parametrize("target_face", [None, "270"])
 async def test_ctu03_optional_arrival_persists_actual_face(

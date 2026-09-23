@@ -194,6 +194,20 @@ def _rack_result_data_schema() -> dict[str, object]:
             )
             for variant in cast("list[dict[str, Any]]", member_schema["oneOf"])
         ]
+        + [
+            _closed_object(
+                ["transport_task_id", "kind", "outcome_revision", "rack_id", "status"],
+                {
+                    **common_properties,
+                    "rack_id": _OBJECT_ID_SCHEMA,
+                    "status": _literal("CANCELLED"),
+                    "final_position": _RACK_POSITION_SCHEMA,
+                    "position_unknown": {"not": {}},
+                    "failure_code": {"not": {}},
+                    "arrival_face": {"not": {}},
+                },
+            )
+        ]
     }
 
 

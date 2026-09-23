@@ -51,7 +51,8 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
 - 同步 submit 直接返回 `422 / REJECTED`；线上 `reason_code` 尚未与 RCS/WMS 确认最终枚举值，暂不计入 §4.2 已批准
   的封闭 `reason_code` 列表，见本节末 TODO。
 - 已接纳（`202 / RECEIVED` → `ACCEPTED`）后 RCS 主动取消，经 `transport.task.resulted@v1` 以
-  `status=FAILED + failure_code=RCS_TASK_REJECTED` 报告；该码已在 §5.3 封闭列表内，语义对齐，无需新增。
+  `status=CANCELLED` 报告。`final_position` 可选；提供时必须为权威 `RACK_POSITION`。WES 将该 wire 分支归一化为内部
+  `FAILED + failure_code=RCS_TASK_REJECTED`，不新增内部 Transport 状态。
 
 两条路径都不改变 §4.1.1、§4.3 已批准的设计：`REJECTED`/`FAILED` 均为不可变终态，Transport 核心不实现指数退避，
 不在原 `transport_task_id`/`operation_id` 上重提。业务如需针对同一目标继续搬运，必须由调用方（工作线插件/业务

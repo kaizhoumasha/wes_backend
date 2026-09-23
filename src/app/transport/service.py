@@ -1741,7 +1741,7 @@ class TransportService:
         task.updated_at = now
         await self._invalidate_other_task_positions(db, task, member)
 
-    async def _apply_result_evidence(
+    async def _apply_result_evidence(  # noqa: PLR0912
         self,
         db: AsyncSession,
         task: TransportTask,
@@ -1804,17 +1804,26 @@ class TransportService:
         await self._lock_projection_authority_root(db, task)
 
         now = timezone.now_for_db()
-        validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome]] = []
+        validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome, bool]] = []
         any_unknown = False
         any_failed = False
         for member in members:
             result = results[member.object_id]
             status = result.get("status")
+            cancelled = status == "CANCELLED"
             has_position = isinstance(result.get("final_position"), dict)
             position_unknown = result.get("position_unknown") is True
-            if has_position == position_unknown or status not in {"SUCCEEDED", "FAILED"}:
+            if cancelled:
+                if (
+                    task.kind not in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
+                    or position_unknown
+                    or result.get("failure_code") is not None
+                    or result.get("arrival_face") is not None
+                ):
+                    raise TransportContractError("invalid cancelled rack result")
+            elif has_position == position_unknown or status not in {"SUCCEEDED", "FAILED"}:
                 raise TransportContractError("invalid member result position or status")
-            failure_code = result.get("failure_code")
+            failure_code = "RCS_TASK_REJECTED" if cancelled else result.get("failure_code")
             if status == "SUCCEEDED" and (not has_position or failure_code is not None):
                 raise TransportContractError("invalid successful member result")
             if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
@@ -1830,19 +1839,19 @@ class TransportService:
                 failure_code=failure_code,
                 arrival_face=arrival_face,
             )
-            validated_results.append((member, result, outcome))
+            validated_results.append((member, result, outcome, cancelled))
             any_unknown |= position_unknown
-            any_failed |= status == "FAILED"
+            any_failed |= status in {"FAILED", "CANCELLED"}
 
         outcomes: list[TransportMemberOutcome] = []
         # 按对象稳定顺序锁定聚合写入；不跨 HTTP，也不参与独立任务准入。
         for member in sorted(members, key=lambda item: (item.object_type, item.object_id)):
             await self._repository.lock_position_result(db, member.object_type, member.object_id)
-        for member, result, outcome in validated_results:
-            status = result["status"]
+        for member, result, outcome, cancelled in validated_results:
+            status = "FAILED" if cancelled else result["status"]
             final_position = result.get("final_position")
             position_unknown = result.get("position_unknown") is True
-            failure_code = result.get("failure_code")
+            failure_code = "RCS_TASK_REJECTED" if cancelled else result.get("failure_code")
             arrival_face = result.get("arrival_face")
             member.status = status
             member.final_position_json = final_position
@@ -1851,16 +1860,17 @@ class TransportService:
             member.arrival_face = arrival_face
             member.last_operation_id = evidence.operation_id
             member.updated_at = now
-            await self._apply_member_position_projection(
-                db,
-                task,
-                member,
-                evidence,
-                position_json=final_position,
-                position_unknown=position_unknown,
-                arrival_face=arrival_face,
-                updated_at=now,
-            )
+            if not cancelled or final_position is not None:
+                await self._apply_member_position_projection(
+                    db,
+                    task,
+                    member,
+                    evidence,
+                    position_json=final_position,
+                    position_unknown=position_unknown,
+                    arrival_face=arrival_face,
+                    updated_at=now,
+                )
             outcomes.append(outcome)
 
         if any_unknown:

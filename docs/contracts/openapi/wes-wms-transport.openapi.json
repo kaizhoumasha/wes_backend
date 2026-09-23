@@ -495,6 +495,81 @@
                               "transport_task_id",
                               "kind",
                               "outcome_revision",
+                              "rack_id",
+                              "status"
+                            ],
+                            "properties": {
+                              "transport_task_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 80,
+                                "pattern": ".*\\S.*"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "RACK_MOVE",
+                                  "RACK_ROTATE"
+                                ]
+                              },
+                              "outcome_revision": {
+                                "type": "integer",
+                                "format": "int64",
+                                "minimum": 1,
+                                "maximum": 9223372036854775807
+                              },
+                              "rack_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100,
+                                "pattern": ".*\\S.*"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "CANCELLED"
+                                ]
+                              },
+                              "final_position": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "required": [
+                                  "kind",
+                                  "location_code"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "RACK_POSITION"
+                                    ]
+                                  },
+                                  "location_code": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 100,
+                                    "pattern": ".*\\S.*"
+                                  }
+                                }
+                              },
+                              "position_unknown": {
+                                "not": {}
+                              },
+                              "failure_code": {
+                                "not": {}
+                              },
+                              "arrival_face": {
+                                "not": {}
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "required": [
+                              "transport_task_id",
+                              "kind",
+                              "outcome_revision",
                               "results"
                             ],
                             "properties": {
