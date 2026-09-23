@@ -101,3 +101,55 @@ async def test_manual_outbound_run_tables_are_retired() -> None:
             assert await connection.fetchval("SELECT to_regclass('wes_runtime.workline_integration_run_steps')") is None
         finally:
             await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_outbound_retirement_rejects_existing_run() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "1d298eb00cc4", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            workline_id = await connection.fetchval(
+                """
+                INSERT INTO wes_biz.work_lines (
+                    created_at, line_code, line_name, line_type, runtime_config_json,
+                    run_mode, diagnostic_profile, device_contracts, position_bindings, is_active
+                ) VALUES (
+                    CURRENT_TIMESTAMP, 'RETIREMENT-TEST', 'Retirement test', 'AUTO',
+                    '{}'::json, 'AUTO', '{}'::json, '{}'::json, '{}'::json, FALSE
+                ) RETURNING id
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.workline_integration_runs (
+                    id, created_at, run_id, workline_id, workline_code, scenario_key,
+                    expected_plugin_key, profile, environment_label, operator_user_id,
+                    active_scope, status, current_phase, configuration_json,
+                    wms_cleanup_confirmed, site_cleanup_confirmed
+                ) VALUES (
+                    1, CURRENT_TIMESTAMP, 'retirement-existing-run', $1, 'RETIREMENT-TEST',
+                    'manual_outbound_picking@v1', 'manual_picking', 'CONTRACT_SIMULATION',
+                    'test', 1, 'RETIREMENT-TEST', 'CREATED', 'BIND_TASK', '{}'::json,
+                    FALSE, FALSE
+                )
+                """,
+                workline_id,
+            )
+            before = await connection.fetchrow(
+                "SELECT * FROM wes_runtime.workline_integration_runs WHERE run_id = 'retirement-existing-run'"
+            )
+            with pytest.raises(subprocess.CalledProcessError) as rejected:
+                run_alembic("upgrade", "334c5ca5b81d", database_url=database_url)
+            assert "人工出库联调 run 尚有记录，拒绝删除运行表" in rejected.value.stderr
+            await assert_database_head(connection, "1d298eb00cc4")
+            after = await connection.fetchrow(
+                "SELECT * FROM wes_runtime.workline_integration_runs WHERE run_id = 'retirement-existing-run'"
+            )
+            assert after == before
+            assert (
+                await connection.fetchval("SELECT to_regclass('wes_runtime.workline_integration_run_steps')")
+                is not None
+            )
+        finally:
+            await connection.close()

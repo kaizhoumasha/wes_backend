@@ -22,6 +22,12 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     connection = op.get_bind()
+    connection.execute(
+        sa.text(
+            "LOCK TABLE wes_runtime.workline_integration_runs, "
+            "wes_runtime.workline_integration_run_steps IN ACCESS EXCLUSIVE MODE"
+        )
+    )
     if connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM wes_runtime.workline_integration_runs)")):
         raise RuntimeError("人工出库联调 run 尚有记录，拒绝删除运行表")
     op.drop_table("workline_integration_run_steps", schema="wes_runtime")
