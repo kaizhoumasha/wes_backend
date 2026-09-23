@@ -88,19 +88,20 @@ def test_repository_latest_filters_by_task_rack_and_arrival_operation() -> None:
 
     import asyncio
 
-    asyncio.run(repository.latest(db, 11, "RACK-1"))
+    asyncio.run(repository.latest(db, 11, "RACK-1", "TRANSPORT-1"))
 
     sql = captured["sql"]
     assert "picking_task_id" in sql
     assert OPERATION in sql
     assert "RACK-1" in sql
+    assert "TRANSPORT-1" in sql
 
 
 @pytest.mark.asyncio
 async def test_reader_returns_none_when_no_original_confirmation_exists() -> None:
     reader, repository = _reader(None)
 
-    assert await reader.latest(object(), 11, "RACK-1") is None
+    assert await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1") is None
     repository.evidence.assert_not_awaited()
 
 
@@ -116,7 +117,7 @@ async def test_reader_rejects_confirmation_request_identity_drift(confirmation) 
     reader, repository = _reader(confirmation)
 
     with pytest.raises(ValueError, match="request identity"):
-        await reader.latest(object(), 11, "RACK-1")
+        await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1")
     repository.evidence.assert_not_awaited()
 
 
@@ -124,7 +125,7 @@ async def test_reader_rejects_confirmation_request_identity_drift(confirmation) 
 async def test_reader_keeps_non_completed_confirmation_without_reading_result_evidence() -> None:
     reader, repository = _reader(_confirmation(status=WmsConfirmationStatus.PENDING))
 
-    snapshot = await reader.latest(object(), 11, "RACK-1")
+    snapshot = await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1")
 
     assert snapshot is not None
     assert snapshot.status is WmsConfirmationStatus.PENDING
@@ -149,7 +150,7 @@ async def test_reader_rejects_result_evidence_identity_drift(evidence) -> None: 
     reader, _ = _reader(_confirmation(), evidence)
 
     with pytest.raises(ValueError, match="evidence identity"):
-        await reader.latest(object(), 11, "RACK-1")
+        await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1")
 
 
 @pytest.mark.asyncio
@@ -165,7 +166,7 @@ async def test_reader_rejects_unapproved_or_drifting_completed_result(evidence, 
     reader, _ = _reader(_confirmation(), evidence)
 
     with pytest.raises(ValueError, match=message):
-        await reader.latest(object(), 11, "RACK-1")
+        await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1")
 
 
 @pytest.mark.asyncio
@@ -174,7 +175,7 @@ async def test_reader_decodes_recorded_outcome_and_evidence_id() -> None:
     evidence = _evidence()
     reader, _ = _reader(confirmation, evidence)
 
-    snapshot = await reader.latest(object(), 11, "RACK-1")
+    snapshot = await reader.latest(object(), 11, "RACK-1", "TRANSPORT-1")
 
     assert snapshot is not None
     assert snapshot.outcome is not None

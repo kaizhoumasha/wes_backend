@@ -80,6 +80,7 @@ async def test_existing_inbound_batch_dispatches_without_plugins_and_replays_wit
                 wms_operations.outbound_bin_inbound_batch(
                     operation_id=operation_id,
                     task_id=task.task_id,
+                    plan_revision=1,
                     rack_id="SOURCE-RACK-01",
                     rack_face="A",
                 ),

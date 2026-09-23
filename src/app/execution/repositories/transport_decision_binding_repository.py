@@ -106,6 +106,19 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
         )
         return {str(resource_id) for resource_id in result.all()}
 
+    async def list_task_member_bindings(
+        self, db: AsyncSession, *, workline_id: int, picking_task_id: int, steps: tuple[str, ...]
+    ) -> set[tuple[int, str]]:
+        columns = cast("Any", TransportDecisionBinding).__table__.c
+        result = await db.execute(
+            select(columns.source_evidence_id, columns.resource_fence_id).where(
+                columns.workline_id == workline_id,
+                columns.picking_task_id == picking_task_id,
+                columns.step.in_(steps),
+            )
+        )
+        return {(int(evidence_id), str(rack_id)) for evidence_id, rack_id in result.all()}
+
     async def add(
         self,
         db: AsyncSession,

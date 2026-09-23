@@ -537,10 +537,11 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 3. WMS 提供各 WorkLine 的任务优先序，人工调整通过队列更新完成。每条线只领取 issued 指定给自己的最高优先级任务，其他空闲线不得抢占。
    暂不可执行的前序任务不阻塞该线后续可执行任务；同一工作线不提前启动后继任务，WES 不提供人工启动入口。WES 按所属插件的动作优先级、设备忙闲、
    Transport 事实和目标面安排节拍，RCS 负责车辆路径、拥堵和避让。
-4. 每条 WorkLine 只有一台 CTU，入站和退箱批次串行；五层来源架的每个 `rack_id + rack_face` 单独记录。
-   WES 对每个已确定来源货架创建一次稳定身份的 CTU01，不用 `workline_positions.capacity`、其他货架的 Transport 状态或离场状态裁决物理准入。
+4. 每条 WorkLine 只有一台 CTU，入站和退箱批次串行；五层来源成员按 `task_id + plan_revision + rack_id + rack_face` 区分，同一架面在不同 revision 可再次安排。
+   WES 为当前有效成员创建有稳定身份的 CTU01；旧成员的 Action 不授权新成员，也不以 `workline_positions.capacity`、其他货架的 Transport 状态或离场状态裁决物理准入。
    RCS 负责 AGV 排队、自主进位和工作位互斥；当前架由原 CTU01/CTU02、成员成功结果与绑定工作位精确 rack/face 投影共同确认，不以计划顺序代替。只有该架的到位事实成立，才启动依赖它的投料/拣选步骤。
-   当前面首次到位即请求一次 `inbound_batch`，冻结完整最终清单并按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。
+   当前来源成员的货架面实际到位后，为该成员请求一次 `inbound_batch`，冻结完整最终清单并按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。
+   `inbound_batch` 请求、`PLAN_MEMBERS` 取消选择器和直接取料面完成事件均显式携带成员 `plan_revision`；旧成员结果不得满足或取消新成员。
    全部冻结分段与成员权威成功、结果发布且到达绑定 HANDOFF_POSITION 即 `feed_complete`；无分段的最终 `RACK_FACE_DONE` 同样完成。
    已冻结的相关义务先闭合；之后 feed_complete 立即驱动同架下一面 CTU02，或在所有面完成后请求
    `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03，不等待 SCAN、业务完成或回架。
@@ -548,11 +549,11 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    RETURN_BUFFER 为 WorkLine 跨任务 FIFO，WMS 对连续前缀分配当前权威 rack/face 的精确 slot，不要求原架原面；未冻结回架目标的 Bin 不锁定来源面。
    后续架有自己的精确到位证据即可推进，不等待旧架 CTU03 最终回调；原动作未知不允许换身份重发。
 5. CTU 可以乱序投箱。Bin 到达 SCAN2 后，WES 请求 Cell 工作计划。WMS 返回当前可执行成员，不下发 Cell 优先级或依赖图。
-   WES 根据现场资源安排执行顺序。
+   WES 按当前 Requirement 与已观察事实编排动作；设备物理接纳和互斥由 ECS/RCS 裁决。
 6. 设备取盘并扫描完整六合一码，`PkgID` 唯一标识当前料盘。WMS 返回 `ACCEPT | REJECT | WAIT`；`ACCEPT` 包含精确 SLOT 和需要的换面或换架模式，
    REPLACE 时旧架离场 destination 由独立 `outbound.rack.departure_decide@v1` 返回，`WAIT`
    包含原因和重试间隔。WES 从可靠位置投影取得新架来源，使用 WorkLine 固定工作位，并在相关事实变化后重新求值；本地技术
-   超时只暂停、告警并进入对账，不得生成业务拒绝。当前盘在扫码台等待 Transport 到位。目标机械臂成功 PUT 后，WES 提交
+   超时沿原 Action 身份和冻结请求自动恢复，不得生成业务拒绝；只有合同与权威 Evidence 不足以确定安全下一动作时才进入对账。当前盘在扫码台等待 Transport 到位。目标机械臂成功 PUT 后，WES 提交
    逐盘位置事实，由 WMS 更新物料位置、库存和目标占用。转运货架容量、规格兼容和目标决定属于 WMS。
    两个机械臂按不同 `device_code` 推进；ECS/PLC 硬件锁负责扫码台交接、防撞和动作互锁。没有安全暂存位时，硬件锁必须在
    下一盘离开来源前确认扫码台交接路径可用；WES 不建立扫码台事件或软件锁。
@@ -563,9 +564,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 7. 目标架、退料架和五层货架可以并行搬运。退料直接取料优先，但不会暂停没有资源冲突的 CTU 和 Bin 流。货架不再承担当前工作时，
    WES 请求 WMS 返回离场去向，再创建离场 TransportTask。WMS 可以用更高 `plan_revision` 发送当前任务尚未发布的正常计划，但不能
    撤销 `inbound_batch` 已选中的 Bin，也不能用当前任务的后续计划替换空取、NG 或 Transport 确定失败的任务明细。
-   Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；`READY.cell_ids[]` 首次接收后不可撤销、删减或改写。
-8. Transport 为 `UNKNOWN/RECONCILING` 时，只暂停受影响的任务明细。WES 等待同一 `transport_task_id` 的更高版本结果或人工核对。
-   Transport 确定失败时，WES 结束失败对象对应的业务任务明细，其他明细继续。尚未到达工作线的 Bin 不推进线内业务；
+   Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；当前 wire 的 `READY.cell_ids[]` 首次接收后不可撤销、删减或改写。同任务同箱可有多次 Passage，工作计划及后续 `BIN_CELL` 动作必须按本次 Passage/Work 关联；目标 wire 见[待确认修订提案](../integration/wms-joint-confirmation-automatic-picking.md)，不得把提案当作现行接口。
+8. Transport 请求或结果暂未知时，仅保留原身份、冻结请求和受影响明细的因果依赖，由可靠投递自动恢复；只有合同语义仍无法确定时进入 `RECONCILING`。
+   Transport 已明确终态后，插件根据原来源成员是否仍有效、目标事实是否已满足，决定停止或以新 Action 身份重试；其他明细继续。尚未到达工作线的 Bin 不推进线内业务；
    退回搬运失败时继续保留原搬运成员与位置证据，后续按确定位置人工处置，只有位置未知才由 Transport 保持 `RECONCILING`。
    WMS/RCS 产生并发送 Transport 结果，所以 WMS 可以直接
    统计没有满足的需求并创建新的 PickingTask。双方不增加 Transport 失败上报或 PickingTask 恢复接口，Transport 请求也不增加

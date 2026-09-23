@@ -13,10 +13,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.app.execution.models import InboundEvidence, TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
+from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelMembersData
 from src.app.wms_integration.outbound_picking.models import (
     DirectPickExecution,
     DirectPickFaceCompletion,
     PickingTaskBinSourceRack,
+)
+from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
+    PickingTaskCancelRepository,
 )
 
 
@@ -47,12 +51,13 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
         done = False
         result = sdk.BinInboundBatchRackFaceDone()
 
-        async def latest_inbound_detail(self, _db, *, workline_id, task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+        async def latest_inbound_detail(self, _db, *, workline_id, task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
+            assert plan_revision == 1
             assert (workline_id, task_id, rack_id, rack_face) == (7, "PICK-1", "R1", "90")
             return (
                 (
                     sdk.wms_operations.outbound_bin_inbound_batch(
-                        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+                        operation_id="batch-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
                     ),
                     sdk.BinInboundBatchOutcome(self.result),
                     SimpleNamespace(id=31),
@@ -143,6 +148,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             assert not await repository.ready_to_confirm(db, line, task)
             face_completion = DirectPickFaceCompletion(
                 picking_task_id=11,
+                plan_revision=1,
                 rack_id="R2",
                 rack_face="90",
                 completed_at=datetime(2026, 9, 14, 4),
@@ -151,6 +157,35 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             db.add(face_completion)
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
+            second_pick = DirectPickExecution(
+                picking_task_id=11,
+                rack_id="R2",
+                rack_face="90",
+                slot_id="S1",
+                plan_revision=2,
+                source_evidence_id=2,
+            )
+            db.add(second_pick)
+            await db.flush()
+            assert not await repository.ready_to_confirm(db, line, task)
+            matched, _ = await PickingTaskCancelRepository().cancel_members(
+                db,
+                task_id=11,
+                data=PickingTaskCancelMembersData.model_validate(
+                    {
+                        "task_id": "PICK-1",
+                        "cancel_scope": "PLAN_MEMBERS",
+                        "direct_pick_sources": [
+                            {"plan_revision": 2, "rack_id": "R2", "rack_face": "90", "slot_ids": ["S1"]}
+                        ],
+                    }
+                ),
+                evidence_id=3,
+            )
+            assert matched and second_pick.cancelled_evidence_id == 3
+            assert direct_pick.cancelled_evidence_id is None
+            assert await repository.ready_to_confirm(db, line, task)
+            await db.delete(second_pick)
             await db.delete(face_completion)
             await db.delete(direct_pick)
             history.done = False
@@ -219,7 +254,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             history.result = sdk.BinInboundBatchReady(
                 (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
             )
-            assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")).complete
+            assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).complete
             assert not await repository.ready_to_confirm(db, line, task)
     finally:
         await engine.dispose()
@@ -320,10 +355,11 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     class History:
-        async def latest_inbound_detail(self, _db, *, workline_id, task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+        async def latest_inbound_detail(self, _db, *, workline_id, task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
+            assert plan_revision == 1
             return (
                 sdk.wms_operations.outbound_bin_inbound_batch(
-                    operation_id="batch-1", task_id=task_id, rack_id=rack_id, rack_face=rack_face
+                    operation_id="batch-1", task_id=task_id, plan_revision=1, rack_id=rack_id, rack_face=rack_face
                 ),
                 sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone()),
                 SimpleNamespace(id=31),
@@ -381,6 +417,7 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
             db.add(
                 DirectPickFaceCompletion(
                     picking_task_id=11,
+                    plan_revision=1,
                     rack_id="RETURN-RACK-01",
                     rack_face="180",
                     completed_at=now,

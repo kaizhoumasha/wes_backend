@@ -319,6 +319,7 @@ async def test_bin_inbound_batch_passes_the_admin_selected_face() -> None:
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
         "data": {
             "task_id": "PICK-001",
+            "plan_revision": 1,
             "rack_id": "RACK-01",
             "rack_face": "90",
         },

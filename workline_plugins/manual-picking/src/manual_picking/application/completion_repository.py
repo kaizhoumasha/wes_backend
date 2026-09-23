@@ -55,6 +55,7 @@ class ManualPickingCompletionRepository:
                 ~select(completed.id)
                 .where(
                     completed.picking_task_id == direct.picking_task_id,
+                    completed.plan_revision == direct.plan_revision,
                     completed.rack_id == direct.rack_id,
                     completed.rack_face == direct.rack_face,
                 )
@@ -97,6 +98,7 @@ class ManualPickingCompletionRepository:
                 db,
                 line.id,
                 task.task_id,
+                source.plan_revision,
                 source.rack_id,
                 source.rack_face,
                 line.position_bindings["INLET"]["location_id"],

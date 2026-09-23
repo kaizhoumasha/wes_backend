@@ -295,27 +295,31 @@ WMS/WES 接口不传 WES 内部的 PickingTask、Bin、Material 或 DeviceComman
 - DirectPick 成员：`task_id + plan_revision + source_locator`
 - 五层来源货架面成员：`task_id + plan_revision + rack_id + rack_face`
 - 物理 Bin：`bin_code` 可重复使用；本次经过与完成结果须使用 Passage/准入 Action 身份，不能仅以 `task_id + bin_code` 判重
-- Cell：`task_id + bin_code + cell_id`
+- Cell：本次 Passage/Work + `cell_id`；当前 wire 尚缺少同任务同箱多次经过的确定关联，见 §9.3，不得仅凭 `task_id + bin_code + cell_id` 关联
 - 当前接料货架面：`task_id + rack_id + rack_face`
-- 一盘物料：`task_id + source_locator + PkgID`
+- 一盘直接取料物料：`task_id + plan_revision + source_locator + PkgID`；`BIN_CELL` 物料需要本次 Passage/准入 Action 关联，当前 wire 缺口见 §9.3
 
 来源成员在同一 revision 内不得重复；同一物理货架、货架面或储位可以由更高 revision 再次安排，形成新的成员。已接收成员本身不被改写；更高 revision 也不自动取消旧成员。
 
-### 6.1 跨 revision 来源成员：WMS/WES 联合优化要求（待实施）
+### 6.1 跨 revision 来源成员：本次实施切片与剩余合同缺口
 
-此处是已确认的**目标合同与实施缺口**，不是现有 wire 或生产代码已支持的声明。原始 `plan_delta` Evidence 保留完整计划，展开成员保留自己的 `plan_revision`、来源 Evidence 和取消 Evidence。WES 只用当前有效成员授权新 Action；历史成员仅解释原 Action/Evidence。相同 `operation_id` 的技术重试仍冻结原请求；新 revision 的同架需求必须形成新成员和新业务 Action 身份。业务重试只跟随原成员，不按 `rack_id` 接续到新成员。
+本切片已将计划成员唯一性、CTU01 提交身份、`inbound_batch`、`PLAN_MEMBERS` 取消和直接取料面完成事实绑定到 `plan_revision`；数据库变更需随迁移激活。物料决定与上报的 `RACK_SLOT` 成员关联仍是后续联合合同缺口，不能据此推定直接取料物料链已支持跨 revision 复用。原始 `plan_delta` Evidence 保留完整计划，展开成员保留自己的 `plan_revision`、来源 Evidence 和取消 Evidence。WES 只用当前有效成员授权新 Action；历史成员仅解释原 Action/Evidence。相同 `operation_id` 的技术重试仍冻结原请求；新 revision 的同架需求必须形成新成员和新业务 Action 身份。业务重试只跟随原成员，不按 `rack_id` 接续到新成员。
 
-联调实施前，WMS/WES 必须同步冻结并替换以下严格 DTO 与处理规则，不保留旧身份的兼容分支：
+本切片的严格 DTO 与剩余联合合同项如下，不保留旧身份的兼容分支：
 
-| 交互 | 必须落实的成员关联 |
-| --- | --- |
-| `plan_delta` 接收 | 同 revision 内按成员业务 key 排重；跨 revision 同架同面允许新增。`last_applied_plan_revision` 仅检查计划流连续性。 |
-| `inbound_batch` | 请求显式指向本次来源成员的 `plan_revision`；WMS 按该成员冻结清单或返回 `RACK_FACE_DONE`，WES 不以任务内历史同架结果代替本次结果。 |
-| `cancel` 的 `PLAN_MEMBERS` | 每个被取消来源须指向所属 `plan_revision`；取消 rev2/A 不影响 rev1/A。 |
-| `direct_pick_completed` 与其他成员级完成/结果 | 指向所属 revision 成员；响应仍按原 operation 身份可靠关联，不能让旧成员结果满足新成员。 |
-| CTU01 与业务重试 | Action/幂等身份绑定本次成员；rev1/A 已提交或完成不阻止 rev2/A，`CANCELLED` 后只评估原成员是否仍有效且目标未满足。物理接纳仍由 RCS 裁决。 |
+| 交互 API | 目标 JSON Path | 要求 |
+| --- | --- | --- |
+| `outbound.picking_task.plan_delta@v1` | `data.plan_revision`（已有） | 同 revision 内按成员业务 key 排重；跨 revision 同架同面允许新增。`last_applied_plan_revision` 仅检查计划流连续性。 |
+| `outbound.bin.inbound_batch@v1` | `data.plan_revision`（新增，必填） | 指向本次五层来源货架面成员；WMS 按该成员冻结清单或返回 `RACK_FACE_DONE`。 |
+| `outbound.picking_task.cancel@v1`，仅 `PLAN_MEMBERS` | `data.bin_source_racks[].plan_revision`、`data.direct_pick_sources[].plan_revision`（新增，所在选择器必填） | 每个选择器只取消所属 revision 的成员；`TASK` 取消不增加字段。 |
+| `outbound.manual_rack.direct_pick_completed@v1` | `data.plan_revision`（新增，必填） | 只结清该 revision 的直接取料货架面。 |
+| `outbound.material.decide@v1`、`outbound.source.empty_decide@v1`、`outbound.material.movement_report@v1` | `data.plan_revision`（新增；`source_locator.type=RACK_SLOT` 时必填） | 直接取料来源储位可能跨 revision 再次出现；物料决定、空取与结果上报必须指向同一来源成员。`BIN_CELL` 不以 revision 代替 Passage 身份；同任务同箱重复经过的 wire 关联仍待单独闭合。 |
 
-`inbound_batch`、取消和完成通知当前示例仍缺少该成员 revision 字段；必须在联合合同变更中确定字段位置、更新示例和 OpenAPI，再实现生产调用链。本节不授权 WES 猜测“最新 revision”或按任务/货架面自动归属结果。
+上述已实施的新增字段均为正整数，必须等于原 `plan_delta` 成员的 revision；同一可靠调用重提沿用原 `operation_id` 和冻结正文，响应仍按该 `operation_id` 关联原请求，不重复携带 revision。CTU01 和业务重试在 WES 内部以当前成员绑定 Action；rev1/A 已提交或完成不阻止 rev2/A，`CANCELLED` 后只评估原成员是否仍有效且目标未满足，物理接纳仍由 RCS 裁决。
+
+`return_rack.arrival_report` 是由 `transport_task_id` 标识的物理到位事实，同一事实可以供多个有效成员求值，不绑定单个 revision。`work_completed` 已以原准入 `admission_operation_id` 区分 Passage；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 已用 `last_applied_plan_revision` 作为计划流游标。这些交互不因本次来源成员修正而机械增加 `plan_revision`。`work_plan` 及其后续 `BIN_CELL` 决定/上报仍缺少同任务同箱多次经过的确定 wire 关联；单加 revision 不能解决同 revision 重复经过。
+
+表中前四项已同步严格 DTO、OpenAPI 中的入站事件和生产调用；第五项仍是**目标 wire**，不可作为已实现接口联调。本节不授权 WES 猜测“最新 revision”或按任务/货架面自动归属结果。
 
 联合验收至少覆盖：`T1/rev1/A/face1` 与 `T1/rev2/A/face1` 各有独立成员、Transport 和 `inbound_batch`；rev2 成员取消不影响 rev1；rev1 结果不能满足 rev2；相同计划消息原身份重放不新增成员；rev3 安排 B/C 后，已回到 B/C 的料箱可按新来源成员重新进入自动化流程。
 
@@ -424,10 +428,31 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
 
 - `TASK`：`data` 只允许 `task_id + cancel_scope`，适用于 `QUEUED | PREPARING`；任务进入 `CANCELLED`，保留 issued 冻结的 WorkLine 指派。
 - `PLAN_MEMBERS`：适用于 `EXECUTING`；`data` 必须在 `task_id + cancel_scope` 外至少携带一个非空选择器：
-  `bin_source_racks[] = {rack_id, rack_faces[]}` 或
-  `direct_pick_sources[] = {rack_id, rack_face, slot_ids[]}`。两个数组中的货架、面和储位均不得重复。
+  `bin_source_racks[] = {plan_revision, rack_id, rack_face[]}` 或
+  `direct_pick_sources[] = {plan_revision, rack_id, rack_face, slot_ids[]}`。同一 revision 内的货架、面和储位不得重复。
 
-上述选择器是当前 wire 形态，尚不能区分跨 revision 复用的来源。§6.1 要求在联合合同变更中为每个被取消成员补齐所属 `plan_revision`；在此之前，不得把同架同面不同 revision 的成员一起取消。
+两个 `plan_revision` 都是所在选择器的必填正整数，必须命中原计划成员。当前 wire 按 `plan_revision + rack_id + rack_face` 判断来源成员是否重复，允许同一物理货架在不同 revision 分别出现并分别取消。
+
+`PLAN_MEMBERS` 当前 wire 示例（同一货架跨 revision 的选择器分别指向各自成员）：
+
+```json
+{
+  "operation_id": "019f3401-4a10-7b1a-aab5-f2df785324d2",
+  "operation": "outbound.picking_task.cancel@v1",
+  "timestamp": 1786060816000,
+  "data": {
+    "task_id": "PICK-20260811-001",
+    "cancel_scope": "PLAN_MEMBERS",
+    "bin_source_racks": [
+      {"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["A"]},
+      {"plan_revision": 2, "rack_id": "RACK-5F-001", "rack_face": ["A"]}
+    ],
+    "direct_pick_sources": [
+      {"plan_revision": 2, "rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]}
+    ]
+  }
+}
+```
 
 `TASK` 禁止成员选择器，`PLAN_MEMBERS` 禁止空选择器。取消处理在同一事务中锁定 PickingTask、按当前执行事实逐个处理成员、保存 Evidence，并写入
 任务终态或不可变成员取消边界后才返回 `202 / RECEIVED + data={}`。WMS 可以在同一请求中携带任意成员选择器；不存在、已取消或当前不可取消的成员跳过，
@@ -773,11 +798,14 @@ SCAN1 只有在目标转运货架和 Bin 入口位置均有权威投影后才允
   "timestamp": 1786064700000,
   "data": {
     "task_id": "PICK-20260811-001",
+    "plan_revision": 2,
     "rack_id": "RACK-5F-001",
     "rack_face": "A"
   }
 }
 ```
+
+目标 wire 的 `data.plan_revision` 为必填正整数，必须与该 `rack_id + rack_face` 的本次来源成员一致；WMS 按 `task_id + plan_revision + rack_id + rack_face` 冻结本次清单。当前 DTO/OpenAPI 尚未增加此字段，见 §6.1。
 
 WMS 在同一事务中冻结该面当前任务的**完整、最终、有序**料箱清单及每箱精确来源槽位；清单中
 `bin_code` 和 `source_locator` 各自唯一，来源货架面必须与请求一致，已分配料箱不得被其他任务重复选择。
@@ -1061,9 +1089,13 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
 | `NO_WORK` | 无 | `cell_ids`、`retry_after_ms` | 当前 Bin 不再需要取料，业务明细完成，物理 Bin 继续退箱 |
 | `WAIT` | `retry_after_ms` | `cell_ids` | 当前不能形成稳定计划 |
 
-`READY.cell_ids[]` 中每项是 WMS 返回的非空 `cell_id`。同一 `task_id + bin_code` 内不得重复；首次接收后即为该 Bin 的最终工作计划，
+`READY.cell_ids[]` 中每项是 WMS 返回的非空 `cell_id`。同一次 `work_plan` 结果内不得重复；首次接收后即为本次 Passage 的最终工作计划，
 不能撤销、删减或改写，数组顺序不表达业务优先级或依赖。此后只能通过现有的逐 Cell、空取、NG 和结果确认流程处理，不能中途撤销
 整个 Bin 或已经开始的料盘动作。
+
+上述 `task_id + bin_code` 只描述当前 wire 的关联能力，不能区分同一 PickingTask 中同一物理料箱的第二次 Passage。`BIN_CELL` 的
+`empty_decide`、`material.decide` 和 `movement_report` 也继承此缺口；新增来源成员 `plan_revision` 不能替代本次 Passage 身份。
+重复经过场景须先由 WMS/WES 联合合同明确本次工作计划与后续 Cell 操作的关联身份，不能按最新箱码记录猜测。
 
 `BIN_CELL` 是顶端可达的物理堆叠，固定按 LIFO 逐盘抓取。`READY.cell_ids[]` 只授权处理这些 Cell，不指定或授权越过 Cell 内的任意料盘；
 WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当前物理栈顶创建来源 DeviceCommand，ECS/PLC 负责确保吸盘不会越过
@@ -1073,8 +1105,8 @@ WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当
 新的 PickingTask、计划增量或命令身份跳过栈顶。不同 Cell 只有在 WorkLine 拓扑和设备安全合同允许时才能并行。
 
 CTU 投箱顺序也不构成业务顺序；`WORK_BUFFER` 是单向 FIFO，队首没有明确
-`READY | NO_WORK | NG` 结果时，后续 Bin 不能绕行。同一 `task_id + bin_code` 只能形成一个最终 `READY | NO_WORK`；`WAIT`
-后使用新 `operation_id`，并携带同一 `task_id + bin_code` 重新判断。
+`READY | NO_WORK | NG` 结果时，后续 Bin 不能绕行。同一次 Passage 只能形成一个最终 `READY | NO_WORK`，同任务同箱再次经过是新 Passage；
+当前 wire 尚不能确定地区分这两次经过，见上方联合合同缺口。`WAIT` 后使用新 `operation_id` 对同一次 Passage 重新判断。
 
 若 SCAN2 读到合法且可识别的实际 Bin，但它不是本次 `inbound_batch` 选中的预期 Bin，WES 必须保存
 `expected_bin_code + actual_bin_code` 和扫码/位置证据，不调用 `work_plan`，也不把实际 Bin 送入 NG。预期 Bin 保持未完成，实际 Bin 不替代计划成员。
@@ -1196,11 +1228,41 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 }
 ```
 
+直接取料 `RACK_SLOT` 的目标 wire 请求示例：
+
+```json
+{
+  "operation_id": "019f3410-af77-71fd-9bde-0df75fcdeea2",
+  "operation": "outbound.material.decide@v1",
+  "timestamp": 1786063000000,
+  "data": {
+    "task_id": "PICK-20260811-001",
+    "plan_revision": 2,
+    "source_locator": {
+      "type": "RACK_SLOT",
+      "rack_id": "RETURN-RACK-01",
+      "rack_face": "A",
+      "slot_id": "A-03"
+    },
+    "six_in_one": {
+      "HHPN": "HHPN-001",
+      "MfrPN": "MFR-001",
+      "Qty": "100",
+      "DateCode": "2610",
+      "LotCode": "LOT-001",
+      "PkgID": "PKG-001"
+    },
+    "scanned_at": 1786062999900
+  }
+}
+```
+
 请求字段说明：
 
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
+| `data.plan_revision` | `source_locator.type=RACK_SLOT` 时是，目标 wire 新增；`BIN_CELL` 不携带 | positive integer / 原直接取料成员 | 必须等于本次来源成员 revision；`BIN_CELL` 的 Passage wire 身份尚待单独闭合，不能只靠 revision 关联 |
 | `data.source_locator` | 是 | `RACK_SLOT \| BIN_CELL` / WMS 原值 | 必须唯一命中当前任务锁定来源；位置类型分别表示 DirectPick 或 Cell |
 | `data.six_in_one.HHPN` | 是 | string[1..256] / 扫码设备 | 物料编码，WES 原样传递 |
 | `data.six_in_one.MfrPN` | 是 | string[1..256] / 扫码设备 | 制造商料号，WES 不做同义转换 |
@@ -1359,7 +1421,7 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 `ng_locator` 必须是 WMS 批准的 `NG_ZONE`。`source_disposition` 只决定料盘确认进入 NG 区后的来源业务状态，不是设备命令。
 `CONTINUE` 允许当前 Cell 继续取下一盘，`CLOSE` 在当前盘 NG 结果确认后关闭当前来源。WMS 尚不能形成这两个最终结果时必须返回
 `WAIT`，不能先返回 `REJECT` 再让 WES 等待未定义的恢复动作。
-相关已确认结果变化时立即以新 `operation_id` 和同一 `task_id + source_locator + PkgID` 重新判断，没有新业务数据时才等待
+相关已确认结果变化时立即以新 `operation_id` 对同一来源成员或 Passage/Work 与 `PkgID` 重新判断，没有新业务数据时才等待
 `retry_after_ms`。
 
 `target_preparation` 只有三种写法：无动作时省略、同架换面时 `mode=ROTATE`、换架时 `mode=REPLACE`。
@@ -1367,8 +1429,8 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 departure `READY` 并等待相关 Transport 到位后直接 PUT，不重新请求物料资格。
 
 `CONTINUE` 表示当前 Cell 业务需求允许继续取下一盘；`SOURCE_DONE` 表示当前盘完成后关闭来源。`RACK_SLOT` 来源只能返回
-`SOURCE_DONE`。同一 `task_id + source_locator + PkgID` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带
-同一业务字段重新判断。
+`SOURCE_DONE`。同一来源成员或 Passage/Work 与 `PkgID` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带
+同一业务身份重新判断。`RACK_SLOT` 以 `task_id + plan_revision + source_locator` 识别成员；`BIN_CELL` 的 Passage/Work wire 关联仍待 §9.3 所述联合合同闭合。
 
 ### 10.3 两个机械臂并发
 
@@ -1435,6 +1497,27 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
 }
 ```
 
+直接取料 `RACK_SLOT` 的目标 wire 请求示例：
+
+```json
+{
+  "operation_id": "019f3420-01be-7e11-b265-10de42c881f3",
+  "operation": "outbound.source.empty_decide@v1",
+  "timestamp": 1786065100000,
+  "data": {
+    "task_id": "PICK-20260811-001",
+    "plan_revision": 2,
+    "source_locator": {
+      "type": "RACK_SLOT",
+      "rack_id": "RETURN-RACK-01",
+      "rack_face": "A",
+      "slot_id": "A-03"
+    },
+    "observed_at": 1786065099900
+  }
+}
+```
+
 响应示例：
 
 ```json
@@ -1480,6 +1563,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
+| `data.plan_revision` | `source_locator.type=RACK_SLOT` 时是，目标 wire 新增；`BIN_CELL` 不携带 | positive integer / 原直接取料成员 | 必须等于发生空取的来源成员 revision；`BIN_CELL` 的同箱多次 Passage 关联尚未在当前 wire 闭合 |
 | `data.source_locator` | 是 | `RACK_SLOT \| BIN_CELL` / WMS 原值 | 必须唯一命中当前任务锁定来源；类型分别表示 DirectPick 或 Cell |
 | `data.observed_at` | 是 | UTC Unix 毫秒 / 设备结果 | 确定无料最终状态发生时间 |
 
@@ -1491,7 +1575,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
 | `WAIT` | `retry_after_ms` | WMS 还不能确定如何处理这次空取；WES 到期后重新请求，不等待替代计划 |
 | `SOURCE_DONE` | 无 | 结束当前任务中的这个来源明细；没有满足的需求留给新的 PickingTask |
 
-同一 `task_id + source_locator` 在一次未完成空取处理中只能形成一个最终 `SOURCE_DONE`。`RETRY` 只允许重试原位置；再次空取时使用新的
+同一来源成员或 Passage/Work 在一次未完成空取处理中只能形成一个最终 `SOURCE_DONE`。`RETRY` 只允许重试原位置；再次空取时使用新的
 `operation_id` 重新请求决定。`WAIT` 只表示当前决定尚未稳定，不能用来等待 WMS 为当前任务寻找替代来源。空取响应禁止嵌入来源集合，
 后续 `plan_delta` 也不能为这个空取结果补上替代来源。WMS 返回 `SOURCE_DONE` 后，WES 结束对应的 `DirectPickExecution` 或
 `CellExecution`；WMS 根据没有满足的需求创建新的 PickingTask。
@@ -1521,6 +1605,34 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
       "rack_face": "A",
       "bin_code": "BIN-001",
       "cell_id": "CELL-03"
+    },
+    "PkgID": "PKG-001",
+    "to_locator": {
+      "type": "RACK_SLOT",
+      "rack_id": "TRANSFER-RACK-01",
+      "rack_face": "A",
+      "slot_id": "A-05"
+    },
+    "occurred_at": 1786065499900
+  }
+}
+```
+
+直接取料 `RACK_SLOT` 的目标 wire 请求示例：
+
+```json
+{
+  "operation_id": "019f3422-f4a8-7247-98f0-8118dfb7f461",
+  "operation": "outbound.material.movement_report@v1",
+  "timestamp": 1786065500000,
+  "data": {
+    "task_id": "PICK-20260811-001",
+    "plan_revision": 2,
+    "source_locator": {
+      "type": "RACK_SLOT",
+      "rack_id": "RETURN-RACK-01",
+      "rack_face": "A",
+      "slot_id": "A-03"
     },
     "PkgID": "PKG-001",
     "to_locator": {
@@ -1591,12 +1703,13 @@ CELL NG 放置结果示例（与上面的 MATERIAL NG 示例是独立分支）�
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
+| `data.plan_revision` | `source_locator.type=RACK_SLOT` 时是，目标 wire 新增；`BIN_CELL` 不携带 | positive integer / 原直接取料成员 | 必须与前序 `material.decide` 的来源成员 revision 一致；`BIN_CELL` 的同箱多次 Passage 关联尚未在当前 wire 闭合 |
 | `data.source_locator` | 是 | `RACK_SLOT \| BIN_CELL` / WMS 原值 | 必须与前序物料决定中的来源完全一致 |
 | `data.PkgID` | 是 | string[1..256] / 扫码设备原文 | 必须与前序物料决定中的 `six_in_one.PkgID` 完全一致 |
 | `data.to_locator` | 是 | `RACK_SLOT \| NG_ZONE` / WMS 决定 | 必须与前序决定的精确目标或 NG 去向一致 |
 | `data.occurred_at` | 是 | UTC Unix 毫秒 / 设备结果 | 实际放置完成时间 |
 
-- WMS 根据 `task_id + source_locator + PkgID` 找到前面的最终物料决定。位置上报不重复发送六合一码。
+- WMS 根据直接取料的 `task_id + plan_revision + source_locator + PkgID` 找到前面的最终物料决定。`BIN_CELL` 本次 Passage/准入 Action 的 wire 身份仍待联合合同闭合；不得仅以 `task_id + bin_code` 查找。位置上报不重复发送六合一码。
 - 正常 PUT 的相同业务字段必须已经得到最终 `ACCEPT`，并使用其 `RACK_SLOT`；MATERIAL/CELL NG 必须已经得到最终 `REJECT`，
   并使用其 `NG_ZONE`。
   WMS 根据前面的业务决定判断 NG 影响范围，不接受本次上报再传一套业务异常分类。

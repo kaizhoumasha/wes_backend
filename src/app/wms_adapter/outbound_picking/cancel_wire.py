@@ -11,6 +11,7 @@ from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTER
 from src.app.wms_adapter.wire_common import (
     NonnegativeMilliseconds,
     OperationId,
+    PositiveInteger,
     RackFaceText,
     RackFaceValues,
     StrictWireModel,
@@ -22,11 +23,13 @@ BusinessIdentifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIE
 
 
 class CancelBinSourceRack(StrictWireModel):
+    plan_revision: PositiveInteger
     rack_id: BusinessIdentifier
     rack_face: RackFaceValues
 
 
 class CancelDirectPickSource(StrictWireModel):
+    plan_revision: PositiveInteger
     rack_id: BusinessIdentifier
     rack_face: RackFaceText
     slot_ids: Annotated[list[BusinessIdentifier], Field(min_length=1)]
@@ -66,10 +69,10 @@ class PickingTaskCancelMembersData(StrictWireModel):
     def validate_selectors(self) -> PickingTaskCancelMembersData:
         if not self.bin_source_racks and not self.direct_pick_sources:
             raise ValueError("PLAN_MEMBERS 至少需要一种非空选择器")
-        rack_ids = [item.rack_id for item in self.bin_source_racks or ()]
+        rack_ids = [(item.plan_revision, item.rack_id) for item in self.bin_source_racks or ()]
         if len(set(rack_ids)) != len(rack_ids):
             raise ValueError("bin_source_racks.rack_id 不得重复")
-        direct_faces = [(item.rack_id, item.rack_face) for item in self.direct_pick_sources or ()]
+        direct_faces = [(item.plan_revision, item.rack_id, item.rack_face) for item in self.direct_pick_sources or ()]
         if len(set(direct_faces)) != len(direct_faces):
             raise ValueError("direct_pick_sources 的 rack_id + rack_face 不得重复")
         return self

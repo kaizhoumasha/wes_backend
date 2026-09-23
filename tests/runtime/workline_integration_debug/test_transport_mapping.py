@@ -2267,18 +2267,23 @@ async def test_bin_inbound_batch_requests_complete_face() -> None:
     result = await service.send_bin_inbound_batch(
         "run-inbound-batch",
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
+        request_data=BinInboundBatchData(task_id="PICK-001", plan_revision=1, rack_id="RACK-01", rack_face="90"),
         expected_version=0,
         actor_id=42,
     )
 
-    assert result["steps"][0]["request"] == {"task_id": "PICK-001", "rack_id": "RACK-01", "rack_face": "90"}
+    assert result["steps"][0]["request"] == {
+        "task_id": "PICK-001",
+        "plan_revision": 1,
+        "rack_id": "RACK-01",
+        "rack_face": "90",
+    }
 
     with pytest.raises(IntegrationDebugConflict, match="WMS 请求内容已变化"):
         await service.send_bin_inbound_batch(
             "run-inbound-batch",
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-02", rack_face="180"),
+            request_data=BinInboundBatchData(task_id="PICK-001", plan_revision=1, rack_id="RACK-02", rack_face="180"),
             expected_version=1,
             actor_id=42,
         )
@@ -2357,7 +2362,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
         await service.send_bin_inbound_batch(
             run.run_id,
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
+            request_data=BinInboundBatchData(task_id="PICK-001", plan_revision=1, rack_id="RACK-01", rack_face="90"),
             expected_version=0,
             actor_id=42,
         )
@@ -2366,7 +2371,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
     result = await service.send_bin_inbound_batch(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90"),
+        request_data=BinInboundBatchData(task_id="PICK-001", plan_revision=1, rack_id="RACK-01", rack_face="90"),
         expected_version=0,
         actor_id=42,
     )

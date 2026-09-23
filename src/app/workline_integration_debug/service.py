@@ -531,6 +531,7 @@ class IntegrationDebugService:
             intent = sdk.wms_operations.outbound_bin_inbound_batch(
                 operation_id=operation_id,
                 task_id=run.task_id,
+                plan_revision=request_data.plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
             )

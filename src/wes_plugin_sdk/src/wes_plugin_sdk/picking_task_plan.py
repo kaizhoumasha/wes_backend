@@ -61,8 +61,9 @@ class PickingTaskPlanAppliedFact(HandlerFact):
         ):
             raise TypeError("pending_bin_source_racks must contain PickingTaskPlanRack values")
         rack_ids = [rack.rack_id for rack in self.pending_bin_source_racks]
-        if len(rack_ids) != len(set(rack_ids)):
-            raise ValueError("pending_bin_source_racks must not contain duplicate rack_id values")
+        member_ids = [(rack.source_evidence_id, rack.rack_id) for rack in self.pending_bin_source_racks]
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError("pending_bin_source_racks must not contain duplicate members")
         if self.target_rack is not None and self.target_rack.rack_id in rack_ids:
             raise ValueError("target_rack must not duplicate a bin source rack_id")
         if type(self.position_bindings) is not tuple or any(
@@ -77,8 +78,9 @@ class PickingTaskPlanAppliedFact(HandlerFact):
         ):
             raise TypeError("pending_return_racks must contain PickingTaskPlanRack values")
         return_rack_ids = [rack.rack_id for rack in self.pending_return_racks]
-        if len(return_rack_ids) != len(set(return_rack_ids)):
-            raise ValueError("pending_return_racks must not contain duplicate rack_id values")
+        return_member_ids = [(rack.source_evidence_id, rack.rack_id) for rack in self.pending_return_racks]
+        if len(return_member_ids) != len(set(return_member_ids)):
+            raise ValueError("pending_return_racks must not contain duplicate members")
         if (self.target_rack is not None and self.target_rack.rack_id in return_rack_ids) or any(
             rack_id in rack_ids for rack_id in return_rack_ids
         ):

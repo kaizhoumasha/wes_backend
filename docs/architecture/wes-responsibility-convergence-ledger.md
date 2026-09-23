@@ -95,7 +95,7 @@ P1 剩余调用点分类（同属 R09/R10，不增加候选编号）：
 
 身份切片：同一 PickingTask 的同一物理料箱允许多次经过；`work_completed.data.admission_operation_id` 关联本次准入 Action 和 Passage，信封顶层 `operation_id` 仍是完成事件投递身份。插件按原准入身份查询并核对 task/bin，旧 `(task_id, bin_code)` 终态唯一索引已退出；同箱两次经过、迟到和重复完成由聚焦测试覆盖，迁移与接收已在独立临时 PostgreSQL 验证。SCAN1/SCAN3 的新 Passage 创建及关联规则不在本切片内，不能因完成事件身份已修复而推定点位身份也已闭合。
 
-左边界因果审查：`plan_delta` 连续版本写入 `PickingTask.last_applied_plan_revision`；当前 `PickingTaskBinSourceRack` 保存成员的 `plan_revision/source_evidence_id/cancelled_evidence_id`。`inbound_batch` 的 `operation_id` 关联冻结请求、`WmsConfirmation` 和 Response Evidence；冻结请求的 `task_id + rack_id + rack_face` 可追溯原计划成员。同一任务的该架面不能被重加为另一成员，因此 V1 的 OP100 迟到不会自动变成 V2 的新成员；目前没有仅为公共包抽取增添 `plan_revision` wire 字段的依据。
+左边界因果审查：`plan_delta` 连续版本写入 `PickingTask.last_applied_plan_revision`；`PickingTaskBinSourceRack` 保存成员的 `plan_revision/source_evidence_id/cancelled_evidence_id`，同一任务的同架面可由更高 revision 新增独立成员。`inbound_batch` 冻结请求现以 `task_id + plan_revision + rack_id + rack_face` 指向原成员，`operation_id` 关联 `WmsConfirmation` 和 Response Evidence；插件按同一 revision 关联结果，V1 的迟到结果不能结清 V2。CTU01 按原计划 Evidence 与 rack 去重；取消和直接取料面完成事实也按 revision 命中成员。本次身份修正不涉及 SCAN4 FIFO 或公共包抽取。
 
 **历史关联只能解释 Evidence，不能批准下一 Action。** `scan_flow._apply_batch_result` 已按冻结请求的 `task_id` 找原任务和成员，不再依赖工作线当前 `EXECUTING` 父任务；已取消成员的迟到 `READY` 仍被匹配和应用为 Evidence，但不创建 BIN_MOVE。`batch_driver` 对已到位、尚未形成的取消面继续创建当前合同要求的首次 `inbound_batch` 义务；已有结果后不再追加入站分段，也不向尚未到位的已取消后续面创建旋转 Action。`PickingTaskBinSourceRack` 只可作为当前 Requirement 的最小查询投影与因果索引，不能作为物理占用、准入或永久历史围栏；逐消费者删除失用字段/查询，若现有 Evidence 与身份足以替代该表，就直接删除，不为保留旧表建设重放框架。系统尚未发布，开发数据可清理，不能以旧数据重建成本作为保留理由。
 

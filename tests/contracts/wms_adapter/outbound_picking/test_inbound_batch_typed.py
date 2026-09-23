@@ -13,6 +13,7 @@ def test_encode_complete_request_and_timestamp_boundaries() -> None:
     intent = wms_operations.outbound_bin_inbound_batch(
         operation_id=OPERATION_ID,
         task_id="task",
+        plan_revision=1,
         rack_id="rack",
         rack_face="000A",
     )
@@ -20,7 +21,7 @@ def test_encode_complete_request_and_timestamp_boundaries() -> None:
         "operation_id": OPERATION_ID,
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 0,
-        "data": {"task_id": "task", "rack_id": "rack", "rack_face": "000A"},
+        "data": {"task_id": "task", "plan_revision": 1, "rack_id": "rack", "rack_face": "000A"},
     }
     for value in (-1, 2**63, True):
         with pytest.raises(ValueError):

@@ -35,16 +35,21 @@ class Positions:
 class Plans:
     def __init__(self):  # type: ignore[no-untyped-def]
         self.picks = [
-            SimpleNamespace(id=21, rack_id="RETURN-RACK-01", rack_face="A", slot_id="A-03", source_evidence_id=61),
-            SimpleNamespace(id=22, rack_id="RETURN-RACK-01", rack_face="A", slot_id="A-04", source_evidence_id=61),
+            SimpleNamespace(
+                id=21, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="A", slot_id="A-03", source_evidence_id=61
+            ),
+            SimpleNamespace(
+                id=22, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="A", slot_id="A-04", source_evidence_id=61
+            ),
         ]
         self.completed: set[tuple[str, str]] = set()
 
     async def list_active_direct_picks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.picks
 
-    async def has_direct_pick_face_completion(self, _db, *, picking_task_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
+    async def has_direct_pick_face_completion(self, _db, *, picking_task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
         assert picking_task_id == 31
+        assert plan_revision >= 1
         return (rack_id, rack_face) in self.completed
 
     async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
@@ -129,7 +134,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         arrival_scheduler=arrival_scheduler,
         arrival_reader=arrival_reader,
         tasks=SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task)),
-        bindings=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+        bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value=set())),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000009",
     )
     return driver, line, task, positions, plans, creator, arrival_reader, arrival_scheduler, departure_scheduler
@@ -214,7 +219,9 @@ async def test_completed_single_face_requests_workline_owned_departure() -> None
 async def test_completed_face_rotates_to_the_next_pending_face_on_the_same_rack() -> None:
     driver, line, task, _, plans, creator, reader, _, departure = setup_driver()
     plans.picks.append(
-        SimpleNamespace(id=23, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=62)
+        SimpleNamespace(
+            id=23, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=62
+        )
     )
     reader.latest.return_value = recorded_snapshot()
     plans.completed.add(("RETURN-RACK-01", "A"))
@@ -254,7 +261,7 @@ async def test_ready_departure_decision_returns_the_return_rack_with_its_own_ste
     assert creator.depart[0]["rack_id"] == "RETURN-RACK-01"
     assert creator.depart[0]["picking_task_id"] == 31
     assert creator.depart[0]["source_evidence_id"] == 93
-    assert creator.depart[0]["correlation_id"] == "pt:31:return-out:RETURN-RACK-01"
+    assert creator.depart[0]["correlation_id"] == "pt:31:e:61:return-out:RETURN-RACK-01"
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
     departure.create_in_session.assert_not_awaited()
 
@@ -264,7 +271,9 @@ async def test_arrival_on_a_later_face_still_rotates_back_to_the_earlier_unfinis
     """到位面由外部搬运决定，不保证是计划首面；更早的未结面不能被跳过。"""
     driver, line, task, positions, plans, creator, reader, _, departure = setup_driver()
     plans.picks.append(
-        SimpleNamespace(id=23, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=62)
+        SimpleNamespace(
+            id=23, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=62
+        )
     )
     positions.current.arrival_face = "B"
     reader.latest.return_value = recorded_snapshot()
@@ -282,7 +291,7 @@ async def test_arrival_on_a_later_face_still_rotates_back_to_the_earlier_unfinis
 async def test_blocked_five_rack_subflow_does_not_block_the_return_rack_subflow() -> None:
     driver, line, task, positions, plans, _, _, scheduler, _ = setup_driver()
     plans.list_bin_source_racks = AsyncMock(  # type: ignore[method-assign]
-        return_value=[SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51)]
+        return_value=[SimpleNamespace(id=11, plan_revision=1, rack_id="R1", rack_face="90", source_evidence_id=51)]
     )
     driver._flow.has_unclosed_action_for_face.return_value = True  # 当前货架面停在未闭合动作上。
     positions.count = AsyncMock(return_value=1)
@@ -307,7 +316,7 @@ async def test_five_rack_admission_and_return_rack_arrival_progress_together_in_
     并行、互不阻塞；一次 advance_in_session 必须同时推进子流程 A（五层架进场）与子流程 B
     （退料货架到位上报），而不是其中一条阻塞另一条。"""
     driver, line, task, _, plans, creator, _, arrival_scheduler, departure = setup_driver()
-    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
+    driver._bindings = SimpleNamespace(list_task_member_bindings=AsyncMock(return_value=set()))
     plans.list_active_bin_source_racks = AsyncMock(  # type: ignore[method-assign]
         return_value=[SimpleNamespace(rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1)]
     )

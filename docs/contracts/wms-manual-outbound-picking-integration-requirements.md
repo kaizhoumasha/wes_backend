@@ -80,7 +80,7 @@ flowchart TD
 | \# | 发起方 → 接收方 | Operation / 事件 | 关键字段 | 结果 |
 | --- | --- | --- | --- | --- |
 | 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
-| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
+| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `plan_revision=1, rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
 | 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
@@ -97,7 +97,7 @@ flowchart TD
 上述表格按业务节点编号，不表示回架后才可换面。`feed_complete` 只要求冻结面全部 inbound 分段及成员权威成功、结果发布、
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
 `workline_positions.capacity` 不作为 WES 的 CTU01 物理准入窗口。WES 对已确定来源架按业务步骤身份最多创建一次 CTU01；RCS 负责排队、自主进位和工作位互斥。某架未到位只暂停依赖该架的后续 SOP，不阻止其他独立货架提交。真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认。
-同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员、CTU01 与 `inbound_batch` 义务处理；当前 wire/实现尚未完成该联合优化，不能以旧成员的动作或结果为新成员结案。
+同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员、CTU01 与 `inbound_batch` 义务处理；请求必须携带该成员的 `plan_revision`，不能以旧成员的动作或结果为新成员结案。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
@@ -110,7 +110,7 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | 4B | WES → WMS | `outbound.return_rack.arrival_report@v1` | `RETURN-RACK-01` 到达工作位 | `200/RECORDED` |
 | — | PDA（黑盒） | 人工按 `added_direct_picks[]` 取 `A-03` 放至 `TRANSFER-RACK-01` | WES 不下发 DeviceCommand，不知道具体取货细节 | — |
-| 5B | WMS → WES | `outbound.manual_rack.direct_pick_completed@v1` | `task_id=PICK-20260902-001, rack_id=RETURN-RACK-01, rack_face=A`，`completed_at=1788390099000` | `202/RECEIVED` |
+| 5B | WMS → WES | `outbound.manual_rack.direct_pick_completed@v1` | `task_id=PICK-20260902-001, plan_revision=1, rack_id=RETURN-RACK-01, rack_face=A`，`completed_at=1788390099000` | `202/RECEIVED` |
 | 6B | WES（本地判断） | 该面 `added_direct_picks[]` 已全部结清，无其它未结明细 | — | 满足 `outbound.rack.departure_decide@v1` 的发起条件 |
 | 7B | WES → WMS | `outbound.rack.departure_decide@v1` | `rack_id=RETURN-RACK-01` | `READY`，货架搬离工作位 |
 
@@ -451,6 +451,7 @@ Evidence/Confirmation。
   "timestamp": 1788390100000,
   "data": {
     "task_id": "PICK-20260902-001",
+    "plan_revision": 1,
     "rack_id": "RETURN-RACK-01",
     "rack_face": "A",
     "completed_at": 1788390099000
@@ -461,14 +462,15 @@ Evidence/Confirmation。
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | 出库合同 Identifier | 必须命中该任务已接收的 `plan_delta.added_direct_picks[]` 中尚未结束的退料货架面 |
+| `data.plan_revision` | 是 | positive integer | 被结清的直接取料来源成员 revision；不得取当前最高 revision 代替 |
 | `data.rack_id` | 是 | string，出库合同 Identifier | 必须等于 `added_direct_picks[].source_locator.rack_id`；不得为空或含未批准格式 |
 | `data.rack_face` | 是 | string，出库合同 Identifier | 必须等于 `added_direct_picks[].source_locator.rack_face`；不得为空或含未批准格式 |
 | `data.completed_at` | 是 | positive integer，UTC Unix 毫秒 | WMS 确认该货架面全部直接取料完成的时间，且 `completed_at <= timestamp` |
 | `timestamp` | 是 | positive integer，UTC Unix 毫秒 | 信封生成时间；必须为正整数，且不得早于 `data.completed_at` |
 
-`data` 是严格对象，只接受上述四个字段；未知字段、缺失字段、`null`、空字符串和错误类型均拒绝，不忽略额外字段。`task_id`、
+`data` 是严格对象，只接受上述五个字段；未知字段、缺失字段、`null`、空字符串和错误类型均拒绝，不忽略额外字段。`task_id`、
 `rack_id`、`rack_face` 必须满足出库合同 Identifier 约束。跨 revision 复用同一货架面时，业务终态身份须包含该来源成员的 `plan_revision`；同一物理
-货架面在不同 `task_id` 或不同 revision 中分别上报和收敛。当前 DTO 尚未携带成员 revision，属于[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)的待实施联合优化，不能将现有 `task_id + rack_id + rack_face` 当作跨 revision 的终态身份。
+货架面在不同 `task_id` 或不同 revision 中分别上报和收敛。严格 DTO 已要求成员 revision；`task_id + rack_id + rack_face` 不构成跨 revision 的终态身份。
 
 本 operation 不携带逐 slot 取货结果：退料货架没有 NG 出口，缺料、损耗等业务异常完全由 WMS/PDA 内部处理，对 WES 保持
 黑盒（对照 §2.2、§4）。完成事件只能结清其明确指向的 revision 成员，供既有

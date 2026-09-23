@@ -229,7 +229,9 @@ class ManualPickingScanFlow:
             (
                 source
                 for source in await self._source_racks.list_bin_source_racks(db, task.id)
-                if source.rack_id == intent.rack_id and source.rack_face == intent.rack_face
+                if source.plan_revision == intent.plan_revision
+                and source.rack_id == intent.rack_id
+                and source.rack_face == intent.rack_face
             ),
             None,
         )

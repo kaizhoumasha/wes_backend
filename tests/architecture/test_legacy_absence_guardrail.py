@@ -43,6 +43,7 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py",
         "migrations/versions/20260923_1033_9b440473b03d_放宽_transport_请求重提计数约束.py",
         "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py",
+        "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "e5120e17cfea3aafa26ef51d1e4429a2c09117c7443f3cc316b01e6c55cc291a"

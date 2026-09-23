@@ -624,7 +624,7 @@ async def test_conflicts_do_not_write_members(mutation, reason):
 
 
 @pytest.mark.parametrize("task_type", ["MANUAL", "AUTO"])
-async def test_sources_are_append_only_and_task_type_neutral(task_type):
+async def test_sources_can_repeat_in_later_revision_and_are_task_type_neutral(task_type):
     service, task, evidence, _ = setup_service()
     task.task_type = task_type
     receipt = event(
@@ -634,9 +634,9 @@ async def test_sources_are_append_only_and_task_type_neutral(task_type):
     )
     evidence.normalized_payload = receipt.model_dump(mode="json", exclude_none=True)
     assert (await service.record(receipt, received_at=NOW)).code == "RECEIVED"
-    service._plans.source_identities.return_value = ({("SRC", " A ", "1")}, set())
     next_data = event(2, added_direct_picks=receipt.model_dump(mode="json")["data"]["added_direct_picks"]).data
-    assert await service.validate_plan(object(), task, next_data, received_at=NOW) == "REFERENCE_CONFLICT"
+    assert await service.validate_plan(object(), task, next_data, received_at=NOW) is None
+    assert service._plans.source_identities.await_args.args[2] == 2
     assert task.initial_plan_evidence_id == task.last_plan_evidence_id == 10
 
 
@@ -692,14 +692,14 @@ async def test_source_lookup_and_insert_use_bounded_candidate_batches():
     db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=list)), flush=AsyncMock(), add=Mock())
     picks = [(f"P{i}", "A", "S") for i in range(MEMBER_BATCH_SIZE + 1)]
     racks = [(f"B{i}", "A") for i in range(MEMBER_BATCH_SIZE + 1)]
-    assert await repository.source_identities(db, 1, direct_picks=picks, bin_racks=racks) == (set(), set())
+    assert await repository.source_identities(db, 1, 2, direct_picks=picks, bin_racks=racks) == (set(), set())
     assert db.execute.await_count == 4
     for call in db.execute.await_args_list:
         query = call.args[0].compile()
         candidates = [value for value in query.params.values() if isinstance(value, list)]
         assert len(candidates) == 1 and 1 <= len(candidates[0]) <= MEMBER_BATCH_SIZE
     db.execute.reset_mock()
-    assert await repository.source_identities(db, 1, direct_picks=[], bin_racks=[]) == (set(), set())
+    assert await repository.source_identities(db, 1, 2, direct_picks=[], bin_racks=[]) == (set(), set())
     db.execute.assert_not_awaited()
     data = event(
         added_bin_source_racks=[{"rack_id": "B0", "rack_face": ["A", "B"]}]

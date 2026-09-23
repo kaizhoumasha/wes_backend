@@ -28,7 +28,7 @@ class Sessions:
 def event(*, scope: str = "TASK") -> PickingTaskCancelEvent:
     data: dict[str, object] = {"task_id": "PICK-1", "cancel_scope": scope}
     if scope == "PLAN_MEMBERS":
-        data["direct_pick_sources"] = [{"rack_id": "R-1", "rack_face": "A", "slot_ids": ["S-1"]}]
+        data["direct_pick_sources"] = [{"plan_revision": 1, "rack_id": "R-1", "rack_face": "A", "slot_ids": ["S-1"]}]
     return PickingTaskCancelEvent.model_validate(
         {
             "operation": OPERATION,

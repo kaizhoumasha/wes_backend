@@ -98,7 +98,7 @@ class _Tasks:
 class _SourceRacks:
     async def list_bin_source_racks(self, db, task_id):  # type: ignore[no-untyped-def]
         assert task_id == 31
-        return [SimpleNamespace(rack_id="RACK-1", rack_face="90", cancelled_evidence_id=None)]
+        return [SimpleNamespace(plan_revision=1, rack_id="RACK-1", rack_face="90", cancelled_evidence_id=None)]
 
     async def has_applied_source_face(self, db, workline_id, rack_id, rack_face):  # type: ignore[no-untyped-def]
         return (workline_id, rack_id, rack_face) == (7, "RACK-1", "90")
@@ -313,7 +313,7 @@ async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_positio
     different_position_codes,
 ) -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
+        operation_id="batch-1", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
@@ -337,7 +337,7 @@ async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_positio
 @pytest.mark.asyncio
 async def test_inbound_batch_result_starts_bin_transport_before_target_rack_arrives() -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
+        operation_id="batch-1", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
@@ -357,7 +357,7 @@ async def test_inbound_batch_result_starts_bin_transport_before_target_rack_arri
 @pytest.mark.asyncio
 async def test_late_inbound_ready_uses_active_member_after_parent_completion() -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-late", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
+        operation_id="batch-late", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
@@ -377,13 +377,13 @@ async def test_late_inbound_ready_uses_active_member_after_parent_completion() -
 @pytest.mark.asyncio
 async def test_late_inbound_ready_after_member_cancellation_creates_no_bin_move() -> None:
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-cancelled", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
+        operation_id="batch-cancelled", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))
     flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result, missing_projection=("RACK", "RACK-1"))
     flow._source_racks.list_bin_source_racks = AsyncMock(
-        return_value=[SimpleNamespace(rack_id="RACK-1", rack_face="90", cancelled_evidence_id=45)]
+        return_value=[SimpleNamespace(plan_revision=1, rack_id="RACK-1", rack_face="90", cancelled_evidence_id=45)]
     )
     evidence = _wms(35, InboundEvidenceKind.WMS_RESULT, "batch-cancelled", {})
     evidence.operation = "outbound.bin.inbound_batch@v1"

@@ -57,6 +57,7 @@ class ManualRackDirectPickCompletedService:
             bound = task_id is not None and await self._plans.has_active_direct_pick_face(
                 db,
                 picking_task_id=task_id,
+                plan_revision=envelope.data.plan_revision,
                 rack_id=envelope.data.rack_id,
                 rack_face=envelope.data.rack_face,
             )
@@ -101,6 +102,7 @@ class ManualRackDirectPickCompletedService:
                 already_completed = await self._plans.has_direct_pick_face_completion(
                     db,
                     picking_task_id=task_id,
+                    plan_revision=envelope.data.plan_revision,
                     rack_id=envelope.data.rack_id,
                     rack_face=envelope.data.rack_face,
                 )
@@ -108,6 +110,7 @@ class ManualRackDirectPickCompletedService:
                     await self._plans.add_direct_pick_face_completion(
                         db,
                         picking_task_id=task_id,
+                        plan_revision=envelope.data.plan_revision,
                         rack_id=envelope.data.rack_id,
                         rack_face=envelope.data.rack_face,
                         completed_at=timezone.to_utc(envelope.data.completed_at / 1000).replace(tzinfo=None),

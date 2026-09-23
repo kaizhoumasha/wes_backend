@@ -222,7 +222,7 @@ class PickingTaskPlanDeltaService:
             (rack.rack_id, rack_face) for rack in data.added_bin_source_racks or () for rack_face in rack.rack_face
         ]
         picks, racks = await self._plans.source_identities(
-            db, task.id, direct_picks=incoming_picks, bin_racks=incoming_racks
+            db, task.id, data.plan_revision, direct_picks=incoming_picks, bin_racks=incoming_racks
         )
         if (
             len(set(incoming_picks)) != len(incoming_picks)

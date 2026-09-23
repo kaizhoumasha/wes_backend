@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBatchRackFaceDone, BinInboundBatchReady
 
 from src.app.execution.models import (
@@ -47,7 +47,7 @@ class BatchRepository:
         self._history = history or BinBatchResultReader()
 
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool:
         """只阻塞当前批次/货架面，避免无关异常冻结整条工作线。"""
         confirmations = cast("Any", WmsConfirmation).__table__.c
@@ -67,7 +67,10 @@ class BatchRepository:
                 confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
                 or_(
                     confirmations.operation == BIN_RETURN_BATCH_OPERATION,
-                    confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                    and_(
+                        confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                        confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
+                    ),
                 ),
             )
             .limit(1)
@@ -85,7 +88,10 @@ class BatchRepository:
                 confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
                 or_(
                     confirmations.operation == BIN_RETURN_BATCH_OPERATION,
-                    confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                    and_(
+                        confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                        confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
+                    ),
                 ),
                 evidences.published_at.is_(None),
                 evidences.kind == InboundEvidenceKind.WMS_RESULT,
@@ -132,10 +138,22 @@ class BatchRepository:
         return not isinstance(result, BinBatchNoBatch)
 
     async def inbound_progress(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str,
+        plan_revision: int,
+        rack_id: str,
+        rack_face: str,
+        inlet_location: str,
     ) -> InboundFaceProgress | None:
         detail = await self._history.latest_inbound_detail(
-            db, workline_id=workline_id, task_id=task_id, rack_id=rack_id, rack_face=rack_face
+            db,
+            workline_id=workline_id,
+            task_id=task_id,
+            plan_revision=plan_revision,
+            rack_id=rack_id,
+            rack_face=rack_face,
         )
         if detail is None:
             return None

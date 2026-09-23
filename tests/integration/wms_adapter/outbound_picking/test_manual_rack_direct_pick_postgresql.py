@@ -71,6 +71,7 @@ def _event(*, operation_id: str, task_id: str, rack_id: str, rack_face: str):
             "timestamp": 1_788_390_000_000,
             "data": {
                 "task_id": task_id,
+                "plan_revision": 1,
                 "rack_id": rack_id,
                 "rack_face": rack_face,
                 "completed_at": 1_788_389_999_000,

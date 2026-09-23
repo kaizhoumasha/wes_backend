@@ -245,7 +245,10 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
             list_active_bin_source_racks=AsyncMock(return_value=[]),
             list_active_direct_picks=AsyncMock(return_value=[]),
         ),
-        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
+        ),
     )
 
     assert await service.activate_batch() == 3
@@ -310,6 +313,7 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         ),
         transport_binding_repository=SimpleNamespace(
             list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
         ),
     )
 
@@ -378,7 +382,10 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
             ),
             list_active_direct_picks=AsyncMock(return_value=[]),
         ),
-        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
+        ),
     )
 
     assert await service.activate_batch() == 2
