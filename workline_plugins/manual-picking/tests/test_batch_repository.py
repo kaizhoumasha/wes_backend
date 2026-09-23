@@ -18,7 +18,7 @@ from src.app.execution.models import (
     TransportDecisionBinding,
     WmsConfirmation,
 )
-from src.app.transport.models import TransportMember, TransportTask
+from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.workline.models import WorkLine
 
@@ -36,6 +36,7 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
             InboundEvidence.__table__,
             WmsConfirmation.__table__,
             TransportTask.__table__,
+            TransportEvidence.__table__,
             TransportMember.__table__,
             PositionProjection.__table__,
             PickingTask.__table__,
@@ -354,7 +355,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
     try:
         async with sessions.begin() as db:
             repo = module.BatchRepository()
-            assert await repo.return_retry_due(db, 7, "R1", "90", now, now + timedelta(microseconds=1))
+            assert await repo.return_retry_due(db, 7, "R1", "90", 51, now, now + timedelta(microseconds=1))
             assert await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301") is None
             return_confirmation = WmsConfirmation(
                 operation="outbound.bin.return_batch@v1",
@@ -406,12 +407,12 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             return_confirmation.response_evidence_id = return_evidence.id
             await db.flush()
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
             )
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
             )
-            assert await repo.return_retry_due(db, 7, "R1", "270", now, now + timedelta(microseconds=1))
+            assert await repo.return_retry_due(db, 7, "R1", "270", 51, now, now + timedelta(microseconds=1))
             db.add(
                 ManualPickingPassage(
                     workline_id=7,
@@ -442,7 +443,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             )
             await db.flush()
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
             )
 
             inbound_confirmation = WmsConfirmation(
@@ -808,12 +809,74 @@ async def test_no_batch_never_reopens_return_check_for_the_same_face() -> None:
         )
     )
     repo = module.BatchRepository(history)
-    db = SimpleNamespace(scalar=AsyncMock(return_value=99))  # Newly ready return bins cannot open another check.
-    assert not await repo.return_retry_due(db, 7, "R1", "90", completed + timedelta(minutes=1), chunk_created)
-    db.scalar.assert_not_awaited()
+    db = SimpleNamespace(scalar=AsyncMock(return_value=chunk_created))
+    assert not await repo.return_retry_due(db, 7, "R1", "90", 51, completed + timedelta(minutes=1), chunk_created)
     assert not await repo.return_retry_due(
-        db, 7, "R1", "90", completed + timedelta(minutes=1), completed + timedelta(seconds=1)
+        db, 7, "R1", "90", 51, completed + timedelta(minutes=1), completed + timedelta(seconds=1)
     )
+    db.scalar.return_value = completed + timedelta(seconds=2)
+    assert await repo.return_retry_due(db, 7, "R1", "90", 52, completed + timedelta(minutes=1), chunk_created)
+
+
+@pytest.mark.asyncio
+async def test_late_transport_publication_does_not_reopen_no_batch() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    arrived = datetime(2026, 9, 15, 12)
+    completed = arrived + timedelta(seconds=1)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                TransportTask(
+                    transport_task_id="source-1",
+                    client_request_id="source-request-1",
+                    request_digest="a" * 64,
+                    kind="RACK_MOVE",
+                    caller_json={},
+                    request_json={},
+                    submit_operation_id="source-op-1",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="SUCCEEDED",
+                    authority_workline_id=7,
+                    created_at=arrived,
+                    updated_at=completed + timedelta(seconds=1),
+                )
+            )
+            db.add(
+                TransportDecisionBinding(
+                    correlation_id="source-1",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    workline_id=7,
+                    resource_fence_id="R1",
+                    client_request_id="source-request-1",
+                    source_evidence_id=51,
+                )
+            )
+            db.add(
+                TransportEvidence(
+                    operation_id="source-result-1",
+                    transport_task_id="source-1",
+                    operation="transport.task.resulted@v1",
+                    outcome_revision=1,
+                    event_timestamp_ms=1,
+                    message_digest="c" * 64,
+                    payload_json={},
+                    ack_timestamp_ms=1,
+                    ack_data_json={},
+                    status="APPLIED",
+                    received_at=arrived,
+                    processed_at=arrived,
+                )
+            )
+            history = SimpleNamespace(
+                latest_return=AsyncMock(return_value=(sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1)), completed))
+            )
+            repo = module.BatchRepository(history)
+            assert not await repo.return_retry_due(db, 7, "R1", "90", 51, completed, arrived)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

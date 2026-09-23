@@ -15,7 +15,7 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
-from src.app.transport.models import TransportMember, TransportTask
+from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
@@ -122,12 +122,43 @@ class BatchRepository:
         return active is not None
 
     async def return_retry_due(
-        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, _now: datetime, after: datetime
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+        source_evidence_id: int,
+        _now: datetime,
+        after: datetime,
     ) -> bool:
         latest = await self._history.latest_return(db, workline_id=workline_id, rack_id=rack_id, rack_face=rack_face)
         if latest is None:
             return True
         outcome, completed_at = latest
+        bindings = cast("Any", TransportDecisionBinding).__table__.c
+        transports = cast("Any", TransportTask).__table__.c
+        results = cast("Any", TransportEvidence).__table__.c
+        arrived_at = await db.scalar(
+            select(results.received_at)
+            .select_from(TransportTask)
+            .join(TransportDecisionBinding, bindings.client_request_id == transports.client_request_id)
+            .join(TransportEvidence, results.transport_task_id == transports.transport_task_id)
+            .where(
+                bindings.workline_id == workline_id,
+                bindings.resource_fence_id == rack_id,
+                bindings.source_evidence_id == source_evidence_id,
+                bindings.step == "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                transports.status == "SUCCEEDED",
+                results.operation == "transport.task.resulted@v1",
+                results.status == "APPLIED",
+            )
+            .order_by(results.outcome_revision.desc())
+            .limit(1)
+        )
+        if arrived_at is None:
+            return False
+        if completed_at < arrived_at:
+            return True
         # NO_BATCH 是本次回架决定的确定终态：继续当前货架的 CTU02/CTU03，最终由 drain 补发空载货架。
         if isinstance(outcome.result, BinBatchNoBatch):
             return False

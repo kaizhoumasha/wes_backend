@@ -23,7 +23,7 @@ class _Repository:
     async def has_unclosed_action_for_face(self, _db, _workline_id, _task_id, _plan_revision, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
         return self.busy
 
-    async def return_retry_due(self, _db, _workline_id, _rack_id, _rack_face, _now, _after):  # type: ignore[no-untyped-def]
+    async def return_retry_due(self, _db, _workline_id, _rack_id, _rack_face, _source_evidence_id, _now, _after):  # type: ignore[no-untyped-def]
         return self.return_due
 
     async def inbound_progress(
@@ -80,6 +80,7 @@ async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_re
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -103,6 +104,7 @@ async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_re
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -127,6 +129,7 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -157,6 +160,7 @@ async def test_batch_flow_requests_inbound_before_return_on_first_face(face_done
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -186,6 +190,7 @@ async def test_cancelled_rack_can_start_return_batch_without_inbound_progress() 
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="510050",
         rack_face="270",
         return_location="CNV0302",
@@ -237,6 +242,7 @@ async def test_frozen_face_schedules_second_transport_without_second_wms_request
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -282,6 +288,7 @@ async def test_cancelled_face_does_not_create_an_inbound_chunk() -> None:
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -733,6 +740,7 @@ async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(
         picking_task_id=31,
         task_id="PICK-1",
         plan_revision=1,
+        source_evidence_id=51,
         rack_id="R1",
         rack_face="90",
         return_location="CNV0302",
@@ -784,13 +792,14 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
         "picking_task_id": 31,
         "task_id": "PICK-1",
         "plan_revision": 1,
+        "source_evidence_id": 51,
         "rack_id": "R1",
         "rack_face": "90",
         "return_location": "CNV0302",
         "inlet_location": "CNV0301",
         "now": now,
     }
-    assert await flow.advance_in_session(object(), **kwargs)
+    assert await flow.advance_in_session(SimpleNamespace(scalar=AsyncMock(return_value=created_at)), **kwargs)
     assert len(scheduler.intents) == 1 and isinstance(scheduler.intents[0][0], sdk.BinReturnBatchIntent)
     assert inbound.calls == []
     history.latest_return.return_value = (
@@ -798,6 +807,6 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
         now + timedelta(seconds=1),
     )
     kwargs["now"] = now + timedelta(seconds=2)
-    assert await flow.advance_in_session(object(), **kwargs)
+    assert await flow.advance_in_session(SimpleNamespace(scalar=AsyncMock(return_value=created_at)), **kwargs)
     assert len(scheduler.intents) == 1
     assert len(inbound.calls) == 1 and inbound.calls[0]["offset"] == 4

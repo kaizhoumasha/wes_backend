@@ -22,7 +22,14 @@ class BatchRepository(Protocol):
     ) -> bool: ...
 
     async def return_retry_due(
-        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime, after: datetime
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+        source_evidence_id: int,
+        now: datetime,
+        after: datetime,
     ) -> bool: ...
 
     async def inbound_progress(
@@ -119,6 +126,7 @@ class ManualPickingBatchFlow:
         picking_task_id: int,
         task_id: str,
         plan_revision: int,
+        source_evidence_id: int,
         rack_id: str,
         rack_face: str,
         return_location: str,
@@ -138,7 +146,7 @@ class ManualPickingBatchFlow:
                 rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
                 return_bins = tuple(row.bin_code for row in rows)
                 if not return_bins or not await self._repository.return_retry_due(
-                    db, workline_id, rack_id, rack_face, now, now
+                    db, workline_id, rack_id, rack_face, source_evidence_id, now, now
                 ):
                     return False
                 intent = choose_next_batch(
@@ -182,7 +190,9 @@ class ManualPickingBatchFlow:
         if (
             can_interleave_return
             and return_bins
-            and await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now, after)
+            and await self._repository.return_retry_due(
+                db, workline_id, rack_id, rack_face, source_evidence_id, now, after
+            )
         ):
             intent = choose_next_batch(
                 operation_id=self._uuid_factory(),

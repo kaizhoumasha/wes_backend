@@ -358,6 +358,7 @@ class ManualPickingBatchDriver:
                 picking_task_id=task.id,
                 task_id=task.task_id,
                 plan_revision=current.plan_revision,
+                source_evidence_id=current.source_evidence_id,
                 rack_id=current.rack_id,
                 rack_face=current.rack_face,
                 return_location=bindings[OUTLET.slot_key]["location_id"],
@@ -372,6 +373,7 @@ class ManualPickingBatchDriver:
             line,
             task,
             current.plan_revision,
+            current.source_evidence_id,
             current.rack_id,
             current.rack_face,
             inlet_location,
@@ -421,12 +423,7 @@ class ManualPickingBatchDriver:
         )
 
     async def _advance_return_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
-        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。
-
-        已知缺口：到位识别依赖退料货架已有 PositionProjection，而当前无任何代码
-        创建对应的入线 Transport（见 TODOS.md「退料货架入线 Transport 缺口」），
-        生产环境暂时无法触发本子流程。
-        """
+        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。"""
         location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
         if not location or self._arrival_scheduler is None or self._arrival_reader is None:
             return 0
@@ -444,9 +441,22 @@ class ManualPickingBatchDriver:
             projection = await ready_rack_projection(
                 db, line, row.rack_id, row.rack_face, location, positions=self._positions, transports=self._transports
             )
-            if projection is not None:
-                current = row
-                break
+            if projection is None:
+                continue
+            arrival_source_id = await self._plans.return_rack_transport_source(
+                db, line.id, task.id, row.rack_id, projection.source_transport_task_id
+            )
+            if arrival_source_id is not None:
+                current = next(
+                    (
+                        face
+                        for face in faces_by_rack[row.rack_id]
+                        if face.source_evidence_id == arrival_source_id and face.rack_face == projection.arrival_face
+                    ),
+                    None,
+                )
+                if current is not None:
+                    break
         if current is None or projection is None:
             return 0
         now = timezone.now_for_db()
@@ -620,6 +630,7 @@ class ManualPickingBatchDriver:
         line: Any,
         task: Any,
         plan_revision: int,
+        source_evidence_id: int,
         rack_id: str,
         rack_face: str,
         inlet_location: str,
@@ -637,6 +648,7 @@ class ManualPickingBatchDriver:
                 picking_task_id=task.id,
                 task_id=task.task_id,
                 plan_revision=plan_revision,
+                source_evidence_id=source_evidence_id,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_location=line.position_bindings[OUTLET.slot_key]["location_id"],

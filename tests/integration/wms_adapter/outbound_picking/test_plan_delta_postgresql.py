@@ -946,6 +946,106 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
             )
 
 
+async def test_reused_direct_pick_owner_uses_current_arrival_transport(integration_session_factory, prepared):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    task_name, ids = prepared
+    direct = [{"source_locator": {"type": "RACK_SLOT", "rack_id": "RETURN-A", "rack_face": "A", "slot_id": "S1"}}]
+    plans = PickingTaskPlanDeltaService(integration_session_factory)
+    assert (await plans.record(_event(task_name, 1, added_direct_picks=direct), received_at=NOW)).code == "RECEIVED"
+    assert (await plans.record(_event(task_name, 2, added_direct_picks=direct), received_at=NOW)).code == "RECEIVED"
+    client_request_id = new_uuid7()
+    transport_task_id = new_uuid7()
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, ids[0])
+        task.status = "EXECUTION_COMPLETED"
+        picks = (
+            await db.scalars(
+                select(DirectPickExecution)
+                .where(DirectPickExecution.picking_task_id == ids[0])
+                .order_by(DirectPickExecution.plan_revision)
+            )
+        ).all()
+        assert [row.plan_revision for row in picks] == [1, 2]
+        db.add(
+            TransportTask(
+                transport_task_id=transport_task_id,
+                client_request_id=client_request_id,
+                request_digest="a" * 64,
+                kind="RACK_MOVE",
+                caller_json={"workline_id": str(ids[1])},
+                request_json={"rack_id": "RETURN-A"},
+                submit_operation_id=new_uuid7(),
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status="SUCCEEDED",
+                authority_workline_id=ids[1],
+                created_at=timezone.now_for_db(),
+                updated_at=timezone.now_for_db(),
+            )
+        )
+        db.add(
+            TransportDecisionBinding(
+                correlation_id=f"pt:{ids[0]}:e:{picks[1].source_evidence_id}:rack:RETURN-A",
+                step="PICKING_TASK_RETURN_RACK_IN",
+                workline_id=ids[1],
+                picking_task_id=ids[0],
+                resource_fence_id="RETURN-A",
+                client_request_id=client_request_id,
+                source_evidence_id=picks[1].source_evidence_id,
+            )
+        )
+        db.add(
+            PositionProjection(
+                object_type="RACK",
+                object_id="RETURN-A",
+                workline_id=ids[1],
+                position_json={"kind": "RACK_POSITION", "location_code": "RETURN-POS"},
+                arrival_face="A",
+                source_operation_id=new_uuid7(),
+                source_transport_task_id=transport_task_id,
+            )
+        )
+    try:
+        async with integration_session_factory() as db:
+            repository = PickingTaskPlanDeltaRepository()
+            assert (
+                await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", transport_task_id)
+                == picks[1].source_evidence_id
+            )
+            assert (await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS")).id == ids[
+                0
+            ]
+            assert (
+                await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", "other-transport") is None
+            )
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(TransportDecisionBinding)
+                .where(TransportDecisionBinding.client_request_id == client_request_id)
+                .values(source_evidence_id=picks[0].source_evidence_id)
+            )
+            await db.execute(
+                update(DirectPickExecution)
+                .where(DirectPickExecution.id == picks[0].id)
+                .values(cancelled_evidence_id=picks[0].source_evidence_id)
+            )
+        async with integration_session_factory() as db:
+            assert await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS") is None
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(PositionProjection).where(PositionProjection.source_transport_task_id == transport_task_id)
+            )
+            await db.execute(
+                delete(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_request_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.client_request_id == client_request_id))
+
+
 async def test_source_queries_return_only_candidates_with_large_history(
     integration_session_factory, prepared, monkeypatch
 ):

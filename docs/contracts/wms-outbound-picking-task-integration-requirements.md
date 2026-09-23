@@ -316,7 +316,7 @@ WMS/WES 接口不传 WES 内部的 PickingTask、Bin、Material 或 DeviceComman
 
 上述已实施的新增字段均为正整数，必须等于原 `plan_delta` 成员的 revision；同一可靠调用重提沿用原 `operation_id` 和冻结正文，响应仍按该 `operation_id` 关联原请求，不重复携带 revision。CTU01 和业务重试在 WES 内部以当前成员绑定 Action；rev1/A 已提交或完成不阻止 rev2/A，`CANCELLED` 后只评估原成员是否仍有效且目标未满足，物理接纳仍由 RCS 裁决。
 
-`return_rack.arrival_report` 是由 `transport_task_id` 标识的物理到位事实，同一事实可以供多个有效成员求值，不绑定单个 revision。`work_completed` 已以原准入 `admission_operation_id` 区分 Passage；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 已用 `last_applied_plan_revision` 作为计划流游标。这些交互不因本次来源成员修正而机械增加 `plan_revision`。`work_plan` 及其后续 `BIN_CELL` 决定/上报仍缺少同任务同箱多次经过的确定 wire 关联；单加 revision 不能解决同 revision 重复经过。
+`return_rack.arrival_report` 是由 `transport_task_id` 标识的物理到位事实，同一事实可以供多个有效成员求值，不绑定单个 revision。WES 先以该 Transport 的绑定确认所属任务，再逐个核对同架有效 revision 成员的面级完成事实；离场动作沿用本次到位绑定的成员因果身份。`work_completed` 已以原准入 `admission_operation_id` 区分 Passage；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 已用 `last_applied_plan_revision` 作为计划流游标。这些交互不因本次来源成员修正而机械增加 `plan_revision`。`work_plan` 及其后续 `BIN_CELL` 决定/上报仍缺少同任务同箱多次经过的确定 wire 关联；单加 revision 不能解决同 revision 重复经过。
 
 表中前四项已同步严格 DTO、OpenAPI 中的入站事件和生产调用；第五项仍是**目标 wire**，不可作为已实现接口联调。本节不授权 WES 猜测“最新 revision”或按任务/货架面自动归属结果。
 
@@ -967,7 +967,7 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 已接纳任务的结果等待期限到达时保留原任务和成员，等待 RCS 明确终态，不凭超时生成 `UNKNOWN`；成员位置确实未知时才按专属事实进入 `RECONCILING`。两种情况都不得伪造成功或另换身份重发。当前面仍能为 FIFO 队首形成可执行批次时继续退箱；
 否则允许入站需求推进或切换来源货架面。已可靠进入 `RETURN_BUFFER` 的 Bin可跨面等待，不再锁定原来源面。
 
-退箱请求收到 `NO_BATCH` 后，本次请求已经结束；WES 不再为同一货架面重试该 `return_batch`，继续 CTU02/CTU03 及后续工作货架流转，候选保留在 FIFO，
+退箱请求收到 `NO_BATCH` 后，本次请求已经结束；WES 不再为同一次物理到位的货架面重试该 `return_batch`。同一架面随后以新成员再次到位时，前一次 `NO_BATCH` 不阻止新的回箱决定。WES 继续 CTU02/CTU03 及后续工作货架流转，候选保留在 FIFO，
 直到所有工作货架耗尽后通过 `workline.return_buffer.drain_rack_decide@v1` 请求空载货架承接。响应未知或 `UNAVAILABLE` 时，才使用原
 `operation_id` 和原请求内容重试。
 
