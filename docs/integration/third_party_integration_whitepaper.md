@@ -16,9 +16,9 @@ authority: 仓库执行系统（WES）与固定式设备控制系统（ECS）的
 
 | 能力 | ECS 现有条款与核验 | 经 WMS 接入的 RCS / Transport | WMS 业务接入 | 结论 |
 | --- | --- | --- | --- | --- |
-| 同资源独立任务原子接纳与物理互斥 | §3.2 当前要求 WES 先查 IDLE；§3.1 定义 ACK/429/503，但未证明 ECS 接纳时的同资源原子排队 | Transport 合同 §4 的接纳及 BIN/RACK 占用条款不等于实际 RCS 排队验证 | prepare §7.2 的有效任务约束不能替代物理互斥 | 供应商能力 UNKNOWN；T1/T2 可本地实施，部署验收阻塞 |
-| 重传、ACK 丢失、进程重启与幂等保存期 | §3.1 保证相同 command_code/载荷不重复驱动；未规定覆盖重试有效期的保存期限 | Transport 合同 §4.1 冻结 operation/operation_id 与 transport_task_id；未找到保存期及对端重启实测 | prepare/return_batch 原身份重试合同存在，保存期与扣账实测缺失 | 持久期限及重启行为 UNKNOWN；不得因此开启交付未知重送 |
-| 原任务恢复结果与版本 | §4.1 只有 command_code、SUCCESS/FAILED、finish_time；无恢复优先级或权威顺序条款 | Transport 合同 §5.3、§6 使用 outcome_revision/outcome_version；更高版可收敛 UNKNOWN，已确定终态仍不能自动改写 | plan_delta 按 task_id 与连续 plan_revision；不等价于 prepare/return_batch 响应纠正 | Transport 本地合同已定义，ECS 恢复排序 UNKNOWN；实测均 UNKNOWN |
+| 同资源独立任务原子接纳与物理互斥 | §3.2 当前要求 WES 先查 IDLE；§3.1 定义 ACK/429/503，但未证明 ECS 接纳时的同资源原子排队 | RCS 承担 AGV 接纳、排队及物理互斥；WES 不用 BIN/RACK 历史任务作跨任务准入 | prepare §7.2 的有效任务约束不能替代物理互斥 | RCS 职责已确认；ECS 供应商与现场接线验收另行验证 |
+| 重传、ACK 丢失、进程重启与幂等保存期 | §3.1 保证相同 command_code/载荷不重复驱动；未规定覆盖重试有效期的保存期限 | 相同 Request 身份查询/重提不创建第二物理任务；RCS 未获 ACK 持续补发 Response，WMS 持久化后 ACK 并向 WES 补发 | prepare/return_batch 原身份重试合同存在，保存期与扣账实测缺失 | RCS/WMS Transport 可靠性合同已确认；ECS 保存期及真实接线验收另行验证 |
+| 原任务恢复结果与版本 | §4.1 只有 command_code、SUCCESS/FAILED、finish_time；无恢复优先级或权威顺序条款 | 已 ACCEPTED 的 RCS 任务最终产生明确终态；真实位置未知仍需原身份后续权威事实 | plan_delta 按 task_id 与连续 plan_revision；不等价于 prepare/return_batch 响应纠正 | RCS 终态合同已确认；ECS 恢复排序与现场实测仍需独立验证 |
 | 事件重报与独立新事件 | §4.2 使用核心字段及 data（包含 timestamp）区分；诊断扩展不参与身份 | Transport 位置 Evidence 按自身 operation identity；不冒充 ECS Event | 业务以自己 operation 身份收报 | 同毫秒同内容新事件的可区分性及移走后独立事件实测 UNKNOWN |
 | 事实反馈、纠正与不重复扣账 | ECS Result 进入 WES Evidence；没有将任意孤立 Result 送给 WMS 的通用合同 | WMS 转发原任务位置/结果，不能把 WES ACK 当 WMS 库存记账 | plan_delta §8.2.1 的合法下一 revision 已由正常 record/replay 自动校验应用；prepare/return_batch 确定响应机器纠正缺口见出库合同 T0 登记 | plan_delta 本地聚焦 FAST 已通过；自动传输重试不等于其余业务纠正，WMS 收件/扣账/纠正实测 UNKNOWN |
 
@@ -415,7 +415,7 @@ POST <WES_BASE_URL>/api/v1/callback/event
 业务数据塞进这个值。统一网络传输接口不规定 `data` 的二级字段，不同设备可以不同；供应商和仓库执行系统必须以对应设备合同
 附录为准，并把这些字段留在 `data` 内，不能提升到顶层。
 
-`ESTOP_PRESSED` 不得发送到 WES Event Callback。急停记录、物理急停、复位和恢复执行由 ECS 独立负责；WES 收到该值时返回 `400 INVALID_ENVELOPE`（`event_type/INVALID_VALUE`），不写入 Evidence，也不唤醒 execution 或 transport-debug。WES 保留原 DeviceCommand 身份和资源围栏，等待 ECS 在恢复后按既有 Result Callback/对账合同报告原命令终态。
+`ESTOP_PRESSED` 不得发送到 WES Event Callback。急停记录、物理急停、复位和恢复执行由 ECS 独立负责；WES 收到该值时返回 `400 INVALID_ENVELOPE`（`event_type/INVALID_VALUE`），不写入 Evidence，也不唤醒 execution 或 transport-debug。WES 保留原 DeviceCommand 身份、证据和受影响步骤的依赖，等待 ECS 在恢复后按既有 Result Callback/对账合同报告原命令终态。
 
 事件回调没有单独的事件身份字段。核心字段、`is_debug` 和 `data` 相同的事件重复上报时，仓库执行系统返回相同的接收确认并且
 只处理一次；省略 `is_debug` 与显式传入 `false` 视为相同事件。

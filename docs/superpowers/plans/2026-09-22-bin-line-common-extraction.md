@@ -1,6 +1,8 @@
 # bin-line-common 共享包抽取 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **STATUS: NEEDS REBASE AGAINST WES RESPONSIBILITY CONVERGENCE — NOT CURRENT IMPLEMENTATION AUTHORITY**
+>
+> **DO NOT IMPLEMENT STAGE 1 UNTIL PREREQUISITES ARE REVALIDATED.** 本文保留作历史分析；下方任务清单、代码示例、四项前置假设和 merge SHA 门禁均不得直接执行。当前依据是 [SRS 第 0 章](../../architecture/SRS.md)、[WES 职责收敛账本](../../architecture/wes-responsibility-convergence-ledger.md)、[人工出库 WMS 合同](../../contracts/wms-manual-outbound-picking-integration-requirements.md)和 [Transport 合同](../../contracts/transport-fulfillment-contract.md)。每项前置能力先证明即使取消共享包抽取也仍为 WES 正确运行所必需，再分别闭合能力、合同、架构不变量和聚焦测试；merge SHA 只记录落地位置。完成职责收敛后重新比较两个插件，再决定是否抽取及抽取范围。
 
 **Goal:** 把 `workline_plugins/manual-picking/` 里与业务无关的入线段、货架循环、回程段代码（约 2500 行）抽取为独立
 的 `workline_plugins/bin-line-common/` 共享包，让 `automatic-picking` 插件后续可以复用同一套代码，不重复实现。
@@ -17,12 +19,12 @@
 
 **Spec:** [docs/superpowers/specs/2026-09-22-automatic-picking-plugin-system-design.md](../specs/2026-09-22-automatic-picking-plugin-system-design.md) §4～§6、§9、§12（架构、文件归属、接缝设计、顺序依赖、测试所有权）
 
-## 前置条件（阻塞 Stage 1，先独立完成并合入，不是本计划的任务）
+## 历史前置假设（待重新裁决，不是当前 Stage 1 启动门禁）
 
 本计划**不能**在以下四项合入 `develop` 之前开始，因为它们直接修改本计划要搬移的同一批文件或其上游合同：
 
 1. [docs/superpowers/specs/2026-09-22-bin-line-scan-retry-fix.md](../specs/2026-09-22-bin-line-scan-retry-fix.md)（回程段扫码重试修正，独立计划，T1/T2）已合入 `develop`。
-2. `docs/specs/2026-09-19-reliable-recovery-task-isolation.md` 对应的基础层改动（`reliable_rack_transport.py`、
+2. 按当前 SRS 和 Transport 合同验证的基础层可靠恢复改动（`reliable_rack_transport.py`、
    `position_projection_service.py`、`transport/service.py` 等）已合入 `develop`。
 3. `plan_revision` 身份合同修正已合入：人工料箱准入/完成 wire 显式携带 revision；Entry/Work 冻结同一 revision，
    禁止用数据库 `id` 或“最近一轮”推断迟到回调归属。

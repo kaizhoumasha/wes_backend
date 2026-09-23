@@ -10,7 +10,8 @@ related:
   - docs/integration/third_party_integration_whitepaper.md
   - docs/integration/device-annex-automatic-picking-arms.md
   - docs/integration/wms-joint-confirmation-automatic-picking.md
-  - docs/specs/2026-09-19-reliable-recovery-task-isolation.md
+  - docs/architecture/SRS.md
+  - docs/contracts/transport-fulfillment-contract.md
   - docs/superpowers/specs/2026-09-22-bin-line-scan-retry-fix.md
   - docs/plugin_development_guide.md
 supersedes: docs/design/automatic-picking-plugin-system-design.docx（评审通过后归档到项目外）
@@ -59,7 +60,8 @@ supersedes: docs/design/automatic-picking-plugin-system-design.docx（评审通�
 - 手工线（[wms-manual-outbound-picking-integration-requirements.md](../../contracts/wms-manual-outbound-picking-integration-requirements.md)）
   C1~C7 代码 `PARTIAL`、C7（静态装配+真实 worker 主链路）`PLANNED`，现场验收全部 `NOT ACCEPTED`。这不阻塞本设计：
   自动线依赖的是基础能力（Transport/DeviceCommand/Evidence/WmsConfirmation），不是手工插件本身；但共享包的真实
-  代码抽取需要等 [可靠恢复与任务隔离 SPEC](../../specs/2026-09-19-reliable-recovery-task-isolation.md) 落地，
+  代码抽取需要等当前基础层改动按 [SRS](../../architecture/SRS.md) 和
+  [Transport 合同](../../contracts/transport-fulfillment-contract.md) 验证并合入，
   见 §9。
 
 ## 4. 架构：依赖方向与三段切法
@@ -78,7 +80,7 @@ src/(基础能力)  ←  wes_plugin_sdk  ←  bin-line-common(共享包，非插
 | 段 | 内容 | 归属 | 差异点 |
 | --- | --- | --- | --- |
 | 入线段 | SCAN1、点1→点2 FIFO、点1 NG 直达点3 | `bin-line-common` | 两插件完全一致 |
-| 货架循环 | `inbound_batch`、CTU01 准入窗口、同架换面、换架离场、`plan_delta` 应用到 F01/CTU01 意图 | `bin-line-common` | 两插件完全一致 |
+| 货架循环 | `inbound_batch`、CTU01 步骤幂等与到位依赖、同架换面、换架离场、`plan_delta` 应用到 F01/CTU01 意图 | `bin-line-common` | 两插件完全一致；物理准入由 RCS 裁决 |
 | 回程段 | SCAN3、SCAN4、`RETURN_BUFFER` FIFO、`return_batch`、drain、任务完成、下一任务准备 | `bin-line-common` | 两插件完全一致；含[独立文档](2026-09-22-bin-line-scan-retry-fix.md)的重试修正，该修正先在 `manual-picking` 内落地，抽取时一并带过来 |
 | **工作段** | SCAN2 之后到"处置结果形成" | **各插件私有** | 手工：PDA 准入+完成；自动：`work_plan`+Cell 循环+双臂+`material.decide`+`movement_report` |
 
@@ -91,7 +93,7 @@ src/(基础能力)  ←  wes_plugin_sdk  ←  bin-line-common(共享包，非插
   │  入线段         货架循环                │   │   工作段      │   │         回程段                │
   │                                        │   │              │   │                              │
   │  SCAN1 → 点1→点2 FIFO → inbound_batch  │ → │  SCAN2 到位   │ → │  处置结果(disposition)         │
-  │  → CTU01 准入 → 同架换面/换架          │   │  → 手工:PDA   │   │  → SCAN3 → SCAN4              │
+  │  → CTU01 请求 → 到位后换面/换架        │   │  → 手工:PDA   │   │  → SCAN3 → SCAN4              │
   │                                        │   │    自动:双臂   │   │  → RETURN_BUFFER FIFO         │
   │                                        │   │              │   │  → return_batch/drain          │
   └────────────────────────────────────────┘   └──────────────┘   └──────────────────────────────┘
@@ -252,8 +254,7 @@ v1 覆盖：SCAN2 到位 → `work_plan`（`READY`/`NO_WORK`/`WAIT`）→ `ARM01
 
 ## 9. 与基础层可靠恢复改动的顺序依赖
 
-`git status` 显示 [可靠恢复与任务隔离 SPEC](../../specs/2026-09-19-reliable-recovery-task-isolation.md) 对应的
-代码改动（`reliable_rack_transport.py`、`position_projection_service.py`、`transport/service.py` 等 18 个核心
+本设计编写时，基础层可靠恢复相关的代码改动（`reliable_rack_transport.py`、`position_projection_service.py`、`transport/service.py` 等 18 个核心
 文件，2 个新迁移）尚未提交，且直接修改了 `batch_driver.py`、`scan_flow.py`、`drain_flow.py`、`batch_repository.py`、
 `rack_readiness.py`——正是 §6.1 要抽取的文件。
 
@@ -355,7 +356,7 @@ or_command`、`test_scan4_rescan_preserves_first_fifo_order_and_command` 当前�
 
 | 新代码路径 | 生产失败方式 | 测试是否覆盖 | 错误处理是否存在 | 用户可见性 |
 | --- | --- | --- | --- | --- |
-| `bin_line_returns` 新物理事件覆盖旧决定 | 扫码器硬件故障反复误触发 | 需新增场景（独立文档 §5），尚未写代码 | 有（§3 告警阈值，log/metric） | 有可观测信号（告警面板），不是静默失败 |
+| `bin_line_returns` 新物理事件覆盖旧决定 | 扫码器硬件故障反复误触发（非离场-再进场、非手动 PLC 重置这两种现场确认过的合法触发源） | 需新增场景（独立文档 §5），尚未写代码 | 有（§3 告警阈值，log/metric） | 有可观测信号（告警面板），不是静默失败 |
 | `automatic_picking_cells/reels` schema（§5.4，TBD） | 无法评估——字段未定 | 无法评估 | 无法评估 | 已知阻塞项，不构成 critical gap |
 | `bin-line-common` 抽取（§6） | 抽取过程引入回归，破坏手工线现有行为 | 有（§12：先内部拆分验证测试全绿，再搬迁） | 有（小步骤+可回滚） | 测试红灯直接暴露 |
 | `retry_count` 告警阈值 | 阈值不合适（过高漏报/过低噪音） | 无调优反馈机制 | 部分（实施时取保守估计，无回调整流程） | 阈值不合适时靠事后调参发现 |

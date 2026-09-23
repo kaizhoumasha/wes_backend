@@ -18,6 +18,8 @@ DO NOT send optional commentary
 
 本文件只保留高频硬约束。任务触及相应范围时再读取专项文档，不要预加载所有上下文：
 
+长期业务与接口真源依次为：**SRS 中的架构原则 → SRS / 当前有效外部合同 → 插件业务合同 → 实施说明 → 项目外历史归档**。本文件约束 Agent 执行方式，不覆盖已批准的业务和 wire 合同；同层冲突必须修订文档，不能挑一份继续实施。`wes-responsibility-convergence-ledger.md` 仅用于本次重构执行，完成后退出长期检索范围。
+
 - 测试目录、所有权、FAST/HEAVY 边界：`tests/README.md`
 - 分层、Service 调用、时区、导出细节：`.claude/context/rules.md`
 - 新模块和 Zero-Code CRUD 示例：`.claude/context/howto.md`
@@ -118,9 +120,16 @@ API → Service → Repository → Database
 
 ### 4.3 系统所有权
 
-- WMS 拥有业务单据、库存、分配和全局位置；WES 拥有可靠的本地执行；ECS 拥有物理事实与设备结果。
-- 可能已被 ECS/RCS 接纳但结果或位置未知的物理动作，必须保留原执行身份、证据和资源围栏并进入对账；ACK、超时、业务完成、
-  数据库状态或 Mock 成功都不能替代物理完成。未取得匹配的权威终态前，禁止换身份重发、释放资源、改址、跳过或覆盖原事实。
+- WMS 拥有业务意图、库存和业务终态；WES 拥有自动化 SOP 与可靠本地执行；ECS/RCS 拥有物理执行、资源接纳和设备结果。
+- WES 只根据当前 WMS 意图与已观察事实决定下一自动化动作。可以等待当前步骤所需的到位、SCAN 或终态事实，不得以历史任务、预测容量或位置投影为其他独立任务建立物理资源围栏。物理容量、AGV 分配、路径冲突和位置预占由 ECS/RCS 裁决。
+- 自动化 Action 的生命周期跟随其直接业务依据。业务重试须由插件确认原 Requirement 未取消、权威目标事实未满足、原 Action 已明确终态；`PickingTask.status` 等父级状态不能代替 `plan_delta member.cancelled_evidence_id`，Action 的 `CANCELLED` 也不能代替目标事实。技术重试沿用原身份，业务重试创建新 Action 身份。
+- 已持久化的 WMS 结果交付义务可晚于父流程完成：插件在创建前判断业务依据与事实，基础派发按冻结身份、未 ACK 状态和原请求重提，不因父级状态变化重新解释业务资格；单纯父状态变化不是对账冲突。
+- Intent 可以变化，已确认的物理 Fact 不能由业务状态改写。Requirement 失效停止未创建的后继动作及业务重试；在途动作是否请求取消按设备合同处理。已确认位置值由权威事实更新；在途动作可使当前位置待核，但不能清除历史到位事实。反向搬运是新 Requirement 和新 Action，不是回滚。
+- Fact 接收与当前投影应用分开：匹配身份的物理结果先可靠留存，再以已有 Action 因果身份决定是否更新当前投影。父级业务状态不拦截真实物理结果；迟到旧结果不能覆盖更新的因果事实。首次 SCAN4 顺序由首次权威到位事实冻结。
+- 可能已被 ECS/RCS 接纳但结果或位置未知的动作，必须保留原执行身份、请求正文、证据和对象级因果依赖；ACK、超时、业务完成、
+  数据库状态或 Mock 成功都不能替代物理完成。未取得匹配的权威事实前，不得换身份创建等价动作、改址、跳过依赖步骤或覆盖原事实；独立动作仍可提交给 ECS/RCS。
+- Transport 技术重试沿用原 WES `operation_id + transport_task_id + 冻结正文`，WMS 保证复用原 RCS `request_id`；明确终态之后，只有插件结合当前 WMS 意图与现场事实确认仍需搬运，才可创建新 Transport 和新请求身份。超时不是失败；RCS 对已接纳任务保证明确终态，未 ACK 的 Response 经 WMS 持久转发并持续补发，WES 持久化后才 ACK。
+- 第 0 章 SRS 的十条架构不变量是 Code Review 红线。每个非终态持久对象须有且只有一个确定的 Next Owner，并能在通知丢失或 Worker 崩溃后由持久扫描、租约到期或等价机制恢复；确定 Evidence 优先重放，只有合同与权威事实不足以决定唯一安全动作时才进入 `RECONCILING`。
 - 每个物理队列必须在对应合同中声明作用域、顺序纪律、冻结顺序、阻塞状态和权威退出证据。FIFO 不得越过未闭合队头，LIFO 不得
   越过未闭合栈顶；`UNKNOWN`、`RECONCILING`、ESTOP、retry 或人工处理不会自动成为越序条件。WMS 决定业务准入与优先级，
   WES 冻结并执行可靠顺序，ECS/PLC 提供实际运动与位置事实；计划与现场冲突时以物理事实冻结对账。
@@ -143,7 +152,7 @@ API → Service → Repository → Database
 - 公共能力只实现一次：`WmsClient`/HTTP Transport 单次有界收发，`WmsConfirmation` 承接 WES→WMS 可靠义务，`InboundEvidence` 与唯一
   Event route 承接 WMS→WES 可靠接收。operation 不得重建 HTTP、持久化、幂等、重试、并发领取或 outbox。
 - Operation 基础能力与插件消费解耦，允许零/一/多消费者；插件安装状态不动态注册或注销 operation。插件缺席只禁止新业务触发，
-  既有可靠义务与迟到结果继续保存；冻结插件版本不可用时保留原身份、证据和资源围栏并进入对账，不回退默认消费者。
+  既有可靠义务与迟到结果继续保存；冻结插件版本不可用时保留原身份、证据和对象级依赖并进入对账，不回退默认消费者。
 - 插件只通过单一 `wms_operations` facade 的固定 typed methods 创建不可变 intent，不传任意 operation 字符串或裸 `dict`，不执行 I/O。
   宿主可靠保存封闭响应后构造 typed outcome，交给冻结业务上下文对应的插件；插件不解析原始 JSON 或按 operation 字符串分派。
   内核私有通用 envelope 不得作为 generic 构造入口重新导出；wire、事务、HTTP、领取、重试和恢复始终由宿主拥有。
@@ -155,7 +164,7 @@ API → Service → Repository → Database
   接收 ACK，业务由后续独立事务/worker 应用。两类模式均在提交后才启动外部副作用；共享入口不得查询插件业务表或按当前插件/default owner 路由。
 - 公开幂等身份仅为 `(operation, operation_id)`；相同身份只能重放相同规范化 payload，内容漂移必须冲突。技术重试保留原身份和内容；
   重新求值仅按合同使用新 identity。ACK 只证明所属合同声明的接收事实，不推定后续业务应用、外部接纳或物理完成；未知状态保留原身份、
-  证据和资源围栏直至权威闭合。
+  证据和受影响步骤的因果依赖直至权威闭合，不阻止其他独立任务。
 - 新 operation 只增加同域 wire/OpenAPI 及该方向所需的 Adapter 或 Handler；业务数据、结果解释、因果恢复和顺序归插件。共享测试证明
   wire/可靠机制，operation 测试验证接入差异，插件测试证明业务，禁止复制公共机制的完整测试矩阵。
 
