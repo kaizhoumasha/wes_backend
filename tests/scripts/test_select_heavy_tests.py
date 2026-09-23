@@ -1388,6 +1388,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260909_0319_bebf575cca2b_widen_device_topology_foreign_keys_to_.py",
         "migrations/versions/20260909_0624_133712f6a89a_add_manual_outbound_integration_runs.py",
         "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py",
+        "migrations/versions/20260923_1154_510f5006d385_合并运行时表到业务schema.py",
         "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py",
         "migrations/versions/20260909_0517_a7e8ad4339e5_add_return_and_transfer_workline_rack_.py",
         "migrations/versions/20260909_0915_d11f8c6fdb0d_support_generic_workline_position_slots.py",

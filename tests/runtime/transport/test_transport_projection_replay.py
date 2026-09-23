@@ -196,7 +196,7 @@ async def test_final_projection_candidate_scan_is_picking_fenced_and_null_safe()
     assert "picking_tasks" in sql
     assert "workline.return_buffer.drain_rack_decide@v1" in sql
     assert "newer_drain_confirmation" in sql
-    assert "ORDER BY wes_runtime.transport_members.updated_at ASC" in sql
+    assert "ORDER BY wes_biz.transport_members.updated_at ASC" in sql
 
 
 @pytest.mark.asyncio

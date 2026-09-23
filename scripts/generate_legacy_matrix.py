@@ -2292,7 +2292,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "src/app/runtime/orchestration/workline_runtime_status_projection.py",
                 "WorklineRuntimeStatusProjection",
                 "runtime",
-                "wes_runtime.workline_runtime_status_projections",
+                "wes_biz.workline_runtime_status_projections",
                 "tests/workline_runtime/test_workline_runtime_status_projection_service.py",
             ),
             (

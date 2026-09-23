@@ -76,7 +76,7 @@ pre-ACK submit timeout/connection loss 的事实 reason 固定为 `SUBMIT_DELIVE
 
 ## 4. 数据模型（直接替换，不做兼容）
 
-在 `wes_biz.wms_confirmations`、`wes_runtime.transport_tasks`、`wes_biz.device_commands` 使用同一套 lifecycle/recovery contract，但 storage schema 不统一。下表是本期逐对象 capability/schema mapping；禁止把逻辑 contract 机械复制成三张表的同名字段。
+在 `wes_biz.wms_confirmations`、`wes_biz.transport_tasks`、`wes_biz.device_commands` 使用同一套 lifecycle/recovery contract。下表是本期逐对象 capability mapping；禁止把逻辑 contract 机械复制成三张表的同名字段。
 
 | Recovery capability | WMS Confirmation | TransportTask | DeviceCommand |
 |---|---|---|---|
@@ -151,8 +151,8 @@ WITH active_execution AS (
 )
 SELECT m.transport_task_id, m.object_type, m.object_id,
        m.last_operation_id, m.updated_at, m.id
-FROM wes_runtime.transport_members AS m
-JOIN wes_runtime.transport_tasks AS t
+FROM wes_biz.transport_members AS m
+JOIN wes_biz.transport_tasks AS t
   ON t.transport_task_id = m.transport_task_id
 JOIN active_execution AS ae
   ON ae.client_request_id = t.client_request_id
@@ -351,7 +351,7 @@ RCS/ECS 明确 `REJECTED/FAILED` 时，WES 保存该终态并交给业务插件�
 
 ### 7.3 RUNTIME_RESET
 
-`wes_runtime.workline_runtime_status_projections` 保存 `source`、`stopped_reason`、`stopped_at`、`resumed_at` 和现有 `evidence_json`。`evidence_json` 只作为恢复动作的 evidence/diagnostic context，由 Service 统一写入稳定 key：`resume_evidence_id`、`resume_trigger`、`driver_tick_id`、`observed_at`；它不是新的权威事实，不作为状态机判断是否允许从 `STOPPED` 恢复到 `READY` 的输入，不复制原始事实内容，也不建立 FK、索引或独立查询能力。是否允许恢复必须基于原始事实对象和既有 invariant 判断。调用方不得自行扩展同一语义的不同 key；未来只有当恢复证据成为业务查询条件、状态机输入或需要数据库级约束时，才将其提升为正式字段并通过 migration 演进。`RUNTIME_RESET` 不是业务 `STOPPED`。恢复 Service 将状态设为 `READY` 后，在 `celery` 队列投递一次 `activate_picking_task_plans_batch`；workline advisory lock 保证幂等，失败记录错误日志/指标，下一 tick 重试。
+`wes_biz.workline_runtime_status_projections` 保存 `source`、`stopped_reason`、`stopped_at`、`resumed_at` 和现有 `evidence_json`。`evidence_json` 只作为恢复动作的 evidence/diagnostic context，由 Service 统一写入稳定 key：`resume_evidence_id`、`resume_trigger`、`driver_tick_id`、`observed_at`；它不是新的权威事实，不作为状态机判断是否允许从 `STOPPED` 恢复到 `READY` 的输入，不复制原始事实内容，也不建立 FK、索引或独立查询能力。是否允许恢复必须基于原始事实对象和既有 invariant 判断。调用方不得自行扩展同一语义的不同 key；未来只有当恢复证据成为业务查询条件、状态机输入或需要数据库级约束时，才将其提升为正式字段并通过 migration 演进。`RUNTIME_RESET` 不是业务 `STOPPED`。恢复 Service 将状态设为 `READY` 后，在 `celery` 队列投递一次 `activate_picking_task_plans_batch`；workline advisory lock 保证幂等，失败记录错误日志/指标，下一 tick 重试。
 
 ## 8. 生产异常验收样本
 
@@ -548,7 +548,7 @@ manual-picking/plugin 另增加 fact-driven outcome consumer 回归测试，冻�
 - WES 实现物理资源调度、占用判断或重复搬运保护。
 - 创建空壳 PickingTask 绕过历史状态。
 - 前端监控页面；本期提供 Service/API 可查询数据和告警。
-- `wes_runtime.reconciliation_attentions` 或其它独立人工异常工单表；当前只使用事实表、metrics、logs 和 alerting。
+- `wes_biz.reconciliation_attentions` 或其它独立人工异常工单表；当前只使用事实表、metrics、logs 和 alerting。
 - 旧版本兼容、旧数据迁移和兼容别名。
 
 ## 历史评审阶段边界（已过期）

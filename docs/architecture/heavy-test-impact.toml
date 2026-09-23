@@ -125,8 +125,8 @@ reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-# 由生成器删除已退出 Epoch 符号并同步 START 版本错误；17 项矩阵 FAST 通过。
-reviewed_content_sha256 = "3aab04775d0eec6ff2e84b23a5ab7c1f01a5a591de230e5bb9f0314bd6628708"
+# WorkLine 状态投影迁入 wes_biz；矩阵 FAST 承接身份校验。
+reviewed_content_sha256 = "6d694219bf20bcf7372e34c1c91ceee99ab10aa00d2020ccda99a7290e13a3f3"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -1165,6 +1165,10 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/env.py"
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
+
+[[mapping]]
+source_glob = "src/database/schema_conf.py"
+heavy_tests = ["tests/integration/test_runtime_schema_consolidation_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 # WorkLine 当前激活合同承接旧 Epoch；旧路径保留用于选择本次删除差异的验证。
@@ -2777,6 +2781,10 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_retirement
 [[mapping]]
 source_glob = "migrations/versions/20260923_1114_334c5ca5b81d_移除人工出库联调运行表.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_retirement_schema_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260923_1154_510f5006d385_合并运行时表到业务schema.py"
+heavy_tests = ["tests/integration/test_runtime_schema_consolidation_postgresql.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py"

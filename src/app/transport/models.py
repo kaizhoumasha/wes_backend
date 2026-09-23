@@ -12,7 +12,7 @@ from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
 from src.database.schema_conf import SchemaType
 
-RUNTIME_SCHEMA = SchemaType.RUNTIME.value
+BIZ_SCHEMA = SchemaType.BIZ.value
 
 # 六态只描述可靠搬运事实：PENDING 经权威 ACK 进入 ACCEPTED，经结果 evidence 进入确定终态；
 # pre-ACK SUBMIT_DELIVERY_UNKNOWN 仍保持 PENDING，ACK 后结果未知/冲突/超时进入 RECONCILING。
@@ -36,7 +36,7 @@ _DEBUG_RUN_STEP_PHASE_CHECK = (
 
 class TransportTask(BaseMixin, table=True):
     __tablename__ = "transport_tasks"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
         CheckConstraint(
@@ -78,7 +78,7 @@ class TransportTask(BaseMixin, table=True):
             postgresql_where=text("outcome_version > published_outcome_version"),
             sqlite_where=text("outcome_version > published_outcome_version"),
         ),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -118,7 +118,7 @@ class TransportDebugRun(BaseMixin, table=True):
     """自动联调轮次的冻结配置与可恢复游标。"""
 
     __tablename__ = "transport_debug_runs"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint(_DEBUG_RUN_STATUS_CHECK, name="transport_debug_run_status_valid"),
         CheckConstraint(_DEBUG_RUN_PHASE_CHECK, name="transport_debug_run_phase_valid"),
@@ -150,7 +150,7 @@ class TransportDebugRun(BaseMixin, table=True):
             sqlite_where=text("active_scope = 'GLOBAL'"),
         ),
         Index("ix_transport_debug_runs_recent", "created_at", "id"),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -178,7 +178,7 @@ class TransportDebugRunStep(BaseMixin, table=True):
     """自动联调轮次中每个外部动作或 Evidence 等待步骤。"""
 
     __tablename__ = "transport_debug_run_steps"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint(_DEBUG_RUN_STEP_STATUS_CHECK, name="transport_debug_run_step_status_valid"),
         CheckConstraint(_DEBUG_RUN_STEP_PHASE_CHECK, name="transport_debug_run_step_phase_valid"),
@@ -198,12 +198,12 @@ class TransportDebugRunStep(BaseMixin, table=True):
         UniqueConstraint("client_request_id", name="ux_transport_debug_run_steps_client_request_id"),
         Index("ix_transport_debug_run_steps_run_status", "run_id", "status", "ordinal"),
         Index("ix_transport_debug_run_steps_transport_task", "transport_task_id"),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
     run_id: str = Field(
-        foreign_key=f"{RUNTIME_SCHEMA}.transport_debug_runs.run_id",
+        foreign_key=f"{BIZ_SCHEMA}.transport_debug_runs.run_id",
         ondelete="CASCADE",
         max_length=80,
     )
@@ -226,18 +226,18 @@ class TransportDebugRunStep(BaseMixin, table=True):
 
 class TransportMember(BaseMixin, table=True):
     __tablename__ = "transport_members"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         UniqueConstraint("transport_task_id", "ordinal", name="ux_transport_members_task_ordinal"),
         UniqueConstraint("transport_task_id", "object_id", name="ux_transport_members_task_object"),
         Index("ix_transport_members_object_fact", "object_type", "object_id", "transport_task_id"),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
     transport_task_id: str = Field(
-        foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",
+        foreign_key=f"{BIZ_SCHEMA}.transport_tasks.transport_task_id",
         max_length=80,
         index=True,
     )
@@ -259,7 +259,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     """由已应用 Transport 联调终态维护的可丢弃当前位置投影。"""
 
     __tablename__ = "transport_debug_position_projections"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         CheckConstraint(
@@ -275,7 +275,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
             "ix_transport_debug_position_projection_source_task",
             "source_transport_task_id",
         ),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -286,7 +286,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     source_operation_id: str = Field(max_length=36)
     source_transport_task_id: str = Field(
-        foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",
+        foreign_key=f"{BIZ_SCHEMA}.transport_tasks.transport_task_id",
         ondelete="CASCADE",
         max_length=80,
     )
@@ -295,7 +295,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
 
 class TransportEvidence(BaseMixin, table=True):
     __tablename__ = "transport_evidence"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint(_EVIDENCE_STATUS_CHECK, name="transport_evidence_status_valid"),
         CheckConstraint(
@@ -320,7 +320,7 @@ class TransportEvidence(BaseMixin, table=True):
             postgresql_where=text("status = 'PENDING'"),
             sqlite_where=text("status = 'PENDING'"),
         ),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -343,14 +343,14 @@ class TransportEvidence(BaseMixin, table=True):
 
 class TransportCallbackReceipt(BaseMixin, table=True):
     __tablename__ = "transport_callback_receipts"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
+    __schema__ = BIZ_SCHEMA
     __table_args__ = (
         CheckConstraint(
             "(conflict_code IS NULL) = (conflict_detected_at IS NULL)",
             name="transport_callback_receipt_conflict_complete",
         ),
         UniqueConstraint("operation", "operation_id", name="ux_transport_callback_receipts_identity"),
-        {"schema": RUNTIME_SCHEMA},
+        {"schema": BIZ_SCHEMA},
     )
 
     id: int | None = Field(default=None, primary_key=True)

@@ -192,7 +192,7 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[WorkLine, WorkLineDev
 async def _drop_status_check_and_update(db: AsyncSession, scenario: Scenario, row_id: int) -> None:
     table_contract = {
         "device": ("wes_biz.device_commands", "ck_device_commands_device_command_status_valid", "status"),
-        "transport": ("wes_runtime.transport_tasks", "ck_transport_tasks_transport_task_status_valid", "status"),
+        "transport": ("wes_biz.transport_tasks", "ck_transport_tasks_transport_task_status_valid", "status"),
         "inbound": (
             "wes_biz.inbound_evidences",
             "ck_inbound_evidences_inbound_evidence_apply_status_valid",
@@ -344,6 +344,7 @@ async def test_completed_non_execution_wms_result_does_not_wait_for_decision_pub
     if owner_kind == "picking_task":
         picking_task = _PickingTask(
             task_id=f"READINESS-PICKING-{identity[:12]}",
+            workline_id=workline.id,
             task_type="MANUAL",
             status="QUEUED",
             queue_revision=1,
@@ -560,11 +561,11 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
         assert (await repository.load_counts(observer)).transport_task_wait_drain == 0
     async with integration_session_factory.begin() as cleanup:
         await cleanup.execute(
-            text("DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :id"),
+            text("DELETE FROM wes_biz.transport_evidence WHERE transport_task_id = :id"),
             {"id": transport_task_id},
         )
         await cleanup.execute(
-            text("DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :id"),
+            text("DELETE FROM wes_biz.transport_tasks WHERE transport_task_id = :id"),
             {"id": transport_task_id},
         )
 
@@ -855,6 +856,8 @@ async def test_repository_classifies_legacy_epoch_owner_before_workline_retireme
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
             async with sessions.begin() as db:
+                # 此用例验证旧 Epoch owner；当前 Repository 的 Transport 模型使用 wes_biz。
+                await db.execute(text("ALTER TABLE wes_runtime.transport_tasks SET SCHEMA wes_biz"))
                 workline_id = await db.scalar(
                     text(
                         """

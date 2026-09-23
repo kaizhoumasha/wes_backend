@@ -30,7 +30,7 @@ JOIN pg_attribute AS source_column
 JOIN pg_attribute AS target_column
     ON target_column.attrelid = target_table.oid AND target_column.attnum = target_key.attnum
 WHERE fk_constraint.contype = 'f'
-    AND source_namespace.nspname IN ('wes_biz', 'wes_runtime', 'wes_sys')
+    AND source_namespace.nspname IN ('wes_biz', 'wes_sys')
 ORDER BY source
 """
 
