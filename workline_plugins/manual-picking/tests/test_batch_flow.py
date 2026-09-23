@@ -75,6 +75,7 @@ async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_re
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -96,6 +97,7 @@ async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_re
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -118,6 +120,7 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -146,6 +149,7 @@ async def test_batch_flow_requests_inbound_before_return_on_first_face(face_done
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -173,6 +177,7 @@ async def test_cancelled_rack_can_start_return_batch_without_inbound_progress() 
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="510050",
         rack_face="270",
@@ -220,6 +225,7 @@ async def test_frozen_face_schedules_second_transport_without_second_wms_request
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -261,6 +267,7 @@ async def test_cancelled_face_does_not_create_an_inbound_chunk() -> None:
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -306,11 +313,18 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
 
     assert (
         await flow.apply_inbound_in_session(
-            object(), evidence, workline_id=7, confirmed_rack_id="R1", confirmed_face="90", inlet_location="CNV0301"
+            object(),
+            evidence,
+            workline_id=7,
+            picking_task_id=31,
+            confirmed_rack_id="R1",
+            confirmed_face="90",
+            inlet_location="CNV0301",
         )
         == "INBOUND_READY"
     )
     assert len(transport.calls) == 1
+    assert transport.calls[0]["picking_task_id"] == 31
     assert transport.calls[0]["source_evidence_id"] == 31
     assert transport.calls[0]["correlation_id"] == "batch-1:0"
     assert transport.calls[0]["moves"] == tuple(
@@ -320,6 +334,7 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
     await flow.create_inbound_chunk(
         object(),
         workline_id=7,
+        picking_task_id=31,
         intent=intent,
         ready=outcome.result,
         evidence_id=31,
@@ -327,12 +342,19 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
         inlet_location="CNV0301",
     )
     assert transport.calls[1]["correlation_id"] == "batch-1:4"
+    assert transport.calls[1]["picking_task_id"] == 31
     assert transport.calls[1]["moves"] == (
         BinMove("A000000005", RackBinSlot("R1", "90", "S5"), HandoffPosition("CNV0301")),
     )
     assert (
         await flow.apply_inbound_in_session(
-            object(), evidence, workline_id=7, confirmed_rack_id="R2", confirmed_face="90", inlet_location="CNV0301"
+            object(),
+            evidence,
+            workline_id=7,
+            picking_task_id=31,
+            confirmed_rack_id="R2",
+            confirmed_face="90",
+            inlet_location="CNV0301",
         )
         is None
     )
@@ -695,6 +717,7 @@ async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(
         object(),
         workline_id=7,
         workline_code="LINE-1",
+        picking_task_id=31,
         task_id="PICK-1",
         rack_id="R1",
         rack_face="90",
@@ -744,6 +767,7 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
     kwargs = {
         "workline_id": 7,
         "workline_code": "LINE-1",
+        "picking_task_id": 31,
         "task_id": "PICK-1",
         "rack_id": "R1",
         "rack_face": "90",

@@ -943,7 +943,8 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 
 响应 identity 必须匹配请求。`200 / DECIDED` 的 `data` 为封闭二选一：
 
-- `READY`：仅 `result=READY`、非空有序 `racks[]`；每项为唯一 `rack_id + rack_face[]`，面数组非空、有序且同架不重复。
+- `READY`：仅 `result=READY`、非空 `racks[]`；每项为唯一 `rack_id + rack_face[]`，面数组非空、有序且同架不重复。
+  `racks[]` 只声明容量 reservation，不声明货架到位或执行顺序；AGV 到位顺序由现场事实决定。
   WMS 返回前必须确认这些面的合计容量满足 `required_slot_count`，并保持相应容量义务；总面数必须在 `1..required_slot_count`，
   每个返回面至少承担一个预留槽位。
 - `WAIT`：仅 `result=WAIT`、`reason_code=NO_DRAIN_RACK_AVAILABLE`、`retry_after_ms`（整数 1～60000）。本次决定闭合，
@@ -954,16 +955,16 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 [`return_buffer_drain/wire.py`](../../src/app/wms_adapter/return_buffer_drain/wire.py)。
 
 WMS 内部以 `(workline_code, drain_operation_id)` 保存该线唯一活动容量 reservation；不增加 wire 字段。普通 `return_batch` 使用已有
-`workline_code + rack_id + rack_face` 消费当前有序面的精确 slot。物理结果或位置未知时 reservation 不释放；本次
+`workline_code + rack_id + rack_face`，为当前已权威到位的 reservation 货架面计算并消费精确 slot。物理结果或位置未知时 reservation 不释放；本次
 `required_slot_count` 对应成员全部权威回库后关闭 drain 并释放剩余容量。后续新入队 Bin 不追加到旧 reservation。
 `NO_BATCH` 表示本次回架决定闭合但没有可分配储位；无论是否已有 `READY` 批次，WES 都不得把它变成同面轮询或设备级卡点。
 当前货架继续 CTU02/CTU03；所有工作货架耗尽后由 drain 请求 WMS 补发空载货架。`UNAVAILABLE` 或响应未知只重试原 return_batch identity。
 
-已创建 drain 链不会被后来到达的 PickingTask 取消、覆盖或绕过。READY 后按 `racks[]` 和每项 `rack_face[]` 的顺序执行：跨架复用
-进场/离场 Transport，同架下一面复用 `RACK_ROTATE`。源为所选 rack_id 的既有 RACK 引用，目标为本线已配置工作位，不从 WMS 响应添加
-新位置字段。CTU01、唯一 RACK 成员和当前投影必须共同证明精确 rack/face 到达，才连续使用普通 `return_batch` 为 FIFO 分配精确 slot 并搬回。
-同架下一面仍须等待当前架匹配 `SUCCEEDED` 和精确在位；跨架时旧架 departure 获 `ACCEPTED` 后即可提交下一架进场，由 RCS 负责排队，
-不等待旧架最终位置。历史或无关 Transport 不构成 WorkLine 级门闩。
+已创建 drain 链不会被后来到达的 PickingTask 取消、覆盖或绕过。READY 的 `racks[]` 是无序 reservation 集合，WES 可在 CTU01
+窗口内提交各架进场，且任一货架取得匹配的 `SUCCEEDED` Transport、唯一 RACK 成员和当前 rack/face 投影后即可独立使用普通
+`return_batch` 为 FIFO 分配精确 slot 并搬回，不等待数组中其它货架。每架内部仍按 `rack_face[]` 顺序复用 `RACK_ROTATE`；源为所选
+rack_id 的既有 RACK 引用，目标为本线已配置工作位，不从 WMS 响应添加新位置字段。跨架时旧架 departure 获 `ACCEPTED` 后即可提交
+其它 reservation 货架进场，由 RCS 负责排队，不等待旧架最终位置。历史或无关 Transport 不构成 WorkLine 级门闩。
 冻结候选前缀及后续仍属本线的 FIFO 未排空、pre-buffer 仍有成员或相关可靠动作未闭合时不离场；排空后创建唯一 CTU03。
 CTU03 接纳释放窗口和业务 reservation；同架复用仍等待权威成功回调及明确 `RACK_POSITION`。WMS 拥有 rack/face、容量与储位分配，WES 拥有本地可靠编排，
 RCS/ECS 拥有接纳和最终物理事实。此设计不引入 Epoch、兼容别名、旧路径、队尾状态、缓存计数器、业务表或字段；

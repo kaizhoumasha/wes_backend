@@ -114,9 +114,10 @@ CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`，实际库位不要�
 RETURN_BUFFER 是 WorkLine 级跨任务 FIFO，正常回架使用当前权威 rack/face，不要求回原货架或原面。
 PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务；已有绑定的 `PREPARING | EXECUTING` 或成功 claim 的任务优先承接 FIFO。
 只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`。请求只携带
-`workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回有序 `racks[].rack_face[]`，WAIT 到期以新
-identity 和当前数量重求值。已创建 drain 链不被后来任务取消：按货架和面顺序共享 CTU01/CTU02 窗口，等待精确权威到位后连续使用普通
-`return_batch`，保留 FIFO 及未闭合义务直到排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
+`workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回无序 `racks[]` reservation，各 rack 内
+`rack_face[]` 有序；WAIT 到期以新 identity 和当前数量重求值。已创建 drain 链不被后来任务取消：在 CTU01 窗口内提交各 reservation
+货架，任一货架精确权威到位后即可独立使用普通 `return_batch`，不等待其它 AGV；同架按面顺序复用 CTU02，保留 FIFO 及未闭合义务直到
+排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。

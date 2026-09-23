@@ -350,6 +350,7 @@ async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_positio
     applied = await flow.apply_in_session(object(), 30, workline_id=7)
 
     assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    assert result.apply_inbound_in_session.await_args.kwargs["picking_task_id"] == 31
     assert result.apply_inbound_in_session.await_args.kwargs["confirmed_rack_id"] == "RACK-1"
     assert result.apply_inbound_in_session.await_args.kwargs["inlet_location"] == "INLET-POSITION"
 

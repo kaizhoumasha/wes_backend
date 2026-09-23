@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBatchRackFaceDone, BinInboundBatchReady
 
 from src.app.execution.models import (
@@ -52,6 +52,7 @@ class BatchRepository:
         """CTU01 按当前活动任务/Drain 货架占窗；历史任务不冻结后续任务。"""
         bindings = TransportDecisionBinding.__table__
         transports = TransportTask.__table__
+        members = TransportMember.__table__.c
         departures = bindings.alias("departures")
         departure_tasks = transports.alias("departure_tasks")
         accepted_departure = (
@@ -74,6 +75,20 @@ class BatchRepository:
             )
             .exists()
         )
+        failed_at_target = (
+            select(members.id)
+            .where(
+                members.transport_task_id == transports.c.transport_task_id,
+                members.object_type == "RACK",
+                members.object_id == bindings.c.resource_fence_id,
+                members.position_unknown.is_(False),
+                members.final_position_json.is_not(None),
+                members.final_position_json["kind"].as_string() == members.target_json["kind"].as_string(),
+                members.final_position_json["location_code"].as_string()
+                == members.target_json["location_code"].as_string(),
+            )
+            .exists()
+        )
         rows = await db.scalars(
             select(bindings.c.resource_fence_id)
             .join(transports, transports.c.client_request_id == bindings.c.client_request_id)
@@ -90,7 +105,10 @@ class BatchRepository:
                     )
                     .exists(),
                 ),
-                transports.c.status.in_(("PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED", "FAILED")),
+                or_(
+                    transports.c.status.in_(("PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED")),
+                    and_(transports.c.status == "FAILED", failed_at_target),
+                ),
                 ~accepted_departure,
             )
             .distinct()

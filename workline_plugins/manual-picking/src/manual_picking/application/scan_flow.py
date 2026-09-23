@@ -218,6 +218,7 @@ class ManualPickingScanFlow:
             db,
             evidence,
             workline_id=workline.id,
+            picking_task_id=cast("int", task.id),
             confirmed_rack_id=intent.rack_id,
             confirmed_face=intent.rack_face,
             inlet_location=positions[INLET.slot_key],

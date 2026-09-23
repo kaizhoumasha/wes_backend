@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -109,7 +109,7 @@ async def test_ready_reservation_is_reused_without_creating_a_new_decision() -> 
 @pytest.mark.asyncio
 async def test_no_batch_advances_to_the_next_ordered_face() -> None:
     ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90", "270")),))
-    decision = SimpleNamespace(result=ready)
+    decision = SimpleNamespace(result=ready, completed_at=NOW - timedelta(seconds=1))
     flow, _, _, history = _flow(rows=(SimpleNamespace(bin_code="B1"),))
     history.latest_return.side_effect = [
         (sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000)), NOW),
@@ -122,11 +122,24 @@ async def test_no_batch_advances_to_the_next_ordered_face() -> None:
 @pytest.mark.asyncio
 async def test_no_batch_on_all_reserved_faces_exhausts_the_last_rack() -> None:
     ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)), sdk.RackFaceSequence("R2", ("270",))))
-    decision = SimpleNamespace(result=ready)
+    decision = SimpleNamespace(result=ready, completed_at=NOW - timedelta(seconds=1))
     flow, _, _, history = _flow(rows=(SimpleNamespace(bin_code="B1"),))
     history.latest_return.return_value = (sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000)), NOW)
 
     assert await flow.active_rack_face(object(), _line(), decision, "R2") == ("R2", "270", True)
+
+
+@pytest.mark.asyncio
+async def test_return_history_before_current_drain_does_not_exhaust_reserved_face() -> None:
+    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
+    current = decision(ready)
+    flow, _, _, history = _flow(rows=(SimpleNamespace(bin_code="B1"),))
+    history.latest_return.return_value = (
+        sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000)),
+        NOW - timedelta(seconds=1),
+    )
+
+    assert await flow.active_rack_face(object(), _line(), current, "R1") == ("R1", "90", False)
 
 
 @pytest.mark.asyncio
@@ -162,7 +175,7 @@ async def test_unclosed_return_obligation_keeps_original_identity() -> None:
 @pytest.mark.asyncio
 async def test_ready_return_batch_allows_departure_after_passage_is_closed() -> None:
     ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
-    decision = SimpleNamespace(result=ready)
+    decision = SimpleNamespace(result=ready, completed_at=NOW - timedelta(seconds=1))
     flow, _, _, history = _flow(rows=())
     history.latest_return.return_value = (SimpleNamespace(result=object()), NOW)
 

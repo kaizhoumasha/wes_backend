@@ -99,7 +99,7 @@ class ManualPickingDrainFlow:
             rack_face=face,
         ):
             return False
-        latest = await self._history.latest_return(db, workline_id=line.id, rack_id=rack_id, rack_face=face)
+        latest = await self._latest_return_for_drain(db, line, decision, rack_id, face)
         if latest is not None:
             outcome, _ = latest
             if isinstance(outcome.result, BinBatchNoBatch):
@@ -126,12 +126,7 @@ class ManualPickingDrainFlow:
             if rack.rack_id != rack_id:
                 continue
             for face in rack.rack_faces:
-                latest = await self._history.latest_return(
-                    db,
-                    workline_id=line.id,
-                    rack_id=rack.rack_id,
-                    rack_face=face,
-                )
+                latest = await self._latest_return_for_drain(db, line, decision, rack.rack_id, face)
                 if latest is None:
                     if rows:
                         return rack.rack_id, face, False
@@ -143,3 +138,17 @@ class ManualPickingDrainFlow:
                 return rack.rack_id, face, False
             return (*last_exhausted, True) if last_exhausted is not None else None
         raise ValueError("rack is not reserved by drain decision")
+
+    async def _latest_return_for_drain(self, db: Any, line: Any, decision: Any, rack_id: str, face: str) -> Any:
+        latest = await self._history.latest_return(
+            db,
+            workline_id=line.id,
+            rack_id=rack_id,
+            rack_face=face,
+        )
+        if latest is None:
+            return None
+        _, completed_at = latest
+        if decision.completed_at is None:
+            raise ValueError("drain completed time missing")
+        return latest if completed_at > decision.completed_at else None

@@ -237,7 +237,7 @@ async def test_drain_uses_authoritatively_arrived_rack_instead_of_wms_list_order
         evidence_id=91,
     )
     ingresses = {
-        "R1": SimpleNamespace(status="ACCEPTED", transport_task_id="arrival-r1"),
+        "R1": SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-r1"),
         "R2": SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-r2"),
     }
 

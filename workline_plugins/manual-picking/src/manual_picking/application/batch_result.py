@@ -30,6 +30,7 @@ class ManualPickingBatchResultFlow:
         evidence: Any,
         *,
         workline_id: int,
+        picking_task_id: int,
         confirmed_rack_id: str,
         confirmed_face: str,
         inlet_location: str,
@@ -45,6 +46,7 @@ class ManualPickingBatchResultFlow:
             await self.create_inbound_chunk(
                 db,
                 workline_id=workline_id,
+                picking_task_id=picking_task_id,
                 intent=intent,
                 ready=result,
                 evidence_id=evidence.id,
@@ -61,6 +63,7 @@ class ManualPickingBatchResultFlow:
         db: Any,
         *,
         workline_id: int,
+        picking_task_id: int,
         intent: BinInboundBatchIntent,
         ready: BinInboundBatchReady,
         evidence_id: int,
@@ -73,6 +76,7 @@ class ManualPickingBatchResultFlow:
         await self._transport.create(
             db,
             workline_id=workline_id,
+            picking_task_id=picking_task_id,
             source_evidence_id=evidence_id,
             correlation_id=f"{intent.operation_id}:{offset}",
             step=INBOUND_STEP,

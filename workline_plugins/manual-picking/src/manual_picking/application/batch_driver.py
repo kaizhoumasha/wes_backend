@@ -197,7 +197,7 @@ class ManualPickingBatchDriver:
             )
         return len(selected)
 
-    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911
+    async def _advance_drain(self, db: Any, line: Any) -> int:
         # Drain rack 是无序 reservation；按各自权威到位事实独立推进。
         workstation = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         occupied = await self._rack_cycles.occupied_source_rack_ids(db, line.id)
@@ -242,10 +242,10 @@ class ManualPickingBatchDriver:
                 or projection.position_json != {"kind": "RACK_POSITION", "location_code": position}
                 or not projection.source_transport_task_id
             ):
-                return count
+                continue
             projection_transport = await self._transports.get_task(db, projection.source_transport_task_id)
             if projection_transport is None or projection_transport.status != "SUCCEEDED":
-                return count
+                continue
             if projection.arrival_face != rack_face:
                 rotation = await repository.transport(db, decision, DRAIN_RACK_ROTATE_STEP, rack_id, rack_face)
                 if rotation is None:
@@ -261,16 +261,16 @@ class ManualPickingBatchDriver:
                     )
                     return count + 1
                 if rotation.status != "SUCCEEDED":
-                    return count
+                    continue
                 projection = await ready_rack_projection(
                     db, line, rack_id, rack_face, position, positions=self._positions, transports=self._transports
                 )
                 if projection is None or not await repository.arrival_matches(
                     db, rotation, projection, rack_id, rack_face
                 ):
-                    return count
+                    continue
             elif not await repository.arrival_matches(db, ingress, projection, rack_id, rack_face):
-                return count
+                continue
             if not exhausted and await self._drain.return_in_session(
                 db,
                 line,
@@ -382,6 +382,7 @@ class ManualPickingBatchDriver:
                 db,
                 workline_id=line.id,
                 workline_code=line.line_code,
+                picking_task_id=task.id,
                 task_id=task.task_id,
                 rack_id=current.rack_id,
                 rack_face=current.rack_face,
@@ -628,6 +629,7 @@ class ManualPickingBatchDriver:
                 db,
                 workline_id=line.id,
                 workline_code=line.line_code,
+                picking_task_id=task.id,
                 task_id=task.task_id,
                 rack_id=rack_id,
                 rack_face=rack_face,

@@ -57,6 +57,7 @@ class InboundCreator(Protocol):
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int,
         intent: BinInboundBatchIntent,
         ready: BinInboundBatchReady,
         evidence_id: int,
@@ -97,6 +98,7 @@ class ManualPickingBatchFlow:
         *,
         workline_id: int,
         workline_code: str,
+        picking_task_id: int,
         task_id: str,
         rack_id: str,
         rack_face: str,
@@ -179,6 +181,7 @@ class ManualPickingBatchFlow:
             await self._inbound.create_inbound_chunk(
                 db,
                 workline_id=workline_id,
+                picking_task_id=picking_task_id,
                 intent=progress.intent,
                 ready=cast("BinInboundBatchReady", progress.result),
                 evidence_id=progress.evidence_id,
