@@ -61,7 +61,7 @@ WES 的业务角色“转运货架”，在 ECS 侧的 `location_type` 就是 `F
 
 | `location_type` | 必填字段 | 逻辑来源 |
 | --- | --- | --- |
-| `BIN` | `location_id`、`location_type`、`bin_cell_location` | 提议直接使用 WMS `work_plan.READY.cell_id`（单个、`1..7` 数字字符串；待 O16 与主合同修订确认） |
+| `BIN` | `location_id`、`location_type`、`bin_cell_location` | WMS 希望 `cell_id` 保持 `BIN_ID + INDEX` 业务编码；提议使用另行提供的 `cell_index` 定位料箱内料格并映射 `bin_cell_location`（待 O16 与主合同修订确认），不得拆解或直接下发 `cell_id` |
 | `ONE_LAYER_RACK` | 供应商原文要求 `location_id`、`location_type`、`bin_type`、`bin_location`、`bin_cell_location` 等；退料货架储位直接放料盘，字段是否适用见 O12、O13 | 来自 `plan_delta.added_direct_picks[].source_locator`（`rack_id`、`rack_face`、`slot_id`） |
 | `SCAN_PLATFORM` | `location_id`、`location_type` | WorkLine 位置绑定 |
 | `FIVE_LAYER_RACK` | `location_id`、`location_type`、`rack_id`、`rack_side`、`rack_layer`、`rack_column` | 提议由 WMS `material.decide.ACCEPT.target_locator` 给出层/列（待主合同修订确认）；`rack_side` 与 `rack_face` 值域仍待 O11 确认 |
@@ -268,5 +268,5 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | O13 | 退料货架直接取料的位置字段：`bin_*` 是否适用于“储位直接放料盘”，`slot_id` 如何映射到 ECS 字段（字段名和 O10 不同，但可以是同一种做法：WMS 直接给出 ECS 需要的字段，不用 WES 反推） | ECS 供应商 + WMS |
 | O14 | 直接取料的“空取”信号，是否与 O5 同一机制 | ECS 供应商 |
 | O15 | 2026-09-21 联调样例的 ARM02 `target` 缺少 `location_type`；硬件文档 §8.1 要求 `FIVE_LAYER_RACK` 必填该字段，请确认是遗漏还是有意省略 | ECS 供应商 |
-| O16 | 已提议：`cell_id` 直接使用 `1..7` 的数字字符串，等同于 `bin_cell_location`，不再单独映射；请 WMS 确认能否按这个格式返回 | WMS |
+| O16 | WMS 希望 `cell_id` 保持 `BIN_ID + INDEX` 编码，可单独提供料箱内定位号 `cell_index`；请 WMS 与 ECS 供应商确认 `cell_index` 的类型/值域及到 `bin_cell_location` 的映射，WES 不从 `cell_id` 推算 | WMS + ECS 供应商 |
 | O17 | 直接取料的 ARM01 测量字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`，如果 O13 确认 `ONE_LAYER_RACK` 需要）目前没有任何 wire 来源：`plan_delta.added_direct_picks[]` 只给 `source_locator`，直接取料没有 `work_plan` 等价物。如果确实需要，建议同 O4/变更 1 的解法，扩展 `added_direct_picks[]` 每项带上这些字段 | WMS |

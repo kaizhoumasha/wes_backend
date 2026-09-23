@@ -817,7 +817,7 @@ T2 完成后可并行启动 Lane B 与 Lane C；两者合并并通过聚焦测�
 ## Implementation Tasks
 
 当前执行方案已收敛为四个最小切片，详见
-[实施方案](../superpowers/plans/2026-09-19-manual-picking-owner-convergence.md)：
+[已完成实施方案](../../../archive_docs/wes_backend/docs/superpowers/plans/2026-09-19-manual-picking-owner-convergence.md)：
 
 1. 收敛 §8/§10 的测试 owner、状态与真实验收边界；
 2. 将 drain outcome fixture 全部对齐为 `rack_face`；
