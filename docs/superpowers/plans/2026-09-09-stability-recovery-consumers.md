@@ -58,7 +58,7 @@ B1 修改 frontend 的 `src/api/modules/transport.ts`、`src/api/modules/wmsDiag
 ### Task B3：独立验收当前联调消费者，不替代插件业务验收
 
 **Files:**
-- Inspect: `src/app/transport/debug_run_service.py`、`src/app/workline_integration_debug/service.py`。
+- Inspect: `src/app/transport/debug_run_service.py`；`src/app/workline_integration_debug/service.py` 已随 #271 退役，不再作为验收对象。
 - Reuse tests: `tests/runtime/transport/test_transport_debug_run_advancement.py`、`tests/integration/transport/test_transport_debug_run_recovery.py`。
 - Docs: `docs/integration/transport-joint-acceptance.md`、`docs/devops/execution-recovery.md`；测试新增时同步 HEAVY mapping。
 

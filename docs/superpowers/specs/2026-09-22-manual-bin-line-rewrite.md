@@ -12,7 +12,7 @@ related:
   - docs/contracts/wms-manual-outbound-picking-integration-requirements.md
   - docs/architecture/authority-matrix.md
 supersedes:
-  - docs/superpowers/plans/2026-09-22-bin-line-common-extraction.md（仅实施路径被取代：渐进重构+搬迁不再执行；
+  - ../archive_docs/wes_backend/docs/superpowers/plans/2026-09-22-bin-line-common-extraction.md（实施路径已废弃：渐进重构+搬迁不再执行；
     其三表 DDL、`dispatch_scan_event` 接口、Review Focus 测试场景等目标架构设计被本文继承，见"旧文档处置"一节）
 ---
 
@@ -20,7 +20,7 @@ supersedes:
 
 ## 定位
 
-本文取代 [bin-line-common 共享包抽取计划](../plans/2026-09-22-bin-line-common-extraction.md)的**实施路径**，
+本文取代 [bin-line-common 共享包抽取计划](../../../../archive_docs/wes_backend/docs/superpowers/plans/2026-09-22-bin-line-common-extraction.md)的**实施路径**，
 但继承它已经评审过的**目标架构设计**（三表 DDL、`dispatch_scan_event` 接口、Review Focus 测试场景，详见"旧文档
 处置"一节）。原计划假设"在 `manual-picking` 内部渐进重构、验证零行为变化后再搬迁"，前提是 v1 的代码和数据要素
 会被后续版本直接继承。经过评审确认三件事后，这个前提不再成立，渐进重构+搬迁这套实施路径不再执行：
@@ -181,7 +181,7 @@ v2 在真实 WorkLine 上稳定运行后，删除 `workline_plugins/manual-picki
 
 ## 旧文档处置
 
-[bin-line-common 共享包抽取计划](../plans/2026-09-22-bin-line-common-extraction.md)分两部分处理，不是整体作废：
+[bin-line-common 共享包抽取计划](../../../../archive_docs/wes_backend/docs/superpowers/plans/2026-09-22-bin-line-common-extraction.md)分两部分处理，不是整体作废：
 
 - **作废的是实施路径**：它假设"在 v1 内部渐进重构、Stage 1 拆分验证零行为变化、Stage 2 `git mv` 搬迁、Stage 3
   接线"，这套过渡步骤的前提（v1 会被后续版本直接继承）不再成立，不会被执行。
@@ -192,7 +192,7 @@ v2 在真实 WorkLine 上稳定运行后，删除 `workline_plugins/manual-picki
   同料箱多轮 revision、inbound/return 公平交替）——这些内容是正确的，直接作为 manual-bin-line 和 bin-line-common
   建表、写接口、写测试用例时的参考依据，不需要重新设计一遍。实施计划阶段会逐项标注具体继承哪一节。
 
-该文件保留在仓库中，不删除，标注为已被实施路径层面取代、但设计内容仍被本文引用；不再作为独立可执行的计划维护。
+该文件已移至项目外归档，完整保留被引用的设计内容；其实施步骤不再作为可执行计划。
 [回程段扫码重试修正 spec](2026-09-22-bin-line-scan-retry-fix.md)继续有效，同时是 v1 补丁和 manual-bin-line 原生
 行为的依据，不需要修改。
 

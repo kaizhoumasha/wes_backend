@@ -83,7 +83,7 @@
 
 ### Task 5: 合同收敛与最终证据
 
-**Files:** 修改 `docs/contracts/wms-manual-outbound-picking-integration-requirements.md`；处理被本方案替代的 `docs/superpowers/plans/2026-09-10-manual-picking-integration-workbench-optimization.md` 的当前引用并移至 `../archive_docs/wes_backend/`（只在确认其剩余任务已被当前真源承接时）；同步 `docs/architecture/file_index.md` 与精确 HEAVY mapping。
+**Files:** 修改 `docs/contracts/wms-manual-outbound-picking-integration-requirements.md`；原联调台后端已退役，历史方案见 `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-10-manual-picking-integration-workbench-optimization.md`，不再执行其中的旧联调台任务；同步 `docs/architecture/file_index.md` 与精确 HEAVY mapping。
 
 - [ ] 把合同 §3 的点1自主步进、点2不可读、点3未知停箱、点4只记录扫码改成已确认的四点流程；只改与本次行为冲突的段落和对应图表，保留历史厂商原件。
 - [ ] 运行 `rg` 限定扫描当前合同、插件、SDK、部署与测试，确认 `data.barcode` 兼容读取和旧流程表述没有仍被当作当前真源；文档只做链接/结构和 diff 检查，不添加 pytest。

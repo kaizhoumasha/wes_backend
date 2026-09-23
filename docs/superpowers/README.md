@@ -8,8 +8,8 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
-| `specs/2026-09-11-wes-nonblocking-execution-design.md` | ECS/Transport 取消跨任务物理围栏、结果自动归集与 WMS 对账职责的目标设计 | IMPLEMENTING；后端未提交 worktree 已通过 QUALITY 与 selected HEAVY（395 passed）；前端合同同步、部署与供应商/现场验收未完成 |
-| `plans/2026-09-11-wes-nonblocking-execution-plan.md` | 合同、ECS、Transport、事实恢复、业务消费者、前端与现场验收切片 | IMPLEMENTING；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，不是 merge ready |
+| `specs/2026-09-11-wes-nonblocking-execution-design.md` | ECS/Transport 取消跨任务物理围栏、结果自动归集与 WMS 对账职责的目标设计 | 后端 PR #246/#247 与前端 PR #125 已合并；部署与供应商/现场验收未完成 |
+| `plans/2026-09-11-wes-nonblocking-execution-plan.md` | 合同、ECS、Transport、事实恢复、业务消费者、前端与现场验收切片 | 后端 PR #246/#247 与前端 PR #125 已合并；部署、供应商接入和现场验收未完成 |
 | `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
 | `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | 后端 A1–A4 实现、评审与验证完成；不依赖具体业务插件，未部署 |
 | `plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面、领域恢复入口和独立消费者验收 | IMPLEMENTING；恢复手册与原消费者验证已推进，前端等待干净 develop 合同 |
@@ -32,13 +32,20 @@
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
-| `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
-| `plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施切片、验证和现场交接入口 | Implemented and merged；仓内验证已完成并已部署联调；现场交接与验收未执行 |
 
 ## 项目外历史归档
 
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md`：实施及 Gate A 已完成；轻量 Commit profile 仍为 Deferred，不属于本计划已交付范围。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-17-manual-picking-contract-closure.md`：Task 6 全部完成，合同收口证据已记录。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-19-manual-picking-owner-convergence.md`：四步任务已完成；真实 worker wiring 和现场验收仍按合同单独跟踪。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-26-transport-integration-diagnostics.md`：前后端实施已合入并部署联调；现场交接与验收未执行。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-02-transport-debug-auto-run-backend.md`、`2026-09-02-transport-debug-auto-run-frontend.md`：自动联调前后端已落地；原计划步骤勾选状态未随交付更新。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-04-transport-bin-return-evidence.md`：逐箱回架 Evidence 修复已随 #209 落地；原计划保留历史实施口径。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-07-wms-integration-diagnostics.md`：双向 WMS 诊断前后端已落地；原计划步骤勾选状态未随交付更新。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-10-manual-picking-integration-workbench-optimization.md`：原人工出库联调台后端已随 #271 退役，旧方案不再执行；业务验收仍按当前合同跟踪。
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-09-22-bin-line-common-extraction.md`：原地渐进抽取路径已由 manual-bin-line 重写设计取代；被继承的目标设计细节保留供该设计引用。
 - `../archive_docs/wes_backend/2026-08-27-phase12-manual-bin-processing-guided-development.md`
 
 - `../archive_docs/wes_backend/stability-recovery-20260909/2026-08-26-release-operational-readiness.md`：保留原文；已实现机制以 `docs/devops/prod-release-deploy.md` 为准，未完成普通 TEST FULL 验收由 `plans/2026-09-09-stability-recovery-operations.md` C2 完整承接。
