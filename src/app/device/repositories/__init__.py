@@ -6,17 +6,11 @@ from .command_repository import (
 )
 from .device_repository import DeviceRepository, device_repository
 from .ingress_history_repository import DeviceIngressHistoryRepository
-from .status_observation_repository import (
-    DeviceStatusObservationRepository,
-    device_status_observation_repository,
-)
 
 __all__ = [
     "DeviceCommandRepository",
     "DeviceIngressHistoryRepository",
     "DeviceRepository",
-    "DeviceStatusObservationRepository",
     "device_command_repository",
     "device_repository",
-    "device_status_observation_repository",
 ]

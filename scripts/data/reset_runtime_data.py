@@ -95,7 +95,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "callback_logs",
             "device_commands",
-            "device_status_observations",
             "direct_pick_executions",
             "inbound_evidence_conflicts",
             "inbound_evidences",
@@ -114,7 +113,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "resource_rack_bin_mounts",
             "resource_rack_placements",
             "resource_state_events",
-            "runtime_location_events",
             "transport_decision_bindings",
             "wms_confirmations",
             "workline_sessions",

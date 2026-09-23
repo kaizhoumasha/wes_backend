@@ -208,9 +208,7 @@ def test_workline_service_config_only_after_runtime_split():
 # 来源:workline 配置域 facade 的实际模块导出,按 service 模块分组维护。
 _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
     {
-        # diagnostic_service
-        "WorklineDiagnosticService",
-        "workline_diagnostic_service",
+        "WorkLineArchiveService",
         # workline_configuration_service
         "WorkLineConfigurationService",
         # workline_position_service
@@ -279,9 +277,6 @@ def test_workline_services_init_keeps_real_exports_accessible():
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
-
-    diagnostic_class = workline_services.WorklineDiagnosticService
-    assert diagnostic_class is not None
 
     with pytest.raises(AttributeError):
         workline_services.inbox_service  # noqa: B018

@@ -11,8 +11,6 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .diagnosis_verdict_builder_service import DiagnosisVerdictBuilder as WorklineDiagnosticService
-    from .diagnosis_verdict_builder_service import diagnosis_verdict_builder as workline_diagnostic_service
     from .plane_service import WorkLinePlaneService as WorkLinePlaneService
     from .plane_service import workline_plane_service as workline_plane_service
     from .workline_archive_service import WorkLineArchiveService as WorkLineArchiveService
@@ -32,8 +30,6 @@ _EXPORTS = {
     "workline_position_service": ("workline_position_service", "workline_position_service"),
     "WorkLineService": ("workline_service", "WorkLineService"),
     "workline_service": ("workline_service", "workline_service"),
-    "WorklineDiagnosticService": ("diagnosis_verdict_builder_service", "DiagnosisVerdictBuilder"),
-    "workline_diagnostic_service": ("diagnosis_verdict_builder_service", "diagnosis_verdict_builder"),
 }
 
 
@@ -43,8 +39,6 @@ __all__ = [
     "WorkLinePlaneService",
     "WorkLinePositionService",
     "WorkLineService",
-    "WorklineDiagnosticService",
-    "workline_diagnostic_service",
     "workline_plane_service",
     "workline_position_service",
     "workline_service",

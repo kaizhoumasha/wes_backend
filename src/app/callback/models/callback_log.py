@@ -125,25 +125,6 @@ class CallbackLog(DataTableMixin, table=True):
 # ==================== Schema ====================
 
 
-class CallbackLogCreate(BaseModel):
-    """创建回调日志 Schema"""
-
-    callback_type: str
-    subject_code: str
-    request_body: dict[str, Any]
-    client_ip: str | None = None
-    user_agent: str | None = None
-    request_id: str | None = None
-    trace_id: str | None = None
-    event_id: str | None = None
-    causation_id: str | None = None
-    response_status: int
-    response_time_ms: int
-    error_message: str | None = None
-    ingress_outcome: str | None = None
-    failure_stage: str | None = None
-
-
 class CallbackLogResponse(BaseModel):
     """回调日志响应 Schema"""
 
@@ -213,7 +194,6 @@ class CallbackLogSubjectResponse(BaseModel):
 
 __all__ = [
     "CallbackLog",
-    "CallbackLogCreate",
     "CallbackLogResponse",
     "CallbackLogSubjectResponse",
     "CallbackLogTraceResponse",

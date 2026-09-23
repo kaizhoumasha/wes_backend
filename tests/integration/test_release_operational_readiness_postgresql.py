@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import event, select, text
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from wes_plugin_sdk import CreateDeviceCommand, DevicePosition, EvidenceReadyFact, FactReference, handler
 
@@ -34,6 +35,7 @@ from src.app.transport.models import TransportEvidence, TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import WorkLine
+from src.database.schema_conf import get_schema_search_path
 from src.utils.timezone import timezone
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
@@ -41,6 +43,22 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 Ledger = Literal["device", "transport", "inbound", "wms"]
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def integration_engine() -> AsyncEngine:
+    """全局准入计数需要独占数据库，避免前序测试残留记录干扰。"""
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "head", database_url=database_url)
+        engine = create_async_engine(
+            database_url,
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": get_schema_search_path()}},
+        )
+        try:
+            yield engine
+        finally:
+            await engine.dispose()
 
 
 @dataclass(frozen=True)

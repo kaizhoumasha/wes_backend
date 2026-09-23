@@ -2,7 +2,6 @@
 
 from src.app.callback.models.callback_log import (
     CallbackLog,
-    CallbackLogCreate,
     CallbackLogResponse,
     CallbackLogSubjectResponse,
     CallbackLogTraceResponse,
@@ -24,7 +23,6 @@ __all__ = [
     "CallbackExternalIngressResponse",
     "CallbackHTTPExceptionResponse",
     "CallbackLog",
-    "CallbackLogCreate",
     "CallbackLogResponse",
     "CallbackLogSubjectResponse",
     "CallbackLogTraceResponse",

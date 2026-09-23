@@ -125,8 +125,7 @@ reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-# WorkLine 状态投影迁入 wes_biz；矩阵 FAST 承接身份校验。
-reviewed_content_sha256 = "6d694219bf20bcf7372e34c1c91ceee99ab10aa00d2020ccda99a7290e13a3f3"
+reviewed_content_sha256 = "aa4e8508158327b49d0a0c4a3905bb3960a970eb80b949e11ffe83d8585df20b"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -599,7 +598,15 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/repositories/{command_repository.py,status_observation_repository.py}"
+source_glob = "src/app/device/repositories/command_repository.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/repositories/status_observation_repository.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
@@ -1577,11 +1584,6 @@ reviewed_content_sha256 = "3834cf23777a64d52de0f4d165b947c9c3271fb77854e419610c8
 source_glob = "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py"
 heavy_tests = []
 reviewed_content_sha256 = "799b13bc91a9407841c97471c0f5b15dd064a5259a8b04b1e3493322b6af0aac"
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/services/runtime_location_event_service.py"
-heavy_tests = []
-reviewed_content_sha256 = "5a963345659fdfe917a99f2b7f694e3cb73f893951e1892822c437925ac8af0b"
 
 [[mapping]]
 source_glob = "src/app/{contracts/runtime_inbox_query.py,runtime/capabilities/material_flow/bin_cell_reservation_service.py,runtime/orchestration/consumers/__init__.py}"
@@ -2787,6 +2789,10 @@ source_glob = "migrations/versions/20260923_1154_510f5006d385_合并运行时表
 heavy_tests = ["tests/integration/test_runtime_schema_consolidation_postgresql.py"]
 
 [[mapping]]
+source_glob = "migrations/versions/20260923_1219_398b9ace6c7b_清理过期设备观察与位置事件表.py"
+heavy_tests = ["tests/integration/test_retired_models_postgresql.py"]
+
+[[mapping]]
 source_glob = "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
@@ -3023,6 +3029,24 @@ heavy_tests = [
 [[mapping]]
 source_glob = "deployment/plugin_models.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/{models/runtime_location_event.py,repositories/runtime_location_event_repository.py}"
+heavy_tests = ["tests/integration/test_retired_models_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/runtime_location_event_service.py"
+heavy_tests = ["tests/integration/test_retired_models_postgresql.py"]
+
+# 仅删除未引用的 CallbackLogCreate DTO，不改变持久化或回调入口。
+[[mapping]]
+source_glob = "src/app/callback/models/callback_log.py"
+heavy_tests = []
+
+# 仅删除未引用的 API DTO；对应持久化表结构未变化。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/object_transition_event.py"
+heavy_tests = []
 
 # 已退役 blocker 集成资产由 T1 独立命令并发/幂等 owner 承接删除差异。
 [[mapping]]

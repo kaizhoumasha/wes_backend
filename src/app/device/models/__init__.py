@@ -15,7 +15,6 @@ from .device import (
     DeviceResponse,
     DeviceUpdate,
 )
-from .evidence import DeviceStatusObservation
 
 __all__ = [
     "CommandStatus",
@@ -27,7 +26,6 @@ __all__ = [
     "DeviceCreate",
     "DeviceEditableBase",
     "DeviceResponse",
-    "DeviceStatusObservation",
     "DeviceUpdate",
     "InvalidCommandTransitionError",
 ]
