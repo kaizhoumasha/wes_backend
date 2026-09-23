@@ -8,7 +8,6 @@ from typing import Any
 from sqlalchemy import JSON, BigInteger, CheckConstraint, Column, Index, Text, UniqueConstraint, text
 from sqlmodel import Field
 
-from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
 from src.database.schema_conf import SchemaType
 
@@ -39,10 +38,7 @@ class TransportTask(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
-        CheckConstraint(
-            f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
-            name="transport_submit_attempt_count_valid",
-        ),
+        CheckConstraint("submit_attempt_count >= 0", name="transport_submit_attempt_count_valid"),
         CheckConstraint(
             "last_applied_wms_outcome_revision >= 0",
             name="transport_last_applied_wms_outcome_revision_valid",

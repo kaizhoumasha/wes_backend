@@ -689,6 +689,18 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         assert task is not None and task.status == "PENDING"
         assert member is not None and member.status == "PENDING" and member.final_position_json is None
         assert evidence is not None and evidence.status == "PENDING" and evidence.processed_at is None
+        async with integration_session_factory.begin() as db:
+            pending = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+            pending.claim_until = timezone.now_for_db() - timedelta(seconds=1)
+        assert await service.process_pending_evidence(1) == 1
+        assert await service.process_pending_evidence(1) == 0
+        async with integration_session_factory() as db:
+            recovered = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+            task = await db.scalar(
+                select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id)
+            )
+        assert recovered.status == "APPLIED" and recovered.processed_at is not None
+        assert task.status == "SUCCEEDED"
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(

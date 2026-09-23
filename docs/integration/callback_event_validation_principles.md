@@ -81,7 +81,7 @@ TransportResult 不使用设备统一接口的 `command_code`、设备合同身�
 
 上述顺序只适用于 WES 合同内的合法事件。`ESTOP_PRESSED` 不进入步骤 2–7，即使带有 `is_debug=true` 也不持久化、不 ACK、不唤醒 execution 或 transport-debug。
 
-新 EVENT 不改写、标失败、释放或重发旧 DeviceCommand；旧命令及其 Evidence、对账原因和资源围栏只由匹配的权威 Result Callback 或既有对账事实闭合。WES 不提供 EVENT blocker 查询、人工 reprocess 或设备空闲探测续行入口。
+新 EVENT 不改写、标失败、释放或重发旧 DeviceCommand；旧命令及其 Evidence、对账原因和当前步骤依赖只由匹配的权威 Result Callback 或既有对账事实闭合。WES 不提供 EVENT blocker 查询、人工 reprocess 或设备空闲探测续行入口。
 
 渐进业务接入按[插件顶层设计 §7.13](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#713-声明先行与渐进业务接入)：
 普通合法 EVENT 无对应 handler 时仅保存观察证据，不创建业务指令、不无限重试、不认定整线故障；已接入 handler

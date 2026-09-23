@@ -62,7 +62,7 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 - 超时必须产生告警、观察证据和对账标记，但不得阻塞同设备后续独立事件或命令；
 - ECS/RCS 对原 `command_code` 的迟到 ACK/RESULT/CALLBACK 必须持续接收、校验、落证，并沿原身份收敛；
 - 只有匹配的设备终态回调才能推进业务流程和位置投影；WES 本地超时、HTTP 状态、ACK 或 `RECONCILING` 不得伪造终态；
-- 结果身份、Evidence、资源围栏和对账原因必须保留到设备终态或人工对账完成，禁止换身份重发等价物理动作。
+- 结果身份、Evidence、受影响步骤的因果依赖和对账原因必须保留到设备终态或人工对账完成，禁止换身份重发等价物理动作；独立命令由 ECS 裁决物理接纳。
 
 ## 3. 内部模型边界
 
@@ -99,7 +99,7 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 - 先按普通 EVENT 持久化并独立返回 ACK，再由 evidence worker 异步创建命令；创建成功后 evidence 以 `IGNORED` 明确表示不进入
   WorkLine/业务 Decision，不表示联调命令失败；
 - 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令，正文漂移保持冲突；
-- 新 EVENT 使用自己的 identity 创建独立命令，不等待同设备旧 `DeviceCommand` 终态；旧命令的 identity、payload、状态、对账原因、Evidence 和资源围栏保持不变；
+- 新 EVENT 使用自己的 identity 创建独立命令，不等待同设备旧 `DeviceCommand` 终态；旧命令的 identity、payload、状态、对账原因、Evidence 和当前步骤依赖保持不变；
 - 联调目标由 `Settings.DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` 指定，新建命令时校验并冻结；Docker 本机开发编排明确指向 ECS Mock，配置变化不改写旧命令。固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
   原样作为 `params`；
 - 复用既有 DeviceCommand、统一 ECS Adapter、worker、CALLBACK 和 evidence；WES 不以本地 Status 或旧命令快照决定新独立命令能否执行，由 ECS 在接纳时裁决；

@@ -173,8 +173,9 @@ async def test_original_work_survives_lost_wakeup_broker_data_and_consumer_resta
                     .where(TransportTask.transport_task_id == case.task_id)
                     .values(result_deadline_at=timezone.now_for_db() - timedelta(seconds=1))
                 )
-            unknown = await _drive(case, lambda item: item.status == "RECONCILING")
-            assert unknown.reason_code == "TRANSPORT_RESULT_TIMEOUT"
+            waiting = await case.runtime.service.get_task_snapshot(case.task_id)
+            assert waiting.status == "ACCEPTED"
+            assert waiting.outcome_version == 0
         await asyncio.to_thread(case.worker.close, success=True)
         case.worker = None
         await _callback(case)

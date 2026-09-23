@@ -43,10 +43,9 @@ ECS 恢复结果无权威先后时只留存，Transport 沿用同任务 revision
 
 使用 `GET /api/v1/transport/callback-receipts?operation=…&operation_id=…` 查询原接收结果，需要 `ops:transport-callback-receipt:read`。收据中的拒绝码和原因是首次保存的结果；拒绝收据可能没有对应 Evidence。不要把内容冲突解释成可覆盖原事实。
 
-`send_started_at` 已保存而结果未知时，即使怀疑网络尚未送达，也不能自动认定未发送。由 WMS/ECS 核对原身份、动作和实际位置，
-再通过正式回调入口提供匹配的权威结果。迟到结果到达后核对 Evidence 应用、执行状态、成员结果及结果发布，最后由消费者证明自身流程推进。
+`send_started_at` 已保存而接收结果未知时，不能认定未发送；WES 用原冻结身份和正文幂等重提。迟到结果到达后核对 Evidence 应用、执行状态、成员结果及结果发布，最后由消费者证明自身流程推进。
 
-`TRANSPORT_RESULT_TIMEOUT_SECONDS` 只用于新接受任务的期限。修改配置不会延长已有 `result_deadline_at`；超时进入对账，不等于动作失败。配置生效、任务期限和现场路线耗时是三个独立验收项，见[配置索引](configuration-index.md)与[Transport 合同](../contracts/transport-fulfillment-contract.md)。
+`TRANSPORT_RESULT_TIMEOUT_SECONDS` 只用于新接受任务的观测期限。修改配置不会延长已有 `result_deadline_at`；超时不推断失败或生成 UNKNOWN，已接纳任务等待 RCS 的明确终态。见[配置索引](configuration-index.md)与[Transport 合同](../contracts/transport-fulfillment-contract.md)。
 
 ## WMS：可靠义务与入站事实分别查询
 
