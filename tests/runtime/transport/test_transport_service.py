@@ -1160,11 +1160,49 @@ async def test_delivery_unknown_preserves_old_task_and_allows_independent_reques
     assert snapshot.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
     assert snapshot.outcome_version == 0
     assert snapshot.outcome_json is None
-    second = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(next_submit_at=timezone.now_for_db() - timedelta(seconds=1))
+        )
     service.provider.code = TransportSubmitCode.RECEIVED
     assert await service.submit_pending_tasks(1) == 1
-    assert service.provider.calls == [handle.transport_task_id, second.transport_task_id]
-    assert (await _load_task(db_engine, handle.transport_task_id)).status == "PENDING"
+    assert service.provider.snapshots[1] == service.provider.snapshots[0]
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "ACCEPTED"
+    second = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [handle.transport_task_id, handle.transport_task_id, second.transport_task_id]
+
+
+@pytest.mark.asyncio
+async def test_delivery_unknown_never_turns_retry_budget_into_physical_rejection(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-retry", RackPosition("A"), RackPosition("B"), "90")
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    for _ in range(4):
+        assert await service.submit_pending_tasks(1) == 1
+        async with sessions.begin() as db:
+            await db.execute(
+                update(TransportTask)
+                .where(TransportTask.transport_task_id == handle.transport_task_id)
+                .values(next_submit_at=timezone.now_for_db() - timedelta(seconds=1))
+            )
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert (snapshot.status, snapshot.reason_code, snapshot.outcome_version) == (
+        "PENDING",
+        "SUBMIT_DELIVERY_UNKNOWN",
+        0,
+    )
+    assert len({item["operation_id"] for item in service.provider.snapshots}) == 1
+    assert len({item["request_body"] for item in service.provider.snapshots}) == 1
+    service.provider.code = TransportSubmitCode.RECEIVED
+    assert await service.submit_pending_tasks(1) == 1
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "ACCEPTED"
 
 
 @pytest.mark.asyncio
@@ -1198,7 +1236,7 @@ async def test_submit_result_with_foreign_task_id_preserves_original_unknown_res
 
 
 @pytest.mark.asyncio
-async def test_expired_claim_after_send_started_stays_pre_ack_ambiguous_without_resend(
+async def test_expired_claim_after_send_started_retries_original_identity(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1209,7 +1247,13 @@ async def test_expired_claim_after_send_started_stays_pre_ack_ambiguous_without_
         await db.execute(
             update(TransportTask)
             .where(TransportTask.transport_task_id == handle.transport_task_id)
-            .values(send_started_at=expired, submit_claim_until=expired, submit_claim_token="dead-worker")
+            .values(
+                reason_code="SUBMIT_DELIVERY_UNKNOWN",
+                submit_attempt_count=4,
+                send_started_at=expired,
+                submit_claim_until=expired,
+                submit_claim_token="dead-worker",
+            )
         )
 
     assert await service.reconcile_overdue_tasks(1) == 1
@@ -1225,8 +1269,9 @@ async def test_expired_claim_after_send_started_stays_pre_ack_ambiguous_without_
             .where(TransportTask.transport_task_id == handle.transport_task_id)
             .values(send_started_at=None, submit_claim_token=None, submit_claim_until=None, next_submit_at=expired)
         )
-    assert await service.submit_pending_tasks(1) == 0
-    assert service.provider.calls == []
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [handle.transport_task_id]
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "ACCEPTED"
 
 
 @pytest.mark.asyncio
@@ -1258,8 +1303,8 @@ async def test_late_submit_result_does_not_reopen_pre_ack_submit_path(db_engine:
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "PENDING"
     assert snapshot.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
-    assert snapshot.send_started_at is not None
-    assert snapshot.next_submit_at is None
+    assert snapshot.send_started_at is None
+    assert snapshot.next_submit_at is not None
     assert snapshot.outcome_json is None
 
 
@@ -1475,7 +1520,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts(
 
 
 @pytest.mark.asyncio
-async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unknown(
+async def test_accepted_result_deadline_is_frozen_without_inferred_unknown(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1517,11 +1562,10 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
             .where(TransportTask.transport_task_id == handle.transport_task_id)
             .values(result_deadline_at=timezone.now_for_db() - timedelta(seconds=1))
         )
-    assert await service.reconcile_overdue_tasks(1) == 1
+    assert await service.reconcile_overdue_tasks(1) == 0
     reconciled = await _load_task(db_engine, handle.transport_task_id)
-    assert reconciled.status == "RECONCILING"
-    assert reconciled.reason_code == "TRANSPORT_RESULT_TIMEOUT"
-    assert reconciled.outcome_version == 1
+    assert reconciled.status == "ACCEPTED"
+    assert reconciled.outcome_version == 0
 
 
 @pytest.mark.asyncio

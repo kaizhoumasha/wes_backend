@@ -11,7 +11,7 @@ SCAN3 = WorkLineDeviceRole(role_key="SCAN3", display_name="退箱检验扫码")
 # 料箱经过后计入退箱 FIFO 队列。
 SCAN4 = WorkLineDeviceRole(role_key="SCAN4", display_name="退箱入队扫码")
 
-# 一个物理在位货架；CTU01 准入窗口读取所绑定 WorkLinePosition 的 capacity。
+# 货架实际到位后，工作位事实用于推进该货架的拣选步骤。
 FIVE_RACK = WorkLinePositionSlot(
     slot_key="FIVE_RACK",
     display_name="五层货架位",

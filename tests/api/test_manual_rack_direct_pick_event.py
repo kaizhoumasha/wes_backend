@@ -32,6 +32,7 @@ def _body() -> dict[str, object]:
         "timestamp": 1_788_390_000_000,
         "data": {
             "task_id": "PICK-001",
+            "plan_revision": 1,
             "rack_id": "RACK-001",
             "rack_face": "A",
             "completed_at": 1_788_389_999_000,

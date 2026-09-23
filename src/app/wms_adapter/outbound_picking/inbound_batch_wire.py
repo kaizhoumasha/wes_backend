@@ -12,7 +12,13 @@ from src.app.wms_adapter.outbound_picking.response_wire import (
     UnavailableResponse,
 )
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
-from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, RackFaceText, StrictWireModel
+from src.app.wms_adapter.wire_common import (
+    NonnegativeMilliseconds,
+    OperationId,
+    PositiveInteger,
+    RackFaceText,
+    StrictWireModel,
+)
 from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 BIN_INBOUND_BATCH_OPERATION = "outbound.bin.inbound_batch@v1"
@@ -21,6 +27,7 @@ Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTER
 
 class BinInboundBatchData(StrictWireModel):
     task_id: Identifier
+    plan_revision: PositiveInteger
     rack_id: Identifier
     rack_face: RackFaceText
 

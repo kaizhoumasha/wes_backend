@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, delete, exists, func, or_, select, text, update
+from sqlalchemy import and_, case, delete, exists, func, or_, select, text, update
 from sqlmodel import col
 
 from src.app.execution.locks import position_projection_lock_identity
-from src.app.execution.models.inbound_evidence import InboundEvidence
 from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.models.transport_decision_binding import TransportDecisionBinding
-from src.app.execution.models.wms_confirmation import WmsConfirmation
 from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
@@ -24,8 +22,6 @@ from src.app.transport.models import (
     TransportMember,
     TransportTask,
 )
-from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
-from src.app.wms_integration.outbound_picking.models.picking_task import PickingTask
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -165,12 +161,10 @@ class TransportRepository:
     ) -> list[tuple[str, str, str, str, datetime]]:
         task_table, member_table = TransportTask.__table__, TransportMember.__table__
         projection_table = PositionProjection.__table__
-        binding_table, picking_table = TransportDecisionBinding.__table__, PickingTask.__table__
-        evidence_table, confirmation_table = InboundEvidence.__table__, WmsConfirmation.__table__
-        newer_confirmation = confirmation_table.alias("newer_drain_confirmation")
+        binding_table = TransportDecisionBinding.__table__
         task, member = task_table.c, member_table.c
         projection = projection_table.c
-        binding, picking = binding_table.c, picking_table.c
+        binding = binding_table.c
         statement = (
             select(
                 task.transport_task_id,
@@ -182,9 +176,6 @@ class TransportRepository:
             .select_from(task_table)
             .join(member_table, member.transport_task_id == task.transport_task_id)
             .join(binding_table, binding.client_request_id == task.client_request_id)
-            .outerjoin(picking_table, picking.id == binding.picking_task_id)
-            .outerjoin(evidence_table, evidence_table.c.id == binding.source_evidence_id)
-            .outerjoin(confirmation_table, confirmation_table.c.response_evidence_id == evidence_table.c.id)
             .outerjoin(
                 projection_table,
                 and_(projection.object_type == member.object_type, projection.object_id == member.object_id),
@@ -193,32 +184,6 @@ class TransportRepository:
                 task.authority_workline_id.is_not(None),
                 binding.workline_id == task.authority_workline_id,
                 binding.causal_token > 0,
-                or_(
-                    and_(
-                        binding.picking_task_id.is_not(None),
-                        picking.workline_id == binding.workline_id,
-                        picking.status.in_(("PREPARING", "EXECUTING")),
-                    ),
-                    and_(
-                        binding.picking_task_id.is_(None),
-                        evidence_table.c.kind == "WMS_RESULT",
-                        evidence_table.c.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                        evidence_table.c.workline_id == binding.workline_id,
-                        evidence_table.c.operation_id.is_not(None),
-                        evidence_table.c.published_at.is_not(None),
-                        confirmation_table.c.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                        confirmation_table.c.operation_id == evidence_table.c.operation_id,
-                        confirmation_table.c.workline_id == binding.workline_id,
-                        confirmation_table.c.status == "COMPLETED",
-                        ~exists(
-                            select(newer_confirmation.c.id).where(
-                                newer_confirmation.c.workline_id == binding.workline_id,
-                                newer_confirmation.c.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                                newer_confirmation.c.operation_id > evidence_table.c.operation_id,
-                            )
-                        ),
-                    ),
-                ),
                 member.status.in_(("SUCCEEDED", "FAILED")),
                 member.last_operation_id.is_not(None),
                 or_(
@@ -245,39 +210,55 @@ class TransportRepository:
         )
         return [tuple(row) for row in (await db.execute(statement)).all()]
 
-    async def is_current_drain_binding(self, db: AsyncSession, binding_id: int) -> bool:
+    async def list_projection_recovery_orphans(
+        self, db: AsyncSession, *, limit: int
+    ) -> list[tuple[str, str, str, str]]:
+        task = TransportTask.__table__.c
+        member = TransportMember.__table__.c
         binding = TransportDecisionBinding.__table__.c
-        evidence = InboundEvidence.__table__.c
-        confirmation = WmsConfirmation.__table__.c
-        newer = WmsConfirmation.__table__.alias("newer_drain_confirmation").c
-        return bool(
-            await db.scalar(
-                select(binding.id)
-                .join(InboundEvidence.__table__, evidence.id == binding.source_evidence_id)
-                .join(WmsConfirmation.__table__, confirmation.response_evidence_id == evidence.id)
-                .where(
-                    binding.id == binding_id,
-                    binding.picking_task_id.is_(None),
-                    evidence.kind == "WMS_RESULT",
-                    evidence.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                    evidence.workline_id == binding.workline_id,
-                    evidence.operation_id.is_not(None),
-                    evidence.published_at.is_not(None),
-                    confirmation.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                    confirmation.operation_id == evidence.operation_id,
-                    confirmation.workline_id == binding.workline_id,
-                    confirmation.status == "COMPLETED",
-                    ~exists(
-                        select(newer.id).where(
-                            newer.workline_id == binding.workline_id,
-                            newer.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                            newer.operation_id > evidence.operation_id,
-                        )
-                    ),
-                )
-                .limit(1)
-            )
+        projection = PositionProjection.__table__.c
+        missing_binding = binding.client_request_id.is_(None)
+        invalid_token = binding.causal_token <= 0
+        incomplete_source = and_(
+            projection.id.is_not(None),
+            or_(projection.source_causal_token.is_(None), projection.source_effect_phase.is_(None)),
         )
+        statement = (
+            select(
+                task.transport_task_id,
+                member.object_type,
+                member.object_id,
+                case(
+                    (missing_binding, "MISSING_BINDING"),
+                    (invalid_token, "NONPOSITIVE_CAUSAL_TOKEN"),
+                    else_="INCOMPLETE_PROJECTION_PROVENANCE",
+                ),
+            )
+            .select_from(TransportTask.__table__)
+            .join(TransportMember.__table__, member.transport_task_id == task.transport_task_id)
+            .outerjoin(
+                TransportDecisionBinding.__table__,
+                and_(
+                    binding.client_request_id == task.client_request_id,
+                    binding.workline_id == task.authority_workline_id,
+                ),
+            )
+            .outerjoin(
+                PositionProjection.__table__,
+                and_(projection.object_type == member.object_type, projection.object_id == member.object_id),
+            )
+            .where(
+                task.authority_workline_id.is_not(None),
+                or_(
+                    and_(member.status.in_(("SUCCEEDED", "FAILED")), member.last_operation_id.is_not(None)),
+                    and_(task.status == "ACCEPTED", task.submit_operation_id.is_not(None), projection.id.is_not(None)),
+                ),
+                or_(missing_binding, invalid_token, incomplete_source),
+            )
+            .order_by(member.id)
+            .limit(limit)
+        )
+        return [tuple(row) for row in (await db.execute(statement)).all()]
 
     async def list_ack_invalidation_projection_candidates(
         self, db: AsyncSession, *, limit: int
@@ -288,9 +269,7 @@ class TransportRepository:
         ``ACCEPTED`` task state is the only source fact and no provider call is made.
         """
         task, member = TransportTask.__table__.c, TransportMember.__table__.c
-        binding, picking = TransportDecisionBinding.__table__.c, PickingTask.__table__.c
-        evidence, confirmation = InboundEvidence.__table__.c, WmsConfirmation.__table__.c
-        newer_confirmation = WmsConfirmation.__table__.alias("newer_drain_confirmation").c
+        binding = TransportDecisionBinding.__table__.c
         projection = PositionProjection.__table__.c
         statement = (
             select(
@@ -303,9 +282,6 @@ class TransportRepository:
             .select_from(TransportTask.__table__)
             .join(TransportMember.__table__, member.transport_task_id == task.transport_task_id)
             .join(TransportDecisionBinding.__table__, binding.client_request_id == task.client_request_id)
-            .outerjoin(PickingTask.__table__, picking.id == binding.picking_task_id)
-            .outerjoin(InboundEvidence.__table__, evidence.id == binding.source_evidence_id)
-            .outerjoin(WmsConfirmation.__table__, confirmation.response_evidence_id == evidence.id)
             .outerjoin(
                 PositionProjection.__table__,
                 and_(projection.object_type == member.object_type, projection.object_id == member.object_id),
@@ -316,32 +292,6 @@ class TransportRepository:
                 task.authority_workline_id.is_not(None),
                 binding.workline_id == task.authority_workline_id,
                 binding.causal_token > 0,
-                or_(
-                    and_(
-                        binding.picking_task_id.is_not(None),
-                        picking.workline_id == binding.workline_id,
-                        picking.status.in_(("PREPARING", "EXECUTING")),
-                    ),
-                    and_(
-                        binding.picking_task_id.is_(None),
-                        evidence.kind == "WMS_RESULT",
-                        evidence.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                        evidence.workline_id == binding.workline_id,
-                        evidence.operation_id.is_not(None),
-                        evidence.published_at.is_not(None),
-                        confirmation.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                        confirmation.operation_id == evidence.operation_id,
-                        confirmation.workline_id == binding.workline_id,
-                        confirmation.status == "COMPLETED",
-                        ~exists(
-                            select(newer_confirmation.id).where(
-                                newer_confirmation.workline_id == binding.workline_id,
-                                newer_confirmation.operation == RETURN_BUFFER_DRAIN_OPERATION,
-                                newer_confirmation.operation_id > evidence.operation_id,
-                            )
-                        ),
-                    ),
-                ),
                 projection.id.is_not(None),
                 projection.source_causal_token.is_not(None),
                 projection.source_effect_phase.is_not(None),
@@ -507,8 +457,11 @@ class TransportRepository:
     ) -> TransportTask | None:
         predicates = [
             col(TransportTask.status) == "PENDING",
-            col(TransportTask.reason_code).is_(None),
-            col(TransportTask.submit_attempt_count) < MAX_SUBMIT_ATTEMPTS,
+            or_(col(TransportTask.reason_code).is_(None), col(TransportTask.reason_code) == "SUBMIT_DELIVERY_UNKNOWN"),
+            or_(
+                col(TransportTask.submit_attempt_count) < MAX_SUBMIT_ATTEMPTS,
+                col(TransportTask.reason_code) == "SUBMIT_DELIVERY_UNKNOWN",
+            ),
             col(TransportTask.send_started_at).is_(None),
             ~exists(
                 select(col(TransportEvidence.id)).where(
@@ -552,27 +505,6 @@ class TransportRepository:
             task.send_started_at = None
         await db.flush()
 
-    async def claim_overdue_tasks(
-        self,
-        db: AsyncSession,
-        *,
-        limit: int,
-        now: datetime,
-    ) -> list[TransportTask]:
-        return list(
-            await db.scalars(
-                select(TransportTask)
-                .where(
-                    col(TransportTask.status) == "ACCEPTED",
-                    col(TransportTask.result_deadline_at).is_not(None),
-                    col(TransportTask.result_deadline_at) <= now,
-                )
-                .order_by(col(TransportTask.result_deadline_at).asc(), col(TransportTask.id).asc())
-                .limit(limit)
-                .with_for_update(skip_locked=True)
-            )
-        )
-
     async def claim_ambiguous_submissions(
         self,
         db: AsyncSession,
@@ -585,7 +517,10 @@ class TransportRepository:
                 select(TransportTask)
                 .where(
                     col(TransportTask.status) == "PENDING",
-                    col(TransportTask.reason_code).is_(None),
+                    or_(
+                        col(TransportTask.reason_code).is_(None),
+                        col(TransportTask.reason_code) == "SUBMIT_DELIVERY_UNKNOWN",
+                    ),
                     col(TransportTask.send_started_at).is_not(None),
                     col(TransportTask.submit_claim_until).is_not(None),
                     col(TransportTask.submit_claim_until) < now,

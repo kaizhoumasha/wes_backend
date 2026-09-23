@@ -20,16 +20,13 @@ from wes_plugin_sdk import (
     wms_operations,
 )
 
-from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET, RETURN_RACK, TRANSFER_RACK
+from manual_picking.definition import FIVE_RACK, INLET, OUTLET, RETURN_RACK, TRANSFER_RACK
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
-from src.app.workline.installed_plugin import parse_position_bindings
-from src.app.workline.services.workline_position_service import workline_position_service
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
-from .batch_repository import BatchRepository
 from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
@@ -72,15 +69,11 @@ class ManualPickingBatchDriver:
         arrival_reader: Any = None,
         passages: Any = None,
         tasks: Any = None,
-        position_service: Any = None,
-        rack_cycles: Any = None,
         bindings: Any = None,
         drain: Any = None,
         uuid_factory: Any = new_uuid7,
     ) -> None:
         self._drain = drain
-        self._position_service = position_service or workline_position_service
-        self._rack_cycles = rack_cycles or BatchRepository()
         self._bindings = bindings or transport_decision_binding_repository
         self._flow = flow
         self._plans = plans
@@ -145,35 +138,23 @@ class ManualPickingBatchDriver:
 
     async def advance_in_session(self, db: Any, line: Any, task: Any) -> int:
         # 子流程 A（五层架）与子流程 B（退料货架）物理并行，任一条被自身条件挡住都不影响另一条。
-        filled = await self._fill_source_window(db, line, task) if task.status == "EXECUTING" else 0
+        filled = await self._submit_source_racks(db, line, task) if task.status == "EXECUTING" else 0
         advanced = await self._advance_current_rack(db, line, task)
         return filled + advanced + await self._advance_return_rack(db, line, task)
 
-    async def _source_window(self, db: Any, line: Any) -> tuple[int, set[str]]:
-        # 调用方持有工作线锁；容量仅限制 CTU01 准入，不代表同时在位的物理货架数。
-        configured = parse_position_bindings(line.config, DEFINITION.position_slots)
-        capacity = await self._position_service.require_position_capacity(
-            db, workline_code=line.line_code, position_code=configured[FIVE_RACK.slot_key]
-        )
-        occupied = await self._rack_cycles.occupied_source_rack_ids(db, line.id)
-        return max(0, capacity - len(occupied)), occupied
-
-    async def _fill_source_window(self, db: Any, line: Any, task: Any) -> int:
-        remaining, occupied = await self._source_window(db, line)
-        if not remaining:
-            return 0
-        decided = await self._bindings.list_task_resource_fence_ids(
+    async def _submit_source_racks(self, db: Any, line: Any, task: Any) -> int:
+        decided = await self._bindings.list_task_member_bindings(
             db, workline_id=line.id, picking_task_id=task.id, steps=(SOURCE_RACK_IN_STEP,)
         )
         sources = await self._plans.list_active_bin_source_racks(db, task.id)
-        fenced = await self._rack_cycles.fenced_source_rack_ids(db, line.id)
-        excluded = decided | occupied | fenced
-        pending: dict[str, Any] = {}
+        pending: dict[tuple[int, str], Any] = {}
         for row in sources:
-            if row.plan_revision <= task.last_applied_plan_revision and row.rack_id not in excluded:
-                pending.setdefault(row.rack_id, row)
-        selected = list(pending.values())[:remaining]
-        for row in selected:
+            if (
+                row.plan_revision <= task.last_applied_plan_revision
+                and (row.source_evidence_id, row.rack_id) not in decided
+            ):
+                pending.setdefault((row.source_evidence_id, row.rack_id), row)
+        for row in pending.values():
             intent = PickingTaskRackTransportIntent(
                 task_id=task.task_id,
                 fact_id=f"picking-task-plan:{task.id}:{task.last_applied_plan_revision}",
@@ -195,20 +176,16 @@ class ManualPickingBatchDriver:
                 resource_fence_id=row.rack_id,
                 intent=intent,
             )
-        return len(selected)
+        return len(pending)
 
     async def _advance_drain(self, db: Any, line: Any) -> int:
         # Drain rack 是无序 reservation；按各自权威到位事实独立推进。
         workstation = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
-        occupied = await self._rack_cycles.occupied_source_rack_ids(db, line.id)
-        fenced = await self._rack_cycles.fenced_source_rack_ids(db, line.id)
         active_task = await self._tasks.get_active_for_workline(db, line.id)
         allow_active_task = (
             active_task is not None
             and active_task.status == "EXECUTING"
             and await current_rack_count(db, line.id, workstation, positions=self._positions) == 0
-            and not occupied
-            and not fenced
         )
         count, decision = await self._drain.decide_in_session(
             db,
@@ -219,7 +196,7 @@ class ManualPickingBatchDriver:
         if decision is None:
             return count
         repository = self._drain.repository
-        filled = await self._fill_drain_window(db, line, decision)
+        filled = await self._submit_drain_racks(db, line, decision)
         if filled:
             return count + filled
         position = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
@@ -294,26 +271,20 @@ class ManualPickingBatchDriver:
                 step=DRAIN_RACK_OUT_STEP,
                 picking_task_id=None,
                 source_evidence_id=decision.evidence_id,
+                arrival_transport_task_id=projection.source_transport_task_id,
                 now=timezone.now_for_db(),
             )
         return count
 
-    async def _fill_drain_window(self, db: Any, line: Any, decision: Any) -> int:
+    async def _submit_drain_racks(self, db: Any, line: Any, decision: Any) -> int:
         if not isinstance(decision.result, ReturnBufferDrainReady):
             return 0
-        remaining, occupied = await self._source_window(db, line)
-        if not remaining:
-            return 0
         repository = self._drain.repository
-        fenced = await self._rack_cycles.fenced_source_rack_ids(db, line.id)
-        selected = []
-        for rack in decision.result.racks:
-            if len(selected) >= remaining:
-                break
-            if rack.rack_id in occupied or rack.rack_id in fenced:
-                continue
-            if await repository.transport(db, decision, DRAIN_RACK_IN_STEP, rack.rack_id) is None:
-                selected.append(rack)
+        selected = [
+            rack
+            for rack in decision.result.racks
+            if await repository.transport(db, decision, DRAIN_RACK_IN_STEP, rack.rack_id) is None
+        ]
         position = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         for rack in selected:
             await self._rack_creator.create(
@@ -337,10 +308,10 @@ class ManualPickingBatchDriver:
             return 0
         bindings = line.position_bindings
         sources = await self._plans.list_bin_source_racks(db, task.id)
-        faces_by_rack: dict[str, list[Any]] = {}
+        faces_by_member: dict[tuple[str, int], list[Any]] = {}
         for row in sources:
-            faces_by_rack.setdefault(row.rack_id, []).append(row)
-        ordered_sources = [row for faces in faces_by_rack.values() for row in faces]
+            faces_by_member.setdefault((row.rack_id, row.source_evidence_id), []).append(row)
+        ordered_sources = [row for faces in faces_by_member.values() for row in faces]
         source_location = bindings[FIVE_RACK.slot_key]["location_id"]
         if not ordered_sources or not await has_single_current_rack(
             db, line.id, source_location, positions=self._positions
@@ -371,11 +342,13 @@ class ManualPickingBatchDriver:
                 projection = candidate
         if current is None or projection is None:
             return 0
-        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, current.rack_id, current.rack_face):
+        if await self._flow.has_unclosed_action_for_face(
+            db, line.id, task.task_id, current.plan_revision, current.rack_id, current.rack_face
+        ):
             return 0
         inlet_location = bindings[INLET.slot_key]["location_id"]
         progress = await self._flow.face_progress(
-            db, line.id, task.task_id, current.rack_id, current.rack_face, inlet_location
+            db, line.id, task.task_id, current.plan_revision, current.rack_id, current.rack_face, inlet_location
         )
         if progress is None or not progress.feed_complete:
             advanced = await self._flow.advance_in_session(
@@ -384,12 +357,14 @@ class ManualPickingBatchDriver:
                 workline_code=line.line_code,
                 picking_task_id=task.id,
                 task_id=task.task_id,
+                plan_revision=current.plan_revision,
+                source_evidence_id=current.source_evidence_id,
                 rack_id=current.rack_id,
                 rack_face=current.rack_face,
                 return_location=bindings[OUTLET.slot_key]["location_id"],
                 inlet_location=inlet_location,
                 now=timezone.now_for_db(),
-                allow_inbound=task.status == "EXECUTING" and getattr(current, "cancelled_evidence_id", None) is None,
+                allow_inbound=progress is None or current.cancelled_evidence_id is None,
             )
             if advanced or getattr(current, "cancelled_evidence_id", None) is None:
                 return int(advanced)
@@ -397,17 +372,27 @@ class ManualPickingBatchDriver:
             db,
             line,
             task,
+            current.plan_revision,
+            current.source_evidence_id,
             current.rack_id,
             current.rack_face,
             inlet_location,
             timezone.now_for_db(),
         ):
             return 1
-        rack_faces = faces_by_rack[current.rack_id]
+        rack_faces = faces_by_member[(current.rack_id, current.source_evidence_id)]
         current_index = rack_faces.index(current)
         for next_face in rack_faces[current_index + 1 :]:
+            if getattr(next_face, "cancelled_evidence_id", None) is not None:
+                continue
             next_progress = await self._flow.face_progress(
-                db, line.id, task.task_id, next_face.rack_id, next_face.rack_face, inlet_location
+                db,
+                line.id,
+                task.task_id,
+                next_face.plan_revision,
+                next_face.rack_id,
+                next_face.rack_face,
+                inlet_location,
             )
             if next_progress is not None:
                 if next_progress.feed_complete:
@@ -430,19 +415,15 @@ class ManualPickingBatchDriver:
             line,
             rack_id=current.rack_id,
             current_face=projection.arrival_face,
-            correlation_id=f"pt:{task.id}:source-out:{current.rack_id}",
+            correlation_id=f"pt:{task.id}:e:{current.source_evidence_id}:source-out:{current.rack_id}",
             step=SOURCE_RACK_OUT_STEP,
             picking_task_id=task.id,
+            arrival_transport_task_id=projection.source_transport_task_id,
             now=timezone.now_for_db(),
         )
 
     async def _advance_return_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
-        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。
-
-        已知缺口：到位识别依赖退料货架已有 PositionProjection，而当前无任何代码
-        创建对应的入线 Transport（见 TODOS.md「退料货架入线 Transport 缺口」），
-        生产环境暂时无法触发本子流程。
-        """
+        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。"""
         location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
         if not location or self._arrival_scheduler is None or self._arrival_reader is None:
             return 0
@@ -450,7 +431,7 @@ class ManualPickingBatchDriver:
         for row in await self._plans.list_active_direct_picks(db, task.id):
             # 完成事实是面级的，同面多个 slot_id 只占一个换面位置。
             faces = faces_by_rack.setdefault(row.rack_id, [])
-            if all(face.rack_face != row.rack_face for face in faces):
+            if all((face.plan_revision, face.rack_face) != (row.plan_revision, row.rack_face) for face in faces):
                 faces.append(row)
         ordered = [row for faces in faces_by_rack.values() for row in faces]
         if not ordered or not await has_single_current_rack(db, line.id, location, positions=self._positions):
@@ -460,13 +441,26 @@ class ManualPickingBatchDriver:
             projection = await ready_rack_projection(
                 db, line, row.rack_id, row.rack_face, location, positions=self._positions, transports=self._transports
             )
-            if projection is not None:
-                current = row
-                break
+            if projection is None:
+                continue
+            arrival_source_id = await self._plans.return_rack_transport_source(
+                db, line.id, task.id, row.rack_id, projection.source_transport_task_id
+            )
+            if arrival_source_id is not None:
+                current = next(
+                    (
+                        face
+                        for face in faces_by_rack[row.rack_id]
+                        if face.source_evidence_id == arrival_source_id and face.rack_face == projection.arrival_face
+                    ),
+                    None,
+                )
+                if current is not None:
+                    break
         if current is None or projection is None:
             return 0
         now = timezone.now_for_db()
-        snapshot = await self._arrival_reader.latest(db, task.id, current.rack_id)
+        snapshot = await self._arrival_reader.latest(db, task.id, current.rack_id, projection.source_transport_task_id)
         if snapshot is None:
             transport = await self._transports.get_task(db, projection.source_transport_task_id)
             if transport.published_outcome_version <= 0:
@@ -524,16 +518,26 @@ class ManualPickingBatchDriver:
             )
             return 0
         if not await self._plans.has_direct_pick_face_completion(
-            db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=current.rack_face
+            db,
+            picking_task_id=task.id,
+            plan_revision=current.plan_revision,
+            rack_id=current.rack_id,
+            rack_face=current.rack_face,
         ):
             return 0
         # 到位面由外部搬运决定，不保证是计划首面；遍历全部面而非 index 之后的切片，
         # 否则更早的未结面会被静默跳过。
         for next_face in faces_by_rack[current.rack_id]:
             if next_face is current or await self._plans.has_direct_pick_face_completion(
-                db, picking_task_id=task.id, rack_id=current.rack_id, rack_face=next_face.rack_face
+                db,
+                picking_task_id=task.id,
+                plan_revision=next_face.plan_revision,
+                rack_id=current.rack_id,
+                rack_face=next_face.rack_face,
             ):
                 continue
+            if next_face.rack_face == projection.arrival_face:
+                return 0
             await self._rack_creator.create_rotate(
                 db,
                 workline_id=line.id,
@@ -551,9 +555,10 @@ class ManualPickingBatchDriver:
             line,
             rack_id=current.rack_id,
             current_face=projection.arrival_face,
-            correlation_id=f"pt:{task.id}:return-out:{current.rack_id}",
+            correlation_id=f"pt:{task.id}:e:{current.source_evidence_id}:return-out:{current.rack_id}",
             step=RETURN_RACK_OUT_STEP,
             picking_task_id=task.id,
+            arrival_transport_task_id=projection.source_transport_task_id,
             now=now,
             current_location=location,
         )
@@ -568,12 +573,14 @@ class ManualPickingBatchDriver:
         correlation_id: str,
         step: str,
         picking_task_id: int | None,
+        arrival_transport_task_id: str,
         now: Any,
         source_evidence_id: int | None = None,
         current_location: str | None = None,
     ) -> int:
         location = current_location or line.position_bindings[FIVE_RACK.slot_key]["location_id"]
-        snapshot = await self._departure_reader.latest_for_workline(db, line.id, rack_id)
+        arrival = await self._transports.get_task(db, arrival_transport_task_id)
+        snapshot = await self._departure_reader.latest_for_workline(db, line.id, rack_id, arrived_at=arrival.created_at)
         if snapshot is None:
             intent = wms_operations.outbound_rack_departure_decide(
                 operation_id=self._uuid_factory(),
@@ -618,11 +625,20 @@ class ManualPickingBatchDriver:
         return 1
 
     async def _advance_return_batch_before_rack_action(
-        self, db: Any, line: Any, task: Any, rack_id: str, rack_face: str, inlet_location: str, now: Any
+        self,
+        db: Any,
+        line: Any,
+        task: Any,
+        plan_revision: int,
+        source_evidence_id: int,
+        rack_id: str,
+        rack_face: str,
+        inlet_location: str,
+        now: Any,
     ) -> bool:
         if not await self._passages.ready_return_prefix_for_update(db, line.id):
             return False
-        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, rack_id, rack_face):
+        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, plan_revision, rack_id, rack_face):
             return False
         return bool(
             await self._flow.advance_in_session(
@@ -631,6 +647,8 @@ class ManualPickingBatchDriver:
                 workline_code=line.line_code,
                 picking_task_id=task.id,
                 task_id=task.task_id,
+                plan_revision=plan_revision,
+                source_evidence_id=source_evidence_id,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_location=line.position_bindings[OUTLET.slot_key]["location_id"],

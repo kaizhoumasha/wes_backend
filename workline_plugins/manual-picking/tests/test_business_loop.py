@@ -2,18 +2,22 @@
 
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 import pytest
 from manual_picking.application.batch_driver import SOURCE_RACK_OUT_STEP
-from manual_picking.application.batch_repository import BatchRepository
 from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DrainRepository
 from manual_picking.application.passage_model import ManualPickingPassage
 from rack_cycle_support import BusinessServer, rack_database, runtime_for, seed_line, seed_task
 from sqlalchemy import select
 
+from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, EcsDeviceEvent
+from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.execution.models import InboundEvidence, PositionProjection, TransportDecisionBinding, WmsConfirmation
+from src.app.execution.models.inbound_evidence import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
+from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -34,6 +38,269 @@ PUBLISH = "src.celery_app.tasks.transport.publish_transport_outcomes_batch"
 
 def run(worker, name):
     return worker.result(worker.send(name))
+
+
+async def test_scan2_deferred_evidence_is_reclaimed_after_old_command_closes(rack_database, monkeypatch):
+    database_url, sessions = rack_database
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        line, task = await seed_line(db, bins=0)
+        task.status = PickingTaskStatus.EXECUTING
+        line.device_contracts = {
+            line.config["device_bindings"]["SCAN2"]: {
+                "device_id": 1,
+                "endpoint_base_url": "http://127.0.0.1:1",
+                "contract_key": "third_party_integration",
+                "contract_version": "1.1",
+                "status_max_age_ms": 30000,
+                "command_timeout_ms": 30000,
+            }
+        }
+        prior = []
+        for role in ("SCAN1",):
+            evidence = InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=f"{role}:{new_uuid7()}",
+                device_code=line.config["device_bindings"][role],
+                payload_digest="a" * 64,
+                normalized_payload={},
+                received_at=now,
+                processed_at=now,
+                published_at=now,
+                decision_digest="b" * 64,
+                apply_status=InboundEvidenceApplyStatus.APPLIED,
+                workline_id=line.id,
+            )
+            db.add(evidence)
+            await db.flush()
+            prior.append(evidence)
+        for role, status in (("SCAN1", CommandStatus.SUCCEEDED), ("SCAN2", CommandStatus.ACKNOWLEDGED)):
+            db.add(
+                DeviceCommand(
+                    command_code=f"{role}-{new_uuid7()}",
+                    device_code=line.config["device_bindings"][role],
+                    workline_id=line.id,
+                    execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
+                    execution_ref_id=f"manual-picking:{new_uuid7()}:{role}",
+                    contract_key="third_party_integration",
+                    contract_version="1.1",
+                    task_type="MOVE_FORWARD",
+                    payload_digest="c" * 64,
+                    deadline_at=now + timedelta(minutes=5),
+                    endpoint_base_url="http://localhost",
+                    command_timeout_ms=30000,
+                    status_max_age_ms=30000,
+                    status=status,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        await db.flush()
+        commands = (await db.scalars(select(DeviceCommand).where(DeviceCommand.workline_id == line.id))).all()
+        scan1_command = next(
+            command for command in commands if command.device_code == line.config["device_bindings"]["SCAN1"]
+        )
+        old_scan2_command = next(
+            command for command in commands if command.device_code == line.config["device_bindings"]["SCAN2"]
+        )
+        db.add(
+            ManualPickingPassage(
+                workline_id=line.id,
+                task_id=task.task_id,
+                bin_code="A000000001",
+                scan1_evidence_id=prior[0].id,
+                scan1_received_at=now,
+                scan1_command_code=scan1_command.command_code,
+                disposition="OPEN",
+            )
+        )
+        payload = EcsDeviceEvent(
+            device_code=line.config["device_bindings"]["SCAN2"],
+            contract_key="third_party_integration",
+            contract_version="1.1",
+            event_type="SCAN_COMPLETED",
+            timestamp=int(timezone.now_utc().timestamp() * 1000),
+            source_event_id=f"SCAN2:{new_uuid7()}",
+            is_debug=False,
+            data={"bin_code": "A000000001-C"},
+        )
+        incoming = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=payload.source_event_id,
+            device_code=payload.device_code,
+            payload_digest="d" * 64,
+            normalized_payload=payload.model_dump(mode="json", exclude_unset=True),
+            received_at=now,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+            workline_id=line.id,
+        )
+        db.add(incoming)
+        await db.flush()
+        evidence_id, line_id, old_command_id = incoming.id, line.id, old_scan2_command.id
+
+    monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", '["manual-picking"]')
+    worker = TransportBrokerWorker(database_url, os.environ["INTEGRATION_REDIS_URL"], "http://127.0.0.1:1")
+    success = False
+    try:
+        worker.start()
+        first_count = run(worker, EXECUTE)
+        assert first_count == 1
+        async with sessions() as db:
+            waiting = await db.get(InboundEvidence, evidence_id)
+            assert waiting.decision_next_attempt_at is not None
+            assert waiting.published_at is None
+        async with sessions.begin() as db:
+            old_command = await db.get(DeviceCommand, old_command_id)
+            old_command.status = CommandStatus.SUCCEEDED
+            waiting = await db.get(InboundEvidence, evidence_id)
+            waiting.decision_next_attempt_at = timezone.now_for_db() - timedelta(seconds=1)
+        second_count = run(worker, EXECUTE)
+        async with sessions() as db:
+            completed = await db.get(InboundEvidence, evidence_id)
+            passage = await db.scalar(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line_id))
+            assert second_count == 1, (
+                completed.apply_status,
+                completed.published_at,
+                completed.decision_next_attempt_at,
+                completed.decision_claim_token,
+            )
+            assert completed.published_at is not None
+            assert passage.scan2_evidence_id == evidence_id
+        success = True
+    finally:
+        worker.close(success=success)
+
+
+async def test_scan4_first_arrival_survives_deferred_worker_reclaim(rack_database, monkeypatch):
+    database_url, sessions = rack_database
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        line, task = await seed_line(db, bins=0)
+        task.status = PickingTaskStatus.EXECUTING
+        scan4_device = line.config["device_bindings"]["SCAN4"]
+        line.device_contracts = {
+            scan4_device: {
+                "device_id": 1,
+                "endpoint_base_url": "http://127.0.0.1:1",
+                "contract_key": "third_party_integration",
+                "contract_version": "1.1",
+                "status_max_age_ms": 30000,
+                "command_timeout_ms": 30000,
+            }
+        }
+        prior = []
+        for role in ("SCAN1", "SCAN2", "SCAN3"):
+            evidence = InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=f"{role}:{new_uuid7()}",
+                device_code=line.config["device_bindings"][role],
+                payload_digest="a" * 64,
+                normalized_payload={},
+                received_at=now,
+                processed_at=now,
+                published_at=now,
+                decision_digest="b" * 64,
+                apply_status=InboundEvidenceApplyStatus.APPLIED,
+                workline_id=line.id,
+            )
+            db.add(evidence)
+            await db.flush()
+            prior.append(evidence)
+        prior_command = DeviceCommand(
+            command_code=f"SCAN3-{new_uuid7()}",
+            device_code=line.config["device_bindings"]["SCAN3"],
+            workline_id=line.id,
+            execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
+            execution_ref_id=f"manual-picking:{prior[2].id}:SCAN3",
+            contract_key="third_party_integration",
+            contract_version="1.1",
+            task_type="MOVE_FORWARD",
+            payload_digest="c" * 64,
+            deadline_at=now + timedelta(minutes=5),
+            endpoint_base_url="http://localhost",
+            command_timeout_ms=30000,
+            status_max_age_ms=30000,
+            status=CommandStatus.ACKNOWLEDGED,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(prior_command)
+        db.add(
+            ManualPickingPassage(
+                workline_id=line.id,
+                task_id=task.task_id,
+                bin_code="A000000001",
+                scan1_evidence_id=prior[0].id,
+                scan1_received_at=now,
+                scan2_evidence_id=prior[1].id,
+                scan3_evidence_id=prior[2].id,
+                scan3_command_code=prior_command.command_code,
+                scan3_route="MOVE_FORWARD",
+                disposition="NORMAL",
+            )
+        )
+        incoming_event = EcsDeviceEvent(
+            device_code=scan4_device,
+            contract_key="third_party_integration",
+            contract_version="1.1",
+            event_type="SCAN_COMPLETED",
+            timestamp=int(timezone.now_utc().timestamp() * 1000),
+            source_event_id=f"SCAN4:{new_uuid7()}",
+            is_debug=False,
+            data={"bin_code": "A000000001-B"},
+        )
+        incoming = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=incoming_event.source_event_id,
+            device_code=scan4_device,
+            payload_digest="d" * 64,
+            normalized_payload=incoming_event.model_dump(mode="json", exclude_unset=True),
+            received_at=now,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+            workline_id=line.id,
+        )
+        db.add(incoming)
+        await db.flush()
+        evidence_id, line_id, command_id = incoming.id, line.id, prior_command.id
+
+    monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", '["manual-picking"]')
+    worker = TransportBrokerWorker(database_url, os.environ["INTEGRATION_REDIS_URL"], "http://127.0.0.1:1")
+    success = False
+    try:
+        worker.start()
+        first_count = run(worker, EXECUTE)
+        assert first_count == 1
+        async with sessions() as db:
+            waiting = await db.get(InboundEvidence, evidence_id)
+            passage = await db.scalar(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line_id))
+            assert waiting.decision_next_attempt_at is not None and waiting.published_at is None
+            assert passage.scan4_evidence_id == evidence_id and passage.scan4_received_at == now
+            assert passage.scan4_command_code is None
+        async with sessions.begin() as db:
+            command = await db.get(DeviceCommand, command_id)
+            command.status = CommandStatus.SUCCEEDED
+            waiting = await db.get(InboundEvidence, evidence_id)
+            waiting.decision_next_attempt_at = timezone.now_for_db() - timedelta(seconds=1)
+        second_count = run(worker, EXECUTE)
+        assert second_count == 1
+        async with sessions() as db:
+            completed = await db.get(InboundEvidence, evidence_id)
+            passage = await db.scalar(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line_id))
+            assert completed.published_at is not None
+            assert passage.scan4_received_at == now and passage.scan4_evidence_id == evidence_id
+            assert passage.scan4_command_code is not None and passage.return_state == "MOVE_PENDING"
+            commands = (
+                await db.scalars(
+                    select(DeviceCommand).where(
+                        DeviceCommand.workline_id == line_id,
+                        DeviceCommand.device_code == scan4_device,
+                    )
+                )
+            ).all()
+            assert len(commands) == 1
+        success = True
+    finally:
+        worker.close(success=success)
 
 
 @asynccontextmanager
@@ -206,10 +473,8 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
         run(worker, SUBMIT)
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
-        # ACK 证明 RCS/WMS 已接管离场动作，释放准入窗口；同架围栏仍等最终结果。
+        # ACK 仅证明 RCS/WMS 已接管离场动作，后续步骤仍等待权威结果。
         assert departure.status == "ACCEPTED" and departure.result_deadline_at is not None
-        async with sessions() as db:
-            assert await BatchRepository().occupied_source_rack_ids(db, line.id) == set()
         await callback(
             transport.service,
             departure,
@@ -224,7 +489,6 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         run(worker, APPLY)
         run(worker, PUBLISH)
         async with sessions() as db:
-            assert await BatchRepository().occupied_source_rack_ids(db, line.id) == set()
             assert await DrainRepository().current(db, line.id) is None
             passages = (
                 await db.scalars(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line.id))

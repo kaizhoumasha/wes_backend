@@ -17,7 +17,7 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 0,
-        "data": {"task_id": "PICK-1", "rack_id": "RACK-1", "rack_face": "正面"},
+        "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "RACK-1", "rack_face": "正面"},
     }
 
 

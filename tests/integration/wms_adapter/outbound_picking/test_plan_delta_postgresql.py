@@ -23,6 +23,7 @@ from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.services import InboundEvidenceService
 from src.app.sys.models.audit_log import AuditLog
 from src.app.transport.models import TransportTask
+from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelEvent
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
@@ -32,6 +33,7 @@ from src.app.wms_integration.outbound_picking.models import (
     PickingTask,
     PickingTaskBinSourceRack,
 )
+from src.app.wms_integration.outbound_picking.services.picking_task_cancel import PickingTaskCancelService
 from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
@@ -185,6 +187,78 @@ async def test_concurrent_revision_replay_and_business_duplicate(integration_ses
         assert evidence.workline_id is evidence.material_execution_id is evidence.transport_task_id is None
 
 
+async def test_revisions_reuse_source_members_and_cancel_only_selected_revision(integration_session_factory, prepared):
+    task_name, ids = prepared
+    plans = PickingTaskPlanDeltaService(integration_session_factory)
+    direct = [{"source_locator": {"type": "RACK_SLOT", "rack_id": "DIRECT-A", "rack_face": "A", "slot_id": "S1"}}]
+    first = _event(
+        task_name, 1, added_bin_source_racks=[{"rack_id": "A", "rack_face": ["90"]}], added_direct_picks=direct
+    )
+    second = _event(
+        task_name, 2, added_bin_source_racks=[{"rack_id": "A", "rack_face": ["90"]}], added_direct_picks=direct
+    )
+    third = _event(
+        task_name,
+        3,
+        added_bin_source_racks=[
+            {"rack_id": "B", "rack_face": ["90"]},
+            {"rack_id": "C", "rack_face": ["90"]},
+        ],
+    )
+    assert (await plans.record(first, received_at=NOW)).code == "RECEIVED"
+    assert (await plans.record(second, received_at=NOW)).code == "RECEIVED"
+    assert (await plans.record(second, received_at=NOW)).code == "DUPLICATE"
+    assert (await plans.record(third, received_at=NOW)).code == "RECEIVED"
+
+    cancel = PickingTaskCancelEvent.model_validate(
+        {
+            "operation": "outbound.picking_task.cancel@v1",
+            "operation_id": new_uuid7(),
+            "timestamp": 1,
+            "data": {
+                "task_id": task_name,
+                "cancel_scope": "PLAN_MEMBERS",
+                "bin_source_racks": [{"plan_revision": 2, "rack_id": "A", "rack_face": ["90"]}],
+                "direct_pick_sources": [
+                    {"plan_revision": 2, "rack_id": "DIRECT-A", "rack_face": "A", "slot_ids": ["S1"]}
+                ],
+            },
+        }
+    )
+    assert (
+        await PickingTaskCancelService(integration_session_factory).record(cancel, received_at=NOW)
+    ).code == "RECEIVED"
+    async with integration_session_factory() as db:
+        racks = list(
+            (
+                await db.scalars(
+                    select(PickingTaskBinSourceRack)
+                    .where(PickingTaskBinSourceRack.picking_task_id == ids[0])
+                    .order_by(PickingTaskBinSourceRack.plan_revision, PickingTaskBinSourceRack.rack_id)
+                )
+            ).all()
+        )
+        picks = list(
+            (
+                await db.scalars(
+                    select(DirectPickExecution)
+                    .where(DirectPickExecution.picking_task_id == ids[0])
+                    .order_by(DirectPickExecution.plan_revision)
+                )
+            ).all()
+        )
+        assert [(row.plan_revision, row.rack_id, row.cancelled_evidence_id is not None) for row in racks] == [
+            (1, "A", False),
+            (2, "A", True),
+            (3, "B", False),
+            (3, "C", False),
+        ]
+        assert [(row.plan_revision, row.cancelled_evidence_id is not None) for row in picks] == [
+            (1, False),
+            (2, True),
+        ]
+
+
 async def test_pending_retry_only_applies_after_persisted_prepare(integration_session_factory, prepared):
     task_name, ids = prepared
     service = PickingTaskPlanDeltaService(integration_session_factory)
@@ -208,7 +282,7 @@ async def test_normal_correction_clears_blocker_and_preserves_original_rejection
     service = PickingTaskPlanDeltaService(integration_session_factory)
     first = _event(task_name)
     assert (await service.record(first, received_at=NOW)).code == "RECEIVED"
-    conflict = _event(task_name, 3, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["F"]}])
+    conflict = _event(task_name, 4, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["F"]}])
     assert (await service.record(conflict, received_at=NOW)).reason_code == "REVISION_CONFLICT"
     correction = _event(task_name, 2, added_bin_source_racks=[{"rack_id": "B", "rack_face": ["F"]}])
     async with integration_session_factory() as db:
@@ -422,12 +496,18 @@ async def test_ten_character_faces_keep_exact_source_identity(integration_sessio
     ).code == "DUPLICATE"
     assert (
         await service.record(_event(task_name, 2, added_bin_source_racks=racks), received_at=NOW)
-    ).reason_code == "REFERENCE_CONFLICT"
+    ).code == "RECEIVED"
     async with integration_session_factory() as db:
-        member = await db.scalar(
-            select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == ids[0])
+        members = list(
+            (
+                await db.scalars(
+                    select(PickingTaskBinSourceRack)
+                    .where(PickingTaskBinSourceRack.picking_task_id == ids[0])
+                    .order_by(PickingTaskBinSourceRack.plan_revision)
+                )
+            ).all()
         )
-        assert member.rack_face == face
+        assert [(member.plan_revision, member.rack_face) for member in members] == [(1, face), (2, face)]
 
 
 async def test_multi_face_bin_source_rack_persists_one_member_per_face(integration_session_factory, prepared):
@@ -694,6 +774,7 @@ async def test_direct_pick_face_completion_constraints_are_enforced_by_postgresq
         db.add(
             DirectPickFaceCompletion(
                 picking_task_id=ids[0],
+                plan_revision=1,
                 rack_id="SOURCE",
                 rack_face="A",
                 completed_at=NOW,
@@ -865,6 +946,106 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
             )
 
 
+async def test_reused_direct_pick_owner_uses_current_arrival_transport(integration_session_factory, prepared):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    task_name, ids = prepared
+    direct = [{"source_locator": {"type": "RACK_SLOT", "rack_id": "RETURN-A", "rack_face": "A", "slot_id": "S1"}}]
+    plans = PickingTaskPlanDeltaService(integration_session_factory)
+    assert (await plans.record(_event(task_name, 1, added_direct_picks=direct), received_at=NOW)).code == "RECEIVED"
+    assert (await plans.record(_event(task_name, 2, added_direct_picks=direct), received_at=NOW)).code == "RECEIVED"
+    client_request_id = new_uuid7()
+    transport_task_id = new_uuid7()
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, ids[0])
+        task.status = "EXECUTION_COMPLETED"
+        picks = (
+            await db.scalars(
+                select(DirectPickExecution)
+                .where(DirectPickExecution.picking_task_id == ids[0])
+                .order_by(DirectPickExecution.plan_revision)
+            )
+        ).all()
+        assert [row.plan_revision for row in picks] == [1, 2]
+        db.add(
+            TransportTask(
+                transport_task_id=transport_task_id,
+                client_request_id=client_request_id,
+                request_digest="a" * 64,
+                kind="RACK_MOVE",
+                caller_json={"workline_id": str(ids[1])},
+                request_json={"rack_id": "RETURN-A"},
+                submit_operation_id=new_uuid7(),
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status="SUCCEEDED",
+                authority_workline_id=ids[1],
+                created_at=timezone.now_for_db(),
+                updated_at=timezone.now_for_db(),
+            )
+        )
+        db.add(
+            TransportDecisionBinding(
+                correlation_id=f"pt:{ids[0]}:e:{picks[1].source_evidence_id}:rack:RETURN-A",
+                step="PICKING_TASK_RETURN_RACK_IN",
+                workline_id=ids[1],
+                picking_task_id=ids[0],
+                resource_fence_id="RETURN-A",
+                client_request_id=client_request_id,
+                source_evidence_id=picks[1].source_evidence_id,
+            )
+        )
+        db.add(
+            PositionProjection(
+                object_type="RACK",
+                object_id="RETURN-A",
+                workline_id=ids[1],
+                position_json={"kind": "RACK_POSITION", "location_code": "RETURN-POS"},
+                arrival_face="A",
+                source_operation_id=new_uuid7(),
+                source_transport_task_id=transport_task_id,
+            )
+        )
+    try:
+        async with integration_session_factory() as db:
+            repository = PickingTaskPlanDeltaRepository()
+            assert (
+                await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", transport_task_id)
+                == picks[1].source_evidence_id
+            )
+            assert (await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS")).id == ids[
+                0
+            ]
+            assert (
+                await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", "other-transport") is None
+            )
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(TransportDecisionBinding)
+                .where(TransportDecisionBinding.client_request_id == client_request_id)
+                .values(source_evidence_id=picks[0].source_evidence_id)
+            )
+            await db.execute(
+                update(DirectPickExecution)
+                .where(DirectPickExecution.id == picks[0].id)
+                .values(cancelled_evidence_id=picks[0].source_evidence_id)
+            )
+        async with integration_session_factory() as db:
+            assert await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS") is None
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(PositionProjection).where(PositionProjection.source_transport_task_id == transport_task_id)
+            )
+            await db.execute(
+                delete(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_request_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.client_request_id == client_request_id))
+
+
 async def test_source_queries_return_only_candidates_with_large_history(
     integration_session_factory, prepared, monkeypatch
 ):
@@ -883,12 +1064,12 @@ async def test_source_queries_return_only_candidates_with_large_history(
         execute = AsyncMock(wraps=db.execute)
         monkeypatch.setattr(db, "execute", execute)
         repository = PickingTaskPlanDeltaRepository()
-        picks, racks = await repository.source_identities(db, ids[0], direct_picks=[], bin_racks=[("H0", "A")])
+        picks, racks = await repository.source_identities(db, ids[0], 1, direct_picks=[], bin_racks=[("H0", "A")])
         assert picks == set() and racks == {("H0", "A")}
         assert execute.await_count == 1
         execute.reset_mock()
         candidates = [(f"M{i}", "A") for i in range(MEMBER_BATCH_SIZE)] + [("H0", "A")]
-        assert await repository.source_identities(db, ids[0], direct_picks=[], bin_racks=candidates) == (
+        assert await repository.source_identities(db, ids[0], 1, direct_picks=[], bin_racks=candidates) == (
             set(),
             {("H0", "A")},
         )

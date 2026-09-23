@@ -66,36 +66,6 @@ class PassageRepository:
         statement = select(ManualPickingPassage).where(_COLUMNS.admission_operation_id == operation_id)
         return (await db.execute(statement.with_for_update())).scalar_one_or_none()
 
-    async def waiting_for_completion_for_update(
-        self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str
-    ) -> ManualPickingPassage | None:
-        statement = select(ManualPickingPassage).where(
-            _COLUMNS.workline_id == workline_id,
-            _COLUMNS.task_id == task_id,
-            _COLUMNS.bin_code == bin_code,
-            _COLUMNS.scan2_evidence_id.is_not(None),
-            _COLUMNS.admission_operation_id.is_not(None),
-            _COLUMNS.wms_result.is_(None),
-        )
-        return (await db.execute(statement.with_for_update())).scalar_one_or_none()
-
-    async def uniquely_completed_for_update(
-        self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str
-    ) -> ManualPickingPassage | None:
-        statement = (
-            select(ManualPickingPassage)
-            .where(
-                _COLUMNS.workline_id == workline_id,
-                _COLUMNS.task_id == task_id,
-                _COLUMNS.bin_code == bin_code,
-                _COLUMNS.wms_completed_evidence_id.is_not(None),
-            )
-            .limit(2)
-            .with_for_update()
-        )
-        rows = list((await db.execute(statement)).scalars().all())
-        return rows[0] if len(rows) == 1 else None
-
     async def scan1_unclosed_for_update(self, db: AsyncSession, workline_id: int) -> tuple[ManualPickingPassage, ...]:
         statement = select(ManualPickingPassage).where(
             _COLUMNS.workline_id == workline_id,

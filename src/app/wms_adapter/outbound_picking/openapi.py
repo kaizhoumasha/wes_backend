@@ -81,8 +81,9 @@ _RACK_FACE_OR_ARRAY = {
 _CANCEL_BIN_SOURCE_RACK = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["rack_id", "rack_face"],
+    "required": ["plan_revision", "rack_id", "rack_face"],
     "properties": {
+        "plan_revision": _POSITIVE_INTEGER,
         "rack_id": _BUSINESS_IDENTIFIER,
         "rack_face": _RACK_FACE_OR_ARRAY,
     },
@@ -90,8 +91,9 @@ _CANCEL_BIN_SOURCE_RACK = {
 _CANCEL_DIRECT_PICK_SOURCE = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["rack_id", "rack_face", "slot_ids"],
+    "required": ["plan_revision", "rack_id", "rack_face", "slot_ids"],
     "properties": {
+        "plan_revision": _POSITIVE_INTEGER,
         "rack_id": _BUSINESS_IDENTIFIER,
         "rack_face": _RACK_FACE,
         "slot_ids": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _BUSINESS_IDENTIFIER},
@@ -208,8 +210,9 @@ MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA = _closed(
         "operation": {"type": "string", "enum": [MANUAL_BIN_COMPLETED_OPERATION]},
         "timestamp": _TIMESTAMP,
         "data": _closed(
-            ["task_id", "bin_code", "result", "completed_at"],
+            ["admission_operation_id", "task_id", "bin_code", "result", "completed_at"],
             {
+                "admission_operation_id": _UUIDV7,
                 "task_id": _BUSINESS_IDENTIFIER,
                 "bin_code": _BUSINESS_IDENTIFIER,
                 "result": {"type": "string", "enum": ["NORMAL", "NG"]},
@@ -228,6 +231,7 @@ MANUAL_BIN_COMPLETED_EVENT_EXAMPLE = {
             "operation": MANUAL_BIN_COMPLETED_OPERATION,
             "timestamp": 1786060807000,
             "data": {
+                "admission_operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e1",
                 "task_id": "PICK-SWAGGER-001",
                 "bin_code": "BIN-SWAGGER-001",
                 "result": "NORMAL",
@@ -244,9 +248,10 @@ MANUAL_RACK_DIRECT_PICK_EVENT_REQUEST_SCHEMA = _closed(
         "operation": {"type": "string", "enum": [MANUAL_RACK_DIRECT_PICK_OPERATION]},
         "timestamp": _TIMESTAMP,
         "data": _closed(
-            ["task_id", "rack_id", "rack_face", "completed_at"],
+            ["task_id", "plan_revision", "rack_id", "rack_face", "completed_at"],
             {
                 "task_id": _BUSINESS_IDENTIFIER,
+                "plan_revision": _POSITIVE_INTEGER,
                 "rack_id": _BUSINESS_IDENTIFIER,
                 "rack_face": _RACK_FACE,
                 "completed_at": _TIMESTAMP,
@@ -265,6 +270,7 @@ MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE = {
             "timestamp": 1786060808000,
             "data": {
                 "task_id": "PICK-SWAGGER-001",
+                "plan_revision": 1,
                 "rack_id": "DIRECT-RACK-01",
                 "rack_face": "B",
                 "completed_at": 1786060807900,
@@ -426,7 +432,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
             "data": {
                 "task_id": "PICK-SWAGGER-001",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "SOURCE-RACK-01", "rack_face": ["270"]}],
+                "bin_source_racks": [{"plan_revision": 1, "rack_id": "SOURCE-RACK-01", "rack_face": ["270"]}],
             },
         },
     },

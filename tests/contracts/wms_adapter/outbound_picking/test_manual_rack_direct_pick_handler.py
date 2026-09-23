@@ -35,6 +35,7 @@ def _event() -> dict[str, object]:
         "timestamp": 1_788_390_000_000,
         "data": {
             "task_id": "PICK-001",
+            "plan_revision": 1,
             "rack_id": "RACK-001",
             "rack_face": "A1",
             "completed_at": 1_788_389_999_000,

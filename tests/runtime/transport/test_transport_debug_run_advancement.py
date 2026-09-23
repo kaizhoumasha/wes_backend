@@ -922,40 +922,6 @@ async def test_transport_delivery_unknown_recovers_only_on_same_task_success() -
     assert repository.run.current_phase == "BINS_TO_INFEED"
 
 
-async def test_transport_result_timeout_recovers_only_on_same_task_success() -> None:
-    service, repository, _ = _harness(task_id="transport-1", status="NEEDS_ATTENTION")
-    repository.run.status = "NEEDS_ATTENTION"
-    repository.run.attention_code = "TRANSPORT_RESULT_TIMEOUT"
-    repository.steps[0].reason_code = "TRANSPORT_RESULT_TIMEOUT"
-    repository.tasks["transport-1"] = _task(
-        "transport-1",
-        CLIENT_IDS[0],
-        "RACK_MOVE",
-        status="RECONCILING",
-        reason_code="TRANSPORT_RESULT_TIMEOUT",
-    )
-
-    assert await service.advance_run("debug-run-1") is False
-    assert repository.run.status == "NEEDS_ATTENTION"
-
-    repository.tasks["transport-1"].status = "SUCCEEDED"
-    repository.tasks["transport-1"].reason_code = None
-    repository.members["transport-1"] = [
-        _member(
-            "transport-1",
-            object_type="RACK",
-            object_id="510056",
-            source={"kind": "RACK", "location_code": "510056"},
-            target={"kind": "RACK_POSITION", "location_code": "KT16"},
-            face="90",
-        )
-    ]
-
-    assert await service.advance_run("debug-run-1") is True
-    assert repository.run.status == "RUNNING"
-    assert repository.run.current_phase == "BINS_TO_INFEED"
-
-
 async def test_transport_position_unknown_recovers_only_on_same_task_success() -> None:
     service, repository, _ = _harness(task_id="transport-1", status="NEEDS_ATTENTION")
     repository.run.status = "NEEDS_ATTENTION"

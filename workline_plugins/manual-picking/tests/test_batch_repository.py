@@ -18,7 +18,7 @@ from src.app.execution.models import (
     TransportDecisionBinding,
     WmsConfirmation,
 )
-from src.app.transport.models import TransportMember, TransportTask
+from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.workline.models import WorkLine
 
@@ -36,6 +36,7 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
             InboundEvidence.__table__,
             WmsConfirmation.__table__,
             TransportTask.__table__,
+            TransportEvidence.__table__,
             TransportMember.__table__,
             PositionProjection.__table__,
             PickingTask.__table__,
@@ -47,12 +48,68 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.asyncio
+async def test_inbound_results_for_same_rack_remain_revision_scoped() -> None:
+    from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 13, 12)
+    try:
+        async with sessions.begin() as db:
+            for revision in (1, 2):
+                operation_id = f"019f0000-0000-7000-8000-{revision:012d}"
+                confirmation = WmsConfirmation(
+                    operation="outbound.bin.inbound_batch@v1",
+                    operation_id=operation_id,
+                    workline_id=7,
+                    request_digest="a" * 64,
+                    request_payload={
+                        "operation": "outbound.bin.inbound_batch@v1",
+                        "operation_id": operation_id,
+                        "timestamp": 1,
+                        "data": {"task_id": "PICK-1", "plan_revision": revision, "rack_id": "A", "rack_face": "90"},
+                    },
+                    deadline_at=now,
+                    status="COMPLETED",
+                    completed_at=now,
+                )
+                evidence = InboundEvidence(
+                    kind="WMS_RESULT",
+                    source_identity=f"wms:inbound:{revision}",
+                    payload_digest="b" * 64,
+                    normalized_payload={
+                        "operation_id": operation_id,
+                        "code": "DECIDED",
+                        "timestamp": 2,
+                        "data": {"result": "RACK_FACE_DONE"},
+                    },
+                    received_at=now,
+                    published_at=now,
+                    decision_digest="c" * 64,
+                    workline_id=7,
+                    operation=confirmation.operation,
+                    operation_id=operation_id,
+                    apply_status="APPLIED",
+                )
+                db.add_all((confirmation, evidence))
+                await db.flush()
+                confirmation.response_evidence_id = evidence.id
+            reader = BinBatchResultReader()
+            for revision in (1, 2):
+                intent, _, _, _ = await reader.latest_inbound_detail(
+                    db, workline_id=7, task_id="PICK-1", plan_revision=revision, rack_id="A", rack_face="90"
+                )
+                assert intent.plan_revision == revision
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_drain_unclosed_transport_is_scoped_to_its_reserved_rack() -> None:
     from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DrainRepository
 
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 22, 16)
-    decision = SimpleNamespace(workline_id=7, intent=SimpleNamespace(operation_id="drain-1"))
+    decision = SimpleNamespace(workline_id=7, evidence_id=10, intent=SimpleNamespace(operation_id="drain-1"))
     try:
         async with sessions.begin() as db:
             for rack_id, status in (("R1", "SUCCEEDED"), ("R2", "PENDING")):
@@ -96,83 +153,6 @@ async def test_drain_unclosed_transport_is_scoped_to_its_reserved_rack() -> None
 
 
 @pytest.mark.asyncio
-async def test_source_rack_windows_keep_unclosed_archived_and_current_authority() -> None:
-    from manual_picking.application.batch_repository import BatchRepository
-    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
-
-    engine, sessions = await _new_sessions()
-    now = datetime(2026, 9, 21, 12)
-    try:
-        async with sessions.begin() as db:
-            historical = PickingTask(
-                task_id="PICK-HISTORICAL",
-                task_type="MANUAL",
-                status="ARCHIVED",
-                archived_at=now,
-                queue_revision=1,
-                dispatch_sequence=1,
-                issued_at_ms=1,
-                issued_evidence_id=1,
-                workline_id=7,
-            )
-            current = PickingTask(
-                task_id="PICK-CURRENT",
-                task_type="MANUAL",
-                status="EXECUTING",
-                queue_revision=1,
-                dispatch_sequence=2,
-                issued_at_ms=1,
-                issued_evidence_id=2,
-                workline_id=7,
-            )
-            db.add_all((historical, current))
-            await db.flush()
-            for identity, rack_id, step, task_id in (
-                ("historical-in", "R-HISTORICAL", "PICKING_TASK_BIN_SOURCE_RACK_IN", historical.id),
-                ("current-in", "R-CURRENT", "PICKING_TASK_BIN_SOURCE_RACK_IN", current.id),
-                ("drain-in", "R-DRAIN", DRAIN_RACK_IN_STEP, None),
-                ("historical-out", "R-HISTORICAL", "MANUAL_PICKING_SOURCE_RACK_OUT", historical.id),
-                ("current-out", "R-CURRENT", "MANUAL_PICKING_SOURCE_RACK_OUT", current.id),
-                ("drain-out", "R-DRAIN", DRAIN_RACK_OUT_STEP, None),
-            ):
-                db.add(
-                    TransportDecisionBinding(
-                        workline_id=7,
-                        picking_task_id=task_id,
-                        correlation_id=identity,
-                        step=step,
-                        resource_fence_id=rack_id,
-                        source_evidence_id=10,
-                        client_request_id=identity,
-                    )
-                )
-                db.add(
-                    TransportTask(
-                        transport_task_id=identity,
-                        client_request_id=identity,
-                        request_digest="a" * 64,
-                        kind="RACK_MOVE",
-                        caller_json={"workline_id": "7"},
-                        request_json={},
-                        submit_operation_id=identity,
-                        submit_timestamp_ms=1,
-                        submit_request_body="{}",
-                        submit_request_body_digest="b" * 64,
-                        status="PENDING",
-                        authority_workline_id=7,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-            await db.flush()
-            repository = BatchRepository()
-            assert await repository.occupied_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
-            assert await repository.fenced_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_face_gate_ignores_unrelated_pending_batch() -> None:
     module = import_module("manual_picking.application.batch_repository")
     engine, sessions = await _new_sessions()
@@ -188,15 +168,15 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
                     request_digest="a" * 64,
                     request_payload={
                         "operation": "outbound.bin.inbound_batch@v1",
-                        "data": {"task_id": "PICK-2", "rack_id": "R2", "rack_face": "270"},
+                        "data": {"task_id": "PICK-2", "plan_revision": 1, "rack_id": "R2", "rack_face": "270"},
                     },
                     deadline_at=now,
                     status="PENDING",
                 )
             )
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-2", "R2", "270")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-2", 1, "R2", "270")
             db.add(
                 TransportTask(
                     transport_task_id="return-1",
@@ -227,7 +207,7 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
                 )
             )
             await db.flush()
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
     finally:
         await engine.dispose()
 
@@ -248,15 +228,15 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
                 request_digest="a" * 64,
                 request_payload={
                     "operation": "outbound.bin.inbound_batch@v1",
-                    "data": {"task_id": "PICK-1", "rack_id": "R1", "rack_face": "90"},
+                    "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
                 },
                 deadline_at=now,
                 status="PENDING",
             )
             db.add(confirmation)
             await db.flush()
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
-            assert not await repo.has_unclosed_action_for_face(db, 8, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 8, "PICK-1", 1, "R1", "90")
 
             # 2) COMPLETED confirmation 但 response_evidence 未 published 仍阻塞。
             confirmation.status = "COMPLETED"
@@ -274,11 +254,11 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
             db.add(evidence)
             await db.flush()
             confirmation.response_evidence_id = evidence.id
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
             evidence.published_at = now
             evidence.decision_digest = "e" * 64
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
 
             # 3) 未关联的 history evidence(其他 operation_id)不构成阻塞。
             db.add(
@@ -295,7 +275,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
                 )
             )
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
 
             # 4) TRANSPORT_RESULT evidence 不计入 WMS_RESULT 阻塞条件。
             db.add(
@@ -311,7 +291,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
                 )
             )
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
     finally:
         await engine.dispose()
 
@@ -353,16 +333,16 @@ async def test_face_gate_transport_state_transitions_release_only_after_publicat
                 )
             )
             await db.flush()
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
             task.status = "SUCCEEDED"
             task.outcome_version = 1
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
             task.published_outcome_version = 1
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
             task.status = "FAILED"
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
     finally:
         await engine.dispose()
 
@@ -375,8 +355,8 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
     try:
         async with sessions.begin() as db:
             repo = module.BatchRepository()
-            assert await repo.return_retry_due(db, 7, "R1", "90", now, now + timedelta(microseconds=1))
-            assert await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301") is None
+            assert await repo.return_retry_due(db, 7, "R1", "90", 51, now, now + timedelta(microseconds=1))
+            assert await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301") is None
             return_confirmation = WmsConfirmation(
                 operation="outbound.bin.return_batch@v1",
                 operation_id="019f0000-0000-7000-8000-000000000002",
@@ -427,12 +407,12 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             return_confirmation.response_evidence_id = return_evidence.id
             await db.flush()
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
             )
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
             )
-            assert await repo.return_retry_due(db, 7, "R1", "270", now, now + timedelta(microseconds=1))
+            assert await repo.return_retry_due(db, 7, "R1", "270", 51, now, now + timedelta(microseconds=1))
             db.add(
                 ManualPickingPassage(
                     workline_id=7,
@@ -463,7 +443,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             )
             await db.flush()
             assert not await repo.return_retry_due(
-                db, 7, "R1", "90", now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
+                db, 7, "R1", "90", 51, now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
             )
 
             inbound_confirmation = WmsConfirmation(
@@ -475,7 +455,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                     "operation": "outbound.bin.inbound_batch@v1",
                     "operation_id": "019f0000-0000-7000-8000-000000000003",
                     "timestamp": 1_788_975_600_000,
-                    "data": {"task_id": "PICK-1", "rack_id": "R1", "rack_face": "90"},
+                    "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
                 },
                 deadline_at=now,
                 status="COMPLETED",
@@ -504,13 +484,13 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             await db.flush()
             inbound_confirmation.response_evidence_id = inbound_evidence.id
             await db.flush()
-            progress = await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
             assert progress.complete and progress.feed_complete
             inbound_evidence.published_at = None
             await db.flush()
-            assert await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301") is None
-            assert await repo.inbound_progress(db, 7, "PICK-1", "R1", "270", "CNV0301") is None
-            assert await repo.inbound_progress(db, 8, "PICK-1", "R1", "90", "CNV0301") is None
+            assert await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301") is None
+            assert await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "270", "CNV0301") is None
+            assert await repo.inbound_progress(db, 8, "PICK-1", 1, "R1", "90", "CNV0301") is None
     finally:
         await engine.dispose()
 
@@ -524,7 +504,7 @@ async def test_inbound_closed_face_does_not_request_again(has_chunk: bool) -> No
     history.latest_inbound_detail = AsyncMock(
         return_value=(
             sdk.wms_operations.outbound_bin_inbound_batch(
-                operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+                operation_id="batch-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
             ),
             sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone()),
             SimpleNamespace(id=31),
@@ -533,7 +513,7 @@ async def test_inbound_closed_face_does_not_request_again(has_chunk: bool) -> No
     )
     repo = module.BatchRepository(history)
     db = SimpleNamespace(scalar=AsyncMock(return_value=13 if has_chunk else None))
-    progress = await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+    progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
     assert progress.feed_complete is (not has_chunk)
     assert progress.complete is (not has_chunk)
     assert progress.next_offset is None
@@ -553,7 +533,7 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
 
     now = datetime(2026, 9, 13, 12)
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+        operation_id="batch-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady(
         tuple(
@@ -617,11 +597,11 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
 
     try:
         async with sessions.begin() as db:
-            progress = await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
             assert progress.next_offset == 0 and not progress.complete
             add_chunk(db, 0)
             await db.flush()
-            assert (await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")).next_offset is None
+            assert (await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).next_offset is None
             for index in range(1, 5):
                 db.add(
                     ManualPickingPassage(
@@ -635,11 +615,11 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
                     )
                 )
             await db.flush()
-            assert (await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")).next_offset == 4
+            assert (await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).next_offset == 4
             for offset in range(4, bin_count, 4):
                 add_chunk(db, offset)
             await db.flush()
-            progress = await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
             assert progress.feed_complete and not progress.complete
             for index in range(5, bin_count + 1):
                 db.add(
@@ -655,7 +635,7 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
                 )
             await db.flush()
             queries.clear()
-            progress = await repo.inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
             assert progress.complete and progress.feed_complete and progress.next_offset is None
             assert progress.last_chunk_created_at == now
             assert len(queries) <= 3, f"{bin_count} bins required {len(queries)} SELECTs"
@@ -669,7 +649,7 @@ async def test_frozen_face_does_not_redispatch_legacy_inbound_binding() -> None:
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 13, 12)
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-legacy", task_id="PICK-1", rack_id="R1", rack_face="90"
+        operation_id="batch-legacy", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),))
     history = SimpleNamespace(
@@ -691,181 +671,7 @@ async def test_frozen_face_does_not_redispatch_legacy_inbound_binding() -> None:
             )
             await db.flush()
             with pytest.raises(ValueError, match="legacy inbound binding"):
-                await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("in_status", ["PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED", "FAILED", "REJECTED"])
-@pytest.mark.parametrize(
-    ("out_status", "reason_code", "was_accepted"),
-    [
-        (None, None, False),
-        ("PENDING", None, False),
-        ("ACCEPTED", None, True),
-        ("RECONCILING", "TRANSPORT_SUBMIT_CONFLICT", False),
-        ("RECONCILING", "TRANSPORT_DELIVERY_UNKNOWN", False),
-        ("RECONCILING", "TRANSPORT_RESULT_TIMEOUT", True),
-        ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", True),
-        ("SUCCEEDED", None, True),
-        ("FAILED", None, True),
-        ("REJECTED", None, False),
-    ],
-)
-@pytest.mark.parametrize("drain", [False, True])
-async def test_source_window_occupancy_uses_ctu01_until_later_ctu03_acceptance(
-    in_status, out_status, reason_code, was_accepted, drain
-):
-    from manual_picking.application.batch_repository import BatchRepository
-
-    engine, sessions = await _new_sessions()
-    now = datetime(2026, 9, 15, 12)
-
-    def add(db, identity, step, status, *, evidence=51, line=7, reason=None, accepted=False, departure=False):
-        db.add(
-            TransportDecisionBinding(
-                workline_id=line,
-                correlation_id=identity,
-                step=step,
-                resource_fence_id="R1",
-                source_evidence_id=evidence,
-                client_request_id=identity,
-            )
-        )
-        db.add(
-            TransportTask(
-                transport_task_id=identity,
-                client_request_id=identity,
-                request_digest="a" * 64,
-                kind="RACK_MOVE",
-                caller_json={"workline_id": str(line)},
-                request_json={},
-                submit_operation_id=identity,
-                submit_timestamp_ms=1,
-                submit_request_body="{}",
-                submit_request_body_digest="b" * 64,
-                status=status,
-                reason_code=reason,
-                result_deadline_at=now + timedelta(seconds=60) if accepted else None,
-                authority_workline_id=line,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        if departure:
-            db.add(
-                TransportMember(
-                    transport_task_id=identity,
-                    ordinal=0,
-                    object_type="RACK",
-                    object_id="R1",
-                    source_json={"kind": "RACK", "location_code": "R1"},
-                    target_json={"kind": "ZONE", "location_code": "WH01"},
-                    status="SUCCEEDED" if status == "SUCCEEDED" else "PENDING",
-                    final_position_json=(
-                        {"kind": "RACK_POSITION", "location_code": "WHE0502"} if status == "SUCCEEDED" else None
-                    ),
-                    position_unknown=False,
-                    updated_at=now,
-                )
-            )
-
-    try:
-        async with sessions.begin() as db:
-            in_step = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN" if drain else "PICKING_TASK_BIN_SOURCE_RACK_IN"
-            out_step = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT" if drain else "MANUAL_PICKING_SOURCE_RACK_OUT"
-            add(db, "in", in_step, in_status)
-            add(db, "duplicate-in", in_step, in_status)
-            add(db, "rotate", "MANUAL_PICKING_SOURCE_RACK_ROTATE", "ACCEPTED")
-            add(db, "other-line", "MANUAL_PICKING_SOURCE_RACK_OUT", "ACCEPTED", line=8)
-            if out_status is not None:
-                add(
-                    db,
-                    "out",
-                    out_step,
-                    out_status,
-                    evidence=52,
-                    reason=reason_code,
-                    accepted=was_accepted,
-                    departure=True,
-                )
-            await db.flush()
-            occupied = await BatchRepository().occupied_source_rack_ids(db, 7)
-            released = out_status in {"ACCEPTED", "SUCCEEDED", "FAILED"} or (
-                out_status == "RECONCILING" and was_accepted
-            )
-            assert occupied == ({"R1"} if in_status not in {"FAILED", "REJECTED"} and not released else set())
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("final_position", "position_unknown", "expected"),
-    [
-        ({"kind": "RACK_POSITION", "location_code": "WHE0502"}, False, set()),
-        ({"kind": "RACK_POSITION", "location_code": "KT16"}, False, {"R1"}),
-        (None, True, set()),
-        (None, False, set()),
-    ],
-)
-async def test_failed_ctu01_releases_capacity_only_with_known_position_away_from_target(
-    final_position, position_unknown, expected
-) -> None:
-    from manual_picking.application.batch_repository import BatchRepository
-    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP
-
-    engine, sessions = await _new_sessions()
-    now = datetime(2026, 9, 22, 21)
-    try:
-        async with sessions.begin() as db:
-            db.add(
-                TransportDecisionBinding(
-                    workline_id=7,
-                    correlation_id="drain:drain-1:rack:R1",
-                    step=DRAIN_RACK_IN_STEP,
-                    resource_fence_id="R1",
-                    source_evidence_id=51,
-                    client_request_id="failed-in",
-                )
-            )
-            db.add(
-                TransportTask(
-                    transport_task_id="failed-in",
-                    client_request_id="failed-in",
-                    request_digest="a" * 64,
-                    kind="RACK_MOVE",
-                    caller_json={"workline_id": "7"},
-                    request_json={"target": {"kind": "RACK_POSITION", "location_code": "KT16"}},
-                    submit_operation_id="failed-in",
-                    submit_timestamp_ms=1,
-                    submit_request_body="{}",
-                    submit_request_body_digest="b" * 64,
-                    status="FAILED",
-                    reason_code="RCS_TASK_REJECTED",
-                    authority_workline_id=7,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            db.add(
-                TransportMember(
-                    transport_task_id="failed-in",
-                    ordinal=0,
-                    object_type="RACK",
-                    object_id="R1",
-                    source_json={"kind": "RACK", "location_code": "R1"},
-                    target_json={"kind": "RACK_POSITION", "location_code": "KT16"},
-                    status="FAILED",
-                    final_position_json=final_position,
-                    position_unknown=position_unknown,
-                    failure_code="RCS_TASK_REJECTED",
-                    updated_at=now,
-                )
-            )
-            await db.flush()
-            assert await BatchRepository().occupied_source_rack_ids(db, 7) == expected
+                await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
     finally:
         await engine.dispose()
 
@@ -898,7 +704,7 @@ async def test_feed_complete_requires_published_transport_members_at_inlet(case:
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 15, 12)
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="feed-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+        operation_id="feed-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
     )
     result = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S1")),))
     history = SimpleNamespace(
@@ -982,7 +788,7 @@ async def test_feed_complete_requires_published_transport_members_at_inlet(case:
                     )
                 )
             await db.flush()
-            progress = await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+            progress = await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
             assert progress.feed_complete is expected
             assert not progress.complete
     finally:
@@ -1003,19 +809,81 @@ async def test_no_batch_never_reopens_return_check_for_the_same_face() -> None:
         )
     )
     repo = module.BatchRepository(history)
-    db = SimpleNamespace(scalar=AsyncMock(return_value=99))  # Newly ready return bins cannot open another check.
-    assert not await repo.return_retry_due(db, 7, "R1", "90", completed + timedelta(minutes=1), chunk_created)
-    db.scalar.assert_not_awaited()
+    db = SimpleNamespace(scalar=AsyncMock(return_value=chunk_created))
+    assert not await repo.return_retry_due(db, 7, "R1", "90", 51, completed + timedelta(minutes=1), chunk_created)
     assert not await repo.return_retry_due(
-        db, 7, "R1", "90", completed + timedelta(minutes=1), completed + timedelta(seconds=1)
+        db, 7, "R1", "90", 51, completed + timedelta(minutes=1), completed + timedelta(seconds=1)
     )
+    db.scalar.return_value = completed + timedelta(seconds=2)
+    assert await repo.return_retry_due(db, 7, "R1", "90", 52, completed + timedelta(minutes=1), chunk_created)
+
+
+@pytest.mark.asyncio
+async def test_late_transport_publication_does_not_reopen_no_batch() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    arrived = datetime(2026, 9, 15, 12)
+    completed = arrived + timedelta(seconds=1)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                TransportTask(
+                    transport_task_id="source-1",
+                    client_request_id="source-request-1",
+                    request_digest="a" * 64,
+                    kind="RACK_MOVE",
+                    caller_json={},
+                    request_json={},
+                    submit_operation_id="source-op-1",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="SUCCEEDED",
+                    authority_workline_id=7,
+                    created_at=arrived,
+                    updated_at=completed + timedelta(seconds=1),
+                )
+            )
+            db.add(
+                TransportDecisionBinding(
+                    correlation_id="source-1",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    workline_id=7,
+                    resource_fence_id="R1",
+                    client_request_id="source-request-1",
+                    source_evidence_id=51,
+                )
+            )
+            db.add(
+                TransportEvidence(
+                    operation_id="source-result-1",
+                    transport_task_id="source-1",
+                    operation="transport.task.resulted@v1",
+                    outcome_revision=1,
+                    event_timestamp_ms=1,
+                    message_digest="c" * 64,
+                    payload_json={},
+                    ack_timestamp_ms=1,
+                    ack_data_json={},
+                    status="APPLIED",
+                    received_at=arrived,
+                    processed_at=arrived,
+                )
+            )
+            history = SimpleNamespace(
+                latest_return=AsyncMock(return_value=(sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1)), completed))
+            )
+            repo = module.BatchRepository(history)
+            assert not await repo.return_retry_due(db, 7, "R1", "90", 51, completed, arrived)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_duplicate_transport_rows_do_not_complete_or_redispatch_a_chunk() -> None:
     module = import_module("manual_picking.application.batch_repository")
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-1", task_id="PICK-1", rack_id="R1", rack_face="90"
+        operation_id="batch-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S1")),))
     history = SimpleNamespace(
@@ -1032,150 +900,5 @@ async def test_duplicate_transport_rows_do_not_complete_or_redispatch_a_chunk() 
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [("batch-1:0", object()), ("batch-1:0", object())])),
         scalars=AsyncMock(side_effect=[[], SimpleNamespace(all=list)]),
     )
-    progress = await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", "R1", "90", "CNV0301")
+    progress = await module.BatchRepository(history).inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
     assert not progress.feed_complete and not progress.complete and progress.next_offset is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("admission", ["source", "drain"])
-@pytest.mark.parametrize("prior_drain", [False, True])
-@pytest.mark.parametrize(
-    ("state", "window_released", "rack_reusable"),
-    [
-        ("ACCEPTED", True, False),
-        ("RESULT_TIMEOUT", True, False),
-        ("POSITION_UNKNOWN", True, False),
-        ("SUCCEEDED", True, True),
-        ("UNKNOWN_MEMBER", True, False),
-        ("UNKNOWN_PROJECTION", True, True),
-        ("STALE_PROJECTION", True, True),
-        ("MISSING_PROJECTION", True, True),
-        ("WRONG_FINAL", True, False),
-    ],
-)
-async def test_same_rack_admission_waits_for_authoritative_departure_after_window_released(
-    admission, prior_drain, state, window_released, rack_reusable
-):
-    from manual_picking.application.batch_repository import BatchRepository
-    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
-    from test_drain_flow import decision
-    from test_source_progression import setup_driver
-
-    engine, sessions = await _new_sessions()
-    now = datetime(2026, 9, 16, 1)
-    target = {"kind": "ZONE", "location_code": "WH01"}
-    final = (
-        {"kind": "ZONE", "location_code": "WH01"}
-        if state == "WRONG_FINAL"
-        else {"kind": "RACK_POSITION", "location_code": "WHE0502"}
-    )
-    departure_status = (
-        "RECONCILING"
-        if state in {"RESULT_TIMEOUT", "POSITION_UNKNOWN"}
-        else "ACCEPTED"
-        if state == "ACCEPTED"
-        else "SUCCEEDED"
-    )
-    driver, line, task, positions, plans, _flow, creator, *_ = setup_driver()
-    driver._rack_cycles = BatchRepository()
-    driver._position_service.require_position_capacity.return_value = 1
-    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
-    plans.rows = [SimpleNamespace(id=21, rack_id="R1", rack_face="90", source_evidence_id=71, plan_revision=1)]
-    task.last_applied_plan_revision = 1
-    positions.target = None
-    positions.count = AsyncMock(return_value=0)
-    creator.create = AsyncMock()
-    row = decision(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)))
-    driver._drain = SimpleNamespace(
-        decide_in_session=AsyncMock(return_value=(0, row)),
-        active_rack_face=AsyncMock(return_value=("R1", "90", False)),
-        repository=SimpleNamespace(
-            transport=AsyncMock(return_value=None), has_unclosed_rack_action=AsyncMock(return_value=False)
-        ),
-    )
-    try:
-        async with sessions.begin() as db:
-            for identity, step, status in (
-                ("earlier-out", DRAIN_RACK_OUT_STEP if prior_drain else "MANUAL_PICKING_SOURCE_RACK_OUT", "SUCCEEDED"),
-                ("old-in", DRAIN_RACK_IN_STEP if prior_drain else "PICKING_TASK_BIN_SOURCE_RACK_IN", "SUCCEEDED"),
-                ("old-out", DRAIN_RACK_OUT_STEP if prior_drain else "MANUAL_PICKING_SOURCE_RACK_OUT", departure_status),
-            ):
-                db.add(
-                    TransportDecisionBinding(
-                        workline_id=7,
-                        correlation_id=identity,
-                        step=step,
-                        resource_fence_id="R1",
-                        source_evidence_id=51,
-                        client_request_id=identity,
-                    )
-                )
-                db.add(
-                    TransportTask(
-                        transport_task_id=identity,
-                        client_request_id=identity,
-                        request_digest="a" * 64,
-                        kind="RACK_MOVE",
-                        caller_json={"workline_id": "7"},
-                        request_json={"rack_id": "R1"},
-                        submit_operation_id=identity,
-                        submit_timestamp_ms=1,
-                        submit_request_body="{}",
-                        submit_request_body_digest="b" * 64,
-                        status=status,
-                        result_deadline_at=now,
-                        reason_code=f"TRANSPORT_{state}" if status == "RECONCILING" else None,
-                        authority_workline_id=7,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-            db.add(
-                TransportMember(
-                    transport_task_id="earlier-out",
-                    ordinal=0,
-                    object_type="RACK",
-                    object_id="R1",
-                    source_json={"kind": "RACK", "rack_id": "R1"},
-                    target_json=target,
-                    status="SUCCEEDED",
-                    final_position_json=target,
-                    position_unknown=False,
-                    updated_at=now,
-                )
-            )
-            db.add(
-                TransportMember(
-                    transport_task_id="old-out",
-                    ordinal=0,
-                    object_type="RACK",
-                    object_id="R1",
-                    source_json={"kind": "RACK", "rack_id": "R1"},
-                    target_json=target,
-                    status=departure_status,
-                    final_position_json=final,
-                    position_unknown=state == "UNKNOWN_MEMBER",
-                    updated_at=now,
-                )
-            )
-            if state != "MISSING_PROJECTION":
-                db.add(
-                    PositionProjection(
-                        object_type="RACK",
-                        object_id="R1",
-                        workline_id=7,
-                        position_json=final,
-                        position_unknown=state == "UNKNOWN_PROJECTION",
-                        source_operation_id="old-out",
-                        source_transport_task_id="stale" if state == "STALE_PROJECTION" else "old-out",
-                    )
-                )
-            await db.flush()
-            assert await driver._rack_cycles.occupied_source_rack_ids(db, 7) == (set() if window_released else {"R1"})
-            count = await (
-                driver.advance_in_session(db, line, task) if admission == "source" else driver._advance_drain(db, line)
-            )
-            assert count == int(rack_reusable)
-            assert creator.create.await_count == int(rack_reusable)
-    finally:
-        await engine.dispose()

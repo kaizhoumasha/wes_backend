@@ -43,6 +43,7 @@ def _confirmation(**overrides):  # type: ignore[no-untyped-def]
         "status": WmsConfirmationStatus.COMPLETED,
         "response_evidence_id": 31,
         "response_result": "READY",
+        "created_at": datetime(2026, 9, 14, 12),
         "completed_at": datetime(2026, 9, 14, 12),
     }
     return SimpleNamespace(**(values | overrides))
@@ -63,9 +64,27 @@ def _evidence(**overrides):  # type: ignore[no-untyped-def]
 def _reader(confirmation, evidence=None):  # type: ignore[no-untyped-def]
     repository = SimpleNamespace(
         latest=AsyncMock(return_value=confirmation),
+        latest_for_workline=AsyncMock(return_value=confirmation),
         evidence=AsyncMock(return_value=evidence),
     )
     return RackDepartureResultReader(repository), repository
+
+
+@pytest.mark.asyncio
+async def test_workline_reader_ignores_departure_decided_before_current_arrival() -> None:
+    reader, repository = _reader(_confirmation(created_at=datetime(2026, 9, 14, 11)), _evidence())
+
+    assert await reader.latest_for_workline(object(), 7, "RACK-1", arrived_at=datetime(2026, 9, 14, 12)) is None
+    repository.evidence.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workline_reader_keeps_decision_created_after_current_arrival() -> None:
+    reader, _ = _reader(_confirmation(created_at=datetime(2026, 9, 14, 13)), _evidence())
+
+    snapshot = await reader.latest_for_workline(object(), 7, "RACK-1", arrived_at=datetime(2026, 9, 14, 12))
+    assert snapshot is not None
+    assert snapshot.intent.operation_id == OPERATION_ID
 
 
 @pytest.mark.asyncio

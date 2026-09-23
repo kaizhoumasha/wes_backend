@@ -12,7 +12,9 @@ from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK
 
 
 class ReturnRackArrivalRepository:
-    async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> WmsConfirmation | None:
+    async def latest(
+        self, db: AsyncSession, picking_task_id: int, rack_id: str, transport_task_id: str
+    ) -> WmsConfirmation | None:
         columns = cast("Any", WmsConfirmation).__table__.c
         return await db.scalar(
             select(WmsConfirmation)
@@ -20,6 +22,7 @@ class ReturnRackArrivalRepository:
                 columns.picking_task_id == picking_task_id,
                 columns.operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION,
                 columns.request_payload["data"]["rack_id"].as_string() == rack_id,
+                columns.request_payload["data"]["transport_task_id"].as_string() == transport_task_id,
             )
             .order_by(columns.id.desc())
             .limit(1)

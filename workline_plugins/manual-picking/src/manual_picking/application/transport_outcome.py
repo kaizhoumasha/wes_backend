@@ -18,7 +18,13 @@ from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultR
 from src.utils.timezone import timezone
 
 from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
-from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DRAIN_RACK_ROTATE_STEP
+from .drain_repository import (
+    DRAIN_RACK_IN_STEP,
+    DRAIN_RACK_OUT_STEP,
+    DRAIN_RACK_ROTATE_STEP,
+    RETURN_RACK_OUT_STEP,
+    RETURN_RACK_ROTATE_STEP,
+)
 
 if TYPE_CHECKING:
     from wes_plugin_sdk import ReturnBufferDrainIntent, ReturnBufferDrainOutcome
@@ -40,7 +46,6 @@ def _drain_business_identity(
 ) -> dict[str, str]:
     if (
         not isinstance(decision.result, ReturnBufferDrainReady)
-        or not binding.correlation_id.startswith(f"drain:{intent.operation_id}:rack:")
         or binding.resource_fence_id not in {rack.rack_id for rack in decision.result.racks}
         or any(member.object_id != binding.resource_fence_id for member in outcome.members)
     ):
@@ -70,7 +75,12 @@ class ManualPickingTransportOutcomePublisher:
         binding = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
         if binding is None or binding.client_request_id != outcome.client_request_id:
             raise LookupError("manual-picking Transport outcome 缺少原 binding")
-        rack_steps = {"PICKING_TASK_TARGET_RACK_IN", "PICKING_TASK_BIN_SOURCE_RACK_IN", SOURCE_RACK_ROTATE_STEP}
+        rack_steps = {
+            "PICKING_TASK_TARGET_RACK_IN",
+            "PICKING_TASK_BIN_SOURCE_RACK_IN",
+            SOURCE_RACK_ROTATE_STEP,
+            RETURN_RACK_ROTATE_STEP,
+        }
         batch_operations = {
             "MANUAL_PICKING_INBOUND_BATCH": BIN_INBOUND_BATCH_OPERATION,
             "MANUAL_PICKING_RETURN_BATCH": BIN_RETURN_BATCH_OPERATION,
@@ -81,6 +91,7 @@ class ManualPickingTransportOutcomePublisher:
             | {
                 SOURCE_RACK_OUT_STEP,
                 TRANSFER_RACK_OUT_STEP,
+                RETURN_RACK_OUT_STEP,
                 DRAIN_RACK_IN_STEP,
                 DRAIN_RACK_ROTATE_STEP,
                 DRAIN_RACK_OUT_STEP,
@@ -103,7 +114,7 @@ class ManualPickingTransportOutcomePublisher:
             if not isinstance(task_id, str) or not task_id:
                 raise ValueError("manual-picking 原计划 Evidence 缺少 PickingTask identity")
             business_identity = {"picking_task_id": task_id, "rack_id": binding.resource_fence_id}
-        elif binding.step in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP}:
+        elif binding.step in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}:
             if source is None or any(member.object_id != binding.resource_fence_id for member in outcome.members):
                 raise LookupError("manual-picking Transport outcome 缺少原货架离场依据")
             if source.kind != InboundEvidenceKind.WMS_RESULT or source.operation != RACK_DEPARTURE_OPERATION:

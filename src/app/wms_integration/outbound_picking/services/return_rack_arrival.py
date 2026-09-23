@@ -70,8 +70,10 @@ class ReturnRackArrivalResultReader:
     def __init__(self, repository: ReturnRackArrivalRepository | None = None) -> None:
         self._repository = repository or ReturnRackArrivalRepository()
 
-    async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> ReturnRackArrivalSnapshot | None:
-        confirmation = await self._repository.latest(db, picking_task_id, rack_id)
+    async def latest(
+        self, db: AsyncSession, picking_task_id: int, rack_id: str, transport_task_id: str
+    ) -> ReturnRackArrivalSnapshot | None:
+        confirmation = await self._repository.latest(db, picking_task_id, rack_id, transport_task_id)
         if confirmation is None:
             return None
         request = parse_return_rack_arrival_report_request(confirmation.request_payload)

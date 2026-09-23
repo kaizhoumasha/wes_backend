@@ -217,7 +217,7 @@ async def test_plan_members_cancel_respects_task_state(
                 "data": {
                     "task_id": task_name,
                     "cancel_scope": "PLAN_MEMBERS",
-                    "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+                    "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90"]}],
                 },
             }
         ),
@@ -254,8 +254,10 @@ async def test_cancel_members_matches_selectors_and_marks_rows(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
-            "direct_pick_sources": [{"rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]}],
+            "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+            "direct_pick_sources": [
+                {"plan_revision": 1, "rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]}
+            ],
         }
     )
 
@@ -304,7 +306,7 @@ async def test_cancel_members_skips_selectors_that_do_not_match(
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
             # 90 面真实存在；999 面不存在——只取消当前仍可取消的成员。
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "999"]}],
+            "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90", "999"]}],
         }
     )
 
@@ -336,7 +338,7 @@ async def test_cancel_members_rejects_reselecting_an_already_cancelled_member(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+            "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90"]}],
         }
     )
 

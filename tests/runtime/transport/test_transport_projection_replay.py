@@ -46,6 +46,10 @@ class _Sessions:
 
 
 class _ReplayRepository:
+    async def list_projection_recovery_orphans(self, _db, *, limit):
+        assert limit == 100
+        return []
+
     async def list_ack_invalidation_projection_candidates(self, _db, *, limit):
         assert limit == 100
         return [("task-1", "BIN", "bin-1", "submit-op-1", CANDIDATE_TIME)]
@@ -69,9 +73,6 @@ class _ReplayRepository:
 
 
 class _DrainReplayRepository(_ReplayRepository):
-    def __init__(self, *, current=True):
-        self.current = current
-
     async def list_final_result_projection_candidates(self, _db, *, limit):
         assert limit == 100
         return [("task-1", "RACK", "rack-1", "result-op-1", CANDIDATE_TIME)]
@@ -95,10 +96,6 @@ class _DrainReplayRepository(_ReplayRepository):
                 updated_at=SimpleNamespace(),
             )
         ]
-
-    async def is_current_drain_binding(self, _db, binding_id):
-        assert binding_id == 17
-        return self.current
 
 
 class _DrainAckReplayRepository(_DrainReplayRepository):
@@ -170,6 +167,9 @@ class _FinalBatchReplayRepository(_ReplayRepository):
 
 
 class _DbForReplay:
+    def __init__(self, picking_status="EXECUTING"):
+        self.picking_status = picking_status
+
     async def execute(self, _statement):
         return SimpleNamespace(scalar_one_or_none=lambda: SimpleNamespace(id=7))
 
@@ -177,7 +177,7 @@ class _DbForReplay:
         return SimpleNamespace(workline_id=7, picking_task_id=11)
 
     async def get(self, _model, _id):
-        return SimpleNamespace(status="EXECUTING")
+        return SimpleNamespace(status=self.picking_status)
 
 
 class _DbForDrainReplay(_DbForReplay):
@@ -186,16 +186,15 @@ class _DbForDrainReplay(_DbForReplay):
 
 
 @pytest.mark.asyncio
-async def test_final_projection_candidate_scan_is_picking_fenced_and_null_safe():
+async def test_final_projection_candidate_scan_uses_causal_identity_without_business_status():
     db = _Db()
     assert await TransportRepository().list_final_result_projection_candidates(db, limit=100) == []
     sql = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
-    assert "PREPARING" in sql and "EXECUTING" in sql
+    assert "picking_tasks.status" not in sql
     assert "IS DISTINCT FROM" in sql
     assert "transport_decision_bindings" in sql
-    assert "picking_tasks" in sql
-    assert "workline.return_buffer.drain_rack_decide@v1" in sql
-    assert "newer_drain_confirmation" in sql
+    assert "picking_tasks" not in sql
+    assert "source_causal_token" in sql
     assert "ORDER BY wes_biz.transport_members.updated_at ASC" in sql
 
 
@@ -207,15 +206,33 @@ async def test_ack_invalidation_candidate_scan_is_separate_and_ack_fenced():
     assert "status = 'ACCEPTED'" in sql
     assert "ACK_INVALIDATION" in sql
     assert "transport_decision_bindings" in sql
-    assert "picking_tasks" in sql
-    assert "workline.return_buffer.drain_rack_decide@v1" in sql
-    assert "newer_drain_confirmation" in sql
+    assert "picking_tasks.status" not in sql
+    assert "picking_tasks" not in sql
+    assert "source_causal_token" in sql
 
 
 def test_replay_task_has_fixed_batch_contract():
     from src.celery_app.tasks.transport import replay_transport_projections_batch
 
     assert replay_transport_projections_batch.name.endswith("replay_transport_projections_batch")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("picking_status", ["EXECUTION_COMPLETED", "CANCELLED"])
+async def test_picking_parent_status_does_not_discard_authoritative_final_position(picking_status):
+    from src.app.transport.service import TransportService
+
+    position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
+    service = TransportService(
+        _Sessions(_DbForReplay(picking_status)),
+        _FinalBatchReplayRepository(),
+        object(),
+        result_timeout=timedelta(seconds=1),
+        position_projections=position_port,
+    )
+
+    assert await service.replay_final_result_projections(100) == 2
+    assert position_port.apply_transport_result.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -290,29 +307,28 @@ async def test_final_replay_continues_after_retryable_candidate(caplog):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("current", "expected"), ((True, 1), (False, 0)))
-async def test_final_replay_revalidates_current_taskless_drain_authority(current, expected):
+async def test_final_replay_passes_taskless_drain_fact_to_causal_projection():
     from src.app.transport.service import TransportService
 
     position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
-        _DrainReplayRepository(current=current),
+        _DrainReplayRepository(),
         object(),
         result_timeout=timedelta(seconds=1),
         position_projections=position_port,
     )
 
-    assert await service.replay_final_result_projections(100) == expected
-    assert position_port.apply_transport_result.await_count == expected
+    assert await service.replay_final_result_projections(100) == 1
+    position_port.apply_transport_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_direct_result_suppresses_historical_taskless_drain_projection_write():
+async def test_direct_result_passes_historical_taskless_drain_fact_to_causal_projection():
     from src.app.transport.service import TransportService
 
     position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
-    repository = _DrainReplayRepository(current=False)
+    repository = _DrainReplayRepository()
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
         repository,
@@ -335,7 +351,7 @@ async def test_direct_result_suppresses_historical_taskless_drain_projection_wri
         updated_at=member.updated_at,
     )
 
-    position_port.apply_transport_result.assert_not_awaited()
+    position_port.apply_transport_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -348,7 +364,7 @@ async def test_direct_result_records_superseded_projection(monkeypatch):
     position_port = SimpleNamespace(
         apply_transport_result=AsyncMock(return_value=SimpleNamespace(source_transport_task_id="task-newer"))
     )
-    repository = _DrainReplayRepository(current=True)
+    repository = _DrainReplayRepository()
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
         repository,
@@ -380,9 +396,9 @@ async def test_projection_recovery_metrics_snapshot_has_stable_low_cardinality_s
     assert set(await snapshot()) == {
         "candidate_count",
         "replayed_count",
-        "stale_suppressed_total",
         "superseded_total",
         "retryable_total",
+        "orphan_sample_count",
         "oldest_candidate_age",
     }
 
@@ -409,35 +425,34 @@ async def test_projection_recovery_metrics_round_trip_through_redis(monkeypatch)
 
     await projection_metrics.record_batch(candidate_count=4, replayed_count=2, oldest_candidate_age=12.5)
     await projection_metrics.record_retryable()
-    await projection_metrics.record_stale_suppressed()
     await projection_metrics.record_superseded()
+    await projection_metrics.record_orphan_sample(3)
 
     assert await projection_metrics.snapshot() == {
         "candidate_count": 4,
         "replayed_count": 2,
-        "stale_suppressed_total": 1,
         "superseded_total": 1,
         "retryable_total": 1,
+        "orphan_sample_count": 3,
         "oldest_candidate_age": 12.5,
     }
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("current", "expected"), ((True, 1), (False, 0)))
-async def test_ack_replay_revalidates_current_taskless_drain_authority(current, expected):
+async def test_ack_replay_passes_taskless_drain_uncertainty_to_causal_projection():
     from src.app.transport.service import TransportService
 
     position_port = SimpleNamespace(invalidate_transport_member=AsyncMock(return_value=None))
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
-        _DrainAckReplayRepository(current=current),
+        _DrainAckReplayRepository(),
         object(),
         result_timeout=timedelta(seconds=1),
         position_projections=position_port,
     )
 
-    assert await service.replay_ack_invalidations(100) == expected
-    assert position_port.invalidate_transport_member.await_count == expected
+    assert await service.replay_ack_invalidations(100) == 1
+    position_port.invalidate_transport_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio

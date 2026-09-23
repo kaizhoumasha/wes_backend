@@ -471,7 +471,7 @@ def test_handle_and_outcome_expose_only_stable_plugin_contract() -> None:
         outcome_version=2,
         caller=_caller(),
         status=TransportOutcomeStatus.UNKNOWN,
-        reason_code="TRANSPORT_RESULT_TIMEOUT",
+        reason_code="TRANSPORT_POSITION_UNKNOWN",
         members=(),
     )
 

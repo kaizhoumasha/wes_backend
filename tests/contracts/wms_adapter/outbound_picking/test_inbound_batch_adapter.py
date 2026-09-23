@@ -19,7 +19,7 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": OPERATION,
         "timestamp": 0,
-        "data": {"task_id": "TASK-1", "rack_id": "RACK-1", "rack_face": "A"},
+        "data": {"task_id": "TASK-1", "plan_revision": 1, "rack_id": "RACK-1", "rack_face": "A"},
     }
 
 

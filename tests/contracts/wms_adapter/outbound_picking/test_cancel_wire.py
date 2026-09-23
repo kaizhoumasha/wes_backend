@@ -30,8 +30,10 @@ def test_plan_member_cancel_preserves_ordered_typed_selectors() -> None:
             {
                 "task_id": "PICK-1",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "R1", "rack_face": ["90", "270"]}],
-                "direct_pick_sources": [{"rack_id": "D1", "rack_face": "A", "slot_ids": ["A-1", "A-2"]}],
+                "bin_source_racks": [{"plan_revision": 1, "rack_id": "R1", "rack_face": ["90", "270"]}],
+                "direct_pick_sources": [
+                    {"plan_revision": 1, "rack_id": "D1", "rack_face": "A", "slot_ids": ["A-1", "A-2"]}
+                ],
             }
         )
     )
@@ -45,7 +47,7 @@ def test_plan_member_cancel_accepts_single_face_string() -> None:
             {
                 "task_id": "PICK-1",
                 "cancel_scope": "PLAN_MEMBERS",
-                "bin_source_racks": [{"rack_id": "R1", "rack_face": "270"}],
+                "bin_source_racks": [{"plan_revision": 1, "rack_id": "R1", "rack_face": "270"}],
             }
         )
     )

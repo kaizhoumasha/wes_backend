@@ -223,9 +223,13 @@ async def test_callback_before_task_is_quiet_then_recovers_exact_registered_work
     await asyncio.gather(*tuple(transaction_wakeup._pending))
     queue.enqueue_transport_submit.assert_not_called()
     assert handle.transport_task_id == task_id
+    pending = await reconciling_service.get_task_snapshot(task_id)
+    assert pending.status == "PENDING"
+    assert pending.reason_code == "TRANSPORT_EVIDENCE_PENDING"
     restarted = TransportService(
         reconciling_service._sessions, TransportRepository(), FakeProvider(), result_timeout=timedelta(seconds=420)
     )
+    assert await restarted.submit_pending_tasks(1) == 0
     assert await restarted.process_pending_evidence(10) == 1
     assert await restarted.process_pending_evidence(10) == 0
     snapshot = await restarted.get_task_snapshot(task_id)

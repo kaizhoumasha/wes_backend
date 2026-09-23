@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.5.0] - 2026-09-23
+
+### Changed
+
+- 按 `plan_revision` 区分同一 PickingTask 重复使用的 rack/rack_face 成员、动作、完成事实与取消范围。
+- 收敛人工拣料扫描、批次与货架推进，并更新自动拣料合同及架构执行账本。
+- 固定 Transport 提交身份与位置投影恢复边界，补充相应迁移。
+
+### Fixed
+
+- 退料货架只消费当前成员对应的到位 Transport；取消旧 revision 后不会借旧投影推进新成员。
+- 后续货架到位可重新决定 `return_batch`；同次到位的 `NO_BATCH` 不因 Transport 结果迟发布而重开。
+
 ## [0.48.4.0] - 2026-09-22
 
 ### Changed

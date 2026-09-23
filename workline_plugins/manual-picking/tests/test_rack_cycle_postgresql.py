@@ -263,27 +263,19 @@ async def test_dispatch_confirmation_and_activation_lock_order(rack_database, ph
         server.close()
 
 
-@pytest.mark.parametrize("reply", ["RECEIVED", "DUPLICATE", "CONFLICT", "INVALID"])
-async def test_ctu03_acceptance_releases_window_and_success_closes_fence(rack_database, reply):
-    from manual_picking.application.batch_repository import BatchRepository
-    from wes_plugin_sdk import TransportZonePosition
-
+async def test_ctu01_creates_each_planned_rack_once_without_local_capacity_admission(rack_database):
     from src.app.execution.models import TransportDecisionBinding
-    from src.app.transport.models import TransportTask
-    from src.app.wms_adapter.transport_wire import RESULT_OPERATION
     from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
-    from src.core.uuid7 import new_uuid7
-    from tests.support.transport_callbacks import record_valid_callback
 
     _, sessions = rack_database
     server = BusinessServer()
     server.start()
     try:
         async with sessions.begin() as db:
-            line, picking = await seed_line(db, bins=0, capacity=2)
+            line, picking = await seed_line(db, bins=0, capacity=1)
             picking.status = "EXECUTING"
             picking.last_applied_plan_revision = 1
-            picking.target_rack_id = "TARGET"
+            picking.target_rack_id = f"TARGET-{line.id}"
             picking.target_rack_face = "90"
             picking.initial_plan_evidence_id = picking.issued_evidence_id
             picking.last_plan_evidence_id = picking.issued_evidence_id
@@ -297,118 +289,25 @@ async def test_ctu03_acceptance_releases_window_and_success_closes_fence(rack_da
                         source_evidence_id=picking.issued_evidence_id,
                     )
                 )
-        async with runtime_for(sessions, server.url) as (runtime, transport):
+        async with runtime_for(sessions, server.url) as (runtime, _transport):
             driver = runtime.plugins[0].picking_task_batch_driver
 
             async def action(db, line):
-                return await driver._fill_source_window(db, line, picking)
+                return await driver._submit_source_racks(db, line, picking)
 
-            assert await serialized_pair(sessions, line.id, action) == (2, 0)
-            assert await transport.service.submit_pending_tasks(100) == 2
-            async with sessions() as db:
-                ingress = await db.scalar(
-                    select(TransportTask)
-                    .join(
-                        TransportDecisionBinding,
-                        TransportDecisionBinding.client_request_id == TransportTask.client_request_id,
-                    )
-                    .where(TransportDecisionBinding.resource_fence_id == f"R0-{line.id}")
-                )
-            payload = {
-                "kind": "RACK_MOVE",
-                "outcome_revision": 1,
-                "rack_id": f"R0-{line.id}",
-                "status": "SUCCEEDED",
-                "final_position": {
-                    "kind": "RACK_POSITION",
-                    "location_code": line.position_bindings["FIVE_RACK"]["location_id"],
-                },
-                "arrival_face": "90",
-            }
-            callback_id = new_uuid7()
-            await record_valid_callback(
-                transport.service,
-                operation_id=callback_id,
-                transport_task_id=ingress.transport_task_id,
-                operation=RESULT_OPERATION,
-                timestamp=1,
-                payload=payload,
-            )
-            assert await transport.service.process_pending_evidence(100) == 1
-            async with sessions.begin() as db:
-                await locked_line(db, line.id)
-                await driver._rack_creator.create_source_return(
-                    db,
-                    workline_id=line.id,
-                    source_evidence_id=picking.issued_evidence_id,
-                    correlation_id=f"pt:{picking.id}:e:{picking.issued_evidence_id}:rack:R0-{line.id}",
-                    step="MANUAL_PICKING_SOURCE_RACK_OUT",
-                    rack_id=f"R0-{line.id}",
-                    destination=TransportZonePosition("WH01"),
-                )
-                assert await BatchRepository().occupied_source_rack_ids(db, line.id) == {
-                    f"R0-{line.id}",
-                    f"R1-{line.id}",
-                }
-            server.transport_code = reply
-            assert await transport.service.submit_pending_tasks(100) == 1
-            released = reply in {"RECEIVED", "DUPLICATE"}
-            assert await serialized_pair(sessions, line.id, action) == (int(released), 0)
-            async with sessions() as db:
-                departure = await db.scalar(
-                    select(TransportTask)
-                    .join(
-                        TransportDecisionBinding,
-                        TransportDecisionBinding.client_request_id == TransportTask.client_request_id,
-                    )
-                    .where(TransportDecisionBinding.step == "MANUAL_PICKING_SOURCE_RACK_OUT")
-                )
-            if released:
-                await record_valid_callback(
-                    transport.service,
-                    operation_id=new_uuid7(),
-                    transport_task_id=departure.transport_task_id,
-                    operation=RESULT_OPERATION,
-                    timestamp=2,
-                    payload={
-                        "kind": "RACK_MOVE",
-                        "outcome_revision": 1,
-                        "rack_id": f"R0-{line.id}",
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0502"},
-                    },
-                )
-                assert await transport.service.process_pending_evidence(100) == 1
-            assert await serialized_pair(sessions, line.id, action) == (0, 0)
-            await record_valid_callback(
-                transport.service,
-                operation_id=callback_id,
-                transport_task_id=ingress.transport_task_id,
-                operation=RESULT_OPERATION,
-                timestamp=1,
-                payload=payload,
-            )
-            await transport.service.process_pending_evidence(100)
-            assert await serialized_pair(sessions, line.id, action) == (0, 0)
+            assert await serialized_pair(sessions, line.id, action) == (3, 0)
             async with sessions() as db:
                 bindings = (
                     await db.scalars(
                         select(TransportDecisionBinding).where(
                             TransportDecisionBinding.workline_id == line.id,
-                            TransportDecisionBinding.step == "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                            TransportDecisionBinding.picking_task_id == picking.id,
                         )
                     )
                 ).all()
-                assert len(bindings) == (3 if released else 2)
-                assert len(await BatchRepository().occupied_source_rack_ids(db, line.id)) == 2
-                departure = await db.get(TransportTask, departure.id)
-                expected_status = "SUCCEEDED" if released else "RECONCILING" if reply == "CONFLICT" else "PENDING"
-                assert departure.status == expected_status
-                assert (departure.result_deadline_at is not None) == released
-                if not released:
-                    assert departure.reason_code == (
-                        "TRANSPORT_SUBMIT_CONFLICT" if reply == "CONFLICT" else "SUBMIT_DELIVERY_UNKNOWN"
-                    )
+                assert {binding.resource_fence_id for binding in bindings} == {
+                    f"R{index}-{line.id}" for index in range(3)
+                }
     finally:
         server.close()
 

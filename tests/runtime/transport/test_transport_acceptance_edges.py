@@ -1552,7 +1552,7 @@ async def test_cancelled_rack_result_maps_to_failed_with_optional_position(
         )
     assert (task.status, task.reason_code, task.last_applied_wms_outcome_revision) == (
         "FAILED",
-        "RCS_TASK_REJECTED",
+        "RCS_TASK_CANCELLED",
         1,
     )
     assert member is not None
@@ -1560,7 +1560,7 @@ async def test_cancelled_rack_result_maps_to_failed_with_optional_position(
         "FAILED",
         final_position,
         False,
-        "RCS_TASK_REJECTED",
+        "RCS_TASK_CANCELLED",
     )
     assert projection is None
     assert publisher.outcomes[0].status.value == "FAILED"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from wes_plugin_sdk import (
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 
 _PLAN_BATCH_LIMIT = 100
+logger = logging.getLogger(__name__)
 TARGET_RACK_IN_STEP = "PICKING_TASK_TARGET_RACK_IN"
 BIN_SOURCE_RACK_IN_STEP = "PICKING_TASK_BIN_SOURCE_RACK_IN"
 RETURN_RACK_IN_STEP = "PICKING_TASK_RETURN_RACK_IN"
@@ -80,15 +82,27 @@ class PickingTaskPlanActivationService:
         identities = self.plugin_identities
         if not identities:
             return 0
-        async with self._sessions.begin() as db:
-            worklines = await self._worklines.list_active_for_plugin_identities(db, identities, limit=limit)
         created = 0
-        for workline_id, plugin_key, plugin_version in worklines:
-            created += await self._activate_workline(
-                workline_id,
-                handler=self._handlers[(plugin_key, plugin_version)],
-                plugin_identity=(plugin_key, plugin_version),
-            )
+        after_id = 0
+        while True:
+            async with self._sessions.begin() as db:
+                worklines = await self._worklines.list_active_for_plugin_identities(
+                    db, identities, limit=limit, after_id=after_id
+                )
+            if not worklines:
+                break
+            after_id = worklines[-1][0]
+            for workline_id, plugin_key, plugin_version in worklines:
+                try:
+                    created += await self._activate_workline(
+                        workline_id,
+                        handler=self._handlers[(plugin_key, plugin_version)],
+                        plugin_identity=(plugin_key, plugin_version),
+                    )
+                except Exception:
+                    logger.exception("picking_task.plan_activation_workline_failed workline_id=%s", workline_id)
+            if len(worklines) < limit:
+                break
         return created
 
     async def _activate_workline(self, workline_id: int, *, handler: Any, plugin_identity: tuple[str, str]) -> int:
@@ -121,8 +135,14 @@ class PickingTaskPlanActivationService:
                 picking_task_id=task.id,
                 steps=steps,
             )
-            pending_racks = await self._pending_bin_racks(db, task, decided_racks)
-            pending_return_racks = await self._pending_return_racks(db, task, decided_racks)
+            decided_members = await self._bindings.list_task_member_bindings(
+                db,
+                workline_id=workline_id,
+                picking_task_id=task.id,
+                steps=(BIN_SOURCE_RACK_IN_STEP, RETURN_RACK_IN_STEP),
+            )
+            pending_racks = await self._pending_bin_racks(db, task, decided_members)
+            pending_return_racks = await self._pending_return_racks(db, task, decided_members)
             target_rack = (
                 PickingTaskPlanRack(
                     rack_id=task.target_rack_id,
@@ -171,12 +191,15 @@ class PickingTaskPlanActivationService:
             completion_count = await completion.advance_in_session(db, line, task) if completion is not None else 0
             return old_count + len(result.transports) + batch_count + completion_count
 
-    async def _pending_bin_racks(self, db: Any, task: Any, decided_racks: set[str]) -> tuple[PickingTaskPlanRack, ...]:
+    async def _pending_bin_racks(
+        self, db: Any, task: Any, decided_members: set[tuple[int, str]]
+    ) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_active_bin_source_racks(db, task.id)
-        grouped: dict[str, list[Any]] = {}
+        grouped: dict[tuple[int, str], list[Any]] = {}
         for row in rows:
-            if row.rack_id not in decided_racks:
-                grouped.setdefault(row.rack_id, []).append(row)
+            key = (row.source_evidence_id, row.rack_id)
+            if key not in decided_members:
+                grouped.setdefault(key, []).append(row)
         return tuple(
             PickingTaskPlanRack(
                 rack_id=rack_id,
@@ -184,17 +207,18 @@ class PickingTaskPlanActivationService:
                 source_evidence_id=str(rack_rows[0].source_evidence_id),
                 plan_revision=rack_rows[0].plan_revision,
             )
-            for rack_id, rack_rows in grouped.items()
+            for (_, rack_id), rack_rows in grouped.items()
         )
 
     async def _pending_return_racks(
-        self, db: Any, task: Any, decided_racks: set[str]
+        self, db: Any, task: Any, decided_members: set[tuple[int, str]]
     ) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_active_direct_picks(db, task.id)
-        grouped: dict[str, list[Any]] = {}
+        grouped: dict[tuple[int, str], list[Any]] = {}
         for row in rows:
-            if row.rack_id not in decided_racks:
-                grouped.setdefault(row.rack_id, []).append(row)
+            key = (row.source_evidence_id, row.rack_id)
+            if key not in decided_members:
+                grouped.setdefault(key, []).append(row)
         return tuple(
             PickingTaskPlanRack(
                 rack_id=rack_id,
@@ -202,23 +226,29 @@ class PickingTaskPlanActivationService:
                 source_evidence_id=str(rack_rows[0].source_evidence_id),
                 plan_revision=rack_rows[0].plan_revision,
             )
-            for rack_id, rack_rows in grouped.items()
+            for (_, rack_id), rack_rows in grouped.items()
         )
 
     @staticmethod
     def _validate_result(fact: PickingTaskPlanAppliedFact, result: object) -> None:
         if type(result) is not PickingTaskPlanHandlingResult:
             raise TypeError("plan handler must return PickingTaskPlanHandlingResult")
-        candidates = {rack.rack_id: rack for rack in ((fact.target_rack,) if fact.target_rack is not None else ())}
-        candidates.update({rack.rack_id: rack for rack in fact.pending_bin_source_racks})
-        candidates.update({rack.rack_id: rack for rack in fact.pending_return_racks})
-        seen: set[str] = set()
+        candidates = {
+            (rack.rack_id, rack.source_evidence_id): rack
+            for rack in (
+                *((fact.target_rack,) if fact.target_rack is not None else ()),
+                *fact.pending_bin_source_racks,
+                *fact.pending_return_racks,
+            )
+        }
+        seen: set[tuple[str, str]] = set()
         bindings = {binding.position_role: binding for binding in fact.position_bindings}
         for intent in result.transports:
-            candidate = candidates.get(intent.rack_id)
+            key = (intent.rack_id, intent.source_evidence_id)
+            candidate = candidates.get(key)
             if (
                 candidate is None
-                or intent.rack_id in seen
+                or key in seen
                 or intent.task_id != fact.task_id
                 or intent.fact_id != fact.fact_id
                 or intent.source_evidence_id != candidate.source_evidence_id
@@ -232,11 +262,11 @@ class PickingTaskPlanActivationService:
                 or intent.target_face not in candidate.rack_faces
             ):
                 raise ValueError("plan handler returned an intent outside the frozen fact")
-            seen.add(intent.rack_id)
-        if fact.target_rack is not None and fact.target_rack.rack_id not in seen:
+            seen.add(key)
+        if fact.target_rack is not None and (fact.target_rack.rack_id, fact.target_rack.source_evidence_id) not in seen:
             raise ValueError("plan handler omitted a pending target rack")
         for return_rack in fact.pending_return_racks:
-            if return_rack.rack_id not in seen:
+            if (return_rack.rack_id, return_rack.source_evidence_id) not in seen:
                 raise ValueError("plan handler omitted a pending return rack")
 
 

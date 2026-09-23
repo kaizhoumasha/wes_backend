@@ -76,9 +76,11 @@ class RackDepartureResultReader:
         return await self._snapshot(db, confirmation, rack_id)
 
     async def latest_for_workline(
-        self, db: AsyncSession, workline_id: int, rack_id: str
+        self, db: AsyncSession, workline_id: int, rack_id: str, *, arrived_at: datetime
     ) -> RackDepartureSnapshot | None:
         confirmation = await self._repository.latest_for_workline(db, workline_id, rack_id)
+        if confirmation is not None and confirmation.created_at <= arrived_at:
+            return None
         return await self._snapshot(db, confirmation, rack_id)
 
     async def _snapshot(

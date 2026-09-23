@@ -71,8 +71,8 @@ from src.app.transport.models import (
 )
 from src.app.transport.projection_metrics import (
     record_batch,
+    record_orphan_sample,
     record_retryable,
-    record_stale_suppressed,
     record_superseded,
 )
 from src.app.transport.submit_snapshot import (
@@ -751,7 +751,7 @@ class TransportService:
                 claim_matches = (
                     current is not None
                     and current.status == TransportTaskStatus.PENDING.value
-                    and current.reason_code is None
+                    and current.reason_code in (None, "SUBMIT_DELIVERY_UNKNOWN")
                     and current.submit_claim_token == token
                     and current.submit_claim_until is not None
                     and current.submit_claim_until >= check_now
@@ -1119,47 +1119,10 @@ class TransportService:
         now = timezone.now_for_db()
         async with self._sessions.begin() as db:
             ambiguous = await self._repository.claim_ambiguous_submissions(db, limit=limit, now=now)
-            remaining = limit - len(ambiguous)
-            overdue = await self._repository.claim_overdue_tasks(db, limit=remaining, now=now) if remaining > 0 else []
             for task in ambiguous:
-                # Pre-ACK uncertainty stays in the physical-submit domain.  We
-                # cannot prove that the provider did not accept this identity,
-                # so never turn it into the post-ACK reconciliation state.
+                # The frozen submit identity is safe to replay through WMS/RCS.
                 _mark_submit_delivery_unknown(task, now)
-            for task in overdue:
-                self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_RESULT_TIMEOUT", now)
-        return len(ambiguous) + len(overdue)
-
-    async def _is_current_projection_authority(self, db: AsyncSession, task: TransportTask) -> bool:
-        """Revalidate the typed business owner before any current projection mutation."""
-
-        from sqlalchemy import select
-
-        from src.app.execution.models import TransportDecisionBinding
-        from src.app.wms_integration.outbound_picking.models.picking_task import PickingTask, PickingTaskStatus
-
-        binding = await db.scalar(
-            select(TransportDecisionBinding).where(
-                TransportDecisionBinding.client_request_id == task.client_request_id,
-                TransportDecisionBinding.workline_id == task.authority_workline_id,
-            )
-        )
-        if binding is None:
-            # Explicit core callers can own a WorkLine-scoped Transport without
-            # a plugin Binding. Plugin-owned taskless actions always persist one.
-            return True
-        if binding.picking_task_id is not None:
-            picking = await db.get(PickingTask, binding.picking_task_id)
-            current = bool(
-                picking is not None and picking.status in {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}
-            )
-            if not current:
-                await record_stale_suppressed()
-            return current
-        current = bool(binding.id is not None and await self._repository.is_current_drain_binding(db, binding.id))
-        if not current:
-            await record_stale_suppressed()
-        return current
+        return len(ambiguous)
 
     async def _lock_projection_authority_root(self, db: AsyncSession, task: TransportTask) -> None:
         """Acquire the WorkLine root before any projection/object fence."""
@@ -1199,8 +1162,6 @@ class TransportService:
         if not may_have_started or (task.status, task.reason_code) == previous_outcome:
             return
         await self._lock_projection_authority_root(db, task)
-        if not await self._is_current_projection_authority(db, task):
-            return
         for member in await self._repository.list_members(db, task.transport_task_id):
             projection = await self._position_projections.invalidate_transport_member(
                 db,
@@ -1218,6 +1179,16 @@ class TransportService:
         _validate_limit(limit)
         async with self._sessions.begin() as db:
             candidates = await self._repository.list_final_result_projection_candidates(db, limit=limit)
+            orphans = await self._repository.list_projection_recovery_orphans(db, limit=limit)
+        await record_orphan_sample(len(orphans))
+        for task_id, object_type, object_id, reason_code in orphans:
+            logger.error(
+                "transport.projection_replay.orphan reason_code=%s task_id=%s object_type=%s object_id=%s",
+                reason_code,
+                task_id,
+                object_type,
+                object_id,
+            )
         replayed = 0
         for task_id, object_type, object_id, operation_id, _candidate_updated_at in candidates:
             try:
@@ -1235,7 +1206,7 @@ class TransportService:
                             TransportDecisionBinding.workline_id == task.authority_workline_id,
                         )
                     )
-                    if binding is None or not await self._is_current_projection_authority(db, task):
+                    if binding is None:
                         continue
                     member = next(
                         (
@@ -1310,7 +1281,7 @@ class TransportService:
                             TransportDecisionBinding.workline_id == task.authority_workline_id,
                         )
                     )
-                    if binding is None or not await self._is_current_projection_authority(db, task):
+                    if binding is None:
                         continue
                     member = next(
                         (
@@ -1476,7 +1447,6 @@ class TransportService:
         await self._repository.add_aggregate(db, task, members)
         registered = await self._repository.requeue_unassociated_evidence(db, task_id)
         if registered:
-            task.status = TransportTaskStatus.RECONCILING.value
             task.reason_code = "TRANSPORT_EVIDENCE_PENDING"
         if self._task_queue is not None:
             defer_wakeup(
@@ -1527,13 +1497,6 @@ class TransportService:
                 operation_id=evidence.operation_id,
                 transport_task_id=task.transport_task_id,
                 updated_at=updated_at,
-            )
-            return
-        if not await self._is_current_projection_authority(db, task):
-            logger.info(
-                "transport.projection_mutation.stale_suppressed task_id=%s object_type=%s",
-                task.transport_task_id,
-                member.object_type,
             )
             return
         projection = await self._position_projections.apply_transport_result(
@@ -1659,6 +1622,9 @@ class TransportService:
         _clear_submit_claim(task)
         task.updated_at = now
         if code in {TransportSubmitCode.NOT_SENT, TransportSubmitCode.UNAVAILABLE}:
+            if task.reason_code == "SUBMIT_DELIVERY_UNKNOWN":
+                _mark_submit_delivery_unknown(task, now)
+                return
             task.status = "PENDING"
             task.reason_code = None
             task.send_started_at = None
@@ -1840,7 +1806,7 @@ class TransportService:
                     raise TransportContractError("invalid cancelled rack result")
             elif has_position == position_unknown or status not in {"SUCCEEDED", "FAILED"}:
                 raise TransportContractError("invalid member result position or status")
-            failure_code = "RCS_TASK_REJECTED" if cancelled else result.get("failure_code")
+            failure_code = "RCS_TASK_CANCELLED" if cancelled else result.get("failure_code")
             if status == "SUCCEEDED" and (not has_position or failure_code is not None):
                 raise TransportContractError("invalid successful member result")
             if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
@@ -1868,7 +1834,7 @@ class TransportService:
             status = "FAILED" if cancelled else result["status"]
             final_position = result.get("final_position")
             position_unknown = result.get("position_unknown") is True
-            failure_code = "RCS_TASK_REJECTED" if cancelled else result.get("failure_code")
+            failure_code = "RCS_TASK_CANCELLED" if cancelled else result.get("failure_code")
             arrival_face = result.get("arrival_face")
             member.status = status
             member.final_position_json = final_position
@@ -2321,10 +2287,13 @@ def _accept_position_fact(task: TransportTask, now: datetime, result_timeout: ti
 
 
 def _mark_submit_delivery_unknown(task: TransportTask, now: datetime) -> None:
-    """Record pre-ACK ambiguity without opening a resend path."""
+    """Retry the frozen request identity after pre-ACK ambiguity."""
 
     task.status = TransportTaskStatus.PENDING.value
     task.reason_code = "SUBMIT_DELIVERY_UNKNOWN"
+    task.send_started_at = None
+    task.next_submit_at = now + _RETRY_DELAY
+    _clear_submit_claim(task)
     task.updated_at = now
     logger.warning(
         "transport.task.submit_delivery_unknown",

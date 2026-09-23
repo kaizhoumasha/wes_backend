@@ -23,7 +23,11 @@ def test_manual_bin_outcomes_are_closed_without_wire_payloads() -> None:
         task_id="PICK-001",
     )
     completed = sdk.ManualBinCompletedFact(
-        task_id="PICK-001", bin_code="A000000001", result="NORMAL", completed_at=1_788_389_999_000
+        admission_operation_id=decided.operation_id,
+        task_id="PICK-001",
+        bin_code="A000000001",
+        result="NORMAL",
+        completed_at=1_788_389_999_000,
     )
 
     assert decided.task_id == completed.task_id  # nosec B101 - pytest assertion

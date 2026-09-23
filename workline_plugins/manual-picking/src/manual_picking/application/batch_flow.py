@@ -18,15 +18,29 @@ if TYPE_CHECKING:
 
 class BatchRepository(Protocol):
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool: ...
 
     async def return_retry_due(
-        self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str, now: datetime, after: datetime
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+        source_evidence_id: int,
+        now: datetime,
+        after: datetime,
     ) -> bool: ...
 
     async def inbound_progress(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str,
+        plan_revision: int,
+        rack_id: str,
+        rack_face: str,
+        inlet_location: str,
     ) -> InboundFaceProgress | None: ...
 
 
@@ -83,14 +97,25 @@ class ManualPickingBatchFlow:
         self._uuid_factory = uuid_factory
 
     async def face_progress(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str, inlet_location: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str,
+        plan_revision: int,
+        rack_id: str,
+        rack_face: str,
+        inlet_location: str,
     ) -> InboundFaceProgress | None:
-        return await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
+        return await self._repository.inbound_progress(
+            db, workline_id, task_id, plan_revision, rack_id, rack_face, inlet_location
+        )
 
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool:
-        return await self._repository.has_unclosed_action_for_face(db, workline_id, task_id, rack_id, rack_face)
+        return await self._repository.has_unclosed_action_for_face(
+            db, workline_id, task_id, plan_revision, rack_id, rack_face
+        )
 
     async def advance_in_session(  # noqa: PLR0911
         self,
@@ -100,6 +125,8 @@ class ManualPickingBatchFlow:
         workline_code: str,
         picking_task_id: int,
         task_id: str,
+        plan_revision: int,
+        source_evidence_id: int,
         rack_id: str,
         rack_face: str,
         return_location: str,
@@ -107,21 +134,26 @@ class ManualPickingBatchFlow:
         now: datetime,
         allow_inbound: bool = True,
     ) -> bool:
-        if await self._repository.has_unclosed_action_for_face(db, workline_id, task_id, rack_id, rack_face):
+        if await self._repository.has_unclosed_action_for_face(
+            db, workline_id, task_id, plan_revision, rack_id, rack_face
+        ):
             return False
-        progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
+        progress = await self._repository.inbound_progress(
+            db, workline_id, task_id, plan_revision, rack_id, rack_face, inlet_location
+        )
         if progress is None:
             if not allow_inbound:
                 rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
                 return_bins = tuple(row.bin_code for row in rows)
                 if not return_bins or not await self._repository.return_retry_due(
-                    db, workline_id, rack_id, rack_face, now, now
+                    db, workline_id, rack_id, rack_face, source_evidence_id, now, now
                 ):
                     return False
                 intent = choose_next_batch(
                     operation_id=self._uuid_factory(),
                     workline_code=workline_code,
                     task_id=task_id,
+                    plan_revision=plan_revision,
                     rack_id=rack_id,
                     rack_face=rack_face,
                     return_bins=return_bins,
@@ -136,6 +168,7 @@ class ManualPickingBatchFlow:
                 operation_id=self._uuid_factory(),
                 workline_code=workline_code,
                 task_id=task_id,
+                plan_revision=plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_bins=(),
@@ -157,12 +190,15 @@ class ManualPickingBatchFlow:
         if (
             can_interleave_return
             and return_bins
-            and await self._repository.return_retry_due(db, workline_id, rack_id, rack_face, now, after)
+            and await self._repository.return_retry_due(
+                db, workline_id, rack_id, rack_face, source_evidence_id, now, after
+            )
         ):
             intent = choose_next_batch(
                 operation_id=self._uuid_factory(),
                 workline_code=workline_code,
                 task_id=task_id,
+                plan_revision=plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_bins=tuple(return_bins),

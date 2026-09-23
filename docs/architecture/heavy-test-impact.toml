@@ -334,8 +334,7 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/picking_task_plan.py"
-heavy_tests = []
-reviewed_content_sha256 = "858f91017e159442931695e2c3da20511f006f6265302ffe6275687d05b40977"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
@@ -3018,6 +3017,30 @@ heavy_tests = [
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260923_1033_9b440473b03d_放宽_transport_请求重提计数约束.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_cancel_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_manual_rack_direct_pick_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/database/base_repository.py"

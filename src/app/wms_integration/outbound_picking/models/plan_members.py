@@ -20,6 +20,7 @@ class DirectPickExecution(EnterpriseMixin, DataTableMixin, table=True):
         Index(
             "ux_direct_pick_source",
             "picking_task_id",
+            "plan_revision",
             "rack_id",
             "rack_face",
             "slot_id",
@@ -49,6 +50,7 @@ class PickingTaskBinSourceRack(EnterpriseMixin, DataTableMixin, table=True):
         Index(
             "ux_picking_bin_source",
             "picking_task_id",
+            "plan_revision",
             "rack_id",
             "rack_face",
             unique=True,
@@ -76,6 +78,7 @@ class DirectPickFaceCompletion(EnterpriseMixin, DataTableMixin, table=True):
         Index(
             "ux_direct_pick_face_completion",
             "picking_task_id",
+            "plan_revision",
             "rack_id",
             "rack_face",
             unique=True,
@@ -84,6 +87,7 @@ class DirectPickFaceCompletion(EnterpriseMixin, DataTableMixin, table=True):
         {"schema": SchemaType.BIZ.value},
     )
     picking_task_id: int = Field(foreign_key="wes_biz.picking_tasks.id", sa_type=SQL_COMPAT_BIGINT)
+    plan_revision: int = Field(sa_type=BigInteger)
     rack_id: str = Field(max_length=100)
     rack_face: str = Field(min_length=1, max_length=10)
     completed_at: datetime

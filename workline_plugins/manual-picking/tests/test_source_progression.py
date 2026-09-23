@@ -41,9 +41,9 @@ class Positions:
 class Plans:
     def __init__(self):  # type: ignore[no-untyped-def]
         self.rows = [
-            SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51),
-            SimpleNamespace(id=12, rack_id="R1", rack_face="270", source_evidence_id=51),
-            SimpleNamespace(id=13, rack_id="R2", rack_face="90", source_evidence_id=52),
+            SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1),
+            SimpleNamespace(id=12, rack_id="R1", rack_face="270", source_evidence_id=51, plan_revision=1),
+            SimpleNamespace(id=13, rack_id="R2", rack_face="90", source_evidence_id=52, plan_revision=1),
         ]
         self.matches = True
         self.owner = None
@@ -79,10 +79,10 @@ class Flow:
         self.calls.append(kwargs)
         return self.created
 
-    async def face_progress(self, _db, _line_id, _task_id, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
+    async def face_progress(self, _db, _line_id, _task_id, _plan_revision, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
         return SimpleNamespace(complete=False, feed_complete=True) if (rack_id, face) in self.complete else None
 
-    async def has_unclosed_action_for_face(self, _db, _line_id, _task_id, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
+    async def has_unclosed_action_for_face(self, _db, _line_id, _task_id, _plan_revision, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
         return self.face_busy
 
 
@@ -127,6 +127,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         task_id="PICK-1",
         workline_id=7,
         status="EXECUTING",
+        last_applied_plan_revision=1,
         target_rack_id="TARGET",
         target_rack_face="A",
     )
@@ -136,7 +137,9 @@ def setup_driver():  # type: ignore[no-untyped-def]
         latest_for_workline=AsyncMock(return_value=None),
     )
     departure_scheduler = SimpleNamespace(create_in_session=AsyncMock())
-    transports = SimpleNamespace(get_task=AsyncMock(return_value=SimpleNamespace(status="SUCCEEDED")))
+    transports = SimpleNamespace(
+        get_task=AsyncMock(return_value=SimpleNamespace(status="SUCCEEDED", created_at=timezone.now_for_db()))
+    )
     tasks = SimpleNamespace(
         get_by_task_id_for_update=AsyncMock(return_value=task),
         get_active_for_workline=AsyncMock(return_value=task),
@@ -154,11 +157,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
             ready_return_prefix_for_update=AsyncMock(return_value=()),
         ),
         tasks=tasks,
-        position_service=SimpleNamespace(require_position_capacity=AsyncMock(return_value=1)),
-        rack_cycles=SimpleNamespace(
-            occupied_source_rack_ids=AsyncMock(return_value={"R1"}),
-            fenced_source_rack_ids=AsyncMock(return_value=set()),
-        ),
+        bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(51, "R1"), (52, "R2")})),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000001",
     )
     return driver, line, task, positions, plans, flow, creator, departure_reader, departure_scheduler
@@ -166,22 +165,16 @@ def setup_driver():  # type: ignore[no-untyped-def]
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("rack_count", "occupied", "fenced", "allow_active_task"),
+    ("rack_count", "allow_active_task"),
     [
-        (0, set(), set(), True),
-        (1, set(), set(), False),
-        (2, set(), set(), False),
-        (0, {"IN-FLIGHT"}, set(), False),
-        (0, set(), {"DEPARTING"}, False),
+        (0, True),
+        (1, False),
+        (2, False),
     ],
 )
-async def test_drain_only_bypasses_active_task_gate_when_workstation_and_source_window_are_empty(
-    rack_count: int, occupied: set[str], fenced: set[str], allow_active_task: bool
-) -> None:
+async def test_drain_active_task_gate_uses_observed_workstation_fact(rack_count: int, allow_active_task: bool) -> None:
     driver, line, _, positions, _, _, _, _, _ = setup_driver()
     positions.count_value = rack_count
-    driver._rack_cycles.occupied_source_rack_ids.return_value = occupied
-    driver._rack_cycles.fenced_source_rack_ids.return_value = fenced
     drain = SimpleNamespace(decide_in_session=AsyncMock(return_value=(0, None)))
     driver._drain = drain
 
@@ -200,7 +193,7 @@ async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain
     ingress = SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1")
     repository = SimpleNamespace(
         has_unclosed_rack_action=AsyncMock(return_value=False),
-        transport=AsyncMock(side_effect=[ingress]),
+        transport=AsyncMock(return_value=ingress),
         arrival_matches=AsyncMock(return_value=True),
     )
     drain = SimpleNamespace(
@@ -221,6 +214,10 @@ async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain
     departure_scheduler.create_in_session.assert_awaited_once()
     intent = departure_scheduler.create_in_session.await_args.args[1]
     assert intent.task_id is None and intent.rack_id == "R1"
+    driver._departure_reader.latest_for_workline.assert_awaited_once()
+    assert driver._departure_reader.latest_for_workline.await_args.kwargs["arrived_at"] == (
+        driver._transports.get_task.return_value.created_at
+    )
 
 
 @pytest.mark.asyncio
@@ -290,7 +287,7 @@ async def test_drain_uses_authoritatively_arrived_rack_instead_of_wms_list_order
         repository=repository,
     )
     driver._drain = drain
-    driver._fill_drain_window = AsyncMock(return_value=0)
+    driver._submit_drain_racks = AsyncMock(return_value=0)
     positions.source.object_id = "R2"
     positions.source.source_transport_task_id = "arrival-r2"
     db = object()
@@ -308,16 +305,7 @@ async def test_drain_uses_authoritatively_arrived_rack_instead_of_wms_list_order
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("capacity", "occupied", "fenced", "expected"),
-    [
-        (1, set(), set(), ["R1"]),
-        (2, set(), set(), ["R1", "R2"]),
-        (2, {"OLD"}, set(), ["R1"]),
-        (3, set(), {"R1"}, ["R2", "R3"]),
-    ],
-)
-async def test_drain_window_fills_capacity_from_reserved_racks(capacity, occupied, fenced, expected) -> None:
+async def test_drain_submits_each_reserved_rack_once() -> None:
     driver, line, _, positions, _, _, creator, _, _ = setup_driver()
     row = SimpleNamespace(
         intent=SimpleNamespace(operation_id="drain-1"),
@@ -347,24 +335,18 @@ async def test_drain_window_fills_capacity_from_reserved_racks(capacity, occupie
         repository=repository,
     )
     positions.count = AsyncMock(return_value=0)
-    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=capacity))
-    driver._rack_cycles = SimpleNamespace(
-        occupied_source_rack_ids=AsyncMock(side_effect=lambda *_: set(occupied)),
-        fenced_source_rack_ids=AsyncMock(return_value=fenced),
-    )
     calls = []
 
     async def create(_db, **kwargs):
         calls.append(kwargs)
         decided.add(kwargs["resource_fence_id"])
-        occupied.add(kwargs["resource_fence_id"])
 
     creator.create = create
 
-    assert await driver._advance_drain(object(), line) == len(expected)
-    assert [call["intent"].rack_id for call in calls] == expected
+    assert await driver._advance_drain(object(), line) == 3
+    assert [call["intent"].rack_id for call in calls] == ["R1", "R2", "R3"]
     assert await driver._advance_drain(object(), line) == 0
-    assert len(calls) == len(expected)
+    assert len(calls) == 3
     for call in calls:
         rack = next(rack for rack in row.result.racks if rack.rack_id == call["intent"].rack_id)
         assert call["intent"].target_face == rack.rack_faces[0]
@@ -388,6 +370,16 @@ async def test_same_rack_rotates_once_after_closed_face_and_uses_planned_next_fa
     assert creator.rotate[0]["target_face"] == "270"
     assert creator.rotate[0]["source_evidence_id"] == 51
     scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_next_face_does_not_create_a_new_rotate_action() -> None:
+    driver, line, task, _, plans, _, creator, _, _ = setup_driver()
+    plans.rows[1].cancelled_evidence_id = 91
+
+    await driver.advance_in_session(object(), line, task)
+
+    assert creator.rotate == []
 
 
 @pytest.mark.asyncio
@@ -502,27 +494,42 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
 
 
 @pytest.mark.asyncio
-async def test_cancelled_source_rack_does_not_start_new_inbound_batch() -> None:
-    driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
+async def test_cancelled_source_rack_without_arrival_does_not_start_inbound_batch() -> None:
+    driver, line, task, positions, plans, flow, creator, _, scheduler = setup_driver()
     plans.rows[0].cancelled_evidence_id = 91
-    flow.complete.add(("R1", "90"))
+    positions.source.object_id = "UNRELATED"
 
-    assert await driver.advance_in_session(object(), line, task) == 1
+    assert await driver.advance_in_session(object(), line, task) == 0
     assert flow.calls == []
     scheduler.create_in_session.assert_not_awaited()
-    assert creator.rotate[0]["target_face"] == "270"
+    assert creator.rotate == []
 
 
 @pytest.mark.asyncio
-async def test_cancelled_source_rack_continues_after_no_batch_without_inbound_progress() -> None:
+@pytest.mark.parametrize("status", ["EXECUTING", "EXECUTION_COMPLETED"])
+async def test_arrived_cancelled_source_face_still_requests_wms_final_batch(status: str) -> None:
     driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
+    task.status = status
     plans.rows[0].cancelled_evidence_id = 91
     flow.complete.clear()
+    flow.created = True
 
     assert await driver.advance_in_session(object(), line, task) == 1
-    assert flow.calls[0]["allow_inbound"] is False
-    assert creator.rotate[0]["target_face"] == "270"
+    assert flow.calls[0]["allow_inbound"] is True
+    assert creator.rotate == []
     scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_source_face_with_existing_ready_result_does_not_start_another_inbound_chunk() -> None:
+    driver, line, task, _, plans, flow, _, _, _ = setup_driver()
+    plans.rows[0].cancelled_evidence_id = 91
+    flow.complete.clear()
+    flow.face_progress = AsyncMock(return_value=SimpleNamespace(feed_complete=False, next_offset=4))
+
+    await driver.advance_in_session(object(), line, task)
+
+    assert flow.calls[0]["allow_inbound"] is False
 
 
 @pytest.mark.asyncio
@@ -582,11 +589,7 @@ async def test_later_revision_face_on_current_rack_precedes_other_rack() -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("capacity", "occupied", "expected"),
-    [(1, set(), ["R1"]), (2, set(), ["R1", "R2"]), (2, {"OLD"}, ["R1"]), (2, {"OLD", "OTHER"}, [])],
-)
-async def test_source_window_fills_stable_plan_order_once_without_target_readiness(capacity, occupied, expected):
+async def test_source_submits_stable_plan_order_once_without_target_readiness():
     driver, line, task, positions, plans, _, creator, _, _ = setup_driver()
     task.last_applied_plan_revision = 2
     for row in plans.rows:
@@ -594,34 +597,71 @@ async def test_source_window_fills_stable_plan_order_once_without_target_readine
     plans.rows.append(SimpleNamespace(id=14, rack_id="R3", rack_face="90", source_evidence_id=53, plan_revision=2))
     positions.target = None
     positions.count = AsyncMock(return_value=0)
-    driver._position_service = SimpleNamespace(require_position_capacity=AsyncMock(return_value=capacity))
-    driver._rack_cycles = SimpleNamespace(
-        occupied_source_rack_ids=AsyncMock(return_value=occupied), fenced_source_rack_ids=AsyncMock(return_value=set())
-    )
     decided = set()
-    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(side_effect=lambda *a, **k: set(decided)))
+    driver._bindings = SimpleNamespace(list_task_member_bindings=AsyncMock(side_effect=lambda *a, **k: set(decided)))
     calls = []
 
     async def create(_db, **kwargs):
         calls.append(kwargs)
-        decided.add(kwargs["resource_fence_id"])
-        occupied.add(kwargs["resource_fence_id"])
+        decided.add((kwargs["source_evidence_id"], kwargs["resource_fence_id"]))
 
     creator.create = create
-    assert await driver.advance_in_session(object(), line, task) == len(expected)
-    assert [call["intent"].rack_id for call in calls] == expected
-    assert driver._position_service.require_position_capacity.await_args.kwargs == {
-        "workline_code": "LINE-1",
-        "position_code": "FIVE_LAYER",
-    }
+    assert await driver.advance_in_session(object(), line, task) == 3
+    assert [call["intent"].rack_id for call in calls] == ["R1", "R2", "R3"]
     assert await driver.advance_in_session(object(), line, task) == 0
-    assert len(calls) == len(expected)
+    assert len(calls) == 3
     for call in calls:
         assert call["intent"].target_face == "90"
         assert call["intent"].source_evidence_id == str(call["source_evidence_id"])
         assert call["intent"].rcs_template_id == sdk.TransportRcsTemplateId.CTU01
         assert call["intent"].target == sdk.TransportRackPosition("FIVE-POS")
         assert call["correlation_id"] == f"pt:31:e:{call['source_evidence_id']}:rack:{call['resource_fence_id']}"
+
+
+@pytest.mark.asyncio
+async def test_ctu01_submits_same_rack_once_per_revision_member():
+    driver, line, task, positions, plans, _, creator, _, _ = setup_driver()
+    task.last_applied_plan_revision = 3
+    plans.rows = [
+        SimpleNamespace(id=11, rack_id="A", rack_face="90", source_evidence_id=51, plan_revision=1),
+        SimpleNamespace(id=12, rack_id="A", rack_face="90", source_evidence_id=52, plan_revision=2),
+        SimpleNamespace(id=13, rack_id="B", rack_face="90", source_evidence_id=53, plan_revision=3),
+        SimpleNamespace(id=14, rack_id="C", rack_face="90", source_evidence_id=53, plan_revision=3),
+    ]
+    positions.count = AsyncMock(return_value=0)
+    submitted: set[tuple[int, str]] = set()
+    calls: list[dict] = []
+    driver._bindings = SimpleNamespace(list_task_member_bindings=AsyncMock(side_effect=lambda *a, **k: set(submitted)))
+
+    async def create(_db, **kwargs):
+        calls.append(kwargs)
+        submitted.add((kwargs["source_evidence_id"], kwargs["resource_fence_id"]))
+
+    creator.create = create
+    assert await driver.advance_in_session(object(), line, task) == 4
+    assert [(call["source_evidence_id"], call["resource_fence_id"]) for call in calls] == [
+        (51, "A"),
+        (52, "A"),
+        (53, "B"),
+        (53, "C"),
+    ]
+    assert len({call["correlation_id"] for call in calls}) == 4
+    assert await driver.advance_in_session(object(), line, task) == 0
+
+
+@pytest.mark.asyncio
+async def test_same_rack_next_revision_is_not_a_face_rotation() -> None:
+    driver, line, task, positions, plans, flow, creator, _, departure_scheduler = setup_driver()
+    positions.source.updated_at = timezone.now_for_db()
+    task.last_applied_plan_revision = 2
+    plans.rows = [
+        SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1),
+        SimpleNamespace(id=12, rack_id="R1", rack_face="90", source_evidence_id=52, plan_revision=2),
+    ]
+    flow.complete.add(("R1", "90"))
+    assert await driver._advance_current_rack(object(), line, task) == 1
+    assert creator.rotate == []
+    departure_scheduler.create_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -646,8 +686,22 @@ async def test_source_departure_uses_authoritative_departure_evidence_and_destin
     )
     assert await driver.advance_in_session(object(), line, task) == 1
     assert creator.depart[0]["source_evidence_id"] == 88
-    assert creator.depart[0]["correlation_id"] == "pt:31:source-out:R1"
+    assert creator.depart[0]["correlation_id"] == "pt:31:e:99:source-out:R1"
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
+
+
+@pytest.mark.asyncio
+async def test_source_departure_reads_decision_for_current_arrival_only() -> None:
+    driver, line, task, _, plans, flow, _, reader, _ = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.rows[1].source_evidence_id = 99
+    flow.complete.add(("R1", "270"))
+    arrived_at = timezone.now_for_db()
+    driver._transports.get_task.return_value.created_at = arrived_at
+    db = object()
+
+    assert await driver.advance_in_session(db, line, task) == 1
+    reader.latest_for_workline.assert_awaited_once_with(db, 7, "R1", arrived_at=arrived_at)
 
 
 @pytest.mark.asyncio
@@ -667,28 +721,26 @@ async def test_feed_complete_departure_does_not_start_new_return_or_wait_for_pas
 @pytest.mark.asyncio
 async def test_rotation_selects_next_unprocessed_face_on_the_same_rack() -> None:
     driver, line, task, _, plans, flow, creator, _, _ = setup_driver()
-    plans.rows.append(SimpleNamespace(id=14, rack_id="R1", rack_face="180", source_evidence_id=53))
+    plans.rows.append(SimpleNamespace(id=14, rack_id="R1", rack_face="180", source_evidence_id=51, plan_revision=1))
     flow.complete.add(("R1", "270"))
     assert await driver.advance_in_session(object(), line, task) == 1
     assert creator.rotate[0]["target_face"] == "180"
-    assert creator.rotate[0]["source_evidence_id"] == 53
+    assert creator.rotate[0]["source_evidence_id"] == 51
     assert creator.depart == []
 
 
 @pytest.mark.asyncio
-async def test_physical_rack_fence_does_not_reclaim_released_capacity_for_another_rack():
+async def test_historical_rack_fence_does_not_block_independent_ctu01_submission():
     driver, line, task, positions, plans, _flow, creator, *_ = setup_driver()
     task.last_applied_plan_revision = 1
     for row in plans.rows:
         row.plan_revision = 1
     positions.target = None
     positions.count = AsyncMock(return_value=0)
-    driver._rack_cycles.occupied_source_rack_ids.return_value = set()
-    driver._rack_cycles.fenced_source_rack_ids.return_value = {"R1"}
-    driver._bindings = SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set()))
+    driver._bindings = SimpleNamespace(list_task_member_bindings=AsyncMock(return_value=set()))
     creator.create = AsyncMock()
-    assert await driver.advance_in_session(object(), line, task) == 1
-    assert creator.create.await_args.kwargs["resource_fence_id"] == "R2"
+    assert await driver.advance_in_session(object(), line, task) == 2
+    assert [call.kwargs["resource_fence_id"] for call in creator.create.await_args_list] == ["R1", "R2"]
 
 
 @pytest.mark.asyncio

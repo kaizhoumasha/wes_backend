@@ -8,8 +8,7 @@ import pytest
 from manual_picking.application.passage_model import ManualPickingPassage
 from manual_picking.application.passage_repository import PassageRepository
 from sqlalchemy import BigInteger, UniqueConstraint, event, insert, update
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.app.execution.models import InboundEvidence
 from src.app.workline.models import WorkLine
@@ -48,7 +47,7 @@ def test_passage_identity_and_fifo_indexes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_wms_terminal_per_task_and_bin() -> None:
+async def test_same_task_and_bin_can_complete_distinct_passages() -> None:
     _ = (InboundEvidence, WorkLine)  # 注册外键目标；本测试只创建插件表。
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
@@ -66,6 +65,7 @@ async def test_one_wms_terminal_per_task_and_bin() -> None:
                         workline_id=7,
                         task_id="PICK-001",
                         bin_code="A000000001",
+                        admission_operation_id=f"OP{evidence_id}",
                         scan1_evidence_id=evidence_id,
                         scan1_received_at=datetime(2026, 9, 13, 12),
                         disposition="OPEN",
@@ -73,30 +73,55 @@ async def test_one_wms_terminal_per_task_and_bin() -> None:
                     )
                 )
             await db.execute(update(table).where(table.c.scan1_evidence_id == 1).values(wms_result="NORMAL"))
-            with pytest.raises(IntegrityError):
-                await db.execute(update(table).where(table.c.scan1_evidence_id == 2).values(wms_result="NG"))
+            await db.execute(update(table).where(table.c.scan1_evidence_id == 2).values(wms_result="NG"))
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions.begin() as db:
+            first = await PassageRepository().by_admission_operation_for_update(db, "OP1")
+            second = await PassageRepository().by_admission_operation_for_update(db, "OP2")
+            assert first is not None and first.wms_result == "NORMAL"
+            assert second is not None and second.wms_result == "NG"
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_return_candidates_never_skip_unclosed_fifo_head() -> None:
-    class _Db:
-        async def execute(self, statement):  # type: ignore[no-untyped-def]
-            del statement
-            return SimpleNamespace(
-                scalars=lambda: SimpleNamespace(
-                    all=lambda: [
-                        SimpleNamespace(return_state="READY"),
-                        SimpleNamespace(return_state="MOVE_PENDING"),
-                        SimpleNamespace(return_state="READY"),
-                    ]
+    _ = (InboundEvidence, WorkLine)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+
+    table = ManualPickingPassage.__table__
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(table.create)
+            for evidence_id, bin_code, second, state in (
+                (3, "BOX-C", 3, "READY"),
+                (2, "BOX-B", 2, "READY"),
+                (1, "BOX-A", 1, "MOVE_PENDING"),
+            ):
+                await db.execute(
+                    insert(table).values(
+                        workline_id=7,
+                        task_id="PICK-001",
+                        bin_code=bin_code,
+                        scan1_evidence_id=evidence_id,
+                        scan1_received_at=datetime(2026, 9, 13, 11),
+                        scan4_evidence_id=evidence_id + 10,
+                        scan4_received_at=datetime(2026, 9, 13, 12, 0, second),
+                        return_state=state,
+                    )
                 )
-            )
-
-    rows = await PassageRepository().ready_return_prefix_for_update(_Db(), 7)
-
-    assert len(rows) == 1
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions.begin() as db:
+            assert await PassageRepository().ready_return_prefix_for_update(db, 7) == ()
+            await db.execute(update(table).where(table.c.bin_code == "BOX-A").values(return_state="READY"))
+            rows = await PassageRepository().ready_return_prefix_for_update(db, 7)
+            assert [row.bin_code for row in rows] == ["BOX-A", "BOX-B", "BOX-C"]
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

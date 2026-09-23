@@ -8,7 +8,13 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import ConfigDict, StringConstraints, model_validator
 
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
-from src.app.wms_adapter.wire_common import OperationId, PositiveMilliseconds, RackFaceText, StrictWireModel
+from src.app.wms_adapter.wire_common import (
+    OperationId,
+    PositiveInteger,
+    PositiveMilliseconds,
+    RackFaceText,
+    StrictWireModel,
+)
 from src.app.wms_diagnostics.observation import WmsCallObservation, validate_observed
 
 MANUAL_RACK_DIRECT_PICK_OPERATION = "outbound.manual_rack.direct_pick_completed@v1"
@@ -19,6 +25,7 @@ class ManualRackDirectPickData(StrictWireModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: Identifier
+    plan_revision: PositiveInteger
     rack_id: Identifier
     rack_face: RackFaceText
     completed_at: PositiveMilliseconds

@@ -112,6 +112,7 @@ def build_deployment_runtime(
         ReturnBufferDrainOwnerService(),
     )
     workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, RackDepartureOwnerService())
+    workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, BinInboundBatchOwnerService())
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "manual-picking" in enabled_plugin_keys:
         from manual_picking.application.batch_driver import ManualPickingBatchDriver
@@ -134,10 +135,7 @@ def build_deployment_runtime(
             ReturnBufferDrainScheduler,
         )
 
-        workline_owner = CombinedWorkLineConfirmationOwner(
-            CombinedWorkLineConfirmationOwner(workline_owner, ManualBinAdmissionOwnerService()),
-            BinInboundBatchOwnerService(),
-        )
+        workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, ManualBinAdmissionOwnerService())
         passages = PassageRepository()
         batch_reader = BinBatchResultReader()
         drain_reader = ReturnBufferDrainResultReader()
@@ -191,6 +189,7 @@ def build_deployment_runtime(
             batch_result=batch_result,
             drain_repository=drains,
             drain_reader=drain_reader,
+            rack_creator=rack_creator,
         )
         completion_driver = ManualPickingCompletionFlow(
             ManualPickingCompletionRepository(history=batch_reader),

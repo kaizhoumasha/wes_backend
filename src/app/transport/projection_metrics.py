@@ -12,9 +12,9 @@ _LOCK = Lock()
 _DEFAULTS: dict[str, int | float] = {
     "candidate_count": 0,
     "replayed_count": 0,
-    "stale_suppressed_total": 0,
     "superseded_total": 0,
     "retryable_total": 0,
+    "orphan_sample_count": 0,
     "oldest_candidate_age": 0.0,
 }
 _METRICS = dict(_DEFAULTS)
@@ -51,8 +51,10 @@ async def record_retryable() -> None:
     await _increment("retryable_total")
 
 
-async def record_stale_suppressed() -> None:
-    await _increment("stale_suppressed_total")
+async def record_orphan_sample(count: int) -> None:
+    with _LOCK:
+        _METRICS["orphan_sample_count"] = count
+    await _redis_call("hset", _REDIS_KEY, mapping={"orphan_sample_count": count})
 
 
 async def record_superseded() -> None:
@@ -75,8 +77,8 @@ async def snapshot() -> dict[str, int | float]:
 
 __all__ = [
     "record_batch",
+    "record_orphan_sample",
     "record_retryable",
-    "record_stale_suppressed",
     "record_superseded",
     "snapshot",
 ]

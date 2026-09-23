@@ -53,6 +53,25 @@ class PickingTaskPlanDeltaRepository:
             is not None
         )
 
+    async def return_rack_transport_source(
+        self, db: AsyncSession, workline_id: int, picking_task_id: int, rack_id: str, transport_task_id: str
+    ) -> int | None:
+        bindings = TransportDecisionBinding.__table__.c
+        transports = TransportTask.__table__.c
+        return await db.scalar(
+            select(bindings.source_evidence_id)
+            .join(TransportTask, transports.client_request_id == bindings.client_request_id)
+            .where(
+                bindings.workline_id == workline_id,
+                bindings.picking_task_id == picking_task_id,
+                bindings.resource_fence_id == rack_id,
+                bindings.step.in_(("PICKING_TASK_RETURN_RACK_IN", "MANUAL_PICKING_RETURN_RACK_ROTATE")),
+                transports.transport_task_id == transport_task_id,
+                transports.status == "SUCCEEDED",
+            )
+            .limit(1)
+        )
+
     async def first_completed_source_owner_at_position(
         self, db: AsyncSession, workline_id: int, location_code: str
     ) -> PickingTask | None:
@@ -99,15 +118,26 @@ class PickingTaskPlanDeltaRepository:
         """仅含直接取料的任务完成后也要继续推进退料货架；候选的到位细节由调用方再校验。"""
         picks = DirectPickExecution.__table__.c
         tasks = PickingTask.__table__.c
+        bindings = TransportDecisionBinding.__table__.c
+        transports = TransportTask.__table__.c
         projections = PositionProjection.__table__.c
         return await db.scalar(
             select(PickingTask)
             .join(DirectPickExecution, picks.picking_task_id == tasks.id)
             .join(
+                TransportDecisionBinding,
+                (bindings.picking_task_id == tasks.id)
+                & (bindings.resource_fence_id == picks.rack_id)
+                & (bindings.source_evidence_id == picks.source_evidence_id)
+                & (bindings.workline_id == tasks.workline_id),
+            )
+            .join(TransportTask, transports.client_request_id == bindings.client_request_id)
+            .join(
                 PositionProjection,
                 (projections.object_type == "RACK")
                 & (projections.object_id == picks.rack_id)
-                & (projections.workline_id == tasks.workline_id),
+                & (projections.workline_id == tasks.workline_id)
+                & (projections.source_transport_task_id == transports.transport_task_id),
             )
             .where(
                 tasks.workline_id == workline_id,
@@ -115,6 +145,8 @@ class PickingTaskPlanDeltaRepository:
                 picks.cancelled_evidence_id.is_(None),
                 picks.plan_revision <= tasks.last_applied_plan_revision,
                 picks.rack_face == projections.arrival_face,
+                bindings.step.in_(("PICKING_TASK_RETURN_RACK_IN", "MANUAL_PICKING_RETURN_RACK_ROTATE")),
+                transports.status == "SUCCEEDED",
                 projections.position_unknown.is_(False),
                 projections.position_json["kind"].as_string() == "RACK_POSITION",
                 projections.position_json["location_code"].as_string() == location_code,
@@ -200,7 +232,7 @@ class PickingTaskPlanDeltaRepository:
         )
 
     async def has_active_direct_pick_face(
-        self, db: AsyncSession, *, picking_task_id: int, rack_id: str, rack_face: str
+        self, db: AsyncSession, *, picking_task_id: int, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool:
         columns = DirectPickExecution.__table__.c
         return (
@@ -208,6 +240,7 @@ class PickingTaskPlanDeltaRepository:
                 select(columns.id)
                 .where(
                     columns.picking_task_id == picking_task_id,
+                    columns.plan_revision == plan_revision,
                     columns.rack_id == rack_id,
                     columns.rack_face == rack_face,
                     columns.cancelled_evidence_id.is_(None),
@@ -218,7 +251,7 @@ class PickingTaskPlanDeltaRepository:
         )
 
     async def has_direct_pick_face_completion(
-        self, db: AsyncSession, *, picking_task_id: int, rack_id: str, rack_face: str
+        self, db: AsyncSession, *, picking_task_id: int, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool:
         columns = DirectPickFaceCompletion.__table__.c
         return (
@@ -226,6 +259,7 @@ class PickingTaskPlanDeltaRepository:
                 select(columns.id)
                 .where(
                     columns.picking_task_id == picking_task_id,
+                    columns.plan_revision == plan_revision,
                     columns.rack_id == rack_id,
                     columns.rack_face == rack_face,
                 )
@@ -239,6 +273,7 @@ class PickingTaskPlanDeltaRepository:
         db: AsyncSession,
         *,
         picking_task_id: int,
+        plan_revision: int,
         rack_id: str,
         rack_face: str,
         completed_at: datetime,
@@ -247,6 +282,7 @@ class PickingTaskPlanDeltaRepository:
         db.add(
             DirectPickFaceCompletion(
                 picking_task_id=picking_task_id,
+                plan_revision=plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 completed_at=completed_at,
@@ -317,6 +353,7 @@ class PickingTaskPlanDeltaRepository:
         self,
         db: AsyncSession,
         task_id: int,
+        plan_revision: int,
         *,
         direct_picks: list[tuple[str, str, str]],
         bin_racks: list[tuple[str, str]],
@@ -332,6 +369,7 @@ class PickingTaskPlanDeltaRepository:
                 await db.execute(
                     select(direct.rack_id, direct.rack_face, direct.slot_id).where(
                         direct.picking_task_id == task_id,
+                        direct.plan_revision == plan_revision,
                         tuple_(direct.rack_id, direct.rack_face, direct.slot_id).in_(candidates),
                     )
                 )
@@ -343,6 +381,7 @@ class PickingTaskPlanDeltaRepository:
                 await db.execute(
                     select(bins.rack_id, bins.rack_face).where(
                         bins.picking_task_id == task_id,
+                        bins.plan_revision == plan_revision,
                         tuple_(bins.rack_id, bins.rack_face).in_(candidates),
                     )
                 )

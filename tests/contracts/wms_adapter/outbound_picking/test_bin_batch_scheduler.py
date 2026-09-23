@@ -34,6 +34,7 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
     inbound = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="019f0000-0000-7000-8000-000000000001",
         task_id="PICK-001",
+        plan_revision=1,
         rack_id="R1",
         rack_face="90",
     )
@@ -55,6 +56,7 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
     assert [call["workline_id"] for call in confirmations.calls] == [7, 7]
     assert confirmations.calls[0]["request_payload"]["data"] == {
         "task_id": "PICK-001",
+        "plan_revision": 1,
         "rack_id": "R1",
         "rack_face": "90",
     }
@@ -68,21 +70,37 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
 
 
 @pytest.mark.asyncio
-async def test_inbound_batch_owner_requires_current_task_and_planned_face() -> None:
+@pytest.mark.parametrize(
+    ("status", "cancelled_evidence_id", "task_type"),
+    [
+        ("EXECUTING", None, "MANUAL"),
+        ("EXECUTION_COMPLETED", None, "MANUAL"),
+        ("EXECUTION_COMPLETED", 91, "MANUAL"),
+        ("ARCHIVED", 91, "MANUAL"),
+        ("EXECUTING", None, "AUTO"),
+    ],
+)
+async def test_inbound_batch_owner_keeps_existing_face_obligation_after_parent_transition(
+    status: str, cancelled_evidence_id: int | None, task_type: str
+) -> None:
     class Tasks:
         async def get_by_task_id_for_update(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return SimpleNamespace(id=31, workline_id=7, status="EXECUTING", task_type="MANUAL")
+            return SimpleNamespace(id=31, workline_id=7, status=status, task_type=task_type)
 
     class Plans:
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return [SimpleNamespace(rack_id="R1", rack_face="90")]
+            return [
+                SimpleNamespace(
+                    plan_revision=1, rack_id="R1", rack_face="90", cancelled_evidence_id=cancelled_evidence_id
+                )
+            ]
 
     owner = bin_batch.BinInboundBatchOwnerService(tasks=Tasks(), plans=Plans())
     payload = {
         "operation_id": "019f0000-0000-7000-8000-000000000001",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
+        "data": {"task_id": "PICK-001", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
     }
 
     assert await owner.validate_owner(object(), workline_id=7, request_payload=payload)
@@ -99,7 +117,7 @@ async def test_inbound_result_reader_binds_frozen_request_to_response_evidence()
         "operation": "outbound.bin.inbound_batch@v1",
         "operation_id": operation_id,
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
+        "data": {"task_id": "PICK-001", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
     }
     response = {
         "operation_id": operation_id,
@@ -149,7 +167,9 @@ async def test_inbound_face_reader_rejects_multiple_distinct_allocations() -> No
 
     reader = bin_batch.BinBatchResultReader()
     with pytest.raises(ValueError, match="multiple inbound allocations"):
-        await reader.latest_inbound_detail(Db(), workline_id=7, task_id="PICK-1", rack_id="R1", rack_face="90")
+        await reader.latest_inbound_detail(
+            Db(), workline_id=7, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        )
 
 
 @pytest.mark.asyncio

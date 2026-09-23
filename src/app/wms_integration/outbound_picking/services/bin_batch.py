@@ -30,7 +30,6 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     parse_bin_return_batch_request,
     parse_bin_return_batch_response,
 )
-from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import PickingTaskRepository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.utils.timezone import timezone
@@ -88,16 +87,12 @@ class BinInboundBatchOwnerService:
         except (ValueError, TypeError):
             return False
         task = await self._tasks.get_by_task_id_for_update(db, request.data.task_id)
-        if (
-            task is None
-            or task.id is None
-            or task.workline_id != workline_id
-            or task.status != PickingTaskStatus.EXECUTING
-            or task.task_type != PickingTaskType.MANUAL
-        ):
+        if task is None or task.id is None or task.workline_id != workline_id:
             return False
         return any(
-            row.rack_id == request.data.rack_id and row.rack_face == request.data.rack_face
+            row.plan_revision == request.data.plan_revision
+            and row.rack_id == request.data.rack_id
+            and row.rack_face == request.data.rack_face
             for row in await self._plans.list_bin_source_racks(db, task.id)
         )
 
@@ -145,6 +140,7 @@ class BinBatchResultReader:
         intent = wms_operations.outbound_bin_inbound_batch(
             operation_id=request.operation_id,
             task_id=request.data.task_id,
+            plan_revision=request.data.plan_revision,
             rack_id=request.data.rack_id,
             rack_face=request.data.rack_face,
         )
@@ -178,6 +174,7 @@ class BinBatchResultReader:
         rack_id: str,
         rack_face: str,
         task_id: str | None = None,
+        plan_revision: int | None = None,
     ) -> tuple[InboundEvidence, datetime] | None:
         confirmations = cast("Any", WmsConfirmation).__table__.c
         evidences = cast("Any", InboundEvidence).__table__.c
@@ -197,6 +194,10 @@ class BinBatchResultReader:
         )
         if task_id is not None:
             statement = statement.where(confirmations.request_payload["data"]["task_id"].as_string() == task_id)
+        if plan_revision is not None:
+            statement = statement.where(
+                confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision
+            )
         rows = (await db.execute(statement)).all()
         if not rows:
             return None
@@ -245,9 +246,16 @@ class BinBatchResultReader:
         )
         return confirmation_id is not None
 
-    async def latest_inbound(self, db: AsyncSession, *, workline_id: int, task_id: str, rack_id: str, rack_face: str):
+    async def latest_inbound(
+        self, db: AsyncSession, *, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+    ):
         detail = await self.latest_inbound_detail(
-            db, workline_id=workline_id, task_id=task_id, rack_id=rack_id, rack_face=rack_face
+            db,
+            workline_id=workline_id,
+            task_id=task_id,
+            plan_revision=plan_revision,
+            rack_id=rack_id,
+            rack_face=rack_face,
         )
         if detail is None:
             return None
@@ -255,13 +263,14 @@ class BinBatchResultReader:
         return outcome, completed_at
 
     async def latest_inbound_detail(
-        self, db: AsyncSession, *, workline_id: int, task_id: str, rack_id: str, rack_face: str
+        self, db: AsyncSession, *, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
     ):
         latest = await self._latest_for_face(
             db,
             workline_id=workline_id,
             operation=BIN_INBOUND_BATCH_OPERATION,
             task_id=task_id,
+            plan_revision=plan_revision,
             rack_id=rack_id,
             rack_face=rack_face,
         )

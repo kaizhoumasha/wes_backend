@@ -27,9 +27,6 @@ KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的�
 且成功成员与绑定工作位的精确 rack/face 投影匹配后，即可继续其当前面流程，无需等待前一架最终位置回调。前一架的原 CTU03 成功回调若给出指定区域内的实际 `RACK_POSITION`，该最终位置是其权威终态并更新投影；
 若没有最终回调则保持 unknown，原 Transport 身份和对账义务不变。
 
-工作线自动 RackCycle 按绑定 FIVE_LAYER/FIVE_RACK 点位 `capacity` 补足 CTU01 窗口，物理当前架仍最多一个，由 RCS 排队和自主进位。
-CTU02 不释放窗口；同线同架的更晚 CTU03 接纳即释放，已接纳后的失败或对账不重新占窗，提交前
-DELIVERY_UNKNOWN/CONFLICT 仍占窗。该释放只允许补充其他货架；同架复用仍等待 CTU03 `SUCCEEDED`、成功成员和明确
-`RACK_POSITION`。CTU02 成功表示旋转后已经回到工作位。
+工作线自动 RackCycle 对每个确定来源架或 WMS drain reservation 以稳定步骤身份最多创建一次 CTU01，不以 `capacity`、历史任务或离场状态扣减物理准入名额。RCS 排队和自主进位；每个架的后续作业仍等待该架自己的权威到位、面向及原 Transport 结果。CTU02 成功表示旋转后已经回到工作位。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。

@@ -30,10 +30,11 @@ class _Worklines:
         identities: tuple[tuple[str, str], ...],
         *,
         limit: int,
+        after_id: int = 0,
     ) -> list[tuple[int, str, str]]:
         assert limit == 100
         self.identities = identities
-        return self.rows
+        return [row for row in self.rows if row[0] > after_id][:limit]
 
 
 class _Coordinator:
@@ -96,6 +97,38 @@ async def test_batch_routes_only_active_exact_plugin_versions_to_their_policy(
     assert worklines.identities == (("inactive", "1.0"), ("sample_plugin", "0.1.0"))
     assert calls == [(manual_policy, 7), (manual_policy, 8)]
     assert reservations == [reserved]
+
+
+@pytest.mark.asyncio
+async def test_prepare_scans_worklines_after_first_full_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [(index, "sample_plugin", "0.1.0") for index in range(1, 103)]
+    worklines = _Worklines(rows)
+    calls: list[tuple[object, int]] = []
+
+    async def prepare(workline_id: int):
+        calls.append((policy, workline_id))
+        if workline_id == 1:
+            raise RuntimeError("one workline failed")
+        return SimpleNamespace(prepared=False)
+
+    policy = object()
+    monkeypatch.setattr(
+        module,
+        "PickingTaskPrepareCoordinator",
+        lambda _sessions, **_kwargs: SimpleNamespace(prepare_next_for_workline=prepare),
+    )
+    service = module.PickingTaskPrepareBatchService(
+        _Sessions(),  # type: ignore[arg-type]
+        plugins=(
+            SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0", picking_task_prepare_policy=policy),
+        ),
+        task_queue_gateway=SimpleNamespace(),  # type: ignore[arg-type]
+        workline_repository=worklines,  # type: ignore[arg-type]
+    )
+
+    await service.prepare_batch()
+
+    assert [workline_id for _policy, workline_id in calls] == list(range(1, 103))
 
 
 @pytest.mark.asyncio

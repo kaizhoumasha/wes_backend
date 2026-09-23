@@ -194,11 +194,13 @@ class ReturnRackArrivalReportIntent:
 class BinInboundBatchIntent:
     operation_id: str
     task_id: str
+    plan_revision: int
     rack_id: str
     rack_face: str
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
+        _positive(self.plan_revision, "plan_revision", 2**63 - 1)
         for name in ("task_id", "rack_id"):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
@@ -621,12 +623,14 @@ class ManualBinAdmissionOutcome:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ManualBinCompletedFact:
+    admission_operation_id: str
     task_id: str
     bin_code: str
     result: Literal["NORMAL", "NG"]
     completed_at: int
 
     def __post_init__(self) -> None:
+        _ = _required(self.admission_operation_id, "admission_operation_id")
         _ = _required(self.task_id, "task_id")
         _ = _required(self.bin_code, "bin_code")
         if self.result not in {"NORMAL", "NG"}:

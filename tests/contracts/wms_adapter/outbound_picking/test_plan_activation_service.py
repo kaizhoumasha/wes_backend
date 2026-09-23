@@ -41,11 +41,12 @@ class _Sessions:
 class _Worklines:
     def __init__(self, line: object | None) -> None:
         self.line = line
+        self.rows = [(7, "sample_plugin", "0.1.0")]
 
-    async def list_active_for_plugin_identities(self, _db, identities, *, limit):  # type: ignore[no-untyped-def]
+    async def list_active_for_plugin_identities(self, _db, identities, *, limit, after_id=0):  # type: ignore[no-untyped-def]
         assert identities == (("sample_plugin", "0.1.0"),)
         assert limit == 100
-        return [(7, "sample_plugin", "0.1.0")]
+        return [row for row in self.rows if row[0] > after_id][:limit]
 
     async def get_for_update(self, _db, workline_id):  # type: ignore[no-untyped-def]
         assert workline_id == 7
@@ -143,6 +144,33 @@ async def test_batch_does_not_read_business_state_without_plan_handler() -> None
 
 
 @pytest.mark.asyncio
+async def test_plan_activation_scans_worklines_after_first_full_page() -> None:
+    worklines = _Worklines(None)
+    worklines.rows = [(index, "sample_plugin", "0.1.0") for index in range(1, 103)]
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="sample_plugin", plugin_version="0.1.0", picking_task_plan_applied_handler=_Handler()
+            ),
+        ),
+        transport_creator=SimpleNamespace(),
+        workline_repository=worklines,
+    )
+
+    async def activate(workline_id: int, **_kwargs: object) -> int:
+        if workline_id == 1:
+            raise RuntimeError("one workline failed")
+        return 0
+
+    service._activate_workline = AsyncMock(side_effect=activate)
+
+    await service.activate_batch()
+
+    assert [call.args[0] for call in service._activate_workline.await_args_list] == list(range(1, 103))
+
+
+@pytest.mark.asyncio
 async def test_reserved_workline_does_not_create_rack_transport() -> None:
     creator = _Creator()
     reserved = AsyncMock(return_value=True)
@@ -217,7 +245,10 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
             list_active_bin_source_racks=AsyncMock(return_value=[]),
             list_active_direct_picks=AsyncMock(return_value=[]),
         ),
-        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
+        ),
     )
 
     assert await service.activate_batch() == 3
@@ -282,6 +313,7 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         ),
         transport_binding_repository=SimpleNamespace(
             list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
         ),
     )
 
@@ -350,7 +382,10 @@ async def test_old_transport_failure_does_not_block_new_rack_submission() -> Non
             ),
             list_active_direct_picks=AsyncMock(return_value=[]),
         ),
-        transport_binding_repository=SimpleNamespace(list_task_resource_fence_ids=AsyncMock(return_value=set())),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
+        ),
     )
 
     assert await service.activate_batch() == 2

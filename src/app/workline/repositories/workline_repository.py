@@ -147,6 +147,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         identities: tuple[tuple[str, str], ...],
         *,
         limit: int,
+        after_id: int = 0,
     ) -> list[tuple[int, str, str]]:
         """按部署能力列出活动工作线；插件缺席时调用方不进入数据库。"""
 
@@ -165,6 +166,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 columns.is_active.is_(True),
                 columns.is_deleted.is_(False),
                 identity_predicate,
+                columns.id > after_id,
             )
             .order_by(columns.id)
             .limit(limit)
