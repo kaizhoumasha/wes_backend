@@ -48,11 +48,14 @@ def test_command_status_is_final_closed_set() -> None:
         CommandStatus.PENDING,
         CommandStatus.DISPATCHING,
         CommandStatus.ACKNOWLEDGED,
-        CommandStatus.RECONCILING,
     ],
 )
 def test_all_unclosed_states_keep_device_slot(status: CommandStatus) -> None:
     assert _command(status=status).occupies_device_slot is True
+
+
+def test_reconciling_command_keeps_callback_identity_but_does_not_block_device_slot() -> None:
+    assert _command(status=CommandStatus.RECONCILING).occupies_device_slot is False
 
 
 @pytest.mark.parametrize(

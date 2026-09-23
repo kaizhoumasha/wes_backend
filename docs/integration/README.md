@@ -9,6 +9,8 @@
 | [第三方设备统一接口白皮书](third_party_integration_whitepaper.md) | WES 与 ECS/网关之间的固定设备 wire 真源 | `Approved` |
 | [Callback/Event 验证原则](callback_event_validation_principles.md) | 设备 callback/event 的合同校验、身份和冲突原则 | 当前设备集成规则 |
 | [WorkLine 设备错误码标准化](workline_device_error_code_standardization.md) | 设备错误码归一化与业务映射边界 | 当前设备集成规则 |
+| [设备合同附录：自动拣料机械臂](device-annex-automatic-picking-arms.md) | ARM01/ARM02 的 `PICK_AND_PUT` 参数、结果与扫码事件字段 | `Draft`；待供应商确认后才可实现 |
+| [WMS 联合确认清单：自动拣料](wms-joint-confirmation-automatic-picking.md) | automatic-picking 需要 WMS 书面确认或联合冻结的 operation 范围 | `Draft`；待 WMS 书面回复后改 `Reviewed` |
 | [WMS Caller Checklist](wms_caller_checklist.md) | 收敛前 typed port 调用方的异常处理基线 | `implementation_baseline`，不是目标业务合同 |
 
 使用顺序：

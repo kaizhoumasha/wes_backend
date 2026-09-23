@@ -6,11 +6,38 @@ from hashlib import sha256
 
 import pytest
 
-from src.app.transport.contracts import TransportSubmitCode
+from src.app.transport.contracts import TransportRecoveryCapability, TransportSubmitCode
 from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
 
 TRANSPORT_SUBMIT_PATH = "/api/v1/wes/transport-requests"
+
+
+def test_wms_transport_adapter_defaults_to_fail_closed_recovery_capability() -> None:
+    adapter = WmsTransportAdapter(
+        FakeClient(FakeAccessResult(Value("NOT_SENT"), None, None)), submit_path=TRANSPORT_SUBMIT_PATH
+    )
+
+    assert adapter.recovery_capability is TransportRecoveryCapability.NO_SAFE_AUTOMATIC_RECOVERY
+
+
+def test_wms_transport_adapter_requires_typed_recovery_capability() -> None:
+    with pytest.raises(TypeError, match="recovery_capability"):
+        WmsTransportAdapter(
+            FakeClient(FakeAccessResult(Value("NOT_SENT"), None, None)),
+            submit_path=TRANSPORT_SUBMIT_PATH,
+            recovery_capability="SAFE_SAME_IDENTITY_RESUBMIT",  # type: ignore[arg-type]
+        )
+
+
+def test_wms_transport_adapter_can_expose_explicit_provider_contract() -> None:
+    adapter = WmsTransportAdapter(
+        FakeClient(FakeAccessResult(Value("NOT_SENT"), None, None)),
+        submit_path=TRANSPORT_SUBMIT_PATH,
+        recovery_capability=TransportRecoveryCapability.QUERY_BEFORE_RESUBMIT,
+    )
+
+    assert adapter.recovery_capability is TransportRecoveryCapability.QUERY_BEFORE_RESUBMIT
 
 
 async def test_transport_observation_uses_original_ack_validation() -> None:

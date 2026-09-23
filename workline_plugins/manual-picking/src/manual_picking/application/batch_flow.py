@@ -57,6 +57,7 @@ class InboundCreator(Protocol):
         db: AsyncSession,
         *,
         workline_id: int,
+        picking_task_id: int,
         intent: BinInboundBatchIntent,
         ready: BinInboundBatchReady,
         evidence_id: int,
@@ -91,12 +92,13 @@ class ManualPickingBatchFlow:
     ) -> bool:
         return await self._repository.has_unclosed_action_for_face(db, workline_id, task_id, rack_id, rack_face)
 
-    async def advance_in_session(
+    async def advance_in_session(  # noqa: PLR0911
         self,
         db: AsyncSession,
         *,
         workline_id: int,
         workline_code: str,
+        picking_task_id: int,
         task_id: str,
         rack_id: str,
         rack_face: str,
@@ -110,7 +112,26 @@ class ManualPickingBatchFlow:
         progress = await self._repository.inbound_progress(db, workline_id, task_id, rack_id, rack_face, inlet_location)
         if progress is None:
             if not allow_inbound:
-                return False
+                rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+                return_bins = tuple(row.bin_code for row in rows)
+                if not return_bins or not await self._repository.return_retry_due(
+                    db, workline_id, rack_id, rack_face, now, now
+                ):
+                    return False
+                intent = choose_next_batch(
+                    operation_id=self._uuid_factory(),
+                    workline_code=workline_code,
+                    task_id=task_id,
+                    rack_id=rack_id,
+                    rack_face=rack_face,
+                    return_bins=return_bins,
+                    return_location=return_location,
+                    return_retry_due=True,
+                    allow_inbound=False,
+                )
+                assert intent is not None
+                await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
+                return True
             intent = choose_next_batch(
                 operation_id=self._uuid_factory(),
                 workline_code=workline_code,
@@ -153,11 +174,14 @@ class ManualPickingBatchFlow:
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
         if not progress.feed_complete:
+            if not allow_inbound:
+                return False
             if progress.next_offset is None:
                 return False
             await self._inbound.create_inbound_chunk(
                 db,
                 workline_id=workline_id,
+                picking_task_id=picking_task_id,
                 intent=progress.intent,
                 ready=cast("BinInboundBatchReady", progress.result),
                 evidence_id=progress.evidence_id,

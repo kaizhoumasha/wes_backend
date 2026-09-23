@@ -2,9 +2,10 @@
 
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.execution.locks import position_projection_lock_identity
 from src.app.resource.models import (
     Bin,
     BinCellOccupancy,
@@ -23,6 +24,13 @@ from src.app.resource.models import (
     ResourceStateEvent,
 )
 from src.database.base_repository import BaseRepository
+
+
+async def _lock_object_authority(db: AsyncSession, *, object_type: str, object_id: str) -> None:
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+        {"identity": position_projection_lock_identity(object_type, object_id)},
+    )
 
 
 class RackTypeRepository(BaseRepository[RackType]):
@@ -149,6 +157,9 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
     def __init__(self) -> None:
         super().__init__(RackPlacement)
 
+    async def lock_object_authority(self, db: AsyncSession, *, object_type: str, object_id: str) -> None:
+        await _lock_object_authority(db, object_type=object_type, object_id=object_id)
+
     async def get_active_by_rack_code(self, db: AsyncSession, rack_code: str) -> RackPlacement | None:
         """查询货架当前 active placement。"""
 
@@ -262,6 +273,9 @@ class RackBinMountRepository(BaseRepository[RackBinMount]):
 
     def __init__(self) -> None:
         super().__init__(RackBinMount)
+
+    async def lock_object_authority(self, db: AsyncSession, *, object_type: str, object_id: str) -> None:
+        await _lock_object_authority(db, object_type=object_type, object_id=object_id)
 
     async def get_active_by_rack_slot(
         self,

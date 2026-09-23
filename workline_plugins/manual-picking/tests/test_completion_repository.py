@@ -79,15 +79,20 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
     task = SimpleNamespace(id=11, task_id="PICK-1", last_applied_plan_revision=1)
     try:
         async with sessions.begin() as db:
-            db.add(
-                PickingTaskBinSourceRack(
-                    picking_task_id=11, rack_id="R1", rack_face="90", plan_revision=1, source_evidence_id=1
-                )
+            source_row = PickingTaskBinSourceRack(
+                picking_task_id=11, rack_id="R1", rack_face="90", plan_revision=1, source_evidence_id=1
             )
+            db.add(source_row)
             await db.flush()
             assert not await repository.ready_to_confirm(db, line, task)
             history.done = True
             assert await repository.ready_to_confirm(db, line, task)
+            source_row.cancelled_evidence_id = 99
+            history.done = False
+            await db.flush()
+            assert await repository.ready_to_confirm(db, line, task)
+            source_row.cancelled_evidence_id = None
+            history.done = True
 
             pending_scan = InboundEvidence(
                 kind="DEVICE_EVENT",

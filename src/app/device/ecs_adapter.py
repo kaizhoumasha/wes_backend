@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from src.app.device.contracts import EcsDeviceStatus, EcsDeviceStatusResponse, EcsSubmitDisposition, EcsSubmitResult
+from src.app.device.contracts import (
+    EcsDeviceStatus,
+    EcsDeviceStatusResponse,
+    EcsRecoveryCapability,
+    EcsSubmitDisposition,
+    EcsSubmitResult,
+)
 from src.core.outbound_http import (
     OutboundHttpDeliveryState,
     OutboundHttpMethod,
@@ -57,9 +63,24 @@ class EcsStatusUnavailableError(RuntimeError):
 class EcsAdapter:
     """把 DeviceCommand 快照映射到四路径合同中的两个出站路径。"""
 
-    def __init__(self, transport: OutboundHttpTransport, *, clock=timezone.now_for_db) -> None:
+    def __init__(
+        self,
+        transport: OutboundHttpTransport,
+        *,
+        clock=timezone.now_for_db,
+        recovery_capability: EcsRecoveryCapability = EcsRecoveryCapability.NO_SAFE_AUTOMATIC_RECOVERY,
+    ) -> None:
         self._transport = transport
         self._clock = clock
+        if type(recovery_capability) is not EcsRecoveryCapability:
+            raise TypeError("recovery_capability must be EcsRecoveryCapability")
+        self._recovery_capability = recovery_capability
+
+    @property
+    def recovery_capability(self) -> EcsRecoveryCapability:
+        """当前 ECS 合同允许的 pre-ACK 恢复策略；默认 fail closed。"""
+
+        return self._recovery_capability
 
     async def submit_command(
         self,

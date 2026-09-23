@@ -180,6 +180,25 @@ class PickingTaskPlanDeltaRepository:
             is not None
         )
 
+    async def has_source_face(self, db: AsyncSession, workline_id: int, rack_id: str, rack_face: str) -> bool:
+        members = PickingTaskBinSourceRack.__table__.c
+        tasks = PickingTask.__table__.c
+        return (
+            await db.scalar(
+                select(members.id)
+                .join(PickingTask, tasks.id == members.picking_task_id)
+                .where(
+                    tasks.workline_id == workline_id,
+                    tasks.status.in_((PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED)),
+                    members.rack_id == rack_id,
+                    members.rack_face == rack_face,
+                    members.plan_revision <= tasks.last_applied_plan_revision,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     async def has_active_direct_pick_face(
         self, db: AsyncSession, *, picking_task_id: int, rack_id: str, rack_face: str
     ) -> bool:

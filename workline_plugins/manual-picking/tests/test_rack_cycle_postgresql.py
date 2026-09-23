@@ -9,10 +9,14 @@ from rack_cycle_support import BusinessServer, activate, locked_line, rack_datab
 from sqlalchemy import select, text
 
 from src.app.execution.models import InboundEvidence, WmsConfirmation
+from src.app.execution.repositories.wms_confirmation_repository import WmsConfirmationRepository
 from src.app.execution.services import WmsConfirmationService
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
+from src.app.wms_integration.outbound_picking.models import PickingTask
+from src.app.wms_integration.outbound_picking.services import PickingTaskConfirmationOwnerService
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainOwnerService
 from src.app.workline.models import WorkLine
+from src.app.workline.repositories import WorkLineRepository
 from src.utils.timezone import timezone
 
 pytest_plugins = ("tests.integration.conftest",)
@@ -57,6 +61,45 @@ async def serialized_pair(sessions, line_id, action):
         return first, await task
 
 
+async def test_picking_confirmation_authority_locks_workline_before_task(rack_database):
+    _, sessions = rack_database
+    async with sessions.begin() as db:
+        line, task = await seed_line(db)
+    lock_attempted = asyncio.Event()
+    waiter_pid = None
+
+    class CoordinatedWorkLines(WorkLineRepository):
+        async def get_for_authority_update(self, db, workline_id, *, populate_existing=False):
+            nonlocal waiter_pid
+            waiter_pid = await db.scalar(text("SELECT pg_backend_pid()"))
+            lock_attempted.set()
+            return await super().get_for_authority_update(db, workline_id, populate_existing=populate_existing)
+
+    owner = PickingTaskConfirmationOwnerService(worklines=CoordinatedWorkLines())
+    owner_task = None
+
+    async def lock_owner():
+        async with sessions.begin() as owner_db:
+            return await owner.lock_authority_root(db=owner_db, picking_task_id=task.id)
+
+    try:
+        async with asyncio.timeout(10):
+            async with sessions.begin() as db:
+                await locked_line(db, line.id)
+                blocker = await db.scalar(text("SELECT pg_backend_pid()"))
+                owner_task = asyncio.create_task(lock_owner())
+                await lock_attempted.wait()
+                await wait_for_block(sessions, waiter_pid, blocker)
+                locked_task = await db.scalar(select(PickingTask).where(PickingTask.id == task.id).with_for_update())
+                assert locked_task is not None
+            assert owner_task is not None
+            assert await owner_task
+    finally:
+        if owner_task is not None and not owner_task.done():
+            owner_task.cancel()
+            await asyncio.gather(owner_task, return_exceptions=True)
+
+
 async def test_duplicate_wakes_create_one_root_and_one_wait_successor(rack_database):
     _, sessions = rack_database
     server = BusinessServer(wait=True)
@@ -95,7 +138,7 @@ async def test_duplicate_wakes_create_one_root_and_one_wait_successor(rack_datab
                 ).all()
                 assert len(rows) == 2
                 assert rows[1].operation_id != rows[0].operation_id
-                assert rows[1].request_payload["data"]["previous_operation_id"] == rows[0].operation_id
+                assert rows[1].request_payload["data"] == rows[0].request_payload["data"]
     finally:
         server.close()
 
@@ -145,48 +188,72 @@ async def test_dispatch_confirmation_and_activation_lock_order(rack_database, ph
             line, _ = await seed_line(db)
         async with runtime_for(sessions, server.url) as (runtime, transport):
             await activate(runtime, line.id)
-            confirmation_locked = asyncio.Event()
-            let_owner_lock = asyncio.Event()
+            root_snapshot_read = asyncio.Event()
+            response_ready = asyncio.Event()
+            save_response = asyncio.Event()
             dispatcher_pid = None
+
+            class CoordinatedRepository(WmsConfirmationRepository):
+                calls = 0
+
+                async def get_by_id(self, db, confirmation_id):
+                    nonlocal dispatcher_pid
+                    confirmation = await super().get_by_id(db, confirmation_id)
+                    self.calls += 1
+                    if self.calls == (1 if phase == "pre_dispatch" else 2):
+                        dispatcher_pid = await db.scalar(text("SELECT pg_backend_pid()"))
+                        root_snapshot_read.set()
+                    return confirmation
 
             class CoordinatedOwner(ReturnBufferDrainOwnerService):
                 calls = 0
 
                 async def validate_owner(self, db, **kwargs):
-                    nonlocal dispatcher_pid
                     self.calls += 1
-                    if self.calls == (1 if phase == "pre_dispatch" else 2):
-                        dispatcher_pid = await db.scalar(text("SELECT pg_backend_pid()"))
-                        confirmation_locked.set()
-                        await let_owner_lock.wait()
                     return await super().validate_owner(db, **kwargs)
 
+            class CoordinatedAdapter(WmsConfirmationAdapter):
+                async def dispatch(self, **kwargs):
+                    result = await super().dispatch(**kwargs)
+                    response_ready.set()
+                    await save_response.wait()
+                    return result
+
+            owner = CoordinatedOwner()
             dispatcher = WmsConfirmationService(
+                repository=CoordinatedRepository(),
                 session_factory=sessions,
-                adapter=WmsConfirmationAdapter(transport.client),
-                workline_owner=CoordinatedOwner(),
+                adapter=(
+                    CoordinatedAdapter(transport.client)
+                    if phase == "response_save"
+                    else WmsConfirmationAdapter(transport.client)
+                ),
+                workline_owner=owner,
             )
-            async with asyncio.timeout(10):
-                # response-save must pass pre-dispatch validation before activation takes WorkLine.
-                if phase == "response_save":
-                    task = asyncio.create_task(dispatcher.dispatch_batch())
-                    await confirmation_locked.wait()
-                async with sessions.begin() as db:
-                    await locked_line(db, line.id)
-                    blocker = await db.scalar(text("SELECT pg_backend_pid()"))
-                    if phase == "pre_dispatch":
+            task = None
+            try:
+                async with asyncio.timeout(10):
+                    if phase == "response_save":
                         task = asyncio.create_task(dispatcher.dispatch_batch())
-                        await confirmation_locked.wait()
-                    let_owner_lock.set()
-                    try:
+                        await response_ready.wait()
+                    async with sessions.begin() as db:
+                        await locked_line(db, line.id)
+                        blocker = await db.scalar(text("SELECT pg_backend_pid()"))
+                        if phase == "pre_dispatch":
+                            task = asyncio.create_task(dispatcher.dispatch_batch())
+                        else:
+                            save_response.set()
+                        await root_snapshot_read.wait()
+                        assert owner.calls == (0 if phase == "pre_dispatch" else 1)
                         await wait_for_block(sessions, dispatcher_pid, blocker)
                         current = await DrainRepository().current(db, line.id)
                         assert current is not None and current.result is None
-                    except BaseException:
-                        task.cancel()
-                        await asyncio.gather(task, return_exceptions=True)
-                        raise
-                assert await task == 1
+                    assert task is not None
+                    assert await task == 1
+            finally:
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             async with sessions() as db:
                 row = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.workline_id == line.id))
                 assert row.status == "COMPLETED"
@@ -335,11 +402,12 @@ async def test_ctu03_acceptance_releases_window_and_success_closes_fence(rack_da
                 assert len(bindings) == (3 if released else 2)
                 assert len(await BatchRepository().occupied_source_rack_ids(db, line.id)) == 2
                 departure = await db.get(TransportTask, departure.id)
-                assert departure.status == ("SUCCEEDED" if released else "RECONCILING")
+                expected_status = "SUCCEEDED" if released else "RECONCILING" if reply == "CONFLICT" else "PENDING"
+                assert departure.status == expected_status
                 assert (departure.result_deadline_at is not None) == released
                 if not released:
                     assert departure.reason_code == (
-                        "TRANSPORT_SUBMIT_CONFLICT" if reply == "CONFLICT" else "TRANSPORT_DELIVERY_UNKNOWN"
+                        "TRANSPORT_SUBMIT_CONFLICT" if reply == "CONFLICT" else "SUBMIT_DELIVERY_UNKNOWN"
                     )
     finally:
         server.close()
@@ -383,7 +451,7 @@ async def test_completed_drain_reader_does_not_lock_confirmation_under_workline(
                     await locked.wait()
                     await wait_for_block(sessions, writer_pid, blocker)
                     current = await DrainRepository().current(db, line.id)
-                    assert current.result.rack_id == server.drain_result["rack_id"]
+                    assert current.result.racks[0].rack_id == server.drain_rack_id
                 except BaseException:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)

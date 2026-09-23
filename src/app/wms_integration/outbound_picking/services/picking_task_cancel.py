@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.models import InboundEvidenceKind
@@ -19,6 +19,12 @@ from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
 from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
     PickingTaskCancelRepository,
+)
+from src.app.workline.repositories import (
+    WorkLineRepository,
+)
+from src.app.workline.repositories import (
+    workline_repository as default_workline_repository,
 )
 from src.utils.timezone import timezone
 
@@ -45,12 +51,14 @@ class PickingTaskCancelService:
         task_repository: PickingTaskRepository | None = None,
         cancel_repository: PickingTaskCancelRepository | None = None,
         transport_service: TransportFinalizer | None = None,
+        workline_repository: WorkLineRepository | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
         self._tasks = task_repository or picking_task_repository
         self._cancel = cancel_repository or PickingTaskCancelRepository()
         self._transport = transport_service
+        self._worklines = workline_repository or default_workline_repository
 
     async def record(
         self,
@@ -89,8 +97,7 @@ class PickingTaskCancelService:
                         raise RuntimeError("取消拒绝缺少首次 reason_code")
                     return self._result(evidence, "CONFLICT", reason)
                 raise RuntimeError("PickingTask 取消 Evidence 处于非法状态")
-            await self._tasks.lock_task_identity(db, envelope.data.task_id)
-            task = await self._tasks.get_by_task_id_for_update(db, envelope.data.task_id)
+            task = await self._lock_task_authority(db, envelope.data.task_id)
             if task is not None:
                 evidence.picking_task_id = task.id
             reason: str | None = None
@@ -105,10 +112,10 @@ class PickingTaskCancelService:
                 else:
                     task.status = PickingTaskStatus.CANCELLED
                     task.increment_version()
-            elif task.status != PickingTaskStatus.EXECUTING:
-                reason = "STATE_CONFLICT"
             elif not isinstance(envelope.data, PickingTaskCancelMembersData):
                 raise RuntimeError("PLAN_MEMBERS 取消缺少成员合同")
+            elif task.status != PickingTaskStatus.EXECUTING:
+                reason = "STATE_CONFLICT"
             else:
                 matched, transport_task_ids = await self._cancel.cancel_members(
                     db,
@@ -116,16 +123,14 @@ class PickingTaskCancelService:
                     data=envelope.data,
                     evidence_id=cast("int", evidence.id),
                 )
-                if not matched:
-                    reason = "REFERENCE_CONFLICT"
-                else:
-                    if self._transport is not None:
-                        for transport_task_id in transport_task_ids:
-                            _ = await self._transport.finalize_unsent_task_in_session(
-                                db,
-                                transport_task_id,
-                                reason_code="TRANSPORT_WITHDRAWN_BEFORE_SEND",
-                            )
+                if self._transport is not None:
+                    for transport_task_id in transport_task_ids:
+                        _ = await self._transport.finalize_unsent_task_in_session(
+                            db,
+                            transport_task_id,
+                            reason_code="TRANSPORT_WITHDRAWN_BEFORE_SEND",
+                        )
+                if matched:
                     task.increment_version()
             if reason is not None:
                 _ = await self._evidence.record_conflict(
@@ -144,6 +149,15 @@ class PickingTaskCancelService:
             evidence.processed_at = received_at
             await self._tasks.flush(db)
             return self._result(evidence, "RECEIVED")
+
+    async def _lock_task_authority(self, db: AsyncSession, task_id: str) -> Any:
+        workline_id = await self._tasks.get_workline_id_by_task_id(db, task_id)
+        if workline_id is not None:
+            workline = await self._worklines.get_for_authority_update(db, workline_id)
+            if workline is None:
+                return None
+        await self._tasks.lock_task_identity(db, task_id)
+        return await self._tasks.get_by_task_id_for_update(db, task_id)
 
     @staticmethod
     def _result(evidence: InboundEvidence, code: str, reason: str | None = None) -> Result:

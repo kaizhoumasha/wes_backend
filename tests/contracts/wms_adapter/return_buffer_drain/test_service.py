@@ -30,11 +30,11 @@ async def test_owner_locks_exact_workline(case):
     elif case == "line":
         line.line_code = "OTHER"
     worklines = AsyncMock()
-    worklines.get_for_update.return_value = line
+    worklines.get_for_authority_update.return_value = line
     db = object()
     owner = ReturnBufferDrainOwnerService(worklines)
     assert await owner.validate_owner(db, workline_id=7, request_payload=request()) is (case == "valid")
-    worklines.get_for_update.assert_awaited_once_with(db, 7, populate_existing=True)
+    worklines.get_for_authority_update.assert_awaited_once_with(db, 7, populate_existing=True)
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -170,14 +171,24 @@ class DelayedNotSentProvider:
 def service(db_engine: object, monkeypatch: pytest.MonkeyPatch) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     projections = PositionProjectionRepository()
+
+    class RuntimeBindingRepository:
+        async def get_by_client_request_id(self, db: AsyncSession, client_request_id: str) -> object | None:
+            task = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == client_request_id))
+            if task is None or task.authority_workline_id is None:
+                return None
+            return SimpleNamespace(workline_id=task.authority_workline_id, causal_token=1)
+
     # SQLite FAST 保留真实准入查询；PostgreSQL 对象锁由集成测试验证。
-    monkeypatch.setattr(projections, "lock_projection", AsyncMock())
+    monkeypatch.setattr(projections, "lock_object_authority", AsyncMock())
     return TransportService(
         sessions,
         TransportRepository(),
         FakeProvider(),
         result_timeout=timedelta(seconds=420),
-        position_projections=PositionProjectionService(repository=projections),
+        position_projections=PositionProjectionService(
+            repository=projections, binding_repository=RuntimeBindingRepository()
+        ),
     )
 
 
@@ -900,11 +911,15 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("submit_code", [TransportSubmitCode.RECEIVED, TransportSubmitCode.DELIVERY_UNKNOWN])
+@pytest.mark.parametrize(
+    ("submit_code", "invalidates_position"),
+    [(TransportSubmitCode.RECEIVED, True), (TransportSubmitCode.DELIVERY_UNKNOWN, False)],
+)
 async def test_submit_that_may_have_started_motion_invalidates_the_original_position(
     service: TransportService,
     db_engine: object,
     submit_code: TransportSubmitCode,
+    invalidates_position: bool,
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -918,6 +933,8 @@ async def test_submit_that_may_have_started_motion_invalidates_the_original_posi
                 arrival_face="90",
                 source_operation_id="arrival-operation",
                 source_transport_task_id="arrival-transport",
+                source_causal_token=0,
+                source_effect_phase="FINAL_RESULT",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -943,10 +960,14 @@ async def test_submit_that_may_have_started_motion_invalidates_the_original_posi
             )
         )
     assert projection is not None
-    assert projection.position_unknown is True
+    assert projection.position_unknown is invalidates_position
     assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "KT16"}
-    assert projection.source_operation_id == task.submit_operation_id
-    assert projection.source_transport_task_id == handle.transport_task_id
+    if invalidates_position:
+        assert projection.source_operation_id == task.submit_operation_id
+        assert projection.source_transport_task_id == handle.transport_task_id
+    else:
+        assert projection.source_operation_id == "arrival-operation"
+        assert projection.source_transport_task_id == "arrival-transport"
 
 
 @pytest.mark.asyncio
@@ -1135,13 +1156,15 @@ async def test_delivery_unknown_preserves_old_task_and_allows_independent_reques
 
     assert await service.submit_pending_tasks(1) == 1
     snapshot = await _load_task(db_engine, handle.transport_task_id)
-    assert snapshot.status == "RECONCILING"
-    assert snapshot.outcome_version == 1
+    assert snapshot.status == "PENDING"
+    assert snapshot.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
+    assert snapshot.outcome_version == 0
+    assert snapshot.outcome_json is None
     second = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
     service.provider.code = TransportSubmitCode.RECEIVED
     assert await service.submit_pending_tasks(1) == 1
     assert service.provider.calls == [handle.transport_task_id, second.transport_task_id]
-    assert (await _load_task(db_engine, handle.transport_task_id)).status == "RECONCILING"
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "PENDING"
 
 
 @pytest.mark.asyncio
@@ -1175,7 +1198,7 @@ async def test_submit_result_with_foreign_task_id_preserves_original_unknown_res
 
 
 @pytest.mark.asyncio
-async def test_expired_claim_after_send_started_reconciles_without_resend(
+async def test_expired_claim_after_send_started_stays_pre_ack_ambiguous_without_resend(
     service: TransportService,
     db_engine: object,
 ) -> None:
@@ -1191,11 +1214,23 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
 
     assert await service.reconcile_overdue_tasks(1) == 1
     assert service.provider.calls == []
-    assert (await _load_task(db_engine, handle.transport_task_id)).status == "RECONCILING"
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
+    assert await service.reconcile_overdue_tasks(1) == 0
+
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(send_started_at=None, submit_claim_token=None, submit_claim_until=None, next_submit_at=expired)
+        )
+    assert await service.submit_pending_tasks(1) == 0
+    assert service.provider.calls == []
 
 
 @pytest.mark.asyncio
-async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: object) -> None:
+async def test_late_submit_result_does_not_reopen_pre_ack_submit_path(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = DelayedNotSentProvider()
     service = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
@@ -1221,11 +1256,99 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
     assert await submit == 1
 
     snapshot = await _load_task(db_engine, handle.transport_task_id)
-    assert snapshot.status == "RECONCILING"
-    assert snapshot.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+    assert snapshot.status == "PENDING"
+    assert snapshot.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
     assert snapshot.send_started_at is not None
     assert snapshot.next_submit_at is None
-    assert snapshot.outcome_json is not None
+    assert snapshot.outcome_json is None
+
+
+@pytest.mark.asyncio
+async def test_position_fact_converges_pre_ack_ambiguous_task_without_resubmit(db_engine: object) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    service = TransportService(
+        sessions,
+        TransportRepository(),
+        FakeProvider(),
+        result_timeout=timedelta(seconds=420),
+    )
+    await confirm_rack_faces(db_engine, {"rack-pre-ack-ambiguous": "90"})
+    handle = await service.move_bins(
+        new_uuid7(),
+        _caller(),
+        (BinMove("bin-pre-ack-ambiguous", RackBinSlot("rack-pre-ack-ambiguous", "90", "1"), HandoffPosition("OUT")),),
+    )
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(send_started_at=now, submit_claim_until=now, submit_claim_token="dead-worker")
+        )
+
+    assert await service.reconcile_overdue_tasks(1) == 1
+    ambiguous = await _load_task(db_engine, handle.transport_task_id)
+    assert (ambiguous.status, ambiguous.reason_code) == ("PENDING", "SUBMIT_DELIVERY_UNKNOWN")
+
+    message = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4475",
+        "operation": "transport.task.member_position_changed@v1",
+        "timestamp": 1,
+        "data": {
+            "transport_task_id": handle.transport_task_id,
+            "container_id": "bin-pre-ack-ambiguous",
+            "milestone": "SOURCE_PICKED",
+        },
+    }
+    await service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=message["data"],
+        rejection_reason_code=None,
+    )
+    assert await service.process_pending_evidence(1) == 1
+    accepted = await _load_task(db_engine, handle.transport_task_id)
+    assert accepted.status == "ACCEPTED"
+    assert accepted.reason_code is None
+    assert accepted.submit_attempt_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_status", ["PENDING", "CONFLICT"])
+async def test_ack_evidence_poison_state_never_reaches_physical_submit(
+    service: TransportService,
+    db_engine: object,
+    evidence_status: str,
+) -> None:
+    handle = await service.move_rack(
+        new_uuid7(), _caller(), "rack-ack-poison", RackPosition("A"), RackPosition("B"), "90"
+    )
+    now = timezone.now_for_db()
+    async with async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False).begin() as db:
+        db.add(
+            TransportEvidence(
+                operation_id=new_uuid7(),
+                transport_task_id=handle.transport_task_id,
+                operation="transport.task.member_position_changed@v1",
+                event_timestamp_ms=1,
+                message_digest="a" * 64,
+                payload_json={"transport_task_id": handle.transport_task_id},
+                ack_timestamp_ms=1,
+                ack_data_json={"transport_task_id": handle.transport_task_id},
+                status=evidence_status,
+                received_at=now,
+                processed_at=now if evidence_status == "CONFLICT" else None,
+                conflict_code="CALLBACK_CONFLICT" if evidence_status == "CONFLICT" else None,
+            )
+        )
+
+    assert await service.submit_pending_tasks(1) == 0
+    assert service.provider.calls == []
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.submit_attempt_count == 0
+    assert snapshot.send_started_at is None
 
 
 @pytest.mark.asyncio
@@ -1416,8 +1539,8 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     assert await service.submit_pending_tasks(1) == 1
     unknown = await _load_task(db_engine, handle.transport_task_id)
     assert (unknown.status, unknown.reason_code, unknown.result_deadline_at) == (
-        "RECONCILING",
-        "TRANSPORT_DELIVERY_UNKNOWN",
+        "PENDING",
+        "SUBMIT_DELIVERY_UNKNOWN",
         None,
     )
 

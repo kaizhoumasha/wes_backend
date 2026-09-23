@@ -20,7 +20,7 @@ class PositionProjectionRepository(BaseRepository[PositionProjection]):
     async def get_workline_for_update(self, db: AsyncSession, workline_id: int) -> WorkLine | None:
         from src.app.workline.repositories.workline_repository import workline_repository
 
-        return await workline_repository.get_for_update(db, workline_id)
+        return await workline_repository.get_for_authority_update(db, workline_id)
 
     async def is_workline_position(self, db: AsyncSession, workline_id: int, position: dict[str, Any] | None) -> bool:
         line = await db.get(WorkLine, workline_id)
@@ -28,7 +28,7 @@ class PositionProjectionRepository(BaseRepository[PositionProjection]):
             return False
         return position.get("location_code") in {binding["location_id"] for binding in line.position_bindings.values()}
 
-    async def lock_projection(self, db: AsyncSession, object_type: str, object_id: str) -> None:
+    async def lock_object_authority(self, db: AsyncSession, object_type: str, object_id: str) -> None:
         _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": position_projection_lock_identity(object_type, object_id)},

@@ -11,7 +11,7 @@ from src.utils.timezone import timezone
 
 @pytest.mark.asyncio
 async def test_real_rack_departure_does_not_require_integration_run():
-    worklines = SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(is_active=True)))
+    worklines = SimpleNamespace(get_for_authority_update=AsyncMock(return_value=SimpleNamespace(is_active=True)))
     tasks = SimpleNamespace(get_by_task_id_for_update=AsyncMock())
     payload = encode_request(
         wms_operations.outbound_rack_departure_decide(
@@ -24,7 +24,9 @@ async def test_real_rack_departure_does_not_require_integration_run():
         timestamp=int(timezone.now_utc().timestamp() * 1000),
     )
 
+    db = object()
     assert await RackDepartureOwnerService(worklines=worklines, tasks=tasks).validate_owner(
-        object(), workline_id=7, request_payload=payload
+        db, workline_id=7, request_payload=payload
     )
+    worklines.get_for_authority_update.assert_awaited_once_with(db, 7, populate_existing=True)
     tasks.get_by_task_id_for_update.assert_not_called()

@@ -33,6 +33,8 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
     arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     source_operation_id: str = Field(max_length=36)
     source_transport_task_id: str = Field(max_length=80)
+    source_causal_token: int | None = Field(default=None, sa_type=BigInteger)
+    source_effect_phase: str | None = Field(default=None, max_length=32)
 
 
 __all__ = ["PositionProjection"]

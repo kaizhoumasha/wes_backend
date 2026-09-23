@@ -79,10 +79,6 @@ class PickingTaskCancelRepository:
                     )
                 ).all()
             )
-        found_picks = {(row.rack_id, row.rack_face, row.slot_id) for row in direct_rows}
-        found_racks = {(row.rack_id, row.rack_face) for row in rack_rows}
-        if found_picks != requested_picks or found_racks != requested_racks:
-            return False, ()
         source_evidence_ids = {row.source_evidence_id for row in (*direct_rows, *rack_rows)}
         rack_ids = {row.rack_id for row in (*direct_rows, *rack_rows)}
         bindings = TransportDecisionBinding.__table__.c
@@ -105,7 +101,7 @@ class PickingTaskCancelRepository:
         for row in (*direct_rows, *rack_rows):
             row.cancelled_evidence_id = evidence_id
         await db.flush()
-        return True, transport_task_ids
+        return bool(direct_rows or rack_rows), transport_task_ids
 
 
 __all__ = ["PickingTaskCancelRepository"]

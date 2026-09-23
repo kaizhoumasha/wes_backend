@@ -58,6 +58,7 @@ def setup_service(
     )
     task = SimpleNamespace(
         id=1,
+        workline_id=2,
         status=task_status,
         last_applied_plan_revision=plan_revision,
         increment_version=Mock(),
@@ -67,6 +68,7 @@ def setup_service(
         record_conflict=AsyncMock(),
     )
     tasks = SimpleNamespace(
+        get_workline_id_by_task_id=AsyncMock(return_value=task.workline_id),
         lock_task_identity=AsyncMock(),
         get_by_task_id_for_update=AsyncMock(return_value=task),
         flush=AsyncMock(),
@@ -76,12 +78,14 @@ def setup_service(
         first_rejection=AsyncMock(return_value="STATE_CONFLICT"),
     )
     transport = SimpleNamespace(finalize_unsent_task_in_session=AsyncMock(return_value=True))
+    worklines = SimpleNamespace(get_for_authority_update=AsyncMock(return_value=SimpleNamespace(id=task.workline_id)))
     service = PickingTaskCancelService(
         Sessions(),
         evidence_service=evidences,
         task_repository=tasks,
         cancel_repository=cancellations,
         transport_service=transport,
+        workline_repository=worklines,
     )
     return service, task, evidence, evidences, tasks, cancellations, transport
 
@@ -97,6 +101,26 @@ async def test_task_cancel_applies_within_the_evidence_transaction() -> None:
     assert evidence.picking_task_id == 1
     assert evidence.apply_status is Status.APPLIED
     tasks.flush.assert_awaited_once()
+
+
+async def test_task_cancel_locks_workline_before_task_identity_and_row() -> None:
+    events = []
+    service, _, _, _, tasks, _, _ = setup_service()
+    tasks.get_workline_id_by_task_id.side_effect = lambda *_args: events.append("snapshot") or 2
+    service._worklines.get_for_authority_update.side_effect = lambda *_args: (
+        events.append("workline") or SimpleNamespace(id=2)
+    )
+    tasks.lock_task_identity.side_effect = lambda *_args: events.append("identity")
+    original = tasks.get_by_task_id_for_update
+
+    async def get_task(*args):
+        events.append("task")
+        return await original(*args)
+
+    tasks.get_by_task_id_for_update = get_task
+
+    assert (await service.record(event(), received_at=NOW)).code == "RECEIVED"
+    assert events[:4] == ["snapshot", "workline", "identity", "task"]
 
 
 @pytest.mark.parametrize(
@@ -115,7 +139,7 @@ async def test_task_cancel_rejects_disallowed_state_or_existing_plan(status, pla
     evidences.record_conflict.assert_awaited_once()
 
 
-async def test_member_cancel_marks_all_matches_and_finalizes_each_unsent_transport() -> None:
+async def test_member_cancel_marks_matches_and_finalizes_each_unsent_transport() -> None:
     service, task, evidence, _, _, cancellations, transport = setup_service(task_status=PickingTaskStatus.EXECUTING)
     cancellations.cancel_members.return_value = (True, ("TRANSPORT-1", "TRANSPORT-2"))
 
@@ -134,7 +158,23 @@ async def test_member_cancel_marks_all_matches_and_finalizes_each_unsent_transpo
     )
 
 
-async def test_member_cancel_is_atomic_when_any_selector_does_not_match() -> None:
+@pytest.mark.parametrize(
+    "task_status", [status for status in PickingTaskStatus if status != PickingTaskStatus.EXECUTING]
+)
+async def test_member_cancel_rejects_non_executing_task(task_status: PickingTaskStatus) -> None:
+    service, task, evidence, evidences, _, cancellations, transport = setup_service(task_status=task_status)
+
+    result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
+
+    assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")
+    assert evidence.apply_status is Status.RECONCILING
+    evidences.record_conflict.assert_awaited_once()
+    task.increment_version.assert_not_called()
+    cancellations.cancel_members.assert_not_awaited()
+    transport.finalize_unsent_task_in_session.assert_not_awaited()
+
+
+async def test_member_cancel_skips_selectors_that_do_not_match() -> None:
     service, task, evidence, evidences, _, cancellations, transport = setup_service(
         task_status=PickingTaskStatus.EXECUTING
     )
@@ -142,11 +182,11 @@ async def test_member_cancel_is_atomic_when_any_selector_does_not_match() -> Non
 
     result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
 
-    assert (result.code, result.reason_code) == ("CONFLICT", "REFERENCE_CONFLICT")
+    assert (result.code, result.reason_code) == ("RECEIVED", None)
     task.increment_version.assert_not_called()
     transport.finalize_unsent_task_in_session.assert_not_awaited()
-    assert evidence.apply_status is Status.RECONCILING
-    evidences.record_conflict.assert_awaited_once()
+    assert evidence.apply_status is Status.APPLIED
+    evidences.record_conflict.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

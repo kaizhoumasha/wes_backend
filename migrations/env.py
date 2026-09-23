@@ -118,6 +118,24 @@ def include_object(obj, name, type_, _reflected, _compare_to):
     )
 
 
+def compare_server_default(
+    _context,
+    inspected_column,
+    metadata_column,
+    _inspected_default,
+    _metadata_default,
+    _rendered_metadata_default,
+):
+    """Keep the PostgreSQL sequence default stable across SQLite metadata."""
+    if (
+        getattr(inspected_column, "name", None) == "causal_token"
+        and getattr(getattr(inspected_column, "table", None), "name", None) == "transport_decision_bindings"
+        and getattr(metadata_column, "name", None) == "causal_token"
+    ):
+        return False
+    return None
+
+
 # 如果有使用 Base 的传统 SQLAlchemy 模型，合并它们的 metadata
 # 注意：只有当 Base.metadata 和 SQLModel.metadata 是不同对象时才需要合并
 if Base.metadata is not SQLModel.metadata and Base.metadata.tables:
@@ -216,10 +234,10 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         # 支持 PostgreSQL 特性
         compare_type=True,
-        compare_server_default=True,
         # 支持多 schema
         include_schemas=True,
         include_object=include_object,
+        compare_server_default=compare_server_default,
         # 支持 version_table_schema
         version_table_schema="wes_sys",
         # 自定义类型渲染
@@ -245,12 +263,12 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         # 支持 PostgreSQL 特性
         compare_type=True,
-        compare_server_default=True,
         # 渲染项目中使用的类型
         render_as_batch=False,
         # 支持多 schema
         include_schemas=True,
         include_object=include_object,
+        compare_server_default=compare_server_default,
         # 支持 version_table_schema（如果需要）
         version_table_schema="wes_sys",  # 将 alembic_version 表放在 wes_sys schema 下
         # 自定义类型渲染

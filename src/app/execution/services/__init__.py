@@ -20,7 +20,13 @@ from .material_execution_service import (
 )
 from .position_projection_service import (
     PositionProjectionAuthorityError,
+    PositionProjectionInvariantViolation,
+    PositionProjectionRetryableError,
     PositionProjectionService,
+    ProjectionCausalRelation,
+    ProjectionEffectPhase,
+    ProjectionSource,
+    compare_projection_sources,
     position_projection_service,
 )
 from .reliable_rack_transport import ReliableRackTransportCreator
@@ -51,7 +57,12 @@ __all__ = [
     "InitialExecutionCorrelationConflictError",
     "MaterialExecutionService",
     "PositionProjectionAuthorityError",
+    "PositionProjectionInvariantViolation",
+    "PositionProjectionRetryableError",
     "PositionProjectionService",
+    "ProjectionCausalRelation",
+    "ProjectionEffectPhase",
+    "ProjectionSource",
     "ReliableRackTransportCreator",
     "WmsConfirmationAcceptance",
     "WmsConfirmationFollowUp",
@@ -62,6 +73,7 @@ __all__ = [
     "WmsConfirmationResponseConflictError",
     "WmsConfirmationResponseConflictResult",
     "WmsConfirmationService",
+    "compare_projection_sources",
     "decision_digest",
     "execution_observation_service",
     "inbound_evidence_service",

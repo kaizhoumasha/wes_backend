@@ -40,9 +40,14 @@ from tests.contracts.wms_adapter.inbound_material.support import (
 )
 
 
+class _Db:
+    async def execute(self, _statement):
+        return SimpleNamespace(scalar_one_or_none=lambda: SimpleNamespace(id=1))
+
+
 class _Transaction(AbstractAsyncContextManager[object]):
     async def __aenter__(self) -> object:
-        return object()
+        return _Db()
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:  # type: ignore[no-untyped-def]
         return None
@@ -69,6 +74,9 @@ class _ConfirmationRepository:
             ),
             None,
         )
+
+    async def get_by_id(self, db, confirmation_id):  # type: ignore[no-untyped-def]
+        return next((item for item in self.confirmations if item.id == confirmation_id), None)
 
     async def add(self, db, confirmation):  # type: ignore[no-untyped-def]
         confirmation.id = max((item.id or 0 for item in self.confirmations), default=0) + 1
@@ -213,6 +221,11 @@ class _PickingTaskOwner:
     def __init__(self, valid: bool = True) -> None:
         self.valid = valid
         self.calls: list[tuple[object, int, str]] = []
+        self.root_calls: list[tuple[object, int]] = []
+
+    async def lock_authority_root(self, db: object, *, picking_task_id: int) -> bool:
+        self.root_calls.append((db, picking_task_id))
+        return self.valid
 
     async def validate_dispatch_owner(self, db: object, *, picking_task_id: int, operation: str) -> bool:
         self.calls.append((db, picking_task_id, operation))
@@ -227,6 +240,80 @@ class _PickingTaskOwner:
     ) -> bool:
         self.calls.append((db, picking_task_id, operation))
         return self.valid
+
+
+@pytest.mark.asyncio
+async def test_picking_authority_root_precedes_confirmation_lock_in_both_dispatch_transactions() -> None:
+    from src.app.wms_adapter.dispatch import WmsDispatchResult
+
+    events: list[str] = []
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+
+    class OrderedRepository(_ConfirmationRepository):
+        async def get_claimed_for_update(self, db, confirmation_id, claim_token):  # type: ignore[no-untyped-def]
+            events.append("confirmation")
+            return await super().get_claimed_for_update(db, confirmation_id, claim_token)
+
+    class OrderedOwner(_PickingTaskOwner):
+        async def lock_authority_root(self, db: object, *, picking_task_id: int) -> bool:
+            events.append("root")
+            return await super().lock_authority_root(db, picking_task_id=picking_task_id)
+
+        async def validate_dispatch_owner(self, db: object, *, picking_task_id: int, operation: str) -> bool:
+            events.append("validate_dispatch")
+            return await super().validate_dispatch_owner(db, picking_task_id=picking_task_id, operation=operation)
+
+        async def validate_response_owner(self, db: object, *, picking_task_id: int, operation: str) -> bool:
+            events.append("validate_response")
+            return await super().validate_response_owner(db, picking_task_id=picking_task_id, operation=operation)
+
+    service = WmsConfirmationService(
+        repository=OrderedRepository([confirmation]),
+        session_factory=_Sessions(),
+        adapter=_Adapter(
+            WmsDispatchResult(
+                WmsDispatchCode.DETERMINATE,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "PREPARE_ACCEPTED",
+                    "data": {},
+                },
+                response_result="PREPARE_ACCEPTED",
+            )
+        ),
+        evidence_service=_EvidenceService(),
+        picking_task_owner=OrderedOwner(),
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert events == [
+        "root",
+        "confirmation",
+        "validate_dispatch",
+        "root",
+        "confirmation",
+        "validate_response",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_picking_authority_drift_fails_closed_without_dispatch() -> None:
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    adapter = _Adapter(SimpleNamespace(code=WmsDispatchCode.DETERMINATE))
+    owner = _PickingTaskOwner(valid=False)
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),
+        adapter=adapter,
+        picking_task_owner=owner,
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert owner.root_calls and owner.calls == []
+    assert adapter.calls == []
+    assert confirmation.status == WmsConfirmationStatus.RECONCILING
 
 
 class _FollowUpPlanner:
@@ -393,7 +480,8 @@ async def test_frozen_picking_fact_retries_original_request_after_owner_changes(
     confirmation.request_digest = _digest(confirmation.request_payload)
     frozen = deepcopy(confirmation.request_payload)
     task_repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status="EXECUTING", workline_id=1))
+        get_workline_id=AsyncMock(return_value=1),
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status="EXECUTING", workline_id=1)),
     )
     repository = _ConfirmationRepository([confirmation])
     evidence = _EvidenceService()
@@ -410,6 +498,7 @@ async def test_frozen_picking_fact_retries_original_request_after_owner_changes(
     assert await WmsConfirmationService(**kwargs).dispatch_batch(now=now) == 1
     assert confirmation.status == WmsConfirmationStatus.PENDING
     task = None if state is None else SimpleNamespace(status=state, workline_id=1 if state != "QUEUED" else None)
+    task_repository.get_workline_id.return_value = task.workline_id if task is not None else None
     task_repository.get_by_id_for_update.return_value = task
     response = {"operation_id": confirmation.operation_id, "code": "RECORDED", "timestamp": 2, "data": {}}
     adapter.result = SimpleNamespace(
@@ -456,6 +545,7 @@ async def test_received_response_is_preserved_when_owner_changes_during_http(own
     evidence = _EvidenceService()
     queue = _TaskQueue()
     owner = SimpleNamespace(
+        lock_authority_root=AsyncMock(return_value=True),
         validate_dispatch_owner=AsyncMock(return_value=True),
         validate_response_owner=AsyncMock(return_value=False),
         validate_owner=AsyncMock(side_effect=[True, False]),
@@ -564,7 +654,12 @@ async def test_picking_decision_is_not_sent_without_valid_business_owner(owner_a
         adapter=adapter,
         evidence_service=_EvidenceService(),  # type: ignore[arg-type]
         picking_task_owner=(
-            PickingTaskConfirmationOwnerService(SimpleNamespace(get_by_id_for_update=AsyncMock(return_value=None)))
+            PickingTaskConfirmationOwnerService(
+                SimpleNamespace(
+                    get_workline_id=AsyncMock(return_value=None),
+                    get_by_id_for_update=AsyncMock(return_value=None),
+                )
+            )
             if owner_available
             else None
         ),

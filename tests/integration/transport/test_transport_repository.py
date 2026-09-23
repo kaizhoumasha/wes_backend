@@ -96,7 +96,7 @@ async def test_expired_pending_task_claim_is_recovered_by_a_new_worker(
 
         assert second is not None and second.transport_task_id == task_id
         assert second.submit_claim_token == "replacement-worker"
-        assert second.send_started_at == now
+        assert second.send_started_at is None
     finally:
         async with integration_session_factory.begin() as cleanup_db:
             task = await repository.get_task(cleanup_db, task_id, for_update=True)

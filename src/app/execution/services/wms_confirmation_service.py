@@ -53,6 +53,8 @@ class WmsConfirmationResponseConflictError(ValueError):
 
 
 class WmsConfirmationRepositoryPort(Protocol):
+    async def get_by_id(self, db: AsyncSession, confirmation_id: int) -> WmsConfirmation | None: ...
+
     async def lock_identity(self, db: AsyncSession, operation: str, operation_id: str) -> None: ...
 
     async def get_by_identity_for_update(
@@ -89,6 +91,13 @@ class MaterialExecutionWorkLineRepositoryPort(Protocol):
 
 
 class PickingTaskConfirmationOwnerPort(Protocol):
+    async def lock_authority_root(
+        self,
+        db: AsyncSession,
+        *,
+        picking_task_id: int,
+    ) -> bool: ...
+
     async def validate_dispatch_owner(
         self,
         db: AsyncSession,
@@ -457,6 +466,27 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             )
         )
 
+    async def _lock_workline_confirmation_root(self, db: AsyncSession, confirmation_id: int) -> bool:
+        """Lock the WorkLine authority root before locking its Confirmation row."""
+
+        snapshot = await self._repository.get_by_id(db, confirmation_id)
+        if snapshot is None:
+            return True
+        if snapshot.picking_task_id is not None:
+            owner = self._picking_task_owner
+            return owner is not None and await owner.lock_authority_root(
+                db,
+                picking_task_id=snapshot.picking_task_id,
+            )
+        if snapshot.workline_id is None:
+            return True
+        from src.app.workline.repositories import WorkLineRepository
+
+        line = await WorkLineRepository().get_for_authority_update(db, snapshot.workline_id)
+        if line is None:
+            raise ValueError("WmsConfirmation WorkLine owner is missing")
+        return True
+
     async def dispatch_batch(
         self, *, limit: int = config.WMS_CONFIRMATION_BATCH_LIMIT, now: datetime | None = None
     ) -> int:
@@ -498,8 +528,12 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             raise RuntimeError("WmsConfirmation 派发尚未完成运行时装配")
         checked_at = now if now is not None else timezone.now_for_db()
         async with sessions.begin() as db:
+            authority_root_valid = await self._lock_workline_confirmation_root(db, confirmation_id)
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
+                return
+            if not authority_root_valid:
+                _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
                 return
             if confirmation.next_attempt_at is not None and checked_at < confirmation.next_attempt_at:
                 _ = await self.record_delivery_unknown(
@@ -572,8 +606,12 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     _ = await diagnostics.finish(observation)
         changed_at = now if now is not None else timezone.now_for_db()
         async with self._execution_wake_transaction(sessions) as (db, wake_execution):
+            authority_root_valid = await self._lock_workline_confirmation_root(db, confirmation_id)
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
+                return
+            if not authority_root_valid:
+                _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                 return
             code = getattr(result.code, "value", result.code)
             if code in {"DETERMINATE", "RECONCILING"} and result.normalized_response is not None:

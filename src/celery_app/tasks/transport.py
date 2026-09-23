@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime, run_async
+from src.celery_app.task_diagnostics import task_failed, task_finished, task_started
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.transaction_wakeup import publish_wakeup
 
@@ -78,11 +79,30 @@ def process_transport_evidence_batch(limit: int = 100) -> int:
 @celery_app.task(name="src.celery_app.tasks.transport.reconcile_transport_tasks_batch")
 def reconcile_transport_tasks_batch(limit: int = 100) -> int:
     _require_fixed_batch(limit)
+    context = task_started("src.celery_app.tasks.transport.reconcile_transport_tasks_batch", limit=limit)
 
     async def _reconcile() -> int:
         return await _current_transport_service().reconcile_overdue_tasks(limit)
 
-    return run_async(_reconcile)
+    try:
+        processed = run_async(_reconcile)
+    except BaseException as error:
+        task_failed(context, error)
+        raise
+    task_finished(context, processed=processed)
+    return processed
+
+
+@celery_app.task(name="src.celery_app.tasks.transport.replay_transport_projections_batch")
+def replay_transport_projections_batch(limit: int = 100) -> int:
+    _require_fixed_batch(limit)
+    return run_async(lambda: _current_transport_service().replay_final_result_projections(limit))
+
+
+@celery_app.task(name="src.celery_app.tasks.transport.replay_transport_ack_invalidations_batch")
+def replay_transport_ack_invalidations_batch(limit: int = 100) -> int:
+    _require_fixed_batch(limit)
+    return run_async(lambda: _current_transport_service().replay_ack_invalidations(limit))
 
 
 @celery_app.task(name="src.celery_app.tasks.transport.publish_transport_outcomes_batch")
@@ -103,5 +123,7 @@ __all__ = [
     "process_transport_evidence_batch",
     "publish_transport_outcomes_batch",
     "reconcile_transport_tasks_batch",
+    "replay_transport_ack_invalidations_batch",
+    "replay_transport_projections_batch",
     "submit_transport_tasks_batch",
 ]

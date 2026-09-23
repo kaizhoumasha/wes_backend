@@ -81,6 +81,34 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_for_authority_update(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        populate_existing: bool = False,
+    ) -> WorkLine | None:
+        """Exclusive root lock for picking/drain/projection authority transitions.
+
+        ``get_for_update`` intentionally uses PostgreSQL's key-share lock for
+        FK-producing evidence paths. Authority transitions need a stronger
+        fence so two sessions cannot both enter the same WorkLine transition.
+        """
+
+        columns = cast("Any", WorkLine).__table__.c
+        statement = (
+            select(WorkLine)
+            .where(
+                columns.id == workline_id,
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
     async def set_active_for_start(self, db: AsyncSession, workline: WorkLine) -> WorkLine:
         """在 START 调用方事务内把已锁定 WorkLine 标记为活动。"""
 

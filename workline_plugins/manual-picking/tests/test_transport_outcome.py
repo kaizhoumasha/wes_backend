@@ -294,7 +294,7 @@ def _configure_drain(publisher):
         "operation_id": operation_id,
         "code": "DECIDED",
         "timestamp": 1,
-        "data": {"result": "READY", "racks": [{"rack_id": "RACK-1", "rack_faces": ["90"]}]},
+        "data": {"result": "READY", "racks": [{"rack_id": "RACK-1", "rack_face": ["90"]}]},
     }
     source.payload_digest = canonical_json_digest(source.normalized_payload)
     intent = wms_operations.workline_return_buffer_drain_rack_decide(

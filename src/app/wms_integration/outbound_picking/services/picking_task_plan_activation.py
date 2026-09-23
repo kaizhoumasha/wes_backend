@@ -93,7 +93,7 @@ class PickingTaskPlanActivationService:
 
     async def _activate_workline(self, workline_id: int, *, handler: Any, plugin_identity: tuple[str, str]) -> int:
         async with self._sessions.begin() as db:
-            line = await self._worklines.get_for_update(db, workline_id)
+            line = await self._worklines.get_for_authority_update(db, workline_id)
             if (
                 line is None
                 or not line.is_active

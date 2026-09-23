@@ -19,6 +19,10 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+[[mapping]]
+source_glob = "scripts/check_runtime_toggle_release_gate.py"
+heavy_tests = []
+
 # 已退役工具只在删除 diff 中出现；FAST 治理 owner 验证 CI/selector 收敛。
 
 [[mapping]]
@@ -63,6 +67,10 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "docs/architecture/heavy-test-impact.toml"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "docs/architecture/reliable-recovery-ac-owner-matrix.toml"
 heavy_tests = []
 
 # 发布 provider exporter 是离线机器合同；migration/input-set/原子替换由聚焦 FAST 脚本测试承接。
@@ -804,6 +812,10 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "tests/mock/camera_mock_server.py"
+heavy_tests = []
+
+[[mapping]]
 source_glob = "tests/mock/robot_arm_mock_server.py"
 heavy_tests = ["tests/mock/test_robot_arm_mock_server.py"]
 
@@ -915,6 +927,7 @@ heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_projection_candidate_postgresql.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
@@ -934,6 +947,7 @@ heavy_tests = [
     "tests/integration/transport/test_transport_debug_reset.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_projection_candidate_postgresql.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
@@ -953,6 +967,20 @@ heavy_tests = [
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+[[mapping]]
+source_glob = "src/app/transport/projection_metrics.py"
+heavy_tests = [
+    "tests/integration/execution/test_reliable_recovery_postgresql.py",
+    "tests/integration/transport/test_transport_projection_candidate_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/admin/v1/performance.py"
+heavy_tests = [
+    "tests/integration/execution/test_reliable_recovery_postgresql.py",
+    "tests/integration/transport/test_transport_projection_candidate_postgresql.py",
 ]
 
 # 自动联调轮次核心由真实 PostgreSQL 状态推进、重启恢复和生产组合根共同承接。
@@ -1080,7 +1108,7 @@ reviewed_content_sha256 = "a15bf10520daa1c1a0333c87f0e18b42d1f2284ed357427b5f973
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/gateway.py"
 heavy_tests = []
-reviewed_content_sha256 = "a44804b0b87ebdbd92932ef83cbcedfffdb65d4b964c54b7bb1adb0ddcbb0851"
+reviewed_content_sha256 = "f4a7781fb15efef1ac577f6db34cfff73931733b911b122ac2683a59f09ffac0"
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/index_builder.py"
@@ -1167,6 +1195,8 @@ source_glob = "src/app/execution/{locks.py,models/bin_execution.py,models/positi
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_projection_authority_fencing_postgresql.py",
+    "tests/integration/execution/test_projection_domain_ordering_postgresql.py",
 ]
 
 [[mapping]]
@@ -1358,13 +1388,13 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/resource/services/projection_service.py"
 heavy_tests = []
-reviewed_content_sha256 = "196f276e8a066c4b37cdb49d81ed7ad450b524465e0551447a03446620df700f"
+reviewed_content_sha256 = "313c4661ed8609fd7a940a83b2538d5773d42d10fa54b9bed8f40b08b184a828"
 
 [[mapping]]
 source_glob = "src/app/resource/services/relation_service.py"
 heavy_tests = []
 # 仅删除 bin_id 输入别名；无新增持久化路径，FAST 验证旧字段保留事实但不生成挂载。
-reviewed_content_sha256 = "fb2d86241479a62bd630796c5468e7bcb6f350a80fe4f515ea086a6822c1c40a"
+reviewed_content_sha256 = "ca02f62225aa1e592302bac5ed9300f43dff5b25d24cfde4d53bb315661e7d9f"
 
 [[mapping]]
 source_glob = "src/app/sys/services/audit_service.py"
@@ -1881,6 +1911,14 @@ heavy_tests = [
     "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/test_transport_fulfillment_queue.py",
+]
+
+[[mapping]]
+source_glob = "src/celery_app/task_diagnostics.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
 ]
 
 # Celery App 同时注册 DeviceCommand 与 Transport worker，必须承接两条生产接线。
@@ -2947,6 +2985,21 @@ source_glob = "migrations/versions/20260918_1446_d8fac9644646_add_direct_pick_fa
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260921_0724_106825879f00_冻结_transport_binding_causal_token.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260921_0742_1d298eb00cc4_增加_projection_causal_provenance.py"
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
 [[mapping]]

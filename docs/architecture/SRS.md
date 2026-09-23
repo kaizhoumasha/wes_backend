@@ -412,7 +412,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   * WMS 决定业务准入、优先级和来源，WES 在耐久接纳边界冻结并执行可靠顺序，ECS/PLC/RCS 提供实际运动、位置和完成事实。
     发起方未提供可验证顺序时，具体合同才允许 WES 以首次耐久接收事实形成规范顺序；网络到达、重试和数组顺序不得被隐式当作业务顺序。
   * 单向输送、入料缓存和 `RETURN_BUFFER` 等声明为 FIFO 的队列不得越过未闭合队头；顶端可达的 `BIN_CELL` 堆叠按 LIFO，
-    不得越过未闭合栈顶。`UNKNOWN`、`RECONCILING`、ESTOP、retry 或人工处理不会自动解除阻塞。
+    不得越过未闭合栈顶。`UNKNOWN`、`RECONCILING`、ESTOP、retry 或人工处理不会自动伪造队列退出；是否阻塞队列必须由具体物理合同声明，
+    不能由 DeviceCommand 通用超时状态自动扩大为设备级阻塞。
   * NG 分流、人工移除、翻垛或其它越序行为只有在对应合同显式授权，并取得足以证明当前队头或栈顶已经可靠退出的物理 evidence 后才成立。
 
 * **设备命令生命周期 (Device Command Lifecycle)**:
@@ -424,12 +425,13 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   * 所有状态变化保留时间、来源、关联和诊断证据，支持查询与审计。
 
 * **超时监控 (Timeout Monitoring)**:
-  * 每条可靠执行对象使用明确 deadline；超时不等同于厂商执行失败。
-  * 命令可能已经到达设备但结果未确认时进入 `TIMED_OUT`，只暂停与该命令关联的业务对象并触发诊断或对账。
+  * 每条可靠执行对象使用明确 deadline；超时只产生 WES 告警、观察证据和对账标记，不等同于厂商执行失败，也不是物理动作完成期限。
+  * 命令可能已经到达设备但结果未确认时进入 `RECONCILING`；该状态保留原命令身份、Evidence 和资源围栏，但不得阻塞同设备后续独立事件或命令。
+  * ECS/RCS 对原命令的迟到终态回调必须持续接收并沿原身份收敛；只有匹配的设备终态 evidence 才能推进业务对象和位置投影，WES 超时、ACK、HTTP 状态或本地状态不得替代设备终态。
   * 晚到结果必须幂等追加为证据；只有满足当前对象关联和安全准入条件时才能推进业务状态。
 
 * **并发控制 (Concurrency Control)**:
-  * WES 对每条 DeviceCommand 独立持久化和领取，不以本地 `AUTO + IDLE`、状态新鲜度或同设备其他未终态命令作为发送前门禁。
+  * WES 对每条 DeviceCommand 独立持久化和领取，不以本地 `AUTO + IDLE`、状态新鲜度或同设备其他未终态命令作为发送前门禁；`RECONCILING` 只用于告警和对账，不占用设备槽位。
     `MANUAL_DEBUG` 仍须满足自身静态合同和 task type 能力要求，但不建立设备级活动占槽。
   * ECS 在接纳时原子判断实际设备状态和物理互斥；同一 `device_code` 竞争失败返回 `429 CAPACITY_EXCEEDED`。不同命令在 WES 中互不阻断。
   * 请求结构或业务 Decision 不合法时只结束或等待该请求；重新调度不依赖本地状态投影授权，也不阻断设备其他请求。
@@ -551,9 +553,10 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。
 5. 退料 Bin 不要求返回原货架或原面。WMS 根据当前权威工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`，WES 可靠执行 `BIN_MOVE`。
    PickingTask 完成后先在同一 WorkLine 锁内原子准备下一任务；已准备任务的后续当前架优先承接 FIFO。无可准备任务且 FIFO 非空时，
-   创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，只上报 `workline_code + required_slot_count`。READY 返回有序
-   `racks[].rack_faces[]`，WAIT 使用 `NO_DRAIN_RACK_AVAILABLE + retry_after_ms`。已创建 drain 链不被后来的任务取消。
-   WES 按货架和面顺序共用 CTU01/CTU02 窗口进入配置工作位，精确权威到位后用普通 return_batch 排空 FIFO，再创建 CTU03；不重新打开 PickingTask。
+   创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，只上报 `workline_code + required_slot_count`。READY 返回无序的
+   `racks[]` reservation，各 rack 内 `rack_faces[]` 有序；WAIT 使用 `NO_DRAIN_RACK_AVAILABLE + retry_after_ms`。已创建 drain 链不被后来的任务取消。
+   WES 在 CTU01 窗口内提交 reservation 货架进场，任一货架精确权威到位后即可独立用普通 return_batch 排空 FIFO；同架按面顺序复用
+   CTU02，排空后创建 CTU03，不等待其它 rack 的 AGV 到位且不重新打开 PickingTask。
    WMS 决定架面与储位，WES 可靠编排，RCS/ECS 提供接纳和结果；不新增 Epoch、队尾模型、兼容路径、缓存计数器、schema 或 migration。
    停线与插件切换原因留在 WES 本地，不进入 wire；对应触发接入仍为 TODO。
 6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 WorkLine 清场由各自物理生命周期继续闭合。

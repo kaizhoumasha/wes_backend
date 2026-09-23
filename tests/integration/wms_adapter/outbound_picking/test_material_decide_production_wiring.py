@@ -31,7 +31,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
             "next_source_action": "CONTINUE",
             "target_preparation": {
                 "mode": "REPLACE",
-                "rack_destination": {"type": "RACK_POSITION", "location_code": "STORE-1"},
             },
         },
         {

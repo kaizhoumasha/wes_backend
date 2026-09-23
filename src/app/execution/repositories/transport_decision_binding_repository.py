@@ -7,6 +7,7 @@ from typing import Any, cast
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
+from src.app.execution.locks import position_projection_lock_identity
 from src.app.execution.models import TransportDecisionBinding
 from src.database.base_repository import BaseRepository
 
@@ -26,6 +27,20 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
         _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": f"transport-decision:{workline_id}:{correlation_id}:{step}"},
+        )
+
+    async def lock_object_authority(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+    ) -> None:
+        """Serialize ownership-changing binding creation with projection mutation."""
+
+        _ = await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": position_projection_lock_identity(object_type, object_id)},
         )
 
     async def get_by_decision_identity_for_update(

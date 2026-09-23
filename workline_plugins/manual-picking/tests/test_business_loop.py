@@ -24,6 +24,7 @@ pytest_plugins = ("tests.integration.conftest",)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 ACTIVATE = "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch"
+PREPARE = "src.celery_app.tasks.picking_task_prepare.prepare_picking_tasks_batch"
 DISPATCH = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 EXECUTE = "src.celery_app.tasks.execution.process_execution_facts_batch"
 SUBMIT = "src.celery_app.tasks.transport.submit_transport_tasks_batch"
@@ -46,6 +47,8 @@ async def worker_for(database, server):
 
     async with runtime_for(sessions, server.url) as (runtime, transport):
         try:
+            previous_plugins = os.environ.get("ENABLED_WORKLINE_PLUGINS")
+            os.environ["ENABLED_WORKLINE_PLUGINS"] = '["manual-picking"]'
             server.start()
             worker.start()
             yield worker, runtime, transport
@@ -53,6 +56,10 @@ async def worker_for(database, server):
         except BaseException as exc:
             primary_error = exc
         finally:
+            if previous_plugins is None:
+                os.environ.pop("ENABLED_WORKLINE_PLUGINS", None)
+            else:
+                os.environ["ENABLED_WORKLINE_PLUGINS"] = previous_plugins
             await close_transport_test_resources(
                 worker=worker,
                 runtime=None,
@@ -125,7 +132,7 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         arrival = {
             "kind": "RACK_MOVE",
             "outcome_revision": 1,
-            "rack_id": server.drain_result["rack_id"],
+            "rack_id": server.drain_rack_id,
             "status": "SUCCEEDED",
             "final_position": {
                 "kind": "RACK_POSITION",
@@ -193,6 +200,9 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         run(worker, PUBLISH)
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
+        run(worker, DISPATCH)
+        run(worker, EXECUTE)
+        run(worker, ACTIVATE)
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
         run(worker, SUBMIT)
         departure = await bound_transport(sessions, line.id, DRAIN_RACK_OUT_STEP)
@@ -249,8 +259,7 @@ async def test_real_worker_prepares_next_task_without_drain(rack_database):
         queued = await seed_task(db, line, queued=True)
     server = BusinessServer()
     async with worker_for(rack_database, server) as (worker, _runtime, _transport):
-        assert run(worker, ACTIVATE) == 1
-        assert run(worker, ACTIVATE) == 0
+        assert run(worker, PREPARE) == 1
         run(worker, DISPATCH)
         async with sessions() as db:
             task = await db.get(type(queued), queued.id)
@@ -355,6 +364,9 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
         run(worker, DISPATCH)  # WMS 权威空面决定 RACK_FACE_DONE，正常业务路径创建 CTU03。
+        run(worker, EXECUTE)
+        run(worker, ACTIVATE)
+        run(worker, DISPATCH)
         run(worker, EXECUTE)
         run(worker, ACTIVATE)
         departure = await bound_transport(sessions, line.id, SOURCE_RACK_OUT_STEP)

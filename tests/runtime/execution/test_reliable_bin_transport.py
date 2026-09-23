@@ -11,6 +11,10 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 class _Bindings:
     def __init__(self) -> None:
         self.binding = None
+        self.object_locks = []
+
+    async def lock_object_authority(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.object_locks.append((kwargs["object_type"], kwargs["object_id"]))
 
     async def lock_decision_identity(self, _db, **_kwargs):  # type: ignore[no-untyped-def]
         return None
@@ -39,7 +43,10 @@ async def test_bin_creator_keeps_original_transport_identity_on_replay() -> None
     creator = reliable_rack_transport.ReliableBinTransportCreator(
         transport, binding_repository=bindings, uuid_factory=lambda: "019f0000-0000-7000-8000-000000000001"
     )
-    moves = (BinMove("A000000001", RackBinSlot("R1", "90", "1"), HandoffPosition("CNV0301")),)
+    moves = (
+        BinMove("A000000002", RackBinSlot("R1", "90", "2"), HandoffPosition("CNV0301")),
+        BinMove("A000000001", RackBinSlot("R1", "90", "1"), HandoffPosition("CNV0301")),
+    )
     fields = {
         "workline_id": 7,
         "source_evidence_id": 31,
@@ -57,5 +64,11 @@ async def test_bin_creator_keeps_original_transport_identity_on_replay() -> None
     assert transport.requests[0][1].workline_id == "7"
     assert transport.requests[0][2] == moves
     assert transport.requests[0][3].workline_id == 7
+    assert bindings.object_locks == [
+        ("BIN", "A000000001"),
+        ("BIN", "A000000002"),
+        ("BIN", "A000000001"),
+        ("BIN", "A000000002"),
+    ]
     with pytest.raises(ValueError, match="binding conflict"):
         await creator.create(object(), **(fields | {"source_evidence_id": 32}))

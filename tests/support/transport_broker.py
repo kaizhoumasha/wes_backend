@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import psutil
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
+from celery.exceptions import TimeoutError as CeleryTimeoutError
 from sqlalchemy.engine import make_url
 
 from redis import Redis
@@ -201,6 +203,7 @@ class TransportBrokerWorker:
     redis_url: str
     wms_base_url: str
     transport_submit_path: str = "/api/v1/wes/transport-requests"
+    pool: str | None = None
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     hostname: str = field(init=False)
     process: subprocess.Popen[str] | None = field(default=None, init=False)
@@ -211,10 +214,15 @@ class TransportBrokerWorker:
     _confirmation_log_file: Any = field(default=None, init=False, repr=False)
     confirmation_log_path: Path | None = field(default=None, init=False)
     _descendant_pids: set[int] = field(default_factory=set, init=False)
+    _task_records: list[dict[str, object]] = field(default_factory=list, init=False)
+    _parent_pids: dict[str, int | None] = field(default_factory=dict, init=False)
     producer: Celery = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_test_redis_url(self.redis_url)
+        self.pool = self.pool or os.getenv("TRANSPORT_TEST_POOL", "prefork")
+        if self.pool not in {"solo", "prefork"}:
+            raise ValueError("Transport worker pool must be solo or prefork")
         self.hostname = f"it-transport-{self.run_id}@localhost"
         self.key_prefix = f"it:transport:{self.run_id}:"
         self.producer = Celery(
@@ -241,8 +249,7 @@ class TransportBrokerWorker:
             "-A",
             "src.celery_app.app",
             "worker",
-            "--pool=prefork",
-            "--concurrency=1",
+            f"--pool={self.pool}",
             "--loglevel=INFO",
             f"--queues={queue}",
             f"--hostname={hostname}",
@@ -251,6 +258,8 @@ class TransportBrokerWorker:
             "--include",
             "tests.support.transport_broker",
         ]
+        if self.pool == "prefork":
+            command.insert(command.index("--loglevel=INFO"), "--concurrency=1")
         process = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
@@ -273,18 +282,53 @@ class TransportBrokerWorker:
             if process.poll() is not None:
                 raise AssertionError(f"Transport worker exited early; log={log_path}")
             log_file.flush()
-            if " ready." in log_path.read_text(errors="replace"):
+            log_text = log_path.read_text(errors="replace")
+            if "invalid username-password pair" in log_text or "Authentication required" in log_text:
+                self._terminate_process_group(process)
+                raise AssertionError(f"Transport worker Redis authentication failed; log={log_path}")
+            if " ready." in log_text and "celery.worker_process.ready" in log_text:
+                # Celery emits ``ready`` before its consumer has completed the
+                # first broker connection. Verify the exact URL used by the
+                # producer so auth/endpoint failures fail at worker startup,
+                # rather than surfacing as an unconsumed task timeout.
+                client = Redis.from_url(self.redis_url, decode_responses=True)
+                try:
+                    client.ping()
+                except Exception as exc:
+                    self._terminate_process_group(process)
+                    raise AssertionError(f"Transport worker broker is not reachable; log={log_path}") from exc
+                finally:
+                    client.close()
                 return process, log_file, log_path
             time.sleep(0.1)
+        self._terminate_process_group(process)
         raise AssertionError(f"Transport worker readiness timed out; log={log_path}")
 
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+
     def start(self) -> TransportBrokerWorker:
-        self.process, self._log_file, self.log_path = self._start_process(
-            FULFILLMENT_QUEUE, self.hostname, f"wes-transport-{self.run_id}-"
-        )
-        self.confirmation_process, self._confirmation_log_file, self.confirmation_log_path = self._start_process(
-            CONFIRMATION_QUEUE, f"it-confirmation-{self.run_id}@localhost", f"wes-confirmation-{self.run_id}-"
-        )
+        try:
+            self.process, self._log_file, self.log_path = self._start_process(
+                FULFILLMENT_QUEUE, self.hostname, f"wes-transport-{self.run_id}-"
+            )
+            self.confirmation_process, self._confirmation_log_file, self.confirmation_log_path = self._start_process(
+                CONFIRMATION_QUEUE, f"it-confirmation-{self.run_id}@localhost", f"wes-confirmation-{self.run_id}-"
+            )
+        except BaseException:
+            for process in (self.process, self.confirmation_process):
+                if process is not None:
+                    self._terminate_process_group(process)
+            raise
         self._capture_descendants()
         return self
 
@@ -296,11 +340,47 @@ class TransportBrokerWorker:
         expires: float | None = None,
     ) -> Any:
         queue = CONFIRMATION_QUEUE if task_name.endswith("dispatch_wms_confirmations_batch") else FULFILLMENT_QUEUE
-        return self.producer.send_task(task_name, kwargs=kwargs or {}, queue=queue, expires=expires)
+        result = self.producer.send_task(task_name, kwargs=kwargs or {}, queue=queue, expires=expires)
+        self._task_records.append(
+            {
+                "task_name": task_name,
+                "task_id": result.id,
+                "queue": queue,
+                "run_id": self.run_id,
+                "key_prefix": self.key_prefix,
+                "hostname": self.hostname,
+                "confirmation_hostname": f"it-confirmation-{self.run_id}@localhost",
+                "child_pids": sorted(self._descendant_pids),
+                "result": "published",
+            }
+        )
+        return result
 
-    @staticmethod
-    def result(result: Any, timeout: float = TASK_TIMEOUT_SECONDS) -> Any:
-        return result.get(timeout=timeout, disable_sync_subtasks=False)
+    def result(self, result: Any, timeout: float = TASK_TIMEOUT_SECONDS) -> Any:
+        try:
+            value = result.get(timeout=timeout, disable_sync_subtasks=False)
+            for record in reversed(self._task_records):
+                if record["task_id"] == getattr(result, "id", None):
+                    record["result"] = "returned"
+                    break
+            return value
+        except CeleryTimeoutError as exc:
+            client = Redis.from_url(self.redis_url, decode_responses=True)
+            try:
+                keys = sorted(client.scan_iter(match=f"{self.key_prefix}*"))
+                queue_state: dict[str, object] = {}
+                for key in keys:
+                    key_type = client.type(key)
+                    if key_type == "list":
+                        queue_state[key] = {"type": key_type, "length": client.llen(key)}
+                    else:
+                        queue_state[key] = {"type": key_type}
+                raise CeleryTimeoutError(
+                    f"task result timeout: task_id={getattr(result, 'id', None)!r} "
+                    f"key_prefix={self.key_prefix!r} redis_keys={queue_state!r}"
+                ) from exc
+            finally:
+                client.close()
 
     def log_text(self) -> str:
         if self.log_path is None:
@@ -318,6 +398,38 @@ class TransportBrokerWorker:
                 )
             except psutil.Error:
                 pass
+
+    def _archive_failure_evidence(self) -> Path | None:
+        evidence_root = os.getenv("HEAVY_WORKER_EVIDENCE_DIR")
+        if not evidence_root:
+            return None
+        destination = Path(evidence_root) / self.run_id
+        destination.mkdir(parents=True, exist_ok=True)
+        for source, name in (
+            (self.log_path, "fulfillment-worker.log"),
+            (self.confirmation_log_path, "confirmation-worker.log"),
+        ):
+            if source is not None and source.exists():
+                if self._log_file is not None and not self._log_file.closed:
+                    self._log_file.flush()
+                if self._confirmation_log_file is not None and not self._confirmation_log_file.closed:
+                    self._confirmation_log_file.flush()
+                shutil.copyfile(source, destination / name)
+        metadata = {
+            "run_id": self.run_id,
+            "key_prefix": self.key_prefix,
+            "pool": self.pool,
+            "fulfillment_queue": FULFILLMENT_QUEUE,
+            "confirmation_queue": CONFIRMATION_QUEUE,
+            "parent_pids": {
+                "fulfillment": self._parent_pids.get("fulfillment"),
+                "confirmation": self._parent_pids.get("confirmation"),
+            },
+            "child_pids": sorted(self._descendant_pids),
+            "tasks": self._task_records,
+        }
+        (destination / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+        return destination
 
     def _cleanup_broker_artifacts(self) -> None:
         client = Redis.from_url(self.redis_url, decode_responses=True)
@@ -381,6 +493,10 @@ class TransportBrokerWorker:
     def close(self, *, success: bool) -> None:
         errors: list[BaseException] = []
         processes = [process for process in (self.process, self.confirmation_process) if process is not None]
+        self._parent_pids = {
+            "fulfillment": self.process.pid if self.process is not None else None,
+            "confirmation": self.confirmation_process.pid if self.confirmation_process is not None else None,
+        }
         if processes:
             try:
                 self._capture_descendants()
@@ -425,6 +541,12 @@ class TransportBrokerWorker:
                         )
                     )
 
+        evidence_path = None
+        if not success:
+            try:
+                evidence_path = self._archive_failure_evidence()
+            except BaseException as exc:
+                errors.append(exc)
         for cleanup in (self.producer.close, self._cleanup_broker_artifacts, self._wait_for_connection_drain):
             try:
                 cleanup()
@@ -439,13 +561,19 @@ class TransportBrokerWorker:
         finally:
             self.process = None
             self.confirmation_process = None
+        if errors and evidence_path is None:
+            try:
+                evidence_path = self._archive_failure_evidence()
+            except BaseException as exc:
+                errors.append(exc)
         if success and not errors:
             for log_path in (self.log_path, self.confirmation_log_path):
                 if log_path is not None:
                     log_path.unlink(missing_ok=True)
         if errors:
             raise BaseExceptionGroup(
-                f"Transport worker {self.run_id} teardown 有 {len(errors)} 项失败；日志保留于 {self.log_path}",
+                f"Transport worker {self.run_id} teardown 有 {len(errors)} 项失败；"
+                f"日志保留于 {evidence_path or self.log_path}",
                 errors,
             )
 

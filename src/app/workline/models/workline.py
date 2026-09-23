@@ -212,6 +212,10 @@ class WorkLineStateTransitionRequest(BaseModel):
     """作业线启停请求。"""
 
     version: int = Field(description="WorkLine 乐观锁版本号")
+    picking_task_id: int | None = Field(default=None, ge=1, description="单任务归档目标（与 task_id 二选一）")
+    task_id: str | None = Field(
+        default=None, min_length=1, max_length=100, description="WMS 业务 task_id（与 picking_task_id 二选一）"
+    )
 
 
 class WorkLineArchiveOpenWorkResponse(BaseModel):
@@ -223,3 +227,6 @@ class WorkLineArchiveOpenWorkResponse(BaseModel):
     archived_plugin_tasks: int = Field(ge=0)
     archived_integration_runs: int = Field(ge=0)
     archived_total: int = Field(ge=0)
+    archived_single_picking_task: bool = False
+    archived_single_picking_task_id: int | None = None
+    picking_task_status_before: str | None = None

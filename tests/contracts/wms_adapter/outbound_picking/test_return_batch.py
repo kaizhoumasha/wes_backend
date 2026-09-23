@@ -185,6 +185,8 @@ async def test_workline_owner_matches_frozen_wire_identity(case, expected):
     elif case == "missing":
         workline = None
     worklines = AsyncMock()
-    worklines.get_for_update.return_value = workline
+    worklines.get_for_authority_update.return_value = workline
     owner = ReturnBatchOwnerService(worklines=worklines)
-    assert await owner.validate_owner(object(), workline_id=7, request_payload=request()) is expected
+    db = object()
+    assert await owner.validate_owner(db, workline_id=7, request_payload=request()) is expected
+    worklines.get_for_authority_update.assert_awaited_once_with(db, 7, populate_existing=True)

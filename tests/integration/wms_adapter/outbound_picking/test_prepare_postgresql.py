@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareTaskType
 
@@ -126,6 +126,7 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
 async def _seed_task(
     db,  # type: ignore[no-untyped-def]
     *,
+    workline_id: int,
     suffix: str,
     task_type: PickingTaskType,
     dispatch_sequence: int,
@@ -147,6 +148,7 @@ async def _seed_task(
     await db.flush()
     task = PickingTask(
         task_id=f"PICK-{suffix}-{operation_id}",
+        workline_id=workline_id,
         task_type=task_type,
         queue_revision=1,
         dispatch_sequence=dispatch_sequence,
@@ -169,6 +171,7 @@ async def test_prepare_batch_enumerates_active_exact_plugin_workline_and_creates
         workline, device = await _seed_ready_workline(db, now=now)
         task = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="b",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_100_000_001,
@@ -198,6 +201,9 @@ async def test_prepare_batch_enumerates_active_exact_plugin_workline_and_creates
 
     async with integration_session_factory.begin() as db:
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == ids[2]))
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.picking_task_id == ids[2]).values(picking_task_id=None)
+        )
         await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
         await db.execute(
@@ -218,6 +224,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         workline, device = await _seed_ready_workline(db, now=now)
         future = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="d",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_000_000_001,
@@ -225,6 +232,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         )
         auto = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="e",
             task_type=PickingTaskType.AUTO,
             dispatch_sequence=9_000_000_002,
@@ -232,6 +240,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         )
         eligible = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="f",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_000_000_003,
@@ -239,6 +248,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         )
         second_eligible = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="1",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_000_000_004,
@@ -330,6 +340,11 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
     async with integration_session_factory.begin() as db:
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id.in_(ids["tasks"])))
         evidence_ids = [task.issued_evidence_id for task in tasks] + [response_evidence.id, ids["historical_evidence"]]
+        await db.execute(
+            update(InboundEvidence)
+            .where(InboundEvidence.picking_task_id.in_(ids["tasks"]))
+            .values(picking_task_id=None)
+        )
         await db.execute(delete(PickingTask).where(PickingTask.id.in_(ids["tasks"])))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
         await db.execute(
@@ -350,6 +365,7 @@ async def test_prepare_skip_locked_allows_only_one_workline_to_claim_one_task(
         second_line, second_device = await _seed_ready_workline(db, now=now)
         task = await _seed_task(
             db,
+            workline_id=first_line.id,
             suffix="3",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_000_000_006,
@@ -386,6 +402,9 @@ async def test_prepare_skip_locked_allows_only_one_workline_to_claim_one_task(
     assert queue.calls == 1
 
     async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.picking_task_id == task_id).values(picking_task_id=None)
+        )
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == task_id))
         await db.execute(delete(PickingTask).where(PickingTask.id == task_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
@@ -429,6 +448,7 @@ async def test_prepare_rolls_back_task_binding_when_confirmation_creation_fails(
         workline, device = await _seed_ready_workline(db, now=now)
         task = await _seed_task(
             db,
+            workline_id=workline.id,
             suffix="2",
             task_type=PickingTaskType.MANUAL,
             dispatch_sequence=9_000_000_005,
@@ -450,10 +470,13 @@ async def test_prepare_rolls_back_task_binding_when_confirmation_creation_fails(
         confirmation = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.picking_task_id == task.id))
     assert persisted is not None
     assert PickingTaskStatus(persisted.status) is PickingTaskStatus.QUEUED
-    assert persisted.workline_id is None
+    assert persisted.workline_id == workline.id
     assert confirmation is None
 
     async with integration_session_factory.begin() as db:
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.picking_task_id == ids[2]).values(picking_task_id=None)
+        )
         await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
         await db.execute(

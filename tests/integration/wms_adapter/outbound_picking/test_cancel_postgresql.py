@@ -19,14 +19,20 @@ from src.app.execution.models import (
     InboundEvidenceApplyStatus as Status,
 )
 from src.app.execution.services import InboundEvidenceService
-from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelMembersData
+from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelEvent, PickingTaskCancelMembersData
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import (
+    DirectPickExecution,
+    PickingTask,
+    PickingTaskBinSourceRack,
+    PickingTaskStatus,
+)
 from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
     PickingTaskCancelRepository,
 )
+from src.app.wms_integration.outbound_picking.services.picking_task_cancel import PickingTaskCancelService
 from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta import PickingTaskPlanDeltaService
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
@@ -188,6 +194,57 @@ async def _cancel_evidence_id(db, *, task_name: str, operation_id: str) -> int:
     return acceptance.evidence.id
 
 
+@pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
+async def test_plan_members_cancel_respects_task_state(
+    integration_session_factory,
+    executing_task_with_members,
+    task_status: PickingTaskStatus,
+) -> None:
+    task_id, task_name = executing_task_with_members
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, task_id)
+        assert task is not None
+        task.status = task_status
+        task.archived_at = NOW if task_status is PickingTaskStatus.ARCHIVED else None
+
+    operation_id = new_uuid7()
+    result = await PickingTaskCancelService(integration_session_factory).record(
+        PickingTaskCancelEvent.model_validate(
+            {
+                "operation": "outbound.picking_task.cancel@v1",
+                "operation_id": operation_id,
+                "timestamp": 1,
+                "data": {
+                    "task_id": task_name,
+                    "cancel_scope": "PLAN_MEMBERS",
+                    "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+                },
+            }
+        ),
+        received_at=NOW,
+    )
+
+    assert (result.code, result.reason_code) == (
+        ("RECEIVED", None) if task_status is PickingTaskStatus.EXECUTING else ("CONFLICT", "STATE_CONFLICT")
+    )
+    async with integration_session_factory() as db:
+        rack = await db.scalar(
+            select(PickingTaskBinSourceRack).where(
+                PickingTaskBinSourceRack.picking_task_id == task_id,
+                PickingTaskBinSourceRack.rack_id == "RACK-5F-001",
+                PickingTaskBinSourceRack.rack_face == "90",
+            )
+        )
+        evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.operation_id == operation_id))
+    assert rack is not None and evidence is not None
+    if task_status is PickingTaskStatus.EXECUTING:
+        assert rack.cancelled_evidence_id == evidence.id
+        assert evidence.apply_status == Status.APPLIED
+    else:
+        assert rack.cancelled_evidence_id is None
+        assert evidence.apply_status == Status.RECONCILING
+
+
 async def test_cancel_members_matches_selectors_and_marks_rows(
     integration_session_factory, executing_task_with_members
 ) -> None:
@@ -237,7 +294,7 @@ async def test_cancel_members_matches_selectors_and_marks_rows(
     assert direct_row.cancelled_evidence_id == evidence_id
 
 
-async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
+async def test_cancel_members_skips_selectors_that_do_not_match(
     integration_session_factory, executing_task_with_members
 ) -> None:
     task_id, task_name = executing_task_with_members
@@ -246,7 +303,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
         {
             "task_id": task_name,
             "cancel_scope": "PLAN_MEMBERS",
-            # 90 面真实存在；999 面不存在——整条请求必须原子拒绝，不部分写入。
+            # 90 面真实存在；999 面不存在——只取消当前仍可取消的成员。
             "bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "999"]}],
         }
     )
@@ -257,7 +314,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
             db, task_id=task_id, data=data, evidence_id=evidence_id
         )
 
-    assert matched is False
+    assert matched is True
     assert transport_task_ids == ()
     async with integration_session_factory() as db:
         rack_row = await db.scalar(
@@ -267,7 +324,7 @@ async def test_cancel_members_is_all_or_nothing_when_selector_partially_matches(
                 PickingTaskBinSourceRack.rack_face == "90",
             )
         )
-    assert rack_row.cancelled_evidence_id is None
+    assert rack_row.cancelled_evidence_id == evidence_id
 
 
 async def test_cancel_members_rejects_reselecting_an_already_cancelled_member(

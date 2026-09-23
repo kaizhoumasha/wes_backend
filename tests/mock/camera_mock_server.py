@@ -25,7 +25,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -38,6 +38,7 @@ from uvicorn import Config, Server
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
 
 # 配置日志
 logging.basicConfig(
@@ -181,7 +182,7 @@ class SensorSimulator:
 
     def _generate_barcode(self, prefix: str = SENSOR_BARCODE_PREFIX) -> str:
         """生成条码（格式：PREFIX + 日期 + 序号）"""
-        today = datetime.now().strftime("%Y%m%d")
+        today = datetime.now().astimezone().strftime("%Y%m%d")
         barcode = f"{prefix}{today}{self._counter:03d}"
         self._counter += 1
         return barcode
@@ -289,13 +290,13 @@ class SensorSimulator:
                 barcode = self._generate_barcode()
 
             # 生成事件 ID
-            event_id = f"EVT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._trigger_count:03d}"
+            event_id = f"EVT-{datetime.now().astimezone().strftime('%Y%m%d%H%M%S')}-{self._trigger_count:03d}"
 
             # 构建事件数据（白皮书 3.2.2）
             event_data = {
                 "device_code": self.device_code,
                 "event_type": "MATERIAL_ARRIVED",
-                "timestamp": int(datetime.now().timestamp() * 1000),
+                "timestamp": int(datetime.now(UTC).timestamp() * 1000),
                 "data": {
                     "location": location,
                     "barcode": barcode,
@@ -313,7 +314,7 @@ class SensorSimulator:
                 barcode=barcode,
                 location=location,
                 timestamp=event_data["timestamp"],
-                reported_at=datetime.now(),
+                reported_at=datetime.now().astimezone(),
             )
             self._events.append(event_record)
             self._trigger_count += 1
@@ -476,7 +477,7 @@ async def get_status():
         "device_type": DEVICE_INFO["device_type"],
         "status": DEVICE_INFO["status"],
         "is_online": DEVICE_INFO["is_online"],
-        "timestamp": int(datetime.now().timestamp() * 1000),
+        "timestamp": int(datetime.now(UTC).timestamp() * 1000),
     }
 
 

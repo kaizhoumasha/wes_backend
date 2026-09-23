@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,7 +19,9 @@ def _ensure_repo_root_on_path() -> None:
 
 
 def _default_generated_at() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    from src.utils.timezone import timezone
+
+    return timezone.now_utc().isoformat().replace("+00:00", "Z")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

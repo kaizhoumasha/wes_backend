@@ -98,7 +98,7 @@ class PickingTaskPrepareCoordinator:
             raise ValueError("now 必须是有效时间")
         prepared: PickingTaskPrepareResult
         async with self._sessions.begin() as db:
-            workline = await self._worklines.get_for_update(db, workline_id)
+            workline = await self._worklines.get_for_authority_update(db, workline_id)
             if workline is None:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             prepared = await self.prepare_next_in_session(

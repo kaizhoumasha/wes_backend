@@ -125,7 +125,10 @@ def setup_service(
         },
         deadline_at=NOW + timedelta(seconds=5),
     )
-    tasks = SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task))
+    tasks = SimpleNamespace(
+        get_workline_id_by_task_id=AsyncMock(return_value=task.workline_id),
+        get_by_task_id_for_update=AsyncMock(return_value=task),
+    )
     plans = SimpleNamespace(
         prepare_context=AsyncMock(
             return_value=(
@@ -142,9 +145,10 @@ def setup_service(
         accept=AsyncMock(return_value=InboundEvidenceAcceptance(evidence=evidence, duplicate=False)),
         record_conflict=AsyncMock(),
     )
-    if plan_admission_policies and workline_repository is None:
+    if workline_repository is None:
         workline_repository = SimpleNamespace(
-            get_by_id=AsyncMock(return_value=SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0"))
+            get_for_authority_update=AsyncMock(return_value=SimpleNamespace(id=task.workline_id)),
+            get_by_id=AsyncMock(return_value=SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0")),
         )
     return (
         PickingTaskPlanDeltaService(
@@ -175,6 +179,25 @@ async def test_revision_one_commits_plan_and_evidence_together():
     ) == ("EXECUTING", 1, 10, 10)
     assert task.target_rack_face == " A "
     assert evidence.apply_status == Status.APPLIED
+
+
+async def test_plan_delta_locks_workline_before_picking_task():
+    events = []
+    service, _, _, _ = setup_service()
+    service._tasks.get_workline_id_by_task_id.side_effect = lambda *_args: events.append("snapshot") or 2
+    service._worklines.get_for_authority_update.side_effect = lambda *_args: (
+        events.append("workline") or SimpleNamespace(id=2)
+    )
+    original = service._tasks.get_by_task_id_for_update
+
+    async def get_task(*args):
+        events.append("task")
+        return await original(*args)
+
+    service._tasks.get_by_task_id_for_update = get_task
+
+    assert (await service.record(event(), received_at=NOW)).code == "RECEIVED"
+    assert events[:3] == ["snapshot", "workline", "task"]
 
 
 async def test_plan_admission_rejects_direct_picks_before_member_persistence():
@@ -365,6 +388,7 @@ async def test_reconciling_without_first_reason_fails_closed_before_policy():
 async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_capability(monkeypatch):
     queue = SimpleNamespace(enqueue_picking_task_plans=Mock())
     worklines = SimpleNamespace(
+        get_for_authority_update=AsyncMock(return_value=SimpleNamespace(id=2)),
         get_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 is_active=True,
@@ -372,7 +396,7 @@ async def test_applied_plan_defers_activation_only_when_an_active_line_has_the_c
                 plugin_key="sample_plugin",
                 plugin_version="0.1.0",
             )
-        )
+        ),
     )
     deferred = Mock()
     monkeypatch.setattr(

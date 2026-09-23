@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +18,7 @@ from src.app.runtime.system_capabilities.outcomes import (
     Success,
 )
 from src.utils.canonical_json import canonical_json_bytes, canonical_json_digest
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -264,7 +264,7 @@ class SystemCapabilityGateway:
                 output_hash=canonical_json_digest(raw_output),
                 authority=self._authority,
                 source=self._source,
-                evidence_at=datetime.now(UTC),
+                evidence_at=timezone.now_utc(),
                 source_version=self._source_version,
                 admission_snapshot=self._admission_snapshot,
                 summary={"outcome": redacted},

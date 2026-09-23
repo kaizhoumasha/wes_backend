@@ -194,6 +194,14 @@ class EcsSubmitDisposition(str, Enum):
     RECONCILING = "RECONCILING"
 
 
+class EcsRecoveryCapability(str, Enum):
+    """ECS 对 pre-ACK ambiguous command 的同 identity 恢复能力。"""
+
+    SAFE_SAME_IDENTITY_RESUBMIT = "SAFE_SAME_IDENTITY_RESUBMIT"
+    QUERY_BEFORE_RESUBMIT = "QUERY_BEFORE_RESUBMIT"
+    NO_SAFE_AUTOMATIC_RECOVERY = "NO_SAFE_AUTOMATIC_RECOVERY"
+
+
 @dataclass(frozen=True, slots=True)
 class EcsSubmitResult:
     disposition: EcsSubmitDisposition
@@ -427,6 +435,7 @@ __all__ = [
     "EcsDeviceState",
     "EcsDeviceStatus",
     "EcsDeviceStatusResponse",
+    "EcsRecoveryCapability",
     "EcsSubmitDisposition",
     "EcsSubmitResult",
     "ManualDebugDeviceCommandSnapshot",

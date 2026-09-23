@@ -36,7 +36,7 @@
 | SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（C4/C5：现有行为与局部测试一致，不替代现场物理验收） |
 | `MANUAL_PICK_NG` 持久化 | `passage_model.reason_code VARCHAR(64)`；`scan_flow._apply_completed` 在 `result=NG` 时写入 `MANUAL_PICK_NG`；新 migration `20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py` | 人工合同 §5.2 | `PASS` |
 | per-Bin 终态唯一索引 | `passage_model.py:27-34` `ux_manual_picking_passages_wms_terminal`：`(task_id, bin_code) WHERE wms_result IS NOT NULL` 部分唯一索引 | 人工合同 §9.1 | `PASS` |
-| point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | 宿主 `src/app/wms_adapter/outbound_picking/manual_bin_*` + 插件 `scan_flow.py`；FastTests 覆盖；集成 owner 由 `tests/integration/wms_integration/outbound_picking/test_plan_activation_return_rack_postgresql.py` + `scripts/run-integration-tests.sh` 统一入口 | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准；自动化验收依赖 `RUN_WORKLINE_INTEGRATION=1` 时真实 PG 跑过） |
+| point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | 宿主 `src/app/wms_adapter/outbound_picking/manual_bin_*` + 插件 `scan_flow.py`；FastTests 覆盖；真实 worker owner 为 `tests/test_business_loop.py`，统一入口为 `scripts/run-integration-tests.sh` | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准；人工 Bin `NORMAL/NG` 纵向 owner 待补，自动化验收依赖 `RUN_WORKLINE_INTEGRATION=1`） |
 | 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py`；集成 `test_rack_cycle_postgresql.py` 覆盖 PostgreSQL 路径 | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（C6：行为与局部测试一致；真实 PG 由集成测试契约承担） |
 | 退料货架直接取料 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` + `manual_rack_direct_pick_completed.py`；插件通过 `completion_repository` 消费面级完成事实推进 `_advance_return_rack` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地；现场物理验收仍 `NOT ACCEPTED`） |
 | 任务完成触发 drain | `batch_driver.py`、`completion_flow.py`、`drain_flow.py`、`tests/test_drain_flow.py` | 人工合同 §5.6；出库合同 §9.2.3 | `PASS` |
@@ -48,7 +48,7 @@
 | 合同要求 | 插件承接 | 结论 |
 | --- | --- | --- |
 | 复用 PickingTask、plan_delta、取消、arrival、inbound/return batch、departure、completion_confirm | 宿主 operation + 插件 typed facade/业务 driver；插件未复制 HTTP、Evidence 或重试 | `PASS` |
-| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 只按 `task_id + bin_code` 绑定 | `PASS`（实现闭合；自动化 owner 由 `test_plan_activation_return_rack_postgresql.py` 等覆盖） |
+| point2 只提交实际 Bin、固定 `task_id`，不查询 Cell/PDA | `scan_flow.py` 构造 admission intent；WMS completion 只按 `task_id + bin_code` 绑定 | `PASS`（实现闭合；自动化 owner 由 `test_manual_bin_completed_postgresql.py`、`test_business_loop.py` 等覆盖） |
 | `work_completed` 先可靠接收，应用时才绑定当前 point2 等待 | `manual_bin_completed_event_handler.py` + `scan_flow.py`；早到/冲突进入 `RECONCILING` | `PASS`（实现闭合；FastTests + 既有 `test_manual_bin_completed_postgresql.py` 覆盖幂等与冲突） |
 | 点3不能由 FIFO 猜测正常授权，点4须等 ECS `SUCCESS` 才入队 | `scan3.py`、`scan4.py`、`test_scan_flow.py`、`test_scan_handlers.py` | `PARTIAL`（C4/C5：现有行为与局部测试一致；不替代 ECS 设备验收） |
 | 来源架按精确 rack/face、原 Transport 和 READY evidence 推进 | `batch_repository.py`、`transport_outcome.py`、`source_progression.py` | `PASS` |
@@ -109,14 +109,15 @@ CTU03 `SUCCEEDED`、成功成员和明确 `RACK_POSITION`，实际库位不要�
 `feed_complete` 只要求当前面最终冻结清单的全部 inbound 分段 Transport 与成员权威成功、结果已发布且终点为绑定 HANDOFF_POSITION；
 无分段的最终 `RACK_FACE_DONE` 同样成立。它不等待 SCAN、业务完成或后续回架。已有可靠义务闭合后，立即创建同架下一面 CTU02，
 或在该架所有面投料完成时请求 `outbound.rack.departure_decide@v1`，READY 后按 WMS 原样 destination 创建 CTU03。投料未完成时只在分段间隙最多尝试一次机会式 `return_batch`，
-`NO_BATCH` 不阻断下一段投料。中间分段继续等待前段 SCAN1 清空入口；末段成功后的换面/换架不等待 SCAN1。
+`NO_BATCH` 即闭合本次回架决定，不重试、不阻断下一段投料；当前货架继续 CTU02/CTU03，剩余料箱最终由 drain 请求空载货架承接。中间分段继续等待前段 SCAN1 清空入口；末段成功后的换面/换架不等待 SCAN1。
 
 RETURN_BUFFER 是 WorkLine 级跨任务 FIFO，正常回架使用当前权威 rack/face，不要求回原货架或原面。
 PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务；已有绑定的 `PREPARING | EXECUTING` 或成功 claim 的任务优先承接 FIFO。
 只有无可准备任务且 FIFO 非空时才创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`。请求只携带
-`workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回有序 `racks[].rack_faces[]`，WAIT 到期以新
-identity 和当前数量重求值。已创建 drain 链不被后来任务取消：按货架和面顺序共享 CTU01/CTU02 窗口，等待精确权威到位后连续使用普通
-`return_batch`，保留 FIFO 及未闭合义务直到排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
+`workline_code + required_slot_count`；任务完成、停线或插件切换原因留在 WES 本地。READY 返回无序 `racks[]` reservation，各 rack 内
+`rack_face[]` 有序；WAIT 到期以新 identity 和当前数量重求值。已创建 drain 链不被后来任务取消：在 CTU01 窗口内提交各 reservation
+货架，任一货架精确权威到位后即可独立使用普通 `return_batch`，不等待其它 AGV；同架按面顺序复用 CTU02，保留 FIFO 及未闭合义务直到
+排空，再请求 `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03。
 完整 wire 见[出库合同 §9.2.3](../../docs/contracts/wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)。
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。

@@ -26,7 +26,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -39,6 +39,7 @@ from uvicorn import Config, Server
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
 
 # 配置日志
 logging.basicConfig(
@@ -226,11 +227,11 @@ class RobotSimulator:
     def _generate_command_code(self) -> str:
         """生成指令编码"""
         self._counter += 1
-        return f"CMD-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._counter:03d}"
+        return f"CMD-{datetime.now().astimezone().strftime('%Y%m%d%H%M%S')}-{self._counter:03d}"
 
     def _generate_barcode(self, prefix: str = ROBOT_BARCODE_PREFIX) -> str:
         """生成条码（格式：PREFIX + 日期 + 序号）"""
-        today = datetime.now().strftime("%Y%m%d")
+        today = datetime.now().astimezone().strftime("%Y%m%d")
         return f"{prefix}{today}{self._counter:03d}"
 
     async def _callback_to_wes(
@@ -252,7 +253,7 @@ class RobotSimulator:
                 "command_code": command_code,
                 "device_code": self.device_code,
                 "result": result,
-                "finish_time": int(datetime.now().timestamp() * 1000),
+                "finish_time": int(datetime.now(UTC).timestamp() * 1000),
             }
 
             if result == "SUCCESS":
@@ -353,7 +354,7 @@ class RobotSimulator:
                 barcode = self._generate_barcode()
 
             # 记录开始时间
-            started_at = datetime.now()
+            started_at = datetime.now().astimezone()
 
             logger.info(
                 f"开始执行指令: command_code={command_code}, task_type={task_type}, "
@@ -382,11 +383,11 @@ class RobotSimulator:
                 # 回调失败不影响执行记录
 
             # 记录结束时间
-            finished_at = datetime.now()
+            finished_at = datetime.now().astimezone()
             duration_ms = int((finished_at - started_at).total_seconds() * 1000)
 
             # 创建执行记录
-            execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
+            execution_id = f"EXEC-{datetime.now().astimezone().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
                 execution_id=execution_id,
                 command_code=command_code,
@@ -568,7 +569,7 @@ class RobotSimulator:
 
         async with self._lock:
             # 记录开始时间
-            started_at = datetime.now()
+            started_at = datetime.now().astimezone()
 
             logger.info(
                 f"开始执行 WES 指令: command_code={payload.command_code}, task_type={task_type}, params={params}"
@@ -588,7 +589,7 @@ class RobotSimulator:
                     "command_code": payload.command_code,
                     "device_code": self.device_code,
                     "result": result,
-                    "finish_time": int(datetime.now().timestamp() * 1000),
+                    "finish_time": int(datetime.now(UTC).timestamp() * 1000),
                     "data": {
                         "actual_source": source_loc,
                         "actual_target": target_loc,
@@ -608,11 +609,11 @@ class RobotSimulator:
                 logger.error(f"回调失败: {e}")
 
             # 记录结束时间
-            finished_at = datetime.now()
+            finished_at = datetime.now().astimezone()
             duration_ms = int((finished_at - started_at).total_seconds() * 1000)
 
             # 创建执行记录
-            execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
+            execution_id = f"EXEC-{datetime.now().astimezone().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
                 execution_id=execution_id,
                 command_code=payload.command_code,
@@ -743,7 +744,7 @@ async def get_status():
         "status": DEVICE_INFO["status"],
         "is_online": DEVICE_INFO["is_online"],
         "current_command_code": current_command["command_code"] if current_command else None,
-        "timestamp": int(datetime.now().timestamp() * 1000),
+        "timestamp": int(datetime.now(UTC).timestamp() * 1000),
     }
 
 

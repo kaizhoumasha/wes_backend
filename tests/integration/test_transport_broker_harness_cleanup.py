@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from typing import TYPE_CHECKING, Any, cast
@@ -63,6 +64,36 @@ def test_worker_applies_one_run_prefix_to_broker_and_result_backend() -> None:
     assert getattr(worker, "key_prefix", None) == "it:transport:prefix-proof:"
     assert dict(worker.producer.conf.broker_transport_options)["global_keyprefix"] == worker.key_prefix
     assert dict(worker.producer.conf.result_backend_transport_options)["global_keyprefix"] == worker.key_prefix
+    worker.producer.close()
+
+
+def test_worker_archives_failure_logs_and_task_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, WMS_BASE_URL, run_id="evidence-proof")
+    worker.log_path = tmp_path / "transport.log"
+    worker.confirmation_log_path = tmp_path / "confirmation.log"
+    worker.log_path.write_text("task.body.start task_name=transport\n", encoding="utf-8")
+    worker.confirmation_log_path.write_text("task.body.done task_name=confirmation\n", encoding="utf-8")
+    worker._parent_pids = {"fulfillment": 101, "confirmation": 102}
+    worker._descendant_pids = {201, 202}
+    worker._task_records.append(
+        {
+            "task_name": "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
+            "task_id": "task-1",
+            "queue": harness.CONFIRMATION_QUEUE,
+        }
+    )
+    monkeypatch.setenv("HEAVY_WORKER_EVIDENCE_DIR", str(tmp_path / "reports"))
+
+    destination = worker._archive_failure_evidence()
+
+    assert destination == tmp_path / "reports" / "evidence-proof"
+    assert (destination / "fulfillment-worker.log").read_text(encoding="utf-8").startswith("task.body.start")
+    assert (destination / "confirmation-worker.log").read_text(encoding="utf-8").startswith("task.body.done")
+    metadata = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["key_prefix"] == "it:transport:evidence-proof:"
+    assert metadata["parent_pids"] == {"fulfillment": 101, "confirmation": 102}
+    assert metadata["child_pids"] == [201, 202]
+    assert metadata["tasks"][0]["queue"] == harness.CONFIRMATION_QUEUE
     worker.producer.close()
 
 

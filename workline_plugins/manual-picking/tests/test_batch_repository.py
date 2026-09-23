@@ -39,11 +39,138 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
             TransportTask.__table__,
             TransportMember.__table__,
             PositionProjection.__table__,
+            PickingTask.__table__,
             TransportDecisionBinding.__table__,
             ManualPickingPassage.__table__,
         ):
             await connection.run_sync(table.create)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.mark.asyncio
+async def test_drain_unclosed_transport_is_scoped_to_its_reserved_rack() -> None:
+    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DrainRepository
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 22, 16)
+    decision = SimpleNamespace(workline_id=7, intent=SimpleNamespace(operation_id="drain-1"))
+    try:
+        async with sessions.begin() as db:
+            for rack_id, status in (("R1", "SUCCEEDED"), ("R2", "PENDING")):
+                client_request_id = f"drain-{rack_id}"
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        picking_task_id=None,
+                        correlation_id=f"drain:drain-1:rack:{rack_id}",
+                        step=DRAIN_RACK_IN_STEP,
+                        resource_fence_id=rack_id,
+                        source_evidence_id=10,
+                        client_request_id=client_request_id,
+                    )
+                )
+                db.add(
+                    TransportTask(
+                        transport_task_id=f"transport-{rack_id}",
+                        client_request_id=client_request_id,
+                        request_digest="a" * 64,
+                        kind="RACK_MOVE",
+                        caller_json={"workline_id": "7"},
+                        request_json={"rack_id": rack_id},
+                        submit_operation_id=f"submit-{rack_id}",
+                        submit_timestamp_ms=1,
+                        submit_request_body="{}",
+                        submit_request_body_digest="b" * 64,
+                        status=status,
+                        authority_workline_id=7,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
+        async with sessions() as db:
+            repository = DrainRepository()
+            assert not await repository.has_unclosed_rack_action(db, decision, "R1")
+            assert await repository.has_unclosed_rack_action(db, decision, "R2")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_rack_windows_keep_unclosed_archived_and_current_authority() -> None:
+    from manual_picking.application.batch_repository import BatchRepository
+    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 21, 12)
+    try:
+        async with sessions.begin() as db:
+            historical = PickingTask(
+                task_id="PICK-HISTORICAL",
+                task_type="MANUAL",
+                status="ARCHIVED",
+                archived_at=now,
+                queue_revision=1,
+                dispatch_sequence=1,
+                issued_at_ms=1,
+                issued_evidence_id=1,
+                workline_id=7,
+            )
+            current = PickingTask(
+                task_id="PICK-CURRENT",
+                task_type="MANUAL",
+                status="EXECUTING",
+                queue_revision=1,
+                dispatch_sequence=2,
+                issued_at_ms=1,
+                issued_evidence_id=2,
+                workline_id=7,
+            )
+            db.add_all((historical, current))
+            await db.flush()
+            for identity, rack_id, step, task_id in (
+                ("historical-in", "R-HISTORICAL", "PICKING_TASK_BIN_SOURCE_RACK_IN", historical.id),
+                ("current-in", "R-CURRENT", "PICKING_TASK_BIN_SOURCE_RACK_IN", current.id),
+                ("drain-in", "R-DRAIN", DRAIN_RACK_IN_STEP, None),
+                ("historical-out", "R-HISTORICAL", "MANUAL_PICKING_SOURCE_RACK_OUT", historical.id),
+                ("current-out", "R-CURRENT", "MANUAL_PICKING_SOURCE_RACK_OUT", current.id),
+                ("drain-out", "R-DRAIN", DRAIN_RACK_OUT_STEP, None),
+            ):
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        picking_task_id=task_id,
+                        correlation_id=identity,
+                        step=step,
+                        resource_fence_id=rack_id,
+                        source_evidence_id=10,
+                        client_request_id=identity,
+                    )
+                )
+                db.add(
+                    TransportTask(
+                        transport_task_id=identity,
+                        client_request_id=identity,
+                        request_digest="a" * 64,
+                        kind="RACK_MOVE",
+                        caller_json={"workline_id": "7"},
+                        request_json={},
+                        submit_operation_id=identity,
+                        submit_timestamp_ms=1,
+                        submit_request_body="{}",
+                        submit_request_body_digest="b" * 64,
+                        status="PENDING",
+                        authority_workline_id=7,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            await db.flush()
+            repository = BatchRepository()
+            assert await repository.occupied_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
+            assert await repository.fenced_source_rack_ids(db, 7) == {"R-HISTORICAL", "R-CURRENT", "R-DRAIN"}
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -303,7 +430,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=999), now + timedelta(microseconds=1)
             )
-            assert await repo.return_retry_due(
+            assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=1000), now + timedelta(microseconds=1)
             )
             assert await repo.return_retry_due(db, 7, "R1", "270", now, now + timedelta(microseconds=1))
@@ -336,7 +463,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                 )
             )
             await db.flush()
-            assert await repo.return_retry_due(
+            assert not await repo.return_retry_due(
                 db, 7, "R1", "90", now + timedelta(milliseconds=1), now + timedelta(microseconds=1)
             )
 
@@ -669,7 +796,77 @@ async def test_source_window_occupancy_uses_ctu01_until_later_ctu03_acceptance(
             released = out_status in {"ACCEPTED", "SUCCEEDED", "FAILED"} or (
                 out_status == "RECONCILING" and was_accepted
             )
-            assert occupied == ({"R1"} if in_status != "REJECTED" and not released else set())
+            assert occupied == ({"R1"} if in_status not in {"FAILED", "REJECTED"} and not released else set())
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_position", "position_unknown", "expected"),
+    [
+        ({"kind": "RACK_POSITION", "location_code": "WHE0502"}, False, set()),
+        ({"kind": "RACK_POSITION", "location_code": "KT16"}, False, {"R1"}),
+        (None, True, set()),
+        (None, False, set()),
+    ],
+)
+async def test_failed_ctu01_releases_capacity_only_with_known_position_away_from_target(
+    final_position, position_unknown, expected
+) -> None:
+    from manual_picking.application.batch_repository import BatchRepository
+    from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 22, 21)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=7,
+                    correlation_id="drain:drain-1:rack:R1",
+                    step=DRAIN_RACK_IN_STEP,
+                    resource_fence_id="R1",
+                    source_evidence_id=51,
+                    client_request_id="failed-in",
+                )
+            )
+            db.add(
+                TransportTask(
+                    transport_task_id="failed-in",
+                    client_request_id="failed-in",
+                    request_digest="a" * 64,
+                    kind="RACK_MOVE",
+                    caller_json={"workline_id": "7"},
+                    request_json={"target": {"kind": "RACK_POSITION", "location_code": "KT16"}},
+                    submit_operation_id="failed-in",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="FAILED",
+                    reason_code="RCS_TASK_REJECTED",
+                    authority_workline_id=7,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                TransportMember(
+                    transport_task_id="failed-in",
+                    ordinal=0,
+                    object_type="RACK",
+                    object_id="R1",
+                    source_json={"kind": "RACK", "location_code": "R1"},
+                    target_json={"kind": "RACK_POSITION", "location_code": "KT16"},
+                    status="FAILED",
+                    final_position_json=final_position,
+                    position_unknown=position_unknown,
+                    failure_code="RCS_TASK_REJECTED",
+                    updated_at=now,
+                )
+            )
+            await db.flush()
+            assert await BatchRepository().occupied_source_rack_ids(db, 7) == expected
     finally:
         await engine.dispose()
 
@@ -794,7 +991,7 @@ async def test_feed_complete_requires_published_transport_members_at_inlet(case:
 
 
 @pytest.mark.asyncio
-async def test_one_return_check_per_feed_gap_even_after_retry_or_new_return_bins() -> None:
+async def test_no_batch_never_reopens_return_check_for_the_same_face() -> None:
     module = import_module("manual_picking.application.batch_repository")
     chunk_created = datetime(2026, 9, 15, 12)
     completed = chunk_created + timedelta(seconds=1)
@@ -810,7 +1007,7 @@ async def test_one_return_check_per_feed_gap_even_after_retry_or_new_return_bins
     db = SimpleNamespace(scalar=AsyncMock(return_value=99))  # Newly ready return bins cannot open another check.
     assert not await repo.return_retry_due(db, 7, "R1", "90", completed + timedelta(minutes=1), chunk_created)
     db.scalar.assert_not_awaited()
-    assert await repo.return_retry_due(
+    assert not await repo.return_retry_due(
         db, 7, "R1", "90", completed + timedelta(minutes=1), completed + timedelta(seconds=1)
     )
 
@@ -892,7 +1089,7 @@ async def test_same_rack_admission_waits_for_authoritative_departure_after_windo
     row = decision(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)))
     driver._drain = SimpleNamespace(
         decide_in_session=AsyncMock(return_value=(0, row)),
-        active_rack_face=AsyncMock(return_value=("R1", "90")),
+        active_rack_face=AsyncMock(return_value=("R1", "90", False)),
         repository=SimpleNamespace(
             transport=AsyncMock(return_value=None), has_unclosed_rack_action=AsyncMock(return_value=False)
         ),

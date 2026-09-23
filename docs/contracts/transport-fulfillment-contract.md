@@ -2,8 +2,8 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-12
-contract_version: 0.3.0
+updated_at: 2026-09-22
+contract_version: 0.4.0
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -41,6 +41,30 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
 合法未知任务结果当前保存后异步 CONFLICT；目标为保存后退出活跃重试，任务建立时按精确身份可靠登记匹配工作。
 该目标复用 Evidence、既有 worker 和提交后唤醒，不周期扫描全部孤立历史。准入删除不改变身份冲突与结果冲突语义。
 五项外部能力证据见[统一接入核验表](../integration/third_party_integration_whitepaper.md)；当前无真实供应商 PASS。
+
+
+## T1 目标不可用重试语义（2026-09-22）
+
+与 RCS、WMS 沟通确认：搬运操作对象（货架、料箱）当前不可用时，RCS 存在两条独立响应路径，均为 Transport 不可变
+终态，核心不做任何自动重试或状态修改：
+
+- 同步 submit 直接返回 `422 / REJECTED`；线上 `reason_code` 尚未与 RCS/WMS 确认最终枚举值，暂不计入 §4.2 已批准
+  的封闭 `reason_code` 列表，见本节末 TODO。
+- 已接纳（`202 / RECEIVED` → `ACCEPTED`）后 RCS 主动取消，经 `transport.task.resulted@v1` 以
+  `status=CANCELLED` 报告。`final_position` 可选；提供时必须为权威 `RACK_POSITION`。WES 将该 wire 分支归一化为内部
+  `FAILED + failure_code=RCS_TASK_REJECTED`，不新增内部 Transport 状态。
+
+两条路径都不改变 §4.1.1、§4.3 已批准的设计：`REJECTED`/`FAILED` 均为不可变终态，Transport 核心不实现指数退避，
+不在原 `transport_task_id`/`operation_id` 上重提。业务如需针对同一目标继续搬运，必须由调用方（工作线插件/业务
+owner）在自身重试循环中以指数退避方式发起重试：退避上限约 60 秒，重试次数无上限（直到目标可用或业务主动放弃），
+且每次重试必须使用全新 `client_request_id` 创建全新 TransportTask，不复用原 `transport_task_id`、`operation_id`
+或已冻结的请求体。
+
+TODO（合同尚未闭合项）：
+
+- 与 RCS/WMS 确认「目标当前不可用」同步 REJECTED 的最终线上 `reason_code` 字符串，并据此更新 §4.2 封闭枚举列表。
+- 确认该 `reason_code` 是否需要区分货架不可用与料箱不可用两种场景，或统一为单一值。
+- 确认工作线插件层的指数退避重试是否需要 WES 提供统一工具/中间件，或完全由各插件自行实现。
 
 
 ## 1. 文档定位
@@ -363,7 +387,7 @@ CTU 物理动作顺序。
 | `413`，空响应体 | 原始请求 Body 超限，确认未接纳 | `REJECTED` |
 | `422 / REJECTED` | 已有关联身份，但信封、DTO、闭集枚举或固定能力不符合合同 | `REJECTED` |
 | `503 / UNAVAILABLE` | 当前无法可靠持久化，或无法取得必须的可信当前面，本次确认未接纳 | 原身份按合同受控重提 |
-| `DELIVERY_UNKNOWN` | 请求可能已送达 | 原身份进入 `RECONCILING`，不得换身份 |
+| `DELIVERY_UNKNOWN` | 请求可能已送达，但尚无确定接纳 ACK | 原身份保持 `PENDING / SUBMIT_DELIVERY_UNKNOWN`，不得换身份或自动重提 |
 
 同步 ACK 只表示接纳，不表示 AGV/CTU 已开始或完成。`TransportHandle` 在本地任务提交后即可返回，因此插件也不依赖同步 ACK。
 搬运提交不提供 `429 / BUSY`，也不定义 `retry_after_ms`。RCS 或 WMS 内部调度容量不足时，WMS 必须先可靠接纳 WES 搬运义务，再在
@@ -383,6 +407,7 @@ CTU 物理动作顺序。
 
 搬运提交 `REJECTED.reason_code` 只允许 `INVALID_ENVELOPE | UNSUPPORTED_OPERATION | INVALID_DATA |
 COORDINATED_BIN_EXCHANGE_UNSUPPORTED`。WES 对这些诊断码执行相同的确定拒绝处理，不按码自动重试或补偿。
+目标（货架、料箱）当前不可用导致的同步 REJECTED 见 T1；其 `reason_code` 尚未确认，不计入本列表。
 
 `BIN_EXCHANGE` 只有在 WMS 确认 RCS 能将 1～2 个二元闭环作为一个协调任务整体接纳时才返回 `RECEIVED`。不支持时固定返回
 `422 / REJECTED / COORDINATED_BIN_EXCHANGE_UNSUPPORTED`；WES 不拆分或降级。
@@ -403,8 +428,8 @@ WES 不按相同 `rack_id`、内部 `bin_code` 或历史位置拒绝独立 Trans
   `request_body_digest` 与 TransportTask 原子持久化；后续领取和重提只读取该不可变快照，不能在 worker 内重新生成线上身份或重新序列化。
 - 领取任务后、调用 HTTP 前，使用独立短事务原子递增 `submit_attempt_count` 并写入发送开始事实 `send_started_at`；HTTP 在
   事务外执行，结果使用新事务保存。只有尚无 `send_started_at` 的过期领取可以重新领取。
-- 已有 `send_started_at` 后 worker 退出或租约过期表示请求可能已送达，任务收敛为 `RECONCILING/UNKNOWN`，不得自动重提；
-  不新增任务状态或尝试表。
+- 已有 `send_started_at` 后 worker 退出或租约过期表示请求可能已送达；没有确定接纳 ACK 时，任务保持
+  `PENDING / SUBMIT_DELIVERY_UNKNOWN`，不得自动重提。`send_started_at` 不是接纳事实；不新增任务状态或尝试表。
 - 本地领取令牌只隔离 worker 执行权，不作为 WMS 权威准入结论身份。
 - worker 写回确定性 ACK 时必须携带实际发送请求的 `operation_id + transport_task_id + request_body_digest`；任一不匹配均失败关闭。
 - 已被新尝试替代的旧 worker 不得覆盖新租约，但匹配身份和摘要的确定性 WMS 准入结论仍可单调收敛。
@@ -564,6 +589,7 @@ WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evid
 `failure_code` 只允许 `RCS_TASK_REJECTED | RCS_EXECUTION_FAILED | POSITION_UNKNOWN | MANUAL_ABORTED`。WMS/RCS 私有码必须在 WMS
 边界完成归一化；未映射私有码不得透传或默认归入 `RCS_EXECUTION_FAILED`，而应告警并等待核对。RCS timeout 本身不能形成搬运最终结果
 失败或 `POSITION_UNKNOWN`；只有 WMS/RCS 基于实际物理恢复或对账形成的明确结论才能构成相应权威结果。
+已接纳任务因目标（货架、料箱）当前不可用被 RCS 主动取消时，使用 `RCS_TASK_REJECTED`；调用方重试语义见 T1。
 
 任务结果只按冻结对象事实聚合：全部对象成功且位置明确才是 `SUCCEEDED`；至少一个对象失败、但全部对象位置均明确时是
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
@@ -673,12 +699,12 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 
 | 状态 | 含义 |
 | --- | --- |
-| `PENDING` | 可靠任务已创建，尚未取得确定接纳事实 |
+| `PENDING` | 可靠任务已创建，尚未取得确定接纳事实；可包含 `SUBMIT_DELIVERY_UNKNOWN`，不能仅凭状态决定重提 |
 | `ACCEPTED` | WMS 已接纳，等待最终结果 |
 | `REJECTED` | WMS/RCS 明确未接纳 |
 | `SUCCEEDED` | 权威成功结果已接受 |
 | `FAILED` | 权威失败结果已接受且位置明确 |
-| `RECONCILING` | 交付、结果或位置未知，或证据冲突 |
+| `RECONCILING` | 已接纳后结果或位置未知，或证据冲突；不表示可再次提交 |
 
 WES 本地运维观察接口可以按 `transport_task_id` 返回任务当前状态、原因、submit 身份和最近一条已可靠持久化的
 `TransportEvidence` 摘要。最近 evidence 按本地 `(received_at DESC, id DESC)` 确定，包含 `PENDING / APPLIED / CONFLICT`，

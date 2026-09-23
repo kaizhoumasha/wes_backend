@@ -15,7 +15,6 @@ _UNCLOSED_STATUSES = (
     CommandStatus.PENDING,
     CommandStatus.DISPATCHING,
     CommandStatus.ACKNOWLEDGED,
-    CommandStatus.RECONCILING,
 )
 
 

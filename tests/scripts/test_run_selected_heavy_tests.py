@@ -76,6 +76,23 @@ def test_selected_heavy_runner_rejects_when_any_manifest_file_collects_nothing(t
     assert status == 2
 
 
+def test_junit_failure_contains_worker_evidence_paths(tmp_path: Path, monkeypatch) -> None:
+    module = _load_runner_module()
+    junit_path = tmp_path / "selected-tests.xml"
+    junit_path.write_text(
+        '<testsuite><testcase classname="test" name="fails"><failure>boom</failure></testcase></testsuite>',
+        encoding="utf-8",
+    )
+    evidence_root = tmp_path / "heavy-worker"
+    (evidence_root / "run-1").mkdir(parents=True)
+    monkeypatch.setenv("HEAVY_WORKER_EVIDENCE_DIR", str(evidence_root))
+
+    module._attach_worker_evidence(junit_path)
+
+    xml = junit_path.read_text(encoding="utf-8")
+    assert str(evidence_root / "run-1") in xml
+
+
 def test_selected_heavy_runner_ignores_deselecting_pytest_addopts(tmp_path: Path, monkeypatch) -> None:
     manifest_path = _write_selected_test(
         tmp_path,

@@ -243,6 +243,19 @@ def test_fulfillment_queue_initializes_target_transport_without_device_runtime(m
     assert service._task_queue is task_queue_gateway
 
 
+def test_confirmation_queue_initializes_without_device_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "celery")
+    runtime = module.CeleryAsyncRuntime()
+
+    runtime.initialize()
+
+    infra.build_transport_runtime.assert_awaited_once()
+    infra.build_device_command_runtime.assert_not_called()
+    runtime.shutdown()
+
+
 def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)

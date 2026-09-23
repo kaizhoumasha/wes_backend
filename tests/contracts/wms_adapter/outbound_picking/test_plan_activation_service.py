@@ -51,6 +51,8 @@ class _Worklines:
         assert workline_id == 7
         return self.line
 
+    get_for_authority_update = get_for_update
+
 
 class _Handler:
     def __init__(self) -> None:

@@ -226,8 +226,10 @@ async def test_worker_exit_after_claim_never_resends_a_possible_physical_action(
             )
         case.worker = _worker(case.server)
         await asyncio.to_thread(case.worker.start)
-        unknown = await _drive(case, lambda item: item.status == "RECONCILING")
-        assert unknown.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+        unknown = await _drive(
+            case, lambda item: item.status == "PENDING" and item.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
+        )
+        assert unknown.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
         assert unknown.submit_operation_id == pending.submit_operation_id
         assert unknown.submit_attempt_count == 1
         assert not case.server.requests
@@ -238,9 +240,11 @@ async def test_remote_receipt_then_connection_loss_preserves_identity_without_re
 ):
     async with _case(integration_session_factory, monkeypatch, disconnect=True) as case:
         await asyncio.to_thread(case.worker.start)
-        unknown = await _drive(case, lambda item: item.status == "RECONCILING")
+        unknown = await _drive(
+            case, lambda item: item.status == "PENDING" and item.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
+        )
         assert len(case.server.requests) == 1
-        assert unknown.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+        assert unknown.reason_code == "SUBMIT_DELIVERY_UNKNOWN"
         retry_scan = case.worker.send("src.celery_app.tasks.transport.submit_transport_tasks_batch")
         assert await asyncio.to_thread(case.worker.result, retry_scan) == 0
         assert len(case.server.requests) == 1

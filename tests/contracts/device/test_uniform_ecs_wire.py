@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 
-from src.app.device.contracts import EcsSubmitDisposition
+from src.app.device.contracts import EcsRecoveryCapability, EcsSubmitDisposition
 from src.app.device.ecs_adapter import EcsAdapter, EcsStatusUnavailableError
 from src.core.outbound_http import (
     OutboundHttpDeliveryState,
@@ -30,6 +30,26 @@ class FakeOutboundHttpTransport:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+def test_ecs_adapter_defaults_to_fail_closed_recovery_capability() -> None:
+    adapter = EcsAdapter(FakeOutboundHttpTransport([]))
+
+    assert adapter.recovery_capability is EcsRecoveryCapability.NO_SAFE_AUTOMATIC_RECOVERY
+
+
+def test_ecs_adapter_requires_typed_recovery_capability() -> None:
+    with pytest.raises(TypeError, match="recovery_capability"):
+        EcsAdapter(FakeOutboundHttpTransport([]), recovery_capability="SAFE_SAME_IDENTITY_RESUBMIT")  # type: ignore[arg-type]
+
+
+def test_ecs_adapter_can_expose_explicit_provider_contract() -> None:
+    adapter = EcsAdapter(
+        FakeOutboundHttpTransport([]),
+        recovery_capability=EcsRecoveryCapability.QUERY_BEFORE_RESUBMIT,
+    )
+
+    assert adapter.recovery_capability is EcsRecoveryCapability.QUERY_BEFORE_RESUBMIT
 
 
 def _response(

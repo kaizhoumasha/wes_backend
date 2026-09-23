@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,7 @@ from src.app.execution.models import (
 )
 from src.app.execution.repositories.material_execution_repository import MaterialExecutionRepository
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+from src.app.execution.repositories.transport_decision_binding_repository import TransportDecisionBindingRepository
 from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceIdentityConflictError,
     InboundEvidenceService,
@@ -43,6 +45,14 @@ from src.app.workline.services.workline_configuration_service import WorkLineCon
 from src.core.exceptions import BusinessException
 
 PREFIX = "EXECUTION-CONSTRAINT-"
+
+
+class _ProjectionBindingRepository:
+    def __init__(self, workline_id: int) -> None:
+        self._workline_id = workline_id
+
+    async def get_by_client_request_id(self, _db, _client_request_id):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(workline_id=self._workline_id, causal_token=self._workline_id)
 
 
 async def _seed_workline(db) -> tuple[WorkLine, str]:
@@ -194,6 +204,7 @@ async def _apply_projection(
     transport_task_id: str | None = None,
 ):
     frozen_transport_task_id = transport_task_id or f"{PREFIX}TRANSPORT-{object_id}"
+    service._bindings = _ProjectionBindingRepository(line_id)
     return await service.apply_transport_result(
         db,
         authority=TransportExecutionAuthority(workline_id=line_id),
@@ -204,6 +215,7 @@ async def _apply_projection(
         arrival_face=None,
         operation_id="019d0000-0000-7000-8000-000000000001",
         transport_task_id=frozen_transport_task_id,
+        client_request_id=f"{PREFIX}REQUEST-{object_id}-{line_id}",
         updated_at=datetime(2026, 8, 28),
     )
 
@@ -231,7 +243,7 @@ async def test_postgresql_bin_projection_uses_workline_and_transport_identity(in
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_cross_task_results_keep_one_unconfirmed_projection(
+async def test_postgresql_concurrent_cross_task_results_keep_causally_newer_projection(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
@@ -258,8 +270,84 @@ async def test_postgresql_concurrent_cross_task_results_keep_one_unconfirmed_pro
         projection = await PositionProjectionRepository().get(db, "BIN", identity)
     assert projection is not None
     assert projection.workline_id in line_ids
-    assert projection.position_unknown is True
+    assert projection.position_unknown is False
     assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}-{projection.workline_id}"
+
+
+@pytest.mark.asyncio
+async def test_postgresql_out_of_order_cross_task_replay_keeps_newer_projection(
+    integration_session_factory,
+) -> None:
+    """真实 PostgreSQL 回放乱序 TransportTask 时，较旧 token 不得覆盖新事实。"""
+
+    async with integration_session_factory.begin() as db:
+        workline, identity = await _seed_workline(db)
+        line_id = workline.id
+
+    class _OrderedBindingRepository:
+        async def get_by_client_request_id(self, _db, client_request_id):  # type: ignore[no-untyped-def]
+            token = {"old-request": 10, "new-request": 20}[client_request_id]
+            return SimpleNamespace(workline_id=line_id, causal_token=token)
+
+    service = PositionProjectionService(binding_repository=_OrderedBindingRepository())
+
+    async def apply(request_id: str, task_id: str, location: str) -> None:
+        async with integration_session_factory.begin() as db:
+            await service.apply_transport_result(
+                db,
+                authority=TransportExecutionAuthority(workline_id=line_id),
+                object_type="BIN",
+                object_id=identity,
+                position={"kind": "HANDOFF_POSITION", "location_code": location},
+                position_unknown=False,
+                arrival_face=None,
+                client_request_id=request_id,
+                operation_id=str(uuid4()),
+                transport_task_id=task_id,
+                updated_at=datetime(2026, 8, 28),
+            )
+
+    await apply("new-request", f"{PREFIX}TASK-NEW-{identity}", "NEW")
+    await apply("old-request", f"{PREFIX}TASK-OLD-{identity}", "OLD")
+
+    async with integration_session_factory() as db:
+        projection = await PositionProjectionRepository().get(db, "BIN", identity)
+
+    assert projection is not None
+    assert projection.source_transport_task_id == f"{PREFIX}TASK-NEW-{identity}"
+    assert projection.source_causal_token == 20
+    assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "NEW"}
+
+
+@pytest.mark.asyncio
+async def test_postgresql_binding_and_projection_share_object_authority_fence(integration_session_factory) -> None:
+    async with integration_session_factory.begin() as db:
+        workline, identity = await _seed_workline(db)
+        line_id = workline.id
+
+    blocker = integration_session_factory()
+    await blocker.begin()
+    try:
+        await TransportDecisionBindingRepository().lock_object_authority(
+            blocker,
+            object_type="BIN",
+            object_id=identity,
+        )
+
+        async def apply() -> PositionProjection:
+            async with integration_session_factory.begin() as db:
+                return await _apply_projection(PositionProjectionService(), db, line_id, identity)
+
+        task = asyncio.create_task(apply())
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+
+        await blocker.rollback()
+        projection = await asyncio.wait_for(task, timeout=2)
+        assert projection.object_id == identity
+    finally:
+        await blocker.rollback()
+        await blocker.close()
 
 
 @pytest.mark.asyncio

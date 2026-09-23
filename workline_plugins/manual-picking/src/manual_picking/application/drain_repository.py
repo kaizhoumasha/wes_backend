@@ -116,9 +116,10 @@ class DrainRepository:
             and members[0].arrival_face == face
         )
 
-    async def has_unclosed_rack_action(self, db: Any, decision: ReturnBufferDrainRecord) -> bool:
+    async def has_unclosed_rack_action(self, db: Any, decision: ReturnBufferDrainRecord, rack_id: str) -> bool:
         bindings = TransportDecisionBinding.__table__.c
         transports = TransportTask.__table__.c
+        correlation_id = f"drain:{decision.intent.operation_id}:rack:{rack_id}"
         return (
             await db.scalar(
                 select(transports.id)
@@ -126,7 +127,10 @@ class DrainRepository:
                 .where(
                     bindings.workline_id == decision.workline_id,
                     bindings.picking_task_id.is_(None),
-                    bindings.correlation_id.startswith(f"drain:{decision.intent.operation_id}:rack:", autoescape=True),
+                    or_(
+                        bindings.correlation_id == correlation_id,
+                        bindings.correlation_id.startswith(f"{correlation_id}:face:", autoescape=True),
+                    ),
                     bindings.step.in_((DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP)),
                     or_(
                         transports.status.in_(("PENDING", "RECONCILING")),
