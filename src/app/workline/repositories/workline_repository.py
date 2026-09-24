@@ -19,7 +19,7 @@ from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.workline import WorkLine
+from src.app.workline.models.workline import WorkLine, WorkLineRunMode
 from src.database.base_repository import BaseRepository
 
 
@@ -133,10 +133,15 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         return workline
 
     async def list_active_plugin_identities(self, db: AsyncSession) -> list[tuple[str, str]]:
+        # ECS_TEST 活动线不激活插件，plugin_version 被置空；worker 启动只校验业务线冻结的插件身份。
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(columns.plugin_key, columns.plugin_version)
-            .where(columns.is_active.is_(True), columns.is_deleted.is_(False))
+            .where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                columns.run_mode != WorkLineRunMode.ECS_TEST,
+            )
             .distinct()
         )
         return list(result.tuples())
@@ -185,6 +190,12 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         if line is None:
             return []
         contracts = line.device_contracts
+        if line.run_mode == WorkLineRunMode.ECS_TEST:
+            # 测试线没有插件角色映射；device_contracts 的 key 直接是冻结的设备码。
+            return [
+                WorkLineDeviceBinding(workline_id=workline_id, device_role=code, device_code=code, **contract)
+                for code, contract in sorted(contracts.items())
+            ]
         return [
             WorkLineDeviceBinding(workline_id=workline_id, device_role=role, device_code=code, **contracts[code])
             for role, code in sorted(line.config.get("device_bindings", {}).items())

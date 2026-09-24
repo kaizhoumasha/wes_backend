@@ -17,6 +17,7 @@ from src.app.workline.models.workline import (
     WorkLineConfigurationStatus,
     WorkLinePluginSummary,
     WorkLinePositionInput,
+    WorkLineRunMode,
 )
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.workline_service import WorkLineService
@@ -493,7 +494,7 @@ class WorkLineConfigurationService:
 
     async def _trigger_plugin_drain(self, db: Any, workline: WorkLine) -> None:
         """停线前主动触发插件的回库暂存区排空，不阻塞、不改变后续未完成负载判定。"""
-        if workline.plugin_key is None:
+        if workline.plugin_key is None or workline.run_mode == WorkLineRunMode.ECS_TEST:
             return
         trigger = self._drain_triggers.get(workline.plugin_key)
         if trigger is None:
@@ -511,7 +512,9 @@ class WorkLineConfigurationService:
         *,
         action: str,
     ) -> None:
-        if workline.plugin_key is None:
+        # ECS_TEST 启动清空了 plugin_version（保留 plugin_key 草稿），不代表插件在运行；
+        # 插件业务义务检查随下次业务 START 重新冻结版本时才有意义。
+        if workline.plugin_key is None or workline.run_mode == WorkLineRunMode.ECS_TEST:
             return
         try:
             installed = self._resolve_matching_definition(workline)

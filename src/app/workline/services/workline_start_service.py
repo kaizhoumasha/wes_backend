@@ -9,13 +9,14 @@ from src.app.device.contracts import DEVICE_INTEGRATION_CONTRACT_KEY, DEVICE_INT
 from src.app.device.repositories.device_repository import device_repository
 from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
 from src.app.workline.activation import WorkLineActivationPlan, WorkLineDeviceBinding, WorkLinePositionBinding
+from src.app.workline.domain.ecs_test import EcsTestRule, parse_ecs_test_rules
 from src.app.workline.installed_plugin import (
     InstalledWorkLinePlugin,
     parse_device_bindings,
     resolve_installed_plugin,
     resolve_position_bindings,
 )
-from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
+from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput, WorkLineRunMode
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.conf import settings
 from src.core.transaction_wakeup import defer_wakeup
@@ -73,6 +74,8 @@ class WorkLineStartService:
             raise WorkLineStartVersionConflictError(f"WorkLine {workline_id} 版本已变化，请重新读取状态")
         if workline.is_active:
             raise WorkLineStartInvalidStateError("WorkLine 已启用")
+        if workline.run_mode == WorkLineRunMode.ECS_TEST:
+            return await self._start_ecs_test(db, workline)
         # 明确启用不等待历史执行/反馈闭合；当前业务约束由已安装插件声明。
         plugin = self._resolve_plugin(workline)
         if plugin.business_blocker is not None:
@@ -162,6 +165,19 @@ class WorkLineStartService:
                 )
             except ValueError as exc:
                 raise WorkLineStartConfigurationError(str(exc)) from exc
+        await self._verify_bindings_online(bindings)
+        return WorkLineActivationPlan(
+            plugin_key=plugin.plugin_key,
+            plugin_version=plugin.plugin_version,
+            flow_mode=None,
+            device_bindings=tuple(bindings),
+            position_bindings=position_bindings,
+        )
+
+    async def _verify_bindings_online(self, bindings: list[WorkLineDeviceBinding]) -> dict[str, Any]:
+        """核对每个 binding 的设备在 ECS 上在线；返回按 device_code 索引的最新状态。"""
+
+        statuses_by_device: dict[str, Any] = {}
         for endpoint in sorted({binding.endpoint_base_url for binding in bindings}):
             if self._adapter_provider is None:
                 raise WorkLineStartConfigurationError("ECS 连通性检查不可用")
@@ -180,15 +196,69 @@ class WorkLineStartService:
                     # START 只发布执行合同；运行模式、空闲状态和时效由命令派发检查。
                     if not status.state.is_online:
                         raise ValueError(f"ECS 设备离线 {binding.device_code}")
+                    statuses_by_device[binding.device_code] = status
             except (KeyError, RuntimeError, ValueError) as exc:
                 raise WorkLineStartConfigurationError(f"ECS 连通性检查失败: {endpoint}: {exc}") from exc
-        return WorkLineActivationPlan(
-            plugin_key=plugin.plugin_key,
-            plugin_version=plugin.plugin_version,
-            flow_mode=None,
-            device_bindings=tuple(bindings),
-            position_bindings=position_bindings,
-        )
+        return statuses_by_device
+
+    async def _start_ecs_test(self, db: Any, workline: WorkLine) -> WorkLine:
+        try:
+            rules = parse_ecs_test_rules(workline.runtime_config_json)
+        except ValueError as exc:
+            raise WorkLineStartConfigurationError(str(exc)) from exc
+        bindings = await self._build_ecs_test_bindings(db, workline, rules)
+        contracts: dict[str, Any] = {}
+        for binding in bindings:
+            contract = asdict(binding)
+            for key in ("workline_id", "device_code", "device_role"):
+                contract.pop(key)
+            contracts[binding.device_code] = contract
+        workline.plugin_version = None
+        workline.flow_mode = None
+        workline.device_contracts = contracts
+        workline.position_bindings = {}
+        return await self._worklines.set_active_for_start(db, workline)
+
+    async def _build_ecs_test_bindings(
+        self, db: Any, workline: WorkLine, rules: tuple[EcsTestRule, ...]
+    ) -> list[WorkLineDeviceBinding]:
+        codes = sorted({code for rule in rules for code in (rule.source_device_code, rule.target_device_code)})
+        devices = await self._devices.get_by_work_line_id_for_update(db, cast("int", workline.id))
+        by_code = {device.device_code: device for device in devices if not device.is_deleted}
+        bindings: list[WorkLineDeviceBinding] = []
+        for code in codes:
+            device = by_code.get(code)
+            if (
+                device is None
+                or not device.is_active
+                or device.id is None
+                or device.work_line_id != workline.id
+                or not device.endpoint_base_url
+            ):
+                raise WorkLineStartConfigurationError(f"{code} 缺少本线启用设备或 Endpoint")
+            try:
+                bindings.append(
+                    WorkLineDeviceBinding(
+                        workline_id=cast("int", workline.id),
+                        device_id=device.id,
+                        device_code=code,
+                        device_role=code,
+                        endpoint_base_url=device.endpoint_base_url,
+                        contract_key=DEVICE_INTEGRATION_CONTRACT_KEY,
+                        contract_version=DEVICE_INTEGRATION_CONTRACT_VERSION,
+                        status_max_age_ms=settings.WORKLINE_DEVICE_STATUS_MAX_AGE_MS,
+                        command_timeout_ms=settings.WORKLINE_DEVICE_COMMAND_TIMEOUT_MS,
+                    )
+                )
+            except ValueError as exc:
+                raise WorkLineStartConfigurationError(str(exc)) from exc
+        statuses_by_device = await self._verify_bindings_online(bindings)
+        for rule in rules:
+            status = statuses_by_device.get(rule.target_device_code)
+            supported = status.device.supported_commands if status is not None else None
+            if supported is not None and rule.task_type not in supported:
+                raise WorkLineStartConfigurationError(f"{rule.target_device_code} 不支持 task_type {rule.task_type}")
+        return bindings
 
     def _resolve_plugin(self, workline: Any) -> InstalledWorkLinePlugin:
         plugin_key = getattr(workline, "plugin_key", None)

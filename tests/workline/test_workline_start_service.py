@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
 
+from src.app.device.contracts import EcsDeviceStatus
 from src.app.workline.activation import WorkLineActivationPlan, WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
+from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput, WorkLineRunMode
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartInvalidStateError,
@@ -16,6 +17,149 @@ from src.app.workline.services.workline_start_service import (
     WorkLineStartService,
     WorkLineStartVersionConflictError,
 )
+from src.utils.timezone import timezone
+
+
+def _ecs_status(device_code: str, *, supported_commands: tuple[str, ...] | None = None, is_online: bool = True):
+    return EcsDeviceStatus.model_validate(
+        {
+            "device": {
+                "device_code": device_code,
+                "device_name": None,
+                "device_type": None,
+                "role": None,
+                "supported_commands": supported_commands,
+                "supported_events": None,
+            },
+            "state": {
+                "device_code": device_code,
+                "is_online": is_online,
+                "mode": "AUTO",
+                "status": "IDLE",
+                "current_command_code": None,
+                "scenario": None,
+                "updated_at": int(timezone.now_utc().timestamp() * 1000),
+            },
+        }
+    )
+
+
+def setup_ecs_test_start(*, rules=None, source_device_missing=False):
+    if rules is None:
+        rules = [
+            {
+                "source_device_code": "SCAN-1",
+                "target_device_code": "TARGET-1",
+                "task_type": "MOVE_FORWARD",
+                "params": {"source": {"location_id": "SCAN-1"}},
+            }
+        ]
+    line = WorkLine(
+        id=11,
+        line_code="WL-11",
+        line_name="ecs test line",
+        line_type=LineType.AUTO,
+        version=1,
+        run_mode=WorkLineRunMode.ECS_TEST,
+        plugin_key="example",  # 停用前遗留的业务插件草稿，ECS_TEST 不要求它有效
+        plugin_version="1.0",
+        runtime_config_json={"ecs_test_rules": rules},
+    )
+    repository = AsyncMock()
+    repository.get_for_update.return_value = line
+
+    async def activate(db, workline):
+        workline.is_active = True
+        workline.increment_version()
+        return workline
+
+    repository.set_active_for_start.side_effect = activate
+    devices = [
+        SimpleNamespace(
+            id=101,
+            device_code="SCAN-1",
+            work_line_id=11,
+            is_active=True,
+            is_deleted=False,
+            endpoint_base_url="http://ecs:8080",
+        ),
+        SimpleNamespace(
+            id=102,
+            device_code="TARGET-1",
+            work_line_id=11,
+            is_active=True,
+            is_deleted=False,
+            endpoint_base_url="http://ecs:8080",
+        ),
+    ]
+    if source_device_missing:
+        devices = devices[1:]
+    device_repo = AsyncMock()
+    device_repo.get_by_work_line_id_for_update.return_value = devices
+    provider = AsyncMock()
+    provider.get_adapter.return_value.fetch_statuses.return_value = (
+        _ecs_status("SCAN-1"),
+        _ecs_status("TARGET-1", supported_commands=("MOVE_FORWARD",)),
+    )
+    service = WorkLineStartService(
+        plugins=(),
+        workline_repository=repository,
+        device_repository=device_repo,
+        device_adapter_provider=provider,
+    )
+    return service, line, repository, device_repo, provider
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_freezes_cross_device_binding_and_clears_plugin_version():
+    service, _line, repository, _devices, _provider = setup_ecs_test_start()
+    started = await service.start(object(), workline_id=11, version=1)
+    assert started.plugin_version is None
+    assert started.flow_mode is None
+    assert started.plugin_key == "example"  # 插件草稿保留，供未来切回业务模式
+    assert set(started.device_contracts) == {"SCAN-1", "TARGET-1"}
+    assert "device_role" not in started.device_contracts["TARGET-1"]
+    assert started.position_bindings == {}
+    repository.set_active_for_start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_rejects_missing_rules():
+    service, line, *_ = setup_ecs_test_start(rules=[])
+    with pytest.raises(WorkLineStartConfigurationError, match="ecs_test_rules"):
+        await service.start(object(), workline_id=11, version=1)
+    assert not line.is_active
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_rejects_duplicate_source():
+    rules = [
+        {"source_device_code": "SCAN-1", "target_device_code": "TARGET-1", "task_type": "MOVE_FORWARD", "params": {}},
+        {"source_device_code": "SCAN-1", "target_device_code": "TARGET-2", "task_type": "MOVE_FORWARD", "params": {}},
+    ]
+    service, _line, *_ = setup_ecs_test_start(rules=rules)
+    with pytest.raises(WorkLineStartConfigurationError, match="ecs_test_rules"):
+        await service.start(object(), workline_id=11, version=1)
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_rejects_device_not_owned_by_line():
+    service, line, *_ = setup_ecs_test_start(source_device_missing=True)
+    with pytest.raises(WorkLineStartConfigurationError, match="SCAN-1"):
+        await service.start(object(), workline_id=11, version=1)
+    assert not line.is_active
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_rejects_target_without_task_type_capability():
+    service, line, _devices, _repo, provider = setup_ecs_test_start()
+    provider.get_adapter.return_value.fetch_statuses.return_value = (
+        _ecs_status("SCAN-1"),
+        _ecs_status("TARGET-1", supported_commands=("PICK_AND_PUT",)),
+    )
+    with pytest.raises(WorkLineStartConfigurationError, match="task_type"):
+        await service.start(object(), workline_id=11, version=1)
+    assert not line.is_active
 
 
 def setup_start():
