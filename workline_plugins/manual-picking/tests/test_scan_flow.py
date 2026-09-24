@@ -1464,7 +1464,8 @@ async def test_scan3_rescan_waits_while_first_command_is_pending() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state() -> None:
+@pytest.mark.parametrize("terminal_status", ["FAILED", "TIMED_OUT"])
+async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state(terminal_status: str) -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S3", "A000000001-B")
@@ -1476,7 +1477,7 @@ async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state()
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
     stuck_command = passages.rows[0].scan3_command_code
-    commands.statuses[stuck_command] = "TIMED_OUT"
+    commands.statuses[stuck_command] = terminal_status
     before = len(commands.requests)
 
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
@@ -1484,6 +1485,11 @@ async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state()
     assert passages.rows[0].scan3_evidence_id == 5
     assert passages.rows[0].scan3_command_code != stuck_command
     assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+
+    retry_command = passages.rows[0].scan3_command_code
+    assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert passages.rows[0].scan3_command_code == retry_command
 
 
 @pytest.mark.asyncio
@@ -1618,15 +1624,48 @@ async def test_scan4_rescan_preserves_first_fifo_order_and_command() -> None:
     await flow.apply_in_session(object(), 4, workline_id=7)
     await flow.apply_in_session(object(), 5, workline_id=7)
     frozen_command = passages.rows[0].scan4_command_code
+    commands.statuses[frozen_command] = "ACKNOWLEDGED"
     before = len(commands.requests)
 
-    assert (
-        await flow.apply_in_session(object(), 6, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
     assert len(commands.requests) == before
     assert passages.rows[0].scan4_evidence_id == 5
     assert passages.rows[0].scan4_command_code == frozen_command
     assert passages.rows[0].return_state == "MOVE_PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["FAILED", "TIMED_OUT"])
+async def test_scan4_rescan_after_terminal_command_preserves_first_arrival(terminal_status: str) -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    evidences.rows[5] = _scan(5, "S4", "A000000001-B")
+    evidences.rows[6] = _scan(6, "S4", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    await flow.apply_in_session(object(), 4, workline_id=7)
+    await flow.apply_in_session(object(), 5, workline_id=7)
+    passage = passages.rows[0]
+    first_arrival = passage.scan4_received_at
+    failed_command = passage.scan4_command_code
+    commands.statuses[failed_command] = terminal_status
+    before = len(commands.requests)
+
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert passage.scan4_evidence_id == 5
+    assert passage.scan4_received_at == first_arrival
+    assert passage.scan4_command_code != failed_command
+    assert passage.return_state == "MOVE_PENDING"
+
+    retry_command = passage.scan4_command_code
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert passage.scan4_command_code == retry_command
 
 
 @pytest.mark.asyncio
