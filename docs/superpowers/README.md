@@ -193,7 +193,6 @@
 - `docs/architecture/authority-matrix.md`
 - `docs/architecture/device-command-contract.md`
 - `docs/architecture/architecture-guardrails-spec.md`
-- `docs/architecture/legacy-cleanup-matrix.csv`（机器可读清理清单）
 - `docs/contracts/wms-northbound-interaction-contract.md`
 - `docs/integration/third_party_integration_whitepaper.md`（长期生效的第三方设备统一接口 2.3）
 - `docs/integration/callback_event_validation_principles.md`
@@ -227,7 +226,8 @@
 - `../archive_docs/wes_backend/docs/business/rough_sorter_scan_decision_contract.md`
 - `../archive_docs/wes_backend/docs/integration/third_party_integration_whitepaper.md`（历史 1.1 原文；当前 2.3 在项目内长期生效）
 - `../archive_docs/wes_backend/wms_rcs_interface_requirements.pdf`（旧 WMS/RCS 接口汇编，不属于硬件厂商原始资料）
-- `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md`（Phase 0 历史分析；机器清单继续保留为 CSV）
+- `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md`（Phase 0 历史分析）
+- `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.csv`（一次性清理清单）
 - `../archive_docs/wes_backend/.serena/memories/learnings/code-reviews/` 下五份 2026-03-07/16 历史评审
 - `../archive_docs/wes_backend/.serena/memories/learnings/tdd-refactor-success-2026-03-16.md`
 - `../archive_docs/wes_backend/.superpowers/sdd/` 下旧 WMS 全工厂实施简报、进度、修复报告和评审差异
@@ -237,7 +237,8 @@
 - `../archive_docs/wes_backend/.learnings/ERRORS.md`（历史工具错误日志，不作为当前架构或运行约束）
 - `../archive_docs/wes_backend/docs/auth/api_authentication_design.md`
 - `../archive_docs/wes_backend/docs/auth/api_authentication_summary.md`
-- `../archive_docs/wes_backend/docs/architecture/business-legacy-absence-ledger.md`（一次性审计快照；机器门禁继续由 CSV 真源承担）
+- `../archive_docs/wes_backend/docs/architecture/business-legacy-absence-ledger.md`（一次性审计快照）
+- `../archive_docs/wes_backend/docs/architecture/business-legacy-absence-ledger.csv`（一次性审计清单）
 - `../archive_docs/wes_backend/.claude/skills/wes-module-creator-1.0.0/OPTIMIZATION_SUMMARY.md`
 
 忽略规则曾隐藏的本地 Wiki、会话计划、QA/部署报告、备份、旧 PR 正文、`claudedocs/`、每日项目日志、根目录
