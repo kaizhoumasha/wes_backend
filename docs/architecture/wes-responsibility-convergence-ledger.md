@@ -93,7 +93,7 @@ P1 剩余调用点分类（同属 R09/R10，不增加候选编号）：
 
 点位事实审查（仍属 R09/R10）：原始 `InboundEvidence` 在插件处理前已持久化，但 SCAN1/SCAN2 的 Passage 应用仍受历史命令、FIFO 和位置门禁影响。已确认 SCAN1 非 `-B` 直达 SCAN3、且本次经过能唯一关联时，SCAN3 当前有效 `-B` 足以正常放行；该历史 NG 覆盖当前 Fact 的分支已修正。无可关联 Passage 时的建经过语义仍待核；SCAN4 无法关联已有 SCAN3 Passage 时也未冻结本点首次到位投影。现场已确认 SCAN4 `MOVE_FORWARD` 后料箱按序进入 `RETURN_BUFFER`，按现行合同以匹配的 ECS `SUCCESS` 作为资格事实；`return_batch` 只消化已具备资格的 FIFO 连续队首，不能按命令完成先后重排。当前排序仍使用 WES `received_at`；ECS 跨箱回调物理排序保证尚未确认，旧厂商资料只提供事件时间字段。直达箱当前扫码授权不等于经过 SCAN2 的箱可绕过 WMS 结果；本地接收顺序也不能冒充未确认的现场顺序。
 
-身份切片：同一 PickingTask 的同一物理料箱允许多次经过；`work_completed.data.admission_operation_id` 关联本次准入 Action 和 Passage，信封顶层 `operation_id` 仍是完成事件投递身份。插件按原准入身份查询并核对 task/bin，旧 `(task_id, bin_code)` 终态唯一索引已退出；同箱两次经过、迟到和重复完成由聚焦测试覆盖，迁移与接收已在独立临时 PostgreSQL 验证。SCAN1/SCAN3 的新 Passage 创建及关联规则不在本切片内，不能因完成事件身份已修复而推定点位身份也已闭合。
+身份切片的历史实现以 `work_completed.data.admission_operation_id` 关联本次准入 Action 和 Passage；其迁移与接收曾在独立临时 PostgreSQL 验证。**2026-09-23 合同修订已替代该通知字段**：WMS 完成通知只传 `task_id + bin_code + result + completed_at`，插件在当前工作位查找唯一等待完成的 Passage；原准入 `admission_operation_id` 仅作 WES 本地 Action 身份，通知顶层 `operation_id` 仍是投递身份。同一 PickingTask 的同一物理料箱允许多次经过，跨 Passage 的 `(task_id, bin_code)` 终态唯一索引仍不恢复。SCAN1/SCAN3 的新 Passage 创建及关联规则不在本切片内。
 
 左边界因果审查：`plan_delta` 连续版本写入 `PickingTask.last_applied_plan_revision`；`PickingTaskBinSourceRack` 保存成员的 `plan_revision/source_evidence_id/cancelled_evidence_id`，同一任务的同架面可由更高 revision 新增独立成员。`inbound_batch` 冻结请求现以 `task_id + plan_revision + rack_id + rack_face` 指向原成员，`operation_id` 关联 `WmsConfirmation` 和 Response Evidence；插件按同一 revision 关联结果，V1 的迟到结果不能结清 V2。CTU01 按原计划 Evidence 与 rack 去重；取消和直接取料面完成事实也按 revision 命中成员。本次身份修正不涉及 SCAN4 FIFO 或公共包抽取。
 

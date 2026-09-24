@@ -86,8 +86,7 @@ backend develop `419d2725`，frontend develop `cdaca7a`。开始实施重新记�
 
 ## T4：业务消费者与 WMS 恢复闭环
 
-**修改入口：** `workline_plugins/rough_sorter/src/rough_sorter/handlers/device_position_confirmed.py`、`target_decided.py`、`material_evidence_ready.py`；`src/app/transport/debug_run_service.py`；`src/app/workline_integration_debug/service.py`；`src/app/wms_adapter/outbound_picking/return_batch_*`；`src/app/wms_integration/outbound_picking/services/picking_task_prepare.py`。只修改调用链确认有旧状态依赖的消费者。
-**原测试：** `workline_plugins/rough_sorter/tests/test_device_and_target.py`、`test_transport_and_recovery.py`；`tests/runtime/transport/test_transport_debug_run_advancement.py`；`tests/runtime/workline_integration_debug/test_transport_mapping.py`。其他实际插件测试在插件包内，不能寄存核心。
+**历史实施入口：** 本节原列的 `rough_sorter` 与 `workline_integration_debug` 生产文件及测试均已退役，不再作为修改或验收目标。当前消费者按存续的 Transport、WMS operation 和实际插件调用链重新枚举；原实施证据见本计划最终记录。
 **接口：** 新本站事件进入其自己的业务决策；同任务事实按身份及来源合同消费；WMS 已纠正的业务请求使用对应 operation 明确合同，不添加通用改报文接口。
 
 - [ ] 按实际工作线列出“本站事件 → WMS 决策 → 指令 → 结果”调用点和测试 owner；未实现的插件不以声明或 fake 假装交付。

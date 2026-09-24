@@ -24,7 +24,6 @@ async def test_manual_bin_completion_is_persisted_before_received_ack() -> None:
             "operation": operation,
             "timestamp": 1_788_390_000_000,
             "data": {
-                "admission_operation_id": new_uuid7(),
                 "task_id": "PICK-001",
                 "bin_code": "BIN-001",
                 "result": "NORMAL",
@@ -69,7 +68,6 @@ async def test_manual_bin_completion_freezes_executing_task_workline_for_plugin(
             "operation": "outbound.manual_bin.work_completed@v1",
             "timestamp": 1_788_390_000_000,
             "data": {
-                "admission_operation_id": new_uuid7(),
                 "task_id": "PICK-001",
                 "bin_code": "A000000001",
                 "result": "NORMAL",

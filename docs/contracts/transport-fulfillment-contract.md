@@ -50,8 +50,8 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
 - 同步 submit 直接返回 `422 / REJECTED`；线上 `reason_code` 尚未与 RCS/WMS 确认最终枚举值，暂不计入 §4.2 已批准
   的封闭 `reason_code` 列表，见本节末 TODO。
 - 已接纳（`202 / RECEIVED` → `ACCEPTED`）后 RCS 主动取消，经 `transport.task.resulted@v1` 以
-  `status=CANCELLED` 报告。`final_position` 可选；提供时必须为权威 `RACK_POSITION`。WES 将该 wire 分支归一化为内部
-  `FAILED + failure_code=RCS_TASK_CANCELLED`，不新增内部 Transport 状态。manual-picking 对仍有原业务依据的货架动作统一按指数退避重试所有明确 `CANCELLED`；原 plan_delta 成员被取消时停止，不因 PickingTask 进入 `EXECUTION_COMPLETED` 而停止。权威现场事实已满足动作目标时不再重复动作。每次业务重试使用新请求身份，原因细分待联调数据形成后再定。
+  `status=CANCELLED` 报告，并携带权威 `RACK_POSITION final_position`。WES 将该 wire 分支归一化为内部
+  `FAILED + failure_code=RCS_TASK_CANCELLED`，不新增内部 Transport 状态。manual-picking 对仍有原业务依据的货架动作统一按指数退避重试所有明确 `CANCELLED`；明确未接纳或有权威终位的失败进场 Transport 同样按当前成员依据重试；原 plan_delta 成员被取消时停止，不因 PickingTask 进入 `EXECUTION_COMPLETED` 而停止。已有成功 Transport 的权威到位事实满足动作目标时不再重复动作。每次业务重试使用新请求身份，原因细分待联调数据形成后再定。
 
 两条路径都不改变 §4.1.1、§4.3 已批准的设计：`REJECTED`/`FAILED` 均为不可变终态，Transport 核心不实现指数退避，
 不在原 `transport_task_id`/`operation_id` 上重提。业务如需针对同一目标继续搬运，必须由调用方（工作线插件/业务
@@ -163,10 +163,10 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 人工拣料 CTU02 的 `SUCCEEDED` 表示旋转后的货架已返回绑定工作位，成功成员、最终精确位置和面向必须与原任务匹配；
 仅接纳或中途旋转不能当作当前架到位。插件按 transport-only `feed_complete` 决定换面时机，Transport 不等待后续扫码或业务完成。
 
-人工拣料的 `workline_positions.capacity` 是设备拓扑参数，不作为 WES 的 CTU01 物理准入窗口。已确认的每个来源货架或 drain reservation，WES 按业务步骤身份最多创建一次 CTU01；其他货架进场、离场或结果未闭合不阻止无依赖 CTU01 提交。RCS 负责 AGV 排队、工作位容量、自主进位和互斥；WES 不建占窗、队尾或同架物理预占。新架只有原 Transport、成功成员与精确工作位 rack/face 事实共同证明到位才可作业；同架后续步骤仍须满足该架自身的离场/到位因果条件。
+人工拣料的 `workline_positions.capacity` 是 WES 针对每个目标点维护的滚动进场 Transport 下发窗口。进场创建后，一个物理货架占一个名额；到位继续占用，业务完成且对应离场 Transport 获得 `ACCEPTED` 后释放并补发 pending。同架跨 revision 或面向复用仍在占窗的进场生命周期，不重复下发 CTU01/F01。明确未接纳的进场任务，或失败且权威终位在目标点外的任务，释放名额；失败终位仍在目标点的业务重试沿用该名额。发送结果、位置或离场接纳未知时保留原身份等待权威 API 结果。RCS 负责 AGV 排队、物理工作位、自动补位与实际进位顺序，WES 不维护其 queue slot。新架只有原 Transport、成功成员与精确工作位 rack/face 事实共同证明到位才可作业。
 
 货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
-人工出库的转运货架默认使用 `F01` 出库。已确认的两类货架推荐规则及各入口实现范围见
+人工出库的转运货架和直接取料退料架进出场均使用 `F01`；五层来源架和 drain 架使用 `CTU01` 进场、`CTU03` 离场，不混用模板。已确认的货架规则及各入口实现范围见
 [人工出库货架搬运规则](../integration/manual-outbound-rack-transport.md)。
 调用方未指定时，WES 在形成不可变请求前规范化为 `F01`。Wire 始终发送明确值，WES 不根据位置编码反推模板，也不建立模板配置映射。
 只要位置与模板各自满足结构合同，WES 就接受、冻结并原样转发，不校验 `source.kind + target.kind + rcs_template_id` 场景组合；
@@ -528,7 +528,7 @@ transport_task_id
 kind: RACK_MOVE | RACK_ROTATE
 outcome_revision  # 1..Int64.MaxValue；同一 transport_task_id 从 1 开始连续递增；技术重试保持不变
 rack_id
-status: SUCCEEDED | FAILED
+status: SUCCEEDED | FAILED | CANCELLED
 final_position? | position_unknown: true
 failure_code?
 arrival_face?
@@ -542,7 +542,65 @@ arrival_face?
 - `FAILED` 且位置明确时必须携带 `final_position + failure_code`；`arrival_face` 可省略、传 `null` 或空字符串，
   与是否指定 `target_face` 无关；非空实际面向原样保存。
 - `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或非空到达面；到达面 `null`、空字符串统一视为未提供。
+- `CANCELLED` 必须携带权威 `RACK_POSITION final_position`，不得携带 `position_unknown`、`failure_code` 或 `arrival_face`。WES 以该终位判断进场货架是否仍在目标点；目标外的终位释放进场窗口，并由插件按当前业务依据重新申请搬运。
 - 货架结果不使用只有一个成员的 `results[]`。
+
+已接纳的离场 Transport 若返回 `FAILED`，且权威终位仍在目标点，当前 `FAILED` DTO 允许省略 `arrival_face`。以下请求可以被可靠接收，但只确认失败终位，不能证明当前工作面，也不能据此创建新的离场 Transport：
+
+```json
+{
+  "operation_id": "019f3401-4a10-7b1a-aab5-f2df785324d2",
+  "operation": "transport.task.resulted@v1",
+  "timestamp": 1786060817000,
+  "data": {
+    "transport_task_id": "019f3400-0e17-7d2a-b944-3cf7953804db",
+    "kind": "RACK_MOVE",
+    "outcome_revision": 1,
+    "rack_id": "RACK-5F-001",
+    "status": "FAILED",
+    "failure_code": "RCS_EXECUTION_FAILED",
+    "final_position": {"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"}
+  }
+}
+```
+
+```json
+{
+  "operation_id": "019f3401-4a10-7b1a-aab5-f2df785324d2",
+  "code": "RECEIVED",
+  "timestamp": 1786060817100,
+  "data": {"transport_task_id": "019f3400-0e17-7d2a-b944-3cf7953804db"}
+}
+```
+
+**恢复要求待确认，当前尚未实现：** WMS/RCS 须通过双方确认的 API 提供该货架在目标点的权威当前面向，WES 才能按当前业务依据以新 `operation_id` 重问 `outbound.rack.departure_decide@v1`。权威面向的提供方式、字段与重报语义尚未冻结；WES 不从原进场面向、Transport 下发顺序或旧投影推断，也不设置需要本地人工解除的窗口名额。
+
+`CANCELLED` 回调及接收响应示例：
+
+```json
+{
+  "operation_id": "019f3401-4a10-7b1a-aab5-f2df785324d1",
+  "operation": "transport.task.resulted@v1",
+  "timestamp": 1786060816000,
+  "data": {
+    "transport_task_id": "019f3400-0e17-7d2a-b944-3cf7953804da",
+    "kind": "RACK_MOVE",
+    "outcome_revision": 1,
+    "rack_id": "RACK-5F-001",
+    "status": "CANCELLED",
+    "final_position": {"kind": "RACK_POSITION", "location_code": "SOURCE-RACK-POSITION"}
+  }
+}
+```
+
+```json
+{
+  "operation_id": "019f3401-4a10-7b1a-aab5-f2df785324d1",
+  "code": "RECEIVED",
+  "timestamp": 1786060816100,
+  "data": {"transport_task_id": "019f3400-0e17-7d2a-b944-3cf7953804da"}
+}
+```
 
 料箱族 `BIN_MOVE | BIN_EXCHANGE` 的 `data` 为：
 

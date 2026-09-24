@@ -162,7 +162,7 @@ ONLINE ──在线预检──> READY ──关闭 Nginx/API/Beat admission─�
 
 由于开发门禁与现场运行静默属于两个可独立审批、独立回滚的子系统，分别实施：
 
-1. `2026-08-26-development-workflow-efficiency.md`：前后端 Agent、Git、QUALITY 和 HEAVY 流程。
+1. `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md`：前后端 Agent、Git、QUALITY 和 HEAVY 流程的已完成实施记录。
 2. `docs/superpowers/plans/2026-09-09-stability-recovery-operations.md` C2：已实现的后端 FULL 只读运行静默门禁的普通 TEST 验收；原实施过程已外部归档，机制以当前发布规范为准。
 
 第一份计划不依赖第二份；第二份不得反向改变日常开发测试策略。

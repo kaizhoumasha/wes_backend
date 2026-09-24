@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -496,14 +498,20 @@ def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) ->
     assert wms_mock_server.transport_submission_store.snapshots()[-1]["request"]["data"]["target_face"] == face
 
 
-def test_transport_submit_mock_rejects_omitted_target_face_outside_ctu03() -> None:
+@pytest.mark.parametrize("template", ["CTU01", "CTU03", "F01"])
+def test_transport_submit_mock_accepts_omitted_target_face_for_rack_move(template: str) -> None:
     envelope = deepcopy(RACK_MOVE)
     envelope["data"].pop("target_face")
+    envelope["data"].update(
+        source={"kind": "RACK_POSITION", "location_code": "a"},
+        target={"kind": "RACK_POSITION", "location_code": "b"},
+        rcs_template_id=template,
+    )
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=envelope)
 
-    assert response.status_code == 422
+    assert response.status_code == 202
 
 
 def test_transport_submit_mock_rejects_explicit_null_target_face_for_ctu03() -> None:
@@ -1304,6 +1312,224 @@ def test_manual_bin_admission_supports_console_happy_path():
     assert admission_response.json()["data"] == {"result": "WORK_REQUIRED", "task_id": "PICK-001"}
 
 
+def test_kt16_good_case_replays_recorded_decisions_and_completion_events(monkeypatch):
+    from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import parse_manual_bin_completed_event
+    from src.app.wms_adapter.outbound_picking.plan_delta_wire import parse_picking_task_plan_delta_event
+    from src.app.wms_adapter.outbound_picking.wire import parse_picking_task_issued_event
+
+    case = wms_mock_server._load_good_case()
+    sent = []
+
+    async def post_callback(url, payload):
+        sent.append(payload)
+        return 202
+
+    monkeypatch.setattr(wms_mock_server, "_post_transport_callback", post_callback)
+    with TestClient(wms_mock_server.app) as client:
+        assert client.post("/debug/good-case/activate").json()["decisions"] == 32
+        assert (
+            wms_mock_server.transport_submission_store.rack_faces(set(case["initial_rack_faces"]))
+            == case["initial_rack_faces"]
+        )
+        for item in case["decisions"]:
+            request = deepcopy(item["request"])
+            if request["operation"] == "outbound.manual_bin.work_admission_decide@v1":
+                request["data"]["scanned_at"] += 1
+            result = client.post("/api/v1/wes/decisions", json=request)
+            assert result.status_code == item["status_code"]
+            assert result.json()["data"] == item["response"]["data"]
+            replay = client.post("/api/v1/wes/decisions", json=request)
+            assert replay.status_code == 200
+            assert replay.json()["data"] == result.json()["data"]
+        parsers = (parse_picking_task_issued_event, parse_picking_task_plan_delta_event)
+        for index, event in enumerate(case["events"]):
+            (parsers[index] if index < 2 else parse_manual_bin_completed_event)(event)
+            assert client.post(f"/debug/good-case/events/{index}/send").json() == {"status_code": 202}
+        assert client.post(f"/debug/good-case/events/{len(case['events'])}/send").status_code == 404
+        assert client.post("/api/v1/wes/decisions", json=case["decisions"][0]["request"]).json()["code"] == "DUPLICATE"
+        unmatched = deepcopy(case["decisions"][0]["request"])
+        unmatched["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d5999"
+        assert client.post("/api/v1/wes/decisions", json=unmatched).status_code == 409
+        assert client.post("/debug/reset").status_code == 200
+    assert sent == case["events"]
+
+
+@pytest.mark.parametrize(
+    ("inbound_template", "target_location", "outbound_template", "outbound_target", "outbound_final"),
+    [
+        ("CTU01", "KT16", "CTU03", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01"),
+        ("F01", "OUT65", "F01", {"kind": "ZONE", "location_code": "SMT_T"}, "SMT_T-01"),
+        ("F01", "OUT65", "F01", {"kind": "RACK_POSITION", "location_code": "STORE-POS"}, "STORE-POS"),
+        ("F01", "RETURN_WORK", "F01", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01"),
+    ],
+)
+@pytest.mark.parametrize("capacity", [1, 3])
+@pytest.mark.asyncio
+async def test_transport_capacity_reuses_inflight_rack_and_recalls_it_after_return(
+    capacity, inbound_template, target_location, outbound_template, outbound_target, outbound_final
+):
+    from src.app.execution.services.rack_inbound_window import RackInboundWindowService
+    from src.app.transport.contracts import TransportHandle
+    from src.core.uuid7 import new_uuid7
+
+    rows = []
+
+    async def active_target(_db, *, workline_id, target_location_code):
+        return [
+            row
+            for row in rows
+            if row.workline_id == workline_id
+            and row.window_target_location_code == target_location_code
+            and row.window_released_at is None
+        ]
+
+    async def active_rack(_db, *, workline_id, rack_id):
+        return [
+            row
+            for row in rows
+            if row.workline_id == workline_id
+            and row.resource_fence_id == rack_id
+            and row.window_target_location_code is not None
+            and row.window_released_at is None
+        ]
+
+    bindings = SimpleNamespace(
+        list_active_window_for_target=active_target,
+        list_active_window_for_rack=active_rack,
+        get_by_client_request_id=AsyncMock(
+            side_effect=lambda _db, request_id: next((row for row in rows if row.client_request_id == request_id), None)
+        ),
+        get_window_by_departure_for_update=AsyncMock(
+            side_effect=lambda _db, request_id: next(
+                (row for row in rows if row.window_departure_client_request_id == request_id), None
+            )
+        ),
+    )
+    positions = SimpleNamespace(
+        get_by_workline_logic_location_for_update=AsyncMock(
+            return_value=SimpleNamespace(workline_id=1, enabled=True, capacity=capacity)
+        )
+    )
+    window = RackInboundWindowService(positions=positions, bindings=bindings)
+    db = SimpleNamespace(flush=AsyncMock())
+
+    with TestClient(wms_mock_server.app) as client:
+
+        async def admit(index, *, cycle=1):
+            rack_id = f"RACK-{index}"
+
+            async def create():
+                request = deepcopy(RACK_MOVE)
+                request["operation_id"] = new_uuid7()
+                request["data"].update(
+                    transport_task_id=f"inbound-{rack_id}-{cycle}",
+                    rack_id=rack_id,
+                    source={"kind": "RACK", "location_code": rack_id},
+                    target={"kind": "RACK_POSITION", "location_code": target_location},
+                    target_face="270",
+                    rcs_template_id=inbound_template,
+                )
+                assert client.post("/api/v1/wes/transport-requests", json=request).status_code == 202
+                rows.append(
+                    SimpleNamespace(
+                        workline_id=1,
+                        picking_task_id=7,
+                        resource_fence_id=rack_id,
+                        client_request_id=request["operation_id"],
+                        window_target_location_code=None,
+                        window_departure_client_request_id=None,
+                        window_released_at=None,
+                    )
+                )
+                return TransportHandle(request["data"]["transport_task_id"], request["operation_id"])
+
+            return await window.admit(
+                db,
+                workline_id=1,
+                workline_code="KT16",
+                target_location_code=target_location,
+                rack_id=rack_id,
+                picking_task_id=7,
+                create=create,
+            )
+
+        assert [await admit(index) for index in range(1, 6)] == [*["CREATED"] * capacity, *["PENDING"] * (5 - capacity)]
+        assert await admit(1) == "REUSED"
+        assert len(client.get("/debug/transport-submissions").json()["submissions"]) == capacity
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": "inbound-RACK-1-1",
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": "RACK-1",
+                "status": "SUCCEEDED",
+                "arrival_face": "270",
+                "final_position": {"kind": "RACK_POSITION", "location_code": target_location},
+            }
+        )
+        assert await admit(capacity + 1) == "PENDING"  # 入场到位仍占窗口
+
+        async def return_rack(cycle):
+            departure = deepcopy(RACK_MOVE)
+            departure["operation_id"] = new_uuid7()
+            departure["data"].update(
+                transport_task_id=f"departure-RACK-1-{cycle}",
+                rack_id="RACK-1",
+                source=(
+                    {"kind": "RACK", "location_code": "RACK-1"}
+                    if outbound_template == "F01"
+                    else {"kind": "RACK_POSITION", "location_code": target_location}
+                ),
+                target=outbound_target,
+                rcs_template_id=outbound_template,
+            )
+            departure["data"].pop("target_face")
+            assert await window.attach_departure(
+                db, workline_id=1, rack_id="RACK-1", client_request_id=departure["operation_id"]
+            )
+            assert await admit(capacity + 1) == "PENDING"
+            assert client.post("/api/v1/wes/transport-requests", json=departure).status_code == 202
+            assert await window.release_on_departure_accepted(db, client_request_id=departure["operation_id"])
+            wms_mock_server.transport_submission_store.apply_result(
+                {
+                    "transport_task_id": departure["data"]["transport_task_id"],
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": "RACK-1",
+                    "status": "SUCCEEDED",
+                    "arrival_face": "270",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": outbound_final},
+                }
+            )
+
+        await return_rack(1)
+        assert await admit(1, cycle=2) == "CREATED"  # 回库后，新业务依据再次呼叫同架
+        active_rack_one = [row for row in rows if row.resource_fence_id == "RACK-1" and row.window_released_at is None]
+        assert len(active_rack_one) == 1
+        assert active_rack_one[0].client_request_id != rows[0].client_request_id
+        assert await admit(capacity + 1) == "PENDING"
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": "inbound-RACK-1-2",
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": "RACK-1",
+                "status": "SUCCEEDED",
+                "arrival_face": "270",
+                "final_position": {"kind": "RACK_POSITION", "location_code": target_location},
+            }
+        )
+        await return_rack(2)
+        assert await admit(capacity + 1) == "CREATED"
+        assert await admit(capacity + 2) == "PENDING"
+        submissions = client.get("/debug/transport-submissions").json()["submissions"]
+        assert [
+            item["request"]["data"]["rack_id"]
+            for item in submissions
+            if item["request"]["data"]["transport_task_id"].startswith("inbound-")
+        ] == [*[f"RACK-{index}" for index in range(1, capacity + 1)], "RACK-1", f"RACK-{capacity + 1}"]
+
+
 def test_return_batch_does_not_treat_transport_acceptance_as_free_slots():
     with TestClient(wms_mock_server.app) as client:
         _pick_return_candidates(client, complete=False)
@@ -1446,14 +1672,19 @@ def test_inbound_batch_freezes_one_face_before_transport_and_replays_original_re
     }
     another = deepcopy(inbound)
     another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4532"
+    next_revision = deepcopy(inbound)
+    next_revision["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4533"
+    next_revision["data"]["plan_revision"] = 2
     with TestClient(wms_mock_server.app) as client:
         first = client.post("/api/v1/wes/decisions", json=inbound)
         second = client.post("/api/v1/wes/decisions", json=another)
         replay = client.post("/api/v1/wes/decisions", json=inbound)
+        later = client.post("/api/v1/wes/decisions", json=next_revision)
 
     assert first.json()["data"]["result"] == "READY"
     assert second.json()["data"] == {"result": "RACK_FACE_DONE"}
     assert replay.json() == first.json()
+    assert later.json()["data"]["result"] == "READY"
 
 
 @pytest.mark.parametrize(

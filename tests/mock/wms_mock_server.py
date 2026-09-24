@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from copy import deepcopy
 from dataclasses import dataclass
@@ -146,8 +147,9 @@ class TransportSubmissionStore:
         self._bin_origin_slots: dict[str, str] = {}
         self._known_slots: set[tuple[str, str, str]] = set()
         self._return_reservations: dict[str, dict[str, Any]] = {}
-        self._served_inbound_faces: set[tuple[str, str, str]] = set()
+        self._served_inbound_faces: set[tuple[str, int, str, str]] = set()
         self._prepared_manual_task_id: str | None = None
+        self._good_case_remaining: list[dict[str, Any]] | None = None
 
     def reset(self) -> None:
         with self._lock:
@@ -166,6 +168,33 @@ class TransportSubmissionStore:
             self._return_reservations.clear()
             self._served_inbound_faces.clear()
             self._prepared_manual_task_id = None
+            self._good_case_remaining = None
+
+    def activate_good_case(self) -> None:
+        with self._lock:
+            self.reset()
+            case = _load_good_case()
+            self._good_case_remaining = deepcopy(case["decisions"])
+            self._rack_faces.update(case["initial_rack_faces"])
+
+    def good_case_active(self) -> bool:
+        with self._lock:
+            return self._good_case_remaining is not None
+
+    def good_case_decision(self, envelope: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            if self._good_case_remaining is None:
+                return None
+            actual = deepcopy(envelope["data"])
+            if envelope["operation"] == MANUAL_BIN_ADMISSION_OPERATION:
+                actual.pop("scanned_at", None)
+            for index, item in enumerate(self._good_case_remaining):
+                expected = deepcopy(item["request"]["data"])
+                if item["request"]["operation"] == MANUAL_BIN_ADMISSION_OPERATION:
+                    expected.pop("scanned_at", None)
+                if item["request"]["operation"] == envelope["operation"] and expected == actual:
+                    return self._good_case_remaining.pop(index)
+            raise LookupError("GOOD_CASE_REQUEST_NOT_RECORDED")
 
     def remember_prepared_manual_task(self, task_id: str) -> None:
         with self._lock:
@@ -355,9 +384,9 @@ class TransportSubmissionStore:
         return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def inbound_batch_result(self, data: BinInboundBatchData) -> dict[str, Any]:
-        # 本机 Mock 一次冻结当前面的完整清单；后续搬运与退箱不再改变该分配。
+        # 本机 Mock 按计划成员冻结完整清单；后续搬运与退箱不再改变该分配。
         with self._lock:
-            face = (data.task_id, data.rack_id, data.rack_face)
+            face = (data.task_id, data.plan_revision, data.rack_id, data.rack_face)
             if face in self._served_inbound_faces:
                 return {"result": "RACK_FACE_DONE"}
             self._served_inbound_faces.add(face)
@@ -529,6 +558,10 @@ def reset_mock_wms_state() -> None:
     transport_submission_store.reset()
 
 
+def _load_good_case() -> dict[str, Any]:
+    return json.loads((Path(__file__).parent / "data" / "kt16_manual_picking_good_case.json").read_text())
+
+
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
@@ -688,7 +721,7 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
     ):
         return False
     if "target_face" not in rack:
-        if rack["rcs_template_id"] != "CTU03":
+        if kind == "RACK_ROTATE":
             return False
     elif not is_opaque_face(rack["target_face"]):
         return False
@@ -1002,6 +1035,48 @@ async def decide_return_batch(request: Request) -> Response:
         COMPLETION_CONFIRM_OPERATION,
         RETURN_BUFFER_DRAIN_OPERATION,
     }
+    if transport_submission_store.good_case_active():
+        parsers = {
+            PICKING_TASK_PREPARE_OPERATION: (parse_picking_task_prepare_request, parse_picking_task_prepare_response),
+            BIN_INBOUND_BATCH_OPERATION: (parse_bin_inbound_batch_request, parse_bin_inbound_batch_response),
+            RACK_DEPARTURE_OPERATION: (parse_rack_departure_request, parse_rack_departure_response),
+            COMPLETION_CONFIRM_OPERATION: (parse_completion_confirm_request, parse_completion_confirm_response),
+            RETURN_BUFFER_DRAIN_OPERATION: (parse_return_buffer_drain_request, parse_return_buffer_drain_response),
+            MANUAL_BIN_ADMISSION_OPERATION: (parse_manual_bin_admission_request, parse_manual_bin_admission_response),
+            BIN_RETURN_BATCH_OPERATION: (parse_bin_return_batch_request, parse_bin_return_batch_response),
+        }
+        pair = parsers.get(operation)
+        if pair is None:
+            return JSONResponse(
+                status_code=422, content=_ack(operation_id, "REJECTED", None, reason_code="UNSUPPORTED_OPERATION")
+            )
+        parse_request, parse_response = pair
+        try:
+            parsed = parse_request(envelope)
+            recorded = transport_submission_store.good_case_decision(envelope)
+        except ValidationError:
+            status, response = 422, _ack(operation_id, "REJECTED", None, reason_code="INVALID_DATA")
+            parse_response(status, response)
+        except LookupError:
+            return JSONResponse(status_code=409, content={"code": "GOOD_CASE_REQUEST_NOT_RECORDED"})
+        else:
+            status = recorded["status_code"]
+            response = _ack(operation_id, recorded["response"]["code"], None)
+            response["data"] = deepcopy(recorded["response"]["data"])
+            if operation == PICKING_TASK_PREPARE_OPERATION:
+                parse_response(status, response)
+            else:
+                parse_response(status, response, request=parsed)
+        transport_submission_store.store(
+            operation=operation,
+            operation_id=operation_id,
+            transport_task_id=None,
+            request=envelope,
+            digest=digest,
+            status_code=status,
+            response=response,
+        )
+        return JSONResponse(status_code=status, content=response)
     try:
         if operation == PICKING_TASK_PREPARE_OPERATION:
             parsed = parse_picking_task_prepare_request(envelope)
@@ -1098,6 +1173,25 @@ async def debug_bin_handoff_arrival(request: BinHandoffArrival) -> Response:
 async def debug_reset() -> dict[str, bool]:
     reset_mock_wms_state()
     return {"reset": True}
+
+
+@app.post("/debug/good-case/activate", tags=[MOCK_DEBUG_TAG])
+async def debug_activate_good_case() -> dict[str, object]:
+    transport_submission_store.activate_good_case()
+    return {"scenario": "kt16_manual_picking", "decisions": len(_load_good_case()["decisions"])}
+
+
+@app.get("/debug/good-case", tags=[MOCK_DEBUG_TAG])
+async def debug_good_case() -> dict[str, Any]:
+    return _load_good_case()
+
+
+@app.post("/debug/good-case/events/{index}/send", tags=[MOCK_DEBUG_TAG])
+async def debug_send_good_case_event(index: int) -> Response:
+    events = _load_good_case()["events"]
+    if index < 0 or index >= len(events):
+        return JSONResponse(status_code=404, content={"code": "GOOD_CASE_EVENT_NOT_FOUND"})
+    return await debug_transport_callback(events[index])
 
 
 @app.post("/debug/transport-submit-mode", tags=[MOCK_DEBUG_TAG])

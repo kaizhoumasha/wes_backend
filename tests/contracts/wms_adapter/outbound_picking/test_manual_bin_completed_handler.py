@@ -34,7 +34,6 @@ def _event() -> dict[str, object]:
         "operation": "outbound.manual_bin.work_completed@v1",
         "timestamp": 1_788_390_000_000,
         "data": {
-            "admission_operation_id": OPERATION_ID,
             "task_id": "PICK-001",
             "bin_code": "BIN-001",
             "result": "NORMAL",

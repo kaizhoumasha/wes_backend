@@ -87,7 +87,7 @@ flowchart TD
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
 | — | PDA（黑盒） | 人工按 WMS 指示拣料 | 具体拣了哪个 Cell，WES 不知道、不查询 | — |
-| 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `admission_operation_id` 指向 7A 的准入请求，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
+| 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `task_id + bin_code` 指向当前等待完成的料箱任务，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
 | 9A | WES 本地执行 | 应用完成事实并释放 point2 | 匹配原 completion evidence | 按稳定命令身份执行 `MOVE_FORWARD`，分别记录应用与物理结果 |
 | 10A | 设备 → WES | 点3 SCAN | `A000000001-B`，本次正常授权 | `MOVE_FORWARD`，放行 |
 | 11A | 设备 → WES | 点4 SCAN | `A000000001-B`，前序正常放行 | `MOVE_FORWARD` 匹配 ECS `SUCCESS` 后入队尾 |
@@ -96,8 +96,9 @@ flowchart TD
 
 上述表格按业务节点编号，不表示回架后才可换面。`feed_complete` 只要求冻结面全部 inbound 分段及成员权威成功、结果发布、
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
-`workline_positions.capacity` 不作为 WES 的 CTU01 物理准入窗口。WES 对已确定来源架按业务步骤身份最多创建一次 CTU01；RCS 负责排队、自主进位和工作位互斥。某架未到位只暂停依赖该架的后续 SOP，不阻止其他独立货架提交。真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认。
-同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员、CTU01 与 `inbound_batch` 义务处理；请求必须携带该成员的 `plan_revision`，不能以旧成员的动作或结果为新成员结案。
+`workline_positions.capacity` 是基础层按目标点维护的滚动 CTU01 下发窗口，按物理货架的进场生命周期计数。货架到位后仍占窗；业务完成且对应 CTU03 获得 `ACCEPTED` 后释放名额，并从 pending 补发下一架。RCS 负责物理排队、自主进位和工作位互斥；真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认，不按提交先后推断。
+明确未接纳或终位在目标点外的失败进场任务释放名额；终位仍在目标点的重试沿用原名额。离场明确未接纳后重新请求 WMS 离场决定；已接纳离场失败且留在目标点、当前面向缺失时的恢复要求仍待确认，见 [Transport 履约合同 §5.3](transport-fulfillment-contract.md#53-搬运最终结果)。
+同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员与 `inbound_batch` 义务处理；请求必须携带该成员的 `plan_revision`，不能以旧成员的动作或结果为新成员结案。若该架的原进场生命周期仍占窗，新成员关联原 CTU01，不重复下发或占窗。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
@@ -112,7 +113,7 @@ flowchart TD
 | — | PDA（黑盒） | 人工按 `added_direct_picks[]` 取 `A-03` 放至 `TRANSFER-RACK-01` | WES 不下发 DeviceCommand，不知道具体取货细节 | — |
 | 5B | WMS → WES | `outbound.manual_rack.direct_pick_completed@v1` | `task_id=PICK-20260902-001, plan_revision=1, rack_id=RETURN-RACK-01, rack_face=A`，`completed_at=1788390099000` | `202/RECEIVED` |
 | 6B | WES（本地判断） | 该面 `added_direct_picks[]` 已全部结清，无其它未结明细 | — | 满足 `outbound.rack.departure_decide@v1` 的发起条件 |
-| 7B | WES → WMS | `outbound.rack.departure_decide@v1` | `rack_id=RETURN-RACK-01` | `READY`，货架搬离工作位 |
+| 7B | WES → WMS | `outbound.rack.departure_decide@v1` | `rack_id=RETURN-RACK-01` | `READY` 后使用 `F01` 搬离工作位 |
 
 **任务收尾**
 
@@ -140,7 +141,7 @@ flowchart TD
   上报更新当前 PickingTask 的退料货架到位状态；
 - 五层货架入站分批：`outbound.bin.inbound_batch@v1`；
 - 退箱：`outbound.bin.return_batch@v1`，WorkLine 级跨任务 `RETURN_BUFFER` FIFO；任务完成后先原子准备下一任务，无下一任务且 FIFO 非空才调用 `workline.return_buffer.drain_rack_decide@v1`（出库合同 §9.2.3）；
-- 所有业务货架离场去向：`outbound.rack.departure_decide@v1`；五层来源架、drain 架 READY 后使用 `CTU03`，转运架 READY 后使用 `F01`，
+- 所有业务货架离场去向：`outbound.rack.departure_decide@v1`；五层来源架、drain 架 READY 后使用 `CTU03`，转运架、直接取料退料架 READY 后使用 `F01`，
   禁止固定 `WH01` 或从其它 operation 猜测 destination；
 - 任务状态确认：`outbound.picking_task.completion_confirm@v1`；
 - Transport 四个通用搬运方法（`move_rack` / `rotate_rack` / `move_bins` / `exchange_bins`）与其提交、回调合同；
@@ -335,64 +336,54 @@ WES 不查询 Cell、不验证预期 Bin，也不把 `NO_WORK` 解释为 NG。
 | --- | --- |
 | 方向 | WMS 到 WES |
 | 端点 | `POST {{WES_BASE_URL}}/api/v1/wms/events` |
-| 触发条件 | WMS 已在同一持久化事务中提交该 Bin 相关的 PDA 子任务和业务结果，并形成 Bin 级最终释放决定 |
+| 触发条件 | WMS 已持久化当前料箱任务的 PDA 子任务和最终业务结果 |
 | 首次成功响应 | `202 / RECEIVED` |
 | `ack_mode` | `EVIDENCE_ACCEPTED` |
-| `ack_commit_facts` | 完成释放决定的 `InboundEvidence` 及消息接收身份；不包含插件工位等待或任务结果的业务应用 |
+| `ack_commit_facts` | 完成通知的 `InboundEvidence` 及消息接收身份；不包含插件业务应用或物理放行 |
 
-ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-每个业务-operation-还要说明什么)，业务应用仍按下述异步流程完成。
+ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-每个业务-operation-还要说明什么)。WMS 通知当前料箱任务已完成，通知数据为 `task_id + bin_code + result + completed_at`。
 
-请求信封复用出库合同公共信封（`operation_id + operation + timestamp + data`），`data` 严格字段如下：
+请求示例：
 
 ```json
 {
-  "operation_id": "<uuid7>",
+  "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
   "operation": "outbound.manual_bin.work_completed@v1",
-  "timestamp": 1788390000000,
+  "timestamp": 1790203807500,
   "data": {
-    "admission_operation_id": "<原 work_admission_decide operation_id>",
-    "task_id": "PICK-20260902-001",
-    "bin_code": "A000000001",
+    "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+    "bin_code": "A000002097",
     "result": "NORMAL",
-    "completed_at": 1788389999000
+    "completed_at": 1790203807437
   }
+}
+```
+
+首次接收响应示例：
+
+```json
+{
+  "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+  "code": "RECEIVED",
+  "timestamp": 1790203807550,
+  "data": {}
 }
 ```
 
 | 字段 | 必填 | 类型/格式 | 说明 |
 | --- | --- | --- | --- |
-| `data.admission_operation_id` | 是 | UUIDv7 | 对应本次 Passage 获得 `WORK_REQUIRED` 的 `work_admission_decide` 请求身份；不同于信封顶层的完成事件 `operation_id` |
-| `data.task_id` | 是 | 出库合同 Identifier | 必须等于 point2 `WORK_REQUIRED` 响应冻结的 PickingTask |
-| `data.bin_code` | 是 | 出库合同 Identifier | 必须等于该 `WORK_REQUIRED` 请求中的实际扫码 Bin；应用时还必须命中当前 WorkLine 内正在 point2 等待的同一 task 和料箱 |
-| `data.result` | 是 | enum | `NORMAL \| NG`；`NORMAL` 授权离开点2进入正常回库路径，`NG` 授权离开点2进入 NG 路径 |
-| `data.completed_at` | 是 | positive integer / UTC Unix 毫秒 | 人工拣料任务形成最终决定的时间；不得早于该 Bin 的 point2 `work_admission.scanned_at`，也不得晚于同一信封的 `timestamp` |
+| `data.task_id` | 是 | 出库合同 Identifier | WMS 当前料箱任务所属 PickingTask |
+| `data.bin_code` | 是 | 出库合同 Identifier | WMS 当前已完成任务的实际料箱号 |
+| `data.result` | 是 | enum | `NORMAL \| NG`；分别授权正常或 NG 路径 |
+| `data.completed_at` | 是 | positive integer / UTC Unix 毫秒 | WMS 完成料箱任务的时间；不得晚于通知的 `timestamp` |
 
-`data` 读取上述五个必填字段，忽略冗余字段；已定义字段不接受非法 `null`、空字符串、错误类型或枚举外取值。`task_id` 和
-`bin_code` 复用出库合同 §4.4 的 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}` 约束，不得为人工线放宽或定义别名。
-`completed_at` 必须保存到第 9.1 节的本次 Passage 最终结果记录，只用于审计和对账；不得用远端业务时间决定消息处理顺序、
-DeviceCommand deadline 或自动超时。
+`data` 只要求上述四个字段；冗余字段按公共严格 DTO 规则处理。`task_id`、`bin_code` 复用出库合同 §4.4 的 Identifier 约束。WES 将 `completed_at` 保存为 WMS 的业务完成时间，不用它选择 Passage 或决定设备动作。
 
-WES 收到后先把原始消息持久化为 `InboundEvidence`，再按出库合同公共协议 ACK。信封顶层的 `(operation, operation_id)` 是本条
-完成事件的重试身份，完整请求内容用于检测同一 ID 的内容冲突；`data.admission_operation_id` 唯一关联原准入 Action 及其 Passage。
-同一 `task_id + bin_code` 可以经历多个 Passage，每个 Passage 只能形成一个最终结果，后到消息不得覆盖。
+WMS 顶层 `(operation, operation_id)` 是通知本身的可靠重试身份；相同身份必须重放相同完整内容。WES 先可靠保存 `InboundEvidence` 再返回 ACK。接收后，插件仅在执行任务所属 WorkLine 内查找唯一的当前 point2 同 `task_id + bin_code` Passage；它必须已经收到 `WORK_REQUIRED` 且仍在等待完成。无唯一匹配、结果冲突或不再等待时保留 Evidence 并进入 `RECONCILING`，不得放行。WES 本地保留 `admission_operation_id` 作为准入 Action 身份，WMS 通知无需携带它。
 
-`work_completed` 同时表示业务完成和物理释放授权，不是“PDA 步骤已操作”的进度通知。WMS 不得在相关子任务与业务
-结果持久化事务提交前发送该消息。WES 返回 `202 / RECEIVED` 只证明 evidence 已可靠接收，不证明料箱已移动；只有该决定成功
-应用到当前点2的活动执行时，WES 才能创建放行设备命令。
+`work_completed` 是 WMS 已形成的最终业务决定，同时授权 WES 按当前 Passage 创建放行命令；`202 / RECEIVED` 只证明通知已可靠接收，不证明已应用或料箱已移动。`NG` 的本地原因记为 `MANUAL_PICK_NG`，由 NG 分支执行设备分流。WMS 内部人工拣料原因不跨系统传输。
 
-WES 可靠保存 `WORK_REQUIRED` 后，当前阶段只保持 `WAITING_EXTERNAL`、point2 占用和原待处理动作；不实现独立的人工处理
-SLA 告警或停止新料箱策略。已进入点1至点2缓存的料箱保持原 FIFO 顺序，超时不得自动释放、改判 NG、关闭执行或创建新命令身份。
-后续若批准 SLA 治理，必须新增明确的宿主 owner、可观察状态和独立验收，不得由本段文字推定已经实现。
-
-WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operation 的完整业务决定。WES 将该决定持久化为人工拣料 NG
-证据，原因记为 `MANUAL_PICK_NG`，由独立 NG 分支执行设备分流。
-
-应用 evidence 时，人工业务模块按 `data.admission_operation_id` 精确查询 Passage，并校验 WorkLine、`task_id`、`bin_code` 与原请求一致。
-若该 Passage 的相同 `result` 已成功应用，新 evidence 直接标记为
-已应用的业务幂等 no\-op，不再检查料箱是否仍在 point2，也不再创建设备命令；若既有结果不同，则 evidence 与受影响执行进入
-`RECONCILING`。只有尚无最终结果的首次应用才继续在同一事务中锁定 WorkLine 生命周期、当前 point2 待处理动作及位置，确认
-其原准入结果为 `WORK_REQUIRED` 且仍在等待 WMS 结果，验证通过后保存结果并创建设备命令。首次消息早到或晚到、找不到匹配准入 Action、
-本次 Passage 不再等待、料箱不在 point2 或 WorkLine 已停用时进入 `RECONCILING`，不得暂存后自动补绑，也不得下发默认方向命令。
+WES 可靠保存 `WORK_REQUIRED` 后保持 point2 占用和等待；超时不得自动释放、改判 NG、关闭执行或创建新命令身份。
 
 ### 5\.3 完成通知的接收、重试与应用边界 {#53}
 
@@ -407,7 +398,7 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 | 当前无法可靠持久化 | `503 / UNAVAILABLE` | WMS 使用原 `operation_id` 和原请求重试 |
 
 共享 HTTP 入口不读取人工线当前工位或任务等待来同步判定业务冲突。换新 `operation_id` 的合法消息仍先返回
-`202 / RECEIVED`；原准入 Action 的单终态和当前执行状态由人工业务模块在异步应用 evidence 时判定。
+`202 / RECEIVED`；当前 `task_id + bin_code` 是否唯一匹配等待完成的 Passage、结果是否已应用或冲突，由人工业务模块在异步应用 evidence 时判定。
 
 ### 5.4 完成事实的本地应用 {#54-completion-local-application}
 
@@ -417,8 +408,8 @@ WMS 的内部人工拣料原因不跨系统传输；`result=NG` 已是本 operat
 取消 `outbound.manual_bin.completion_apply_report@v1`，WES 不再向 WMS 二次报告完成事实的应用结果。
 对已批准的 `work_completed`，可靠接收、幂等和 `202 / RECEIVED` ACK 语义保持不变；ACK 不表示物理释放完成。
 
-WES 校验原完成 evidence 与当前任务、料箱或货架面绑定，保存本地应用状态。早到、绑定不匹配或结果冲突进入本地
-`RECONCILING`，保留原 identity 与证据，不下发方向命令，也不创建额外上报义务。
+WES 校验完成 Evidence 的 `task_id + bin_code` 与当前工作位等待完成的料箱，保存本地应用状态。无唯一匹配或结果冲突进入本地
+`RECONCILING`，保留通知身份与证据，不下发方向命令，也不创建额外上报义务；已应用的相同结果不重复创建设备命令。
 
 插件自动执行分别记录完成事实应用、稳定命令创建和物理完成；`NO_WORK` 按释放结果推进，不要求完成通知。
 
@@ -671,13 +662,13 @@ Task 2 必须在 `manual-picking` 业务所有权内建立一条窄的 Passage �
 
 - `task_id`；
 - `bin_code`；
-- 原准入 `admission_operation_id`；
+- WES 本地准入 `admission_operation_id`（不在 WMS 完成通知中传输）；
 - `result`；
 - WMS 形成最终决定的 `completed_at`；
 - 首次成功应用的 `source_evidence_id`；
 - 当前 WorkLine 和首次到位 Evidence，以及原释放命令关联。
 
-数据库以唯一 `admission_operation_id` 关联本次 Passage 并保证单终态；不得保留跨 Passage 的 `(task_id, bin_code)` 终态唯一约束。不得扫描
+数据库以唯一 `admission_operation_id` 标识本地准入 Action；完成通知按当前 WorkLine 的 `task_id + bin_code` 查找唯一等待完成的 Passage，且每个 Passage 仅应用一个最终结果。不得保留跨 Passage 的 `(task_id, bin_code)` 终态唯一约束。不得扫描
 `InboundEvidence.normalized_payload` JSON 重建当前业务状态，人工任务字段只存于插件，也不为该单行索引查询增加缓存。
 
 该记录的 SQLModel、Repository 和业务查询位于 `workline_plugins/manual-picking/` 应用层。建表、唯一约束和索引仍通过根仓库
@@ -817,7 +808,7 @@ T2 完成后可并行启动 Lane B 与 Lane C；两者合并并通过聚焦测�
 ## Implementation Tasks
 
 当前执行方案已收敛为四个最小切片，详见
-[实施方案](../superpowers/plans/2026-09-19-manual-picking-owner-convergence.md)：
+[已完成实施方案](../../../archive_docs/wes_backend/docs/superpowers/plans/2026-09-19-manual-picking-owner-convergence.md)：
 
 1. 收敛 §8/§10 的测试 owner、状态与真实验收边界；
 2. 将 drain outcome fixture 全部对齐为 `rack_face`；

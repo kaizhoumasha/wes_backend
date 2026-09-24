@@ -1,0 +1,1133 @@
+{
+  "name": "kt16_manual_picking_good_case",
+  "source": "2026-09-23 KT16 联调：27 条 WMS 决策及 5 条 work_completed 为已完成/已应用记录；5 条 inbound_batch 按已确认源槽位补齐；issued 与 plan_delta 因未保存原始信封，按已确认业务数据重建并使用示例身份与时间。",
+  "decisions": [
+    {
+      "request": {
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.picking_task.prepare@v1",
+        "operation_id": "01a0d067-0df2-7966-a9d4-7783c66009a2",
+        "timestamp": 1790202809832
+      },
+      "status_code": 202,
+      "response": {
+        "code": "PREPARE_ACCEPTED",
+        "data": {},
+        "operation_id": "01a0d067-0df2-7966-a9d4-7783c66009a2",
+        "timestamp": 1790202810750
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510034",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d071-5efa-7959-841e-aa7ba493fd1c",
+        "timestamp": 1790203485942
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d071-5efa-7959-841e-aa7ba493fd1c",
+        "timestamp": 1790203489357
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510047",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d074-d063-7323-8765-1f514a3a4ca5",
+        "timestamp": 1790203711585
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d074-d063-7323-8765-1f514a3a4ca5",
+        "timestamp": 1790203719305
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "bin_code": "A000002097",
+          "scanned_at": 1790203729752,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "operation_id": "01a0d075-3aad-7934-8bb9-24e4da73bc93",
+        "timestamp": 1790203738797
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "WORK_REQUIRED",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation_id": "01a0d075-3aad-7934-8bb9-24e4da73bc93",
+        "timestamp": 1790203739656
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510013",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d076-9d0d-7bf4-9bb9-d86b3a35c7a0",
+        "timestamp": 1790203829515
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d076-9d0d-7bf4-9bb9-d86b3a35c7a0",
+        "timestamp": 1790203839295
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "90",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510071",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d079-6cbd-7d0c-8d7a-18d52ebf6241",
+        "timestamp": 1790204013755
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d079-6cbd-7d0c-8d7a-18d52ebf6241",
+        "timestamp": 1790204019280
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510035",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d07b-2403-7663-90af-0cec7ba4f61a",
+        "timestamp": 1790204126209
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d07b-2403-7663-90af-0cec7ba4f61a",
+        "timestamp": 1790204129255
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "bin_code": "A000002264",
+          "scanned_at": 1790206734687,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "operation_id": "01a0d0a2-f2b4-7d32-8199-000698aea867",
+        "timestamp": 1790206735029
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "WORK_REQUIRED",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation_id": "01a0d0a2-f2b4-7d32-8199-000698aea867",
+        "timestamp": 1790206739290
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "required_slot_count": 1,
+          "workline_code": "KT16"
+        },
+        "operation": "workline.return_buffer.drain_rack_decide@v1",
+        "operation_id": "01a0d0a3-289c-7541-865d-f3232b6b6cad",
+        "timestamp": 1790206748821
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "racks": [
+            {
+              "rack_face": [
+                "270"
+              ],
+              "rack_id": "510013"
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0a3-289c-7541-865d-f3232b6b6cad",
+        "timestamp": 1790206759358
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "270",
+          "rack_id": "510013",
+          "return_candidates": [
+            {
+              "bin_code": "A000002097",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0a7-04af-7391-b793-87239cc891ce",
+        "timestamp": 1790207001767
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "moves": [
+            {
+              "bin_code": "A000002097",
+              "sequence_no": 1,
+              "target": {
+                "rack_face": "270",
+                "rack_id": "510013",
+                "slot_id": "510013B2F1C101",
+                "type": "RACK_BIN_SLOT"
+              }
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0a7-04af-7391-b793-87239cc891ce",
+        "timestamp": 1790207009398
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "bin_code": "A000001893",
+          "scanned_at": 1790207328531,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "operation_id": "01a0d0ac-0ef8-722b-9677-63db309b0650",
+        "timestamp": 1790207332088
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "WORK_REQUIRED",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation_id": "01a0d0ac-0ef8-722b-9677-63db309b0650",
+        "timestamp": 1790207339248
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "bin_code": "A000001628",
+          "scanned_at": 1790207356165,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "operation_id": "01a0d0ac-775a-77d7-951b-3e3ed0a7ba24",
+        "timestamp": 1790207358810
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "WORK_REQUIRED",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation_id": "01a0d0ac-775a-77d7-951b-3e3ed0a7ba24",
+        "timestamp": 1790207359304
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "bin_code": "A000000118",
+          "scanned_at": 1790207460968,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "operation_id": "01a0d0ae-250a-7c55-bcd0-c30c91a516f1",
+        "timestamp": 1790207468810
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "WORK_REQUIRED",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation_id": "01a0d0ae-250a-7c55-bcd0-c30c91a516f1",
+        "timestamp": 1790207469281
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "270",
+          "rack_id": "510013",
+          "return_candidates": [
+            {
+              "bin_code": "A000002264",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0ae-4c42-79ef-a503-4ecf19f2ce16",
+        "timestamp": 1790207478841
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "NO_BATCH",
+          "retry_after_ms": 3000
+        },
+        "operation_id": "01a0d0ae-4c42-79ef-a503-4ecf19f2ce16",
+        "timestamp": 1790207489286
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510013",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d0ae-7716-7d9a-8361-e2a035a9c6cb",
+        "timestamp": 1790207489810
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d0ae-7716-7d9a-8361-e2a035a9c6cb",
+        "timestamp": 1790207499263
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "required_slot_count": 2,
+          "workline_code": "KT16"
+        },
+        "operation": "workline.return_buffer.drain_rack_decide@v1",
+        "operation_id": "01a0d0ae-c16e-7b49-9f55-23bfe005456e",
+        "timestamp": 1790207508837
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "racks": [
+            {
+              "rack_face": [
+                "270"
+              ],
+              "rack_id": "510026"
+            },
+            {
+              "rack_face": [
+                "90"
+              ],
+              "rack_id": "510028"
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0ae-c16e-7b49-9f55-23bfe005456e",
+        "timestamp": 1790207519277
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "270",
+          "rack_id": "510026",
+          "return_candidates": [
+            {
+              "bin_code": "A000002264",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            },
+            {
+              "bin_code": "A000001893",
+              "sequence_no": 2,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0b2-a8bb-7b51-bbad-c3fa13e5c1c3",
+        "timestamp": 1790207764661
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "moves": [
+            {
+              "bin_code": "A000002264",
+              "sequence_no": 1,
+              "target": {
+                "rack_face": "270",
+                "rack_id": "510026",
+                "slot_id": "510026B4F1C101",
+                "type": "RACK_BIN_SLOT"
+              }
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0b2-a8bb-7b51-bbad-c3fa13e5c1c3",
+        "timestamp": 1790207769312
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "270",
+          "rack_id": "510026",
+          "return_candidates": [
+            {
+              "bin_code": "A000001893",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            },
+            {
+              "bin_code": "A000001628",
+              "sequence_no": 2,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0ba-ad8f-764b-a450-407d8208d164",
+        "timestamp": 1790208290180
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "NO_BATCH",
+          "retry_after_ms": 3000
+        },
+        "operation_id": "01a0d0ba-ad8f-764b-a450-407d8208d164",
+        "timestamp": 1790208299458
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510026",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d0ba-d3ea-7391-a89c-2f04d344d4ed",
+        "timestamp": 1790208300007
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d0ba-d3ea-7391-a89c-2f04d344d4ed",
+        "timestamp": 1790208309291
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "90",
+          "rack_id": "510028",
+          "return_candidates": [
+            {
+              "bin_code": "A000001893",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            },
+            {
+              "bin_code": "A000001628",
+              "sequence_no": 2,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0bb-d0fe-7ecc-b3f5-2f54d7089019",
+        "timestamp": 1790208364790
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "moves": [
+            {
+              "bin_code": "A000001893",
+              "sequence_no": 1,
+              "target": {
+                "rack_face": "90",
+                "rack_id": "510028",
+                "slot_id": "510028A4F2C101",
+                "type": "RACK_BIN_SLOT"
+              }
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0bb-d0fe-7ecc-b3f5-2f54d7089019",
+        "timestamp": 1790208369276
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "last_applied_plan_revision": 1,
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.picking_task.completion_confirm@v1",
+        "operation_id": "01a0d0bc-082c-7885-b471-c37ff73f06ba",
+        "timestamp": 1790208378880
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "COMPLETED"
+        },
+        "operation_id": "01a0d0bc-082c-7885-b471-c37ff73f06ba",
+        "timestamp": 1790208389358
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "270",
+          "current_location": {
+            "location_code": "OUT65",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "610017",
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4"
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d0bc-5617-70e3-a791-123abe8237ec",
+        "timestamp": 1790208398865
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "SMT_T",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d0bc-5617-70e3-a791-123abe8237ec",
+        "timestamp": 1790208409315
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "90",
+          "rack_id": "510028",
+          "return_candidates": [
+            {
+              "bin_code": "A000001628",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0bc-a80e-7890-a43f-b348d11136ff",
+        "timestamp": 1790208419845
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "result": "NO_BATCH",
+          "retry_after_ms": 3000
+        },
+        "operation_id": "01a0d0bc-a80e-7890-a43f-b348d11136ff",
+        "timestamp": 1790208429293
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "90",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510028",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d0bc-cf2e-77a4-a10b-e8ffd4d96bd5",
+        "timestamp": 1790208429867
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d0bc-cf2e-77a4-a10b-e8ffd4d96bd5",
+        "timestamp": 1790208439318
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "required_slot_count": 1,
+          "workline_code": "KT16"
+        },
+        "operation": "workline.return_buffer.drain_rack_decide@v1",
+        "operation_id": "01a0d0bd-194f-75f9-8a1c-621d8f46dbf4",
+        "timestamp": 1790208448828
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "racks": [
+            {
+              "rack_face": [
+                "90"
+              ],
+              "rack_id": "510034"
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0bd-194f-75f9-8a1c-621d8f46dbf4",
+        "timestamp": 1790208459314
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "rack_face": "90",
+          "rack_id": "510034",
+          "return_candidates": [
+            {
+              "bin_code": "A000001628",
+              "sequence_no": 1,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            },
+            {
+              "bin_code": "A000000118",
+              "sequence_no": 2,
+              "source": {
+                "location_code": "CNV0302",
+                "type": "HANDOFF_POSITION"
+              }
+            }
+          ],
+          "workline_code": "KT16"
+        },
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "01a0d0c5-b5a0-7caf-9a52-567aae1893bb",
+        "timestamp": 1790209013147
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "moves": [
+            {
+              "bin_code": "A000001628",
+              "sequence_no": 1,
+              "target": {
+                "rack_face": "90",
+                "rack_id": "510034",
+                "slot_id": "510034A1F1C101",
+                "type": "RACK_BIN_SLOT"
+              }
+            },
+            {
+              "bin_code": "A000000118",
+              "sequence_no": 2,
+              "target": {
+                "rack_face": "90",
+                "rack_id": "510034",
+                "slot_id": "510034A1F2C101",
+                "type": "RACK_BIN_SLOT"
+              }
+            }
+          ],
+          "result": "READY"
+        },
+        "operation_id": "01a0d0c5-b5a0-7caf-9a52-567aae1893bb",
+        "timestamp": 1790209019767
+      }
+    },
+    {
+      "request": {
+        "data": {
+          "current_face": "90",
+          "current_location": {
+            "location_code": "KT16",
+            "type": "RACK_POSITION"
+          },
+          "rack_id": "510034",
+          "task_id": null
+        },
+        "operation": "outbound.rack.departure_decide@v1",
+        "operation_id": "01a0d0d5-6813-7e5b-ab65-93a008a5deca",
+        "timestamp": 1790210041872
+      },
+      "status_code": 200,
+      "response": {
+        "code": "DECIDED",
+        "data": {
+          "rack_destination": {
+            "location_code": "WH01",
+            "type": "ZONE"
+          },
+          "result": "READY"
+        },
+        "operation_id": "01a0d0d5-6813-7e5b-ab65-93a008a5deca",
+        "timestamp": 1790210049938
+      }
+    },
+    {
+      "request": {
+        "operation": "outbound.bin.inbound_batch@v1",
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5000",
+        "timestamp": 1790200000000,
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "plan_revision": 1,
+          "rack_id": "510034",
+          "rack_face": "270"
+        }
+      },
+      "status_code": 200,
+      "response": {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5000",
+        "code": "DECIDED",
+        "timestamp": 1790200000000,
+        "data": {
+          "result": "READY",
+          "bins": [
+            {
+              "bin_code": "A000002097",
+              "source_locator": {
+                "type": "RACK_BIN_SLOT",
+                "rack_id": "510034",
+                "rack_face": "270",
+                "slot_id": "510034B2F2C101"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "operation": "outbound.bin.inbound_batch@v1",
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5001",
+        "timestamp": 1790200000001,
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "plan_revision": 1,
+          "rack_id": "510047",
+          "rack_face": "270"
+        }
+      },
+      "status_code": 200,
+      "response": {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5001",
+        "code": "DECIDED",
+        "timestamp": 1790200000001,
+        "data": {
+          "result": "READY",
+          "bins": [
+            {
+              "bin_code": "A000002264",
+              "source_locator": {
+                "type": "RACK_BIN_SLOT",
+                "rack_id": "510047",
+                "rack_face": "270",
+                "slot_id": "510047B3F2C101"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "operation": "outbound.bin.inbound_batch@v1",
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5002",
+        "timestamp": 1790200000002,
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "plan_revision": 1,
+          "rack_id": "510013",
+          "rack_face": "270"
+        }
+      },
+      "status_code": 200,
+      "response": {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5002",
+        "code": "DECIDED",
+        "timestamp": 1790200000002,
+        "data": {
+          "result": "READY",
+          "bins": [
+            {
+              "bin_code": "A000001893",
+              "source_locator": {
+                "type": "RACK_BIN_SLOT",
+                "rack_id": "510013",
+                "rack_face": "270",
+                "slot_id": "510013B2F1C101"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "operation": "outbound.bin.inbound_batch@v1",
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5003",
+        "timestamp": 1790200000003,
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "plan_revision": 1,
+          "rack_id": "510071",
+          "rack_face": "90"
+        }
+      },
+      "status_code": 200,
+      "response": {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5003",
+        "code": "DECIDED",
+        "timestamp": 1790200000003,
+        "data": {
+          "result": "READY",
+          "bins": [
+            {
+              "bin_code": "A000001628",
+              "source_locator": {
+                "type": "RACK_BIN_SLOT",
+                "rack_id": "510071",
+                "rack_face": "90",
+                "slot_id": "510071A2F1C101"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "operation": "outbound.bin.inbound_batch@v1",
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5004",
+        "timestamp": 1790200000004,
+        "data": {
+          "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+          "plan_revision": 1,
+          "rack_id": "510035",
+          "rack_face": "270"
+        }
+      },
+      "status_code": 200,
+      "response": {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d5004",
+        "code": "DECIDED",
+        "timestamp": 1790200000004,
+        "data": {
+          "result": "READY",
+          "bins": [
+            {
+              "bin_code": "A000000118",
+              "source_locator": {
+                "type": "RACK_BIN_SLOT",
+                "rack_id": "510035",
+                "rack_face": "270",
+                "slot_id": "510035B2F2C101"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "events": [
+    {
+      "operation": "outbound.picking_task.issued@v1",
+      "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d6000",
+      "timestamp": 1790202700000,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "task_type": "MANUAL",
+        "workline_code": "KT16",
+        "queue_revision": 1,
+        "dispatch_sequence": 100
+      }
+    },
+    {
+      "operation": "outbound.picking_task.plan_delta@v1",
+      "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d6001",
+      "timestamp": 1790202900000,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "plan_revision": 1,
+        "target_rack": {
+          "rack_id": "610017",
+          "rack_face": "270"
+        },
+        "added_bin_source_racks": [
+          {
+            "rack_id": "510013",
+            "rack_face": [
+              "270"
+            ]
+          },
+          {
+            "rack_id": "510034",
+            "rack_face": [
+              "270"
+            ]
+          },
+          {
+            "rack_id": "510035",
+            "rack_face": [
+              "270"
+            ]
+          },
+          {
+            "rack_id": "510047",
+            "rack_face": [
+              "270"
+            ]
+          },
+          {
+            "rack_id": "510071",
+            "rack_face": [
+              "90"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "operation": "outbound.manual_bin.work_completed@v1",
+      "operation_id": "01a0d075-cc58-76f4-969b-535379bcc6e9",
+      "timestamp": 1790203776088,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "bin_code": "A000002097",
+        "result": "NORMAL",
+        "completed_at": 1790203776088
+      }
+    },
+    {
+      "operation": "outbound.manual_bin.work_completed@v1",
+      "operation_id": "01a0d0a6-0af8-7b77-a8d3-cfbdb7b56412",
+      "timestamp": 1790206937848,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "bin_code": "A000002264",
+        "result": "NORMAL",
+        "completed_at": 1790206937848
+      }
+    },
+    {
+      "operation": "outbound.manual_bin.work_completed@v1",
+      "operation_id": "01a0d0ac-2ecf-788f-84dd-93d15016308d",
+      "timestamp": 1790207340239,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "bin_code": "A000001893",
+        "result": "NORMAL",
+        "completed_at": 1790207340239
+      }
+    },
+    {
+      "operation": "outbound.manual_bin.work_completed@v1",
+      "operation_id": "01a0d0ac-7fb0-7ab8-9748-79ffdfa3fc83",
+      "timestamp": 1790207360944,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "bin_code": "A000001628",
+        "result": "NORMAL",
+        "completed_at": 1790207360944
+      }
+    },
+    {
+      "operation": "outbound.manual_bin.work_completed@v1",
+      "operation_id": "01a0d0bb-ff6c-799d-91d5-db297146ad3d",
+      "timestamp": 1790208376684,
+      "data": {
+        "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
+        "bin_code": "A000000118",
+        "result": "NORMAL",
+        "completed_at": 1790208376684
+      }
+    }
+  ],
+  "initial_rack_faces": {
+    "510013": "270",
+    "510026": "270",
+    "510028": "90",
+    "510034": "270",
+    "510035": "270",
+    "510047": "270",
+    "510071": "90",
+    "610017": "270"
+  }
+}

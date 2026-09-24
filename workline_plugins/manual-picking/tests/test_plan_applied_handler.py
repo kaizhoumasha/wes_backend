@@ -55,15 +55,23 @@ def test_plan_handler_requires_target_position() -> None:
         PickingTaskPlanAppliedHandler()(replace(FACT, position_bindings=(POSITIONS[0],)))
 
 
-def test_plan_applied_fact_rejects_duplicate_physical_racks() -> None:
-    with pytest.raises(ValueError, match="duplicate rack_id"):
+def test_plan_applied_fact_distinguishes_members_across_revisions() -> None:
+    with pytest.raises(ValueError, match="duplicate members"):
         replace(
             FACT,
             pending_bin_source_racks=(
                 PickingTaskPlanRack("FIVE-1", ("90",), source_evidence_id="101", plan_revision=1),
-                PickingTaskPlanRack("FIVE-1", ("270",), source_evidence_id="102", plan_revision=2),
+                PickingTaskPlanRack("FIVE-1", ("270",), source_evidence_id="101", plan_revision=1),
             ),
         )
+    repeated_rack = replace(
+        FACT,
+        pending_bin_source_racks=(
+            PickingTaskPlanRack("FIVE-1", ("90",), source_evidence_id="101", plan_revision=1),
+            PickingTaskPlanRack("FIVE-1", ("90",), source_evidence_id="102", plan_revision=2),
+        ),
+    )
+    assert len(PickingTaskPlanAppliedHandler()(repeated_rack).transports) == 1
 
 
 def test_plan_handler_creates_return_rack_intent_per_rack_with_f01() -> None:

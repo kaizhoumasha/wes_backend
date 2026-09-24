@@ -266,6 +266,7 @@ class ManualPickingScanFlow:
             not in {
                 "PICKING_TASK_TARGET_RACK_IN",
                 "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                "PICKING_TASK_RETURN_RACK_IN",
                 SOURCE_RACK_ROTATE_STEP,
                 SOURCE_RACK_OUT_STEP,
                 TRANSFER_RACK_OUT_STEP,
@@ -285,8 +286,17 @@ class ManualPickingScanFlow:
         ):
             return None
         status = payload.get("status")
-        if status == "FAILED" and payload.get("reason_code") == "RCS_TASK_CANCELLED":
-            return await self._retry_cancelled_rack(db, evidence, task, workline_id)
+        if (
+            status in {"FAILED", "REJECTED"}
+            and payload["step"]
+            in {
+                "PICKING_TASK_TARGET_RACK_IN",
+                "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                "PICKING_TASK_RETURN_RACK_IN",
+                DRAIN_RACK_IN_STEP,
+            }
+        ) or (status == "FAILED" and payload.get("reason_code") == "RCS_TASK_CANCELLED"):
+            return await self._retry_terminal_rack(db, evidence, task, workline_id)
         if status == "SUCCEEDED":
             members = payload.get("members")
             expected_position = (
@@ -321,7 +331,7 @@ class ManualPickingScanFlow:
             return None
         return status
 
-    async def _retry_cancelled_rack(  # noqa: PLR0911
+    async def _retry_terminal_rack(  # noqa: PLR0911
         self, db: Any, evidence: Any, task: Any, workline_id: int
     ) -> str | int | None:
         payload = evidence.normalized_payload
@@ -351,7 +361,7 @@ class ManualPickingScanFlow:
                 for rack in await self._source_racks.list_active_bin_source_racks(db, current.id)
             ):
                 return "IGNORED"
-            if payload["step"] == RETURN_RACK_ROTATE_STEP and not any(
+            if payload["step"] in {"PICKING_TASK_RETURN_RACK_IN", RETURN_RACK_ROTATE_STEP} and not any(
                 rack.rack_id == payload["rack_id"]
                 and rack.rack_face == task.request_json.get("target_face")
                 and rack.source_evidence_id == binding.source_evidence_id
@@ -368,14 +378,18 @@ class ManualPickingScanFlow:
         target = request.get("position") if task.kind == "RACK_ROTATE" else request.get("target")
         if isinstance(target, dict) and target.get("kind") == "RACK_POSITION":
             projection = await self._positions.get(db, "RACK", payload["rack_id"])
-            if (
-                projection is not None
+            goal_position_matches = (
+                payload["status"] != "REJECTED"
+                and projection is not None
                 and projection.workline_id == workline_id
                 and not projection.position_unknown
                 and projection.position_json == target
                 and (request.get("target_face") is None or projection.arrival_face == request["target_face"])
-            ):
-                return "IGNORED"
+            )
+            if goal_position_matches and projection.source_transport_task_id:
+                source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
+                if source_task is not None and source_task.status == "SUCCEEDED":
+                    return "IGNORED"
         prior_attempt = 0
         if binding.correlation_id.startswith("retry:"):
             prior_attempt = int(binding.correlation_id.split(":", 2)[1])
@@ -407,9 +421,8 @@ class ManualPickingScanFlow:
             }
             source = request["source"]
             target = request["target"]
-            await self._rack_creator.create(
-                db,
-                **common,
+            create_kwargs = dict(
+                common,
                 resource_fence_id=payload["rack_id"],
                 intent=SimpleNamespace(
                     rack_id=payload["rack_id"],
@@ -419,6 +432,20 @@ class ManualPickingScanFlow:
                     rcs_template_id=TransportRcsTemplateId(request["rcs_template_id"]),
                 ),
             )
+            if binding.step in {
+                "PICKING_TASK_TARGET_RACK_IN",
+                "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                "PICKING_TASK_RETURN_RACK_IN",
+                DRAIN_RACK_IN_STEP,
+            }:
+                workline = await self._worklines.get_for_authority_update(db, workline_id)
+                if workline is None:
+                    return None
+                admission = await self._rack_creator.create_windowed_inbound(
+                    db, workline_code=workline.line_code, retry_terminal_inbound=True, **create_kwargs
+                )
+                return "RETRY_CREATED" if admission == "CREATED" else 1000
+            await self._rack_creator.create(db, **create_kwargs)
         return "RETRY_CREATED"
 
     async def _apply_batch_transport_result(self, db: Any, evidence: Any, workline_id: int) -> str | None:
@@ -705,7 +732,9 @@ class ManualPickingScanFlow:
 
     async def _apply_completed(self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str]) -> str | None:
         completed = self._wms_reader.decode_completed_fact(evidence.normalized_payload)
-        passage = await self._passages.by_admission_operation_for_update(db, completed.admission_operation_id)
+        passage = await self._passages.unique_open_bin_for_update(
+            db, workline_id=workline_id, bin_code=completed.bin_code
+        )
         if (
             passage is None
             or passage.workline_id != workline_id
@@ -715,12 +744,7 @@ class ManualPickingScanFlow:
             return None
         if passage.wms_result is not None:
             return "DUPLICATE_COMPLETION" if passage.wms_result == completed.result else None
-        if (
-            passage.scan2_evidence_id is None
-            or passage.admission_scanned_at is None
-            or completed.completed_at < passage.admission_scanned_at
-            or passage.admission_result != "WORK_REQUIRED"
-        ):
+        if passage.scan2_evidence_id is None or passage.admission_result != "WORK_REQUIRED":
             return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
             return _WAIT_FOR_RESULT

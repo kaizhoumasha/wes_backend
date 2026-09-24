@@ -119,6 +119,43 @@ class TransportDecisionBindingRepository(BaseRepository[TransportDecisionBinding
         )
         return {(int(evidence_id), str(rack_id)) for evidence_id, rack_id in result.all()}
 
+    async def list_active_window_for_target(
+        self, db: AsyncSession, *, workline_id: int, target_location_code: str
+    ) -> list[TransportDecisionBinding]:
+        columns = cast("Any", TransportDecisionBinding).__table__.c
+        result = await db.scalars(
+            select(TransportDecisionBinding).where(
+                columns.workline_id == workline_id,
+                columns.window_target_location_code == target_location_code,
+                columns.window_released_at.is_(None),
+            )
+        )
+        return list(result)
+
+    async def list_active_window_for_rack(
+        self, db: AsyncSession, *, workline_id: int, rack_id: str
+    ) -> list[TransportDecisionBinding]:
+        columns = cast("Any", TransportDecisionBinding).__table__.c
+        result = await db.scalars(
+            select(TransportDecisionBinding).where(
+                columns.workline_id == workline_id,
+                columns.resource_fence_id == rack_id,
+                columns.window_target_location_code.is_not(None),
+                columns.window_released_at.is_(None),
+            )
+        )
+        return list(result)
+
+    async def get_window_by_departure_for_update(
+        self, db: AsyncSession, client_request_id: str
+    ) -> TransportDecisionBinding | None:
+        columns = cast("Any", TransportDecisionBinding).__table__.c
+        return await db.scalar(
+            select(TransportDecisionBinding)
+            .where(columns.window_departure_client_request_id == client_request_id)
+            .with_for_update()
+        )
+
     async def add(
         self,
         db: AsyncSession,

@@ -191,6 +191,78 @@ async def test_initial_schema_matches_reviewed_final_manifest(
 
 
 @pytest.mark.asyncio()
+async def test_rack_window_migration_rejects_unclosed_legacy_ingress() -> None:
+    previous_revision = "aa4d58c0be72"
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", previous_revision, database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            workline_id = await connection.fetchval(
+                """
+                INSERT INTO wes_biz.work_lines (
+                    id, created_at, line_code, line_name, line_type, runtime_config_json,
+                    run_mode, diagnostic_profile, device_contracts, position_bindings, is_active
+                ) VALUES (
+                    1, now(), 'RACK-WINDOW-MIGRATION', 'Rack window migration', 'MANUAL', '{}'::json,
+                    'AUTO', '{}'::json, '{}'::json, '{}'::json, TRUE
+                ) RETURNING id
+                """
+            )
+            evidence_id = await connection.fetchval(
+                """
+                INSERT INTO wes_biz.inbound_evidences (
+                    id, created_at, kind, source_identity, payload_digest, normalized_payload,
+                    received_at, apply_status, decision_attempt_count, operation, operation_id
+                ) VALUES (
+                    1, now(), 'WMS_EVENT', 'rack-window-migration', repeat('a', 64),
+                    '{}'::json, now(), 'APPLIED', 0, 'outbound.picking_task.issued',
+                    '019f12d0-58d7-7b4d-a23a-1b90aa5d4473'
+                ) RETURNING id
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_biz.transport_tasks (
+                    id, transport_task_id, client_request_id, request_digest, kind, caller_json, request_json,
+                    submit_operation_id, submit_timestamp_ms, submit_request_body, submit_request_body_digest,
+                    status, submit_attempt_count, outcome_version, published_outcome_version,
+                    last_applied_wms_outcome_revision, created_at, updated_at, authority_workline_id
+                ) VALUES (
+                    1, 'legacy-rack-in', 'legacy-rack-request', repeat('b', 64), 'RACK_MOVE',
+                    '{}'::json, '{"target":{"kind":"RACK_POSITION","location_code":"KT16"}}'::json,
+                    '019f12d0-58d7-7b4d-a23a-1b90aa5d4472', 1, '{}', repeat('c', 64),
+                    'ACCEPTED', 1, 0, 0, 0, now(), now(), $1
+                )
+                """,
+                workline_id,
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_biz.transport_decision_bindings (
+                    id, created_at, correlation_id, step, workline_id, resource_fence_id,
+                    client_request_id, source_evidence_id
+                ) VALUES (
+                    1, now(), 'legacy-rack-in', 'PICKING_TASK_BIN_SOURCE_RACK_IN', $1,
+                    'RACK-1', 'legacy-rack-request', $2
+                )
+                """,
+                workline_id,
+                evidence_id,
+            )
+            with pytest.raises(subprocess.CalledProcessError) as rejected:
+                run_alembic("upgrade", "c41df10527aa", database_url=database_url)
+            assert "requires closed legacy rack lifecycles" in rejected.value.stderr
+            await assert_database_head(connection, previous_revision)
+            await connection.execute("UPDATE wes_biz.transport_tasks SET status = 'SUCCEEDED' WHERE id = 1")
+            with pytest.raises(subprocess.CalledProcessError) as rejected:
+                run_alembic("upgrade", "c41df10527aa", database_url=database_url)
+            assert "requires closed legacy rack lifecycles" in rejected.value.stderr
+            await assert_database_head(connection, previous_revision)
+        finally:
+            await connection.close()
+
+
+@pytest.mark.asyncio()
 async def test_transport_face_successor_preserves_legacy_empty_and_has_lossless_downgrade_guard() -> None:
     async with temporary_database() as (_database, database_url):
         run_alembic("upgrade", INITIAL_REVISION, database_url=database_url)

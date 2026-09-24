@@ -22,12 +22,15 @@ from src.app.transport.contracts import (
     RcsTemplateId,
     TransportCaller,
     TransportExecutionAuthority,
+    TransportHandle,
     ZonePosition,
 )
 from src.core.uuid7 import new_uuid7
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 
 
 class RackTransportIntent(Protocol):
@@ -105,7 +108,7 @@ class TransportServicePort(Protocol):
         rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority,
-    ) -> object: ...
+    ) -> TransportHandle: ...
 
     async def rotate_rack_in_session(
         self,
@@ -182,11 +185,49 @@ class ReliableRackTransportCreator:
         transport_service: TransportServicePort,
         *,
         binding_repository: TransportBindingRepositoryPort | None = None,
+        inbound_window: RackInboundWindowService | None = None,
         uuid_factory: Any = new_uuid7,
     ) -> None:
         self._transport = transport_service
         self._bindings = binding_repository or transport_decision_binding_repository
+        self._inbound_window = inbound_window
         self._uuid_factory = uuid_factory
+
+    async def create_windowed_inbound(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        workline_code: str,
+        picking_task_id: int | None,
+        source_evidence_id: int,
+        correlation_id: str,
+        step: str,
+        resource_fence_id: str,
+        intent: RackTransportIntent,
+        retry_terminal_inbound: bool = False,
+    ) -> str:
+        if self._inbound_window is None or type(intent.target) is not TransportRackPosition:
+            raise ValueError("rack inbound window or target position unavailable")
+        return await self._inbound_window.admit(
+            db,
+            workline_id=workline_id,
+            workline_code=workline_code,
+            target_location_code=intent.target.location_code,
+            rack_id=intent.rack_id,
+            picking_task_id=picking_task_id,
+            retry_terminal_inbound=retry_terminal_inbound,
+            create=lambda: self.create(
+                db,
+                workline_id=workline_id,
+                picking_task_id=picking_task_id,
+                source_evidence_id=source_evidence_id,
+                correlation_id=correlation_id,
+                step=step,
+                resource_fence_id=resource_fence_id,
+                intent=intent,
+            ),
+        )
 
     async def create(
         self,
@@ -199,7 +240,7 @@ class ReliableRackTransportCreator:
         step: str,
         resource_fence_id: str,
         intent: RackTransportIntent,
-    ) -> object:
+    ) -> TransportHandle:
         binding = await _binding_for(
             db,
             self._bindings,
@@ -270,7 +311,8 @@ class ReliableRackTransportCreator:
         correlation_id: str,
         step: str,
         rack_id: str,
-        destination: TransportZonePosition,
+        destination: TransportZonePosition | TransportRackPosition,
+        rcs_template_id: TransportRcsTemplateId = TransportRcsTemplateId.CTU03,
     ) -> object:
         return await self._create_rack_departure(
             db,
@@ -281,7 +323,7 @@ class ReliableRackTransportCreator:
             step=step,
             rack_id=rack_id,
             destination=destination,
-            template=RcsTemplateId.CTU03,
+            template=RcsTemplateId(rcs_template_id.value),
         )
 
     async def create_transfer_departure(
@@ -333,7 +375,7 @@ class ReliableRackTransportCreator:
             resource_fence_id=rack_id,
             object_authority=(("RACK", rack_id),),
         )
-        return await self._transport.move_rack_in_session(
+        result = await self._transport.move_rack_in_session(
             db,
             client_request_id=binding.client_request_id,
             caller=TransportCaller(workline_id=str(workline_id)),
@@ -344,6 +386,11 @@ class ReliableRackTransportCreator:
             rcs_template_id=template,
             execution_authority=TransportExecutionAuthority(workline_id=workline_id),
         )
+        if self._inbound_window is not None:
+            _ = await self._inbound_window.attach_departure(
+                db, workline_id=workline_id, rack_id=rack_id, client_request_id=binding.client_request_id
+            )
+        return result
 
     @staticmethod
     def _convert_position(position: TransportRackMovePosition) -> RackMovePosition:

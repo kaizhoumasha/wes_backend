@@ -136,13 +136,18 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
     _ = require_transport_text(result[id_field], id_field, max_length=100)
     status = result["status"]
     if status == "CANCELLED":
-        if not rack_kind or any(key in result for key in ("position_unknown", "failure_code", "arrival_face")):
-            raise TransportContractError("CANCELLED rack result does not accept unknown, failure, or face fields")
-        if "final_position" in result:
-            final_position = _validate_position(result["final_position"])
-            if final_position["kind"] != "RACK_POSITION":
-                raise TransportContractError("cancelled rack result position must be RACK_POSITION")
-            result["final_position"] = final_position
+        if (
+            not rack_kind
+            or "final_position" not in result
+            or any(key in result for key in ("position_unknown", "failure_code", "arrival_face"))
+        ):
+            raise TransportContractError(
+                "CANCELLED rack result requires final_position and no unknown, failure, or face fields"
+            )
+        final_position = _validate_position(result["final_position"])
+        if final_position["kind"] != "RACK_POSITION":
+            raise TransportContractError("cancelled rack result position must be RACK_POSITION")
+        result["final_position"] = final_position
         result["arrival_face"] = None
         return result
     if status not in {"SUCCEEDED", "FAILED"}:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003 - SQLModel resolves this annotation at runtime
 from typing import ClassVar
 
 from sqlalchemy import BigInteger, Column, ForeignKeyConstraint, Index, UniqueConstraint, text
@@ -45,6 +46,15 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
             "step",
         ),
         Index("ix_transport_decision_bindings_picking_task", "picking_task_id"),
+        Index(
+            "ux_transport_decision_bindings_active_inbound_rack",
+            "workline_id",
+            "resource_fence_id",
+            unique=True,
+            postgresql_where=text("window_target_location_code IS NOT NULL AND window_released_at IS NULL"),
+            sqlite_where=text("window_target_location_code IS NOT NULL AND window_released_at IS NULL"),
+        ),
+        Index("ix_transport_decision_bindings_window_departure", "window_departure_client_request_id"),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -72,6 +82,9 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
         index=True,
         sa_type=SQL_COMPAT_BIGINT,
     )
+    window_target_location_code: str | None = Field(default=None, max_length=120)
+    window_departure_client_request_id: str | None = Field(default=None, max_length=120)
+    window_released_at: datetime | None = Field(default=None)
 
     @property
     def decision_identity(self) -> tuple[int, str, str]:

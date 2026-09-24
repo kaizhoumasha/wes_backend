@@ -400,7 +400,7 @@ async def test_result_requires_position_xor_unknown_and_failure_code() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("final_position", [None, {"kind": "RACK_POSITION", "location_code": "KT16"}])
-async def test_cancelled_rack_result_accepts_optional_final_position(final_position) -> None:
+async def test_cancelled_rack_result_requires_final_position(final_position) -> None:
     recorder = FakeRecorder()
     data = {
         "transport_task_id": "transport-1",
@@ -413,8 +413,9 @@ async def test_cancelled_rack_result_accepts_optional_final_position(final_posit
         data["final_position"] = final_position
     response = await TransportEventHandler(recorder).handle(_body("transport.task.resulted@v1", data))
 
-    assert response.http_status == 202
-    assert recorder.calls[0]["payload"]["status"] == "CANCELLED"
+    assert response.http_status == (202 if final_position is not None else 422)
+    if final_position is not None:
+        assert recorder.calls[0]["payload"]["status"] == "CANCELLED"
 
 
 @pytest.mark.asyncio

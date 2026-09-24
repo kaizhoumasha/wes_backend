@@ -61,15 +61,15 @@ WES 的业务角色“转运货架”，在 ECS 侧的 `location_type` 就是 `F
 
 | `location_type` | 必填字段 | 逻辑来源 |
 | --- | --- | --- |
-| `BIN` | `location_id`、`location_type`、`bin_cell_location` | 提议直接使用 WMS `work_plan.READY.cell_id`（单个、`1..7` 数字字符串；待 O16 与主合同修订确认） |
+| `BIN` | `location_id`、`location_type`、`bin_cell_location` | WMS 已确认 `cell_id` 保持 `BIN_ID + INDEX` 业务编码，并单独提供 `cell_index`；WES 按 O16 冻结的设备映射生成 `bin_cell_location` |
 | `ONE_LAYER_RACK` | 供应商原文要求 `location_id`、`location_type`、`bin_type`、`bin_location`、`bin_cell_location` 等；退料货架储位直接放料盘，字段是否适用见 O12、O13 | 来自 `plan_delta.added_direct_picks[].source_locator`（`rack_id`、`rack_face`、`slot_id`） |
 | `SCAN_PLATFORM` | `location_id`、`location_type` | WorkLine 位置绑定 |
-| `FIVE_LAYER_RACK` | `location_id`、`location_type`、`rack_id`、`rack_side`、`rack_layer`、`rack_column` | 提议由 WMS `material.decide.ACCEPT.target_locator` 给出层/列（待主合同修订确认）；`rack_side` 与 `rack_face` 值域仍待 O11 确认 |
+| `FIVE_LAYER_RACK` | `location_id`、`location_type`、`rack_id`、`rack_side`、`rack_layer`、`rack_column` | WMS 已接受在 `material.decide.ACCEPT.target_locator` 给出层/列；`rack_side` 与 `rack_face` 值域仍待 O11 确认 |
 
 供应商原文还要求 `bin_type`、`reel_layer`、`reel_thickness`、`reel_totalthickness`、`reel_diameter`。
 **2026-09-21 更新**：`reel_totalthickness` 不需要 WMS 提供，WES 本地按 `reel_thickness × reel_layer` 计算。
-其余四个字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`）仍然没有来源——这是出库合同 `work_plan.READY`
-的真实缺口，需要合同新增字段，已转入 [WMS/WES 主合同修订提案](wms-joint-confirmation-automatic-picking.md) 第 6 节，不是设备附录能单独解决的问题。
+其余四个字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`）由 WMS 已接受的
+`work_plan.READY` 目标响应提供，见[出库主合同 §9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)；WES 接线与设备参数映射仍待实施。
 
 ### 4.3 示例
 
@@ -223,9 +223,8 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 }
 ```
 
-**WES 不解析这个字符串**，原样保存为扫码证据，并原样转发给 WMS。这意味着 `outbound.material.decide@v1` 的请求字段
-（合同 §10.2 的 `data.six_in_one.{HHPN,MfrPN,Qty,DateCode,LotCode,PkgID}` 六个独立字段）需要改成一个原始 `barcode`
-字符串字段——这是合同变更，不是设备附录能单独解决的，见 [WMS/WES 主合同修订提案](wms-joint-confirmation-automatic-picking.md) 第 6 节。
+**WES 不解析这个字符串**，原样保存为扫码证据，并按 WMS 已接受的 `outbound.material.decide@v1` 目标请求以
+`data.barcode` 原样转发，见[出库主合同 §10.2](../contracts/wms-outbound-picking-task-integration-requirements.md)。
 六合一码的拆分和业务解释完全由 WMS 负责，WES 只做证据保存和原样转发，不做任何解析、拆分或格式假设。
 
 ## 7. 时限、互锁与恢复
@@ -256,17 +255,17 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | O1 | 扫码平台事件用哪个 `device_code` 上报（`ARM01`、`ARM02` 还是独立设备）？状态查询里没有独立扫码设备 | ECS 供应商 |
 | O2 | 事件能否带 `source_command_code`？否则 WES 只能按“平台同一时刻仅一盘”推断 | ECS 供应商 |
 | ~~O3~~ | 已确定：WES 不解析，原样转发 `barcode` 给 WMS；`material.decide` 请求字段需要合同变更，见 §6 更新 | 已关闭 |
-| O4 | `bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter` 拟由 WMS 在 `work_plan.READY` 里按 Cell 提供（见主合同修订提案第 6 节，待 WMS 确认）；`reel_totalthickness` 由 WES 本地计算 | WMS |
+| O4 | WMS 已接受在 `work_plan.READY` 按 Cell 提供 `bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`；`reel_totalthickness` 由 WES 本地计算，接线与设备验收仍待完成 | WMS |
 | O5 | 设备能否明确区分“Cell 无料（空取）”与“取料失败”？ | ECS 供应商 |
 | O6 | `params.business_key` 是否需要，或仅靠 `command_code` 追溯 | ECS 供应商 |
 | O7 | `error_detail.code` 取值表及原厂码对应关系 | ECS 供应商 |
 | O8 | 读不出码或不完整时，ECS 发什么事件、是否重扫、何时放弃 | ECS 供应商 |
 | O9 | `PICK_AND_PUT` 的合理 `timeout`、结果回调最长延迟 | ECS 供应商 |
-| O10 | 提议在 `material.decide.ACCEPT.target_locator` 增加 `rack_layer`、`rack_column`，由 WMS 直接给出；待主合同修订提案第 6 节确认 | WMS |
+| O10 | WMS 已接受在 `material.decide.ACCEPT.target_locator` 提供 `rack_layer`、`rack_column`；设备值域与映射仍需验收 | WMS |
 | O11 | `rack_side`（A/B）与合同 `rack_face` 是否同一值域 | WMS + ECS 供应商 |
 | O12 | 退料货架在 ECS 里的 `location_type` 是否为 `ONE_LAYER_RACK`，`ARM01` 能否从它直接取单个料盘 | ECS 供应商 |
 | O13 | 退料货架直接取料的位置字段：`bin_*` 是否适用于“储位直接放料盘”，`slot_id` 如何映射到 ECS 字段（字段名和 O10 不同，但可以是同一种做法：WMS 直接给出 ECS 需要的字段，不用 WES 反推） | ECS 供应商 + WMS |
 | O14 | 直接取料的“空取”信号，是否与 O5 同一机制 | ECS 供应商 |
 | O15 | 2026-09-21 联调样例的 ARM02 `target` 缺少 `location_type`；硬件文档 §8.1 要求 `FIVE_LAYER_RACK` 必填该字段，请确认是遗漏还是有意省略 | ECS 供应商 |
-| O16 | 已提议：`cell_id` 直接使用 `1..7` 的数字字符串，等同于 `bin_cell_location`，不再单独映射；请 WMS 确认能否按这个格式返回 | WMS |
+| O16 | WMS 已确认 `cell_id` 保持 `BIN_ID + INDEX` 编码并单独提供料箱内定位号 `cell_index`；`cell_index` 的设备类型/值域及到 `bin_cell_location` 的映射由 WMS 与 ECS 供应商冻结 | WMS + ECS 供应商 |
 | O17 | 直接取料的 ARM01 测量字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`，如果 O13 确认 `ONE_LAYER_RACK` 需要）目前没有任何 wire 来源：`plan_delta.added_direct_picks[]` 只给 `source_locator`，直接取料没有 `work_plan` 等价物。如果确实需要，建议同 O4/变更 1 的解法，扩展 `added_direct_picks[]` 每项带上这些字段 | WMS |

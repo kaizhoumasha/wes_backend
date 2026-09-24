@@ -23,7 +23,6 @@ def test_manual_bin_outcomes_are_closed_without_wire_payloads() -> None:
         task_id="PICK-001",
     )
     completed = sdk.ManualBinCompletedFact(
-        admission_operation_id=decided.operation_id,
         task_id="PICK-001",
         bin_code="A000000001",
         result="NORMAL",

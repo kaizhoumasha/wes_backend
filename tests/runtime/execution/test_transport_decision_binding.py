@@ -106,7 +106,15 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
             self.moves.append(kwargs)
 
     binding_repo, transport = Bindings(), Transport()
-    ids = iter(("rotate-request", "source-return-request", "transfer-return-request", "transfer-position-request"))
+    ids = iter(
+        (
+            "rotate-request",
+            "source-return-request",
+            "return-rack-request",
+            "transfer-return-request",
+            "transfer-position-request",
+        )
+    )
     creator = ReliableRackTransportCreator(transport, binding_repository=binding_repo, uuid_factory=lambda: next(ids))
     rotate = {
         "workline_id": 7,
@@ -135,6 +143,15 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     }
     await creator.create_source_return(object(), **source_return)
     await creator.create_source_return(object(), **source_return)
+    await creator.create_source_return(
+        object(),
+        **{
+            **source_return,
+            "correlation_id": "pt:31:return-out:R1",
+            "step": "MANUAL_PICKING_RETURN_RACK_OUT",
+            "rcs_template_id": sdk.TransportRcsTemplateId.F01,
+        },
+    )
     transfer_return = {
         "workline_id": 7,
         "source_evidence_id": 71,
@@ -157,6 +174,7 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     assert [call["client_request_id"] for call in transport.moves] == [
         "source-return-request",
         "source-return-request",
+        "return-rack-request",
         "transfer-return-request",
         "transfer-return-request",
         "transfer-position-request",
@@ -167,9 +185,10 @@ async def test_rotate_and_departure_reuse_one_bound_client_identity_per_decision
     assert all(
         call["rcs_template_id"] == RcsTemplateId.CTU03 and call["target_face"] is None for call in transport.moves[:2]
     )
+    assert transport.moves[2]["rcs_template_id"] == RcsTemplateId.F01
     assert all(
         call["rcs_template_id"] == RcsTemplateId.F01 and call["target"] == ZonePosition("WH05")
-        for call in transport.moves[2:4]
+        for call in transport.moves[3:5]
     )
     assert transport.moves[-1]["rcs_template_id"] == RcsTemplateId.F01
     assert transport.moves[-1]["target"] == RackPosition("STORE-POS")

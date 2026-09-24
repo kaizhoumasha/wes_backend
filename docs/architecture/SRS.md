@@ -42,7 +42,7 @@ WMS 决定业务意图、变化与终态；WES 把当前意图编排为自动化
 
 **Arrival Fact ≠ Business Authorization ≠ Physical Execution Result。** SCAN1～SCAN4 各自上报本点实际到位与当前扫码事实；WMS 业务授权和 ECS 动作终态分别形成独立 Evidence。每个点先可靠记录到位，再根据本点箱码、当前 Requirement 和本料箱真正需要的前置确定结果决定 Action；缺少 SCAN2 不会自行否定允许直达 SCAN3 的现场路径。Passage 只聚合已观察事实和本次动作身份，不保存预期路线作为后续决策的权威。SCAN4 首次到位决定 FIFO 顺序；匹配该点 `MOVE_FORWARD` 的 ECS `SUCCESS` 才使料箱进入 `RETURN_BUFFER` 并具备 `return_batch` 资格。`return_batch` 只消费按首次到位顺序排列后的连续合格队首，后项先成功也不得越过未闭合队首。若 ECS 不保证跨箱回调按现场到位顺序送达，WES 不得把本地 `received_at` 当成物理顺序保证。
 
-**Bin identity is reusable; Passage identity is single-use.** Passage 标识一次物理经过，Action/operation 标识其中一次外部逻辑动作。同一任务中的同一 `bin_code` 可有多个 Passage；Evidence 按来源事件身份去重，外部 Action 按自身身份幂等，不以可重复使用的 `bin_code` 判定重复。本次 Passage 的 WMS 完成结果按原准入 `admission_operation_id` 精确关联；信封顶层 `operation_id` 保持该完成事件自身的投递身份。
+**Bin identity is reusable; Passage identity is single-use.** Passage 标识一次物理经过，Action/operation 标识其中一次外部逻辑动作。同一任务中的同一 `bin_code` 可有多个 Passage；Evidence 按来源事件身份去重，外部 Action 按自身身份幂等，不以可重复使用的 `bin_code` 判定重复。人工料箱 `work_completed` 通知以 `task_id + bin_code` 匹配当前工作位唯一等待完成的 Passage；WES 本地的 `admission_operation_id` 仍标识准入 Action，不要求 WMS 回传。信封顶层 `operation_id` 是完成通知自身的投递身份。
 
 **Historical lineage explains evidence; current requirement authorizes action。** 历史成员、原 Action 和冻结请求身份用于关联迟到结果及审计，不因历史成员曾经存在就允许新设备动作。创建后继 Action 前检查直接 Requirement 仍有效、目标尚未由权威 Fact 满足、同一次逻辑 Action 没有未决或已创建的身份；物理接纳仍由 ECS/RCS 裁决。前序结果尚未确定不等于确定失败，不得据此下发 NG 或错误方向动作。
 
@@ -52,11 +52,13 @@ RCS 已确认同一货架或料箱的前一 Transport 未释放时会拒绝第�
 | --- | --- |
 | 下一自动化动作、SOP 推进和插件内部步骤顺序 | WMS 权威的业务有效性、库存、来源/目标、取消和业务终态 |
 | 明确可重试结果之后，依据原 Requirement 与权威目标事实决定是否重试及退避时机 | AGV 分配、物理资源可用性、路径冲突、货架/位置/设备资源预占 |
-| 当前步骤缺少权威到位、SCAN、结果事实时暂停其依赖步骤 | 根据命令下发顺序、预测容量或虚拟占用阻止无依赖动作 |
+| 当前步骤缺少权威到位、SCAN、结果事实时暂停其依赖步骤；按目标点配置维护 Transport 下发窗口 | 根据下发顺序推断实际工作顺序，或管理 RCS 的物理排队位、AGV 和补位 |
 
 `Command ≠ Fact`；`Command order ≠ Physical order`；`Timeout ≠ Failure`。同一业务步骤只创建一个 Transport；请求侧结果未知时保持原 WES `operation_id + transport_task_id + 冻结正文` 查询/重提，WMS 复用原 RCS `request_id`；明确终态后重新执行业务必须创建新 Transport 和新请求身份。已接纳任务由 RCS 给出明确终态；WMS 持久化 RCS Response 后才 ACK，并对未获 WES ACK 的 Response 持续补发；WES 对 Response 幂等持久化提交后才 ACK。基础 Transport 不决定业务重试，也不建立物理资源围栏。
 
-CTU01 的物理接纳、工作位互斥和 AGV 排队由 RCS 决定。WES 保留同一步骤身份幂等及货架实际到位后的拣选依赖；A 先提交、B 先到位时，B 的流程按其到位事实独立推进。`workline_positions.capacity` 是设备拓扑参数，不是 WES 根据历史 Transport 状态扣减的 CTU01 准入窗口。
+`workline_positions.capacity` 是 WES 对该目标点维护的滚动进场 Transport 下发窗口。窗口按物理货架的一次进场生命周期计数，不按 revision、face 或计划成员计数：进场 Transport 创建即占用；到位后继续占用；业务完成并且对应离场 Transport 获得 `ACCEPTED` 后释放一个名额，随即从 pending 补发下一架。明确未接纳的进场任务，或权威终位明确不在目标点的失败进场任务，释放其名额；失败终位仍在目标点且需要重试时沿用该物理生命周期的名额；发送结果或位置未知时保留原身份，等待 WMS/RCS 后续 API 的权威结果恢复。离场明确未接纳后，业务层可依据当前意图重新决定并以新身份下发。窗口不得形成必须人工解除的资源围栏。基础层提供窗口计数、同架生命周期复用和可靠补发；插件提供业务候选、离场条件和 Transport intent。不同目标点独立并发。RCS 决定 AGV、实际工作位及 N-1 排队位、自动补位和真实进位顺序；WES 不维护物理 queue slot。A 先提交、B 先到位时，B 的业务只按其权威到位事实推进。
+
+已接纳的离场任务若以 `FAILED` 结束且货架仍在目标点，下一次离场决定还需要权威当前面向。现有货架 `FAILED` 回调允许省略 `arrival_face`，这条 API 恢复路径的面向来源尚未确认，当前实现也未闭合；具体未决要求见 [Transport 履约合同 §5.3](../contracts/transport-fulfillment-contract.md#53-搬运最终结果)。
 
 ## 无阻塞执行目标补充（T0，2026-09-11）
 
@@ -538,7 +540,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    暂不可执行的前序任务不阻塞该线后续可执行任务；同一工作线不提前启动后继任务，WES 不提供人工启动入口。WES 按所属插件的动作优先级、设备忙闲、
    Transport 事实和目标面安排节拍，RCS 负责车辆路径、拥堵和避让。
 4. 每条 WorkLine 只有一台 CTU，入站和退箱批次串行；五层来源成员按 `task_id + plan_revision + rack_id + rack_face` 区分，同一架面在不同 revision 可再次安排。
-   WES 为当前有效成员创建有稳定身份的 CTU01；旧成员的 Action 不授权新成员，也不以 `workline_positions.capacity`、其他货架的 Transport 状态或离场状态裁决物理准入。
+   WES 为当前有效成员确定货架进场需求，基础层按目标点 `capacity` 滚动下发 CTU01；同一物理货架在同一进场生命周期内跨 revision 新增成员时复用原进场 Transport，新成员仍独立保留业务身份。
    RCS 负责 AGV 排队、自主进位和工作位互斥；当前架由原 CTU01/CTU02、成员成功结果与绑定工作位精确 rack/face 投影共同确认，不以计划顺序代替。只有该架的到位事实成立，才启动依赖它的投料/拣选步骤。
    当前来源成员的货架面实际到位后，为该成员请求一次 `inbound_batch`，冻结完整最终清单并按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。
    `inbound_batch` 请求、`PLAN_MEMBERS` 取消选择器和直接取料面完成事件均显式携带成员 `plan_revision`；旧成员结果不得满足或取消新成员。
@@ -564,7 +566,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 7. 目标架、退料架和五层货架可以并行搬运。退料直接取料优先，但不会暂停没有资源冲突的 CTU 和 Bin 流。货架不再承担当前工作时，
    WES 请求 WMS 返回离场去向，再创建离场 TransportTask。WMS 可以用更高 `plan_revision` 发送当前任务尚未发布的正常计划，但不能
    撤销 `inbound_batch` 已选中的 Bin，也不能用当前任务的后续计划替换空取、NG 或 Transport 确定失败的任务明细。
-   Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；当前 wire 的 `READY.cell_ids[]` 首次接收后不可撤销、删减或改写。同任务同箱可有多次 Passage，工作计划及后续 `BIN_CELL` 动作必须按本次 Passage/Work 关联；目标 wire 见[待确认修订提案](../integration/wms-joint-confirmation-automatic-picking.md)，不得把提案当作现行接口。
+   Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；WMS 已接受的 `READY` 给出单个编码 `cell_id`、独立 `cell_index` 和物理参数。同任务同箱可有多次 Passage，WES 在本地关联工作计划及后续 `BIN_CELL` 动作；WMS 按当前业务事实决定。目标 wire 见[出库主合同](../contracts/wms-outbound-picking-task-integration-requirements.md)，接线状态按该合同分别核对。
 8. Transport 请求或结果暂未知时，仅保留原身份、冻结请求和受影响明细的因果依赖，由可靠投递自动恢复；只有合同语义仍无法确定时进入 `RECONCILING`。
    Transport 已明确终态后，插件根据原来源成员是否仍有效、目标事实是否已满足，决定停止或以新 Action 身份重试；其他明细继续。尚未到达工作线的 Bin 不推进线内业务；
    退回搬运失败时继续保留原搬运成员与位置证据，后续按确定位置人工处置，只有位置未知才由 Transport 保持 `RECONCILING`。

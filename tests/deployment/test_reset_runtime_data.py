@@ -362,6 +362,10 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     assert summary.mode == "apply"
     reset_mock.assert_not_awaited()
     assert any(statement.lstrip().upper().startswith("TRUNCATE") for statement in session.statements)
+    assert any(
+        statement.startswith("UPDATE wes_biz.work_lines") and "is_active = false" in statement
+        for statement in session.statements
+    )
     assert session.commits == 1
 
 
@@ -370,6 +374,7 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     ("fail_on_sql", "fail_commit"),
     (
         ("TRUNCATE ", False),
+        ("UPDATE wes_biz.work_lines", False),
         ("INSERT INTO wes_biz.workline_runtime_status_projections", False),
         (None, True),
     ),

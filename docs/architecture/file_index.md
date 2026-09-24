@@ -32,8 +32,8 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端未提交 worktree 已实现并通过 QUALITY 与 selected HEAVY（395 passed）；前端同步、部署及供应商/现场验收未完成 |
-| `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；后端 T1–T5 已实现，前端受 clean develop 合同冻结门禁阻塞，当前不是 merge ready |
+| `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端 PR #246/#247 与前端 PR #125 已合并，部署及供应商/现场验收未完成 |
+| `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；仓库实施已合并，仍承接部署及供应商/现场验收 |
 | `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | [WES 职责收敛执行账本](wes-responsibility-convergence-ledger.md) | 19 项职责候选的权威 owner、处置分类、调用与测试所有权；CTU01 第一切片和四个实施 Wave |
@@ -48,13 +48,11 @@
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁；原人工 R4 已由正常 record/replay 自动应用取代 |
 | `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution/LineRunEpoch 退役、WorkLine 当前插件与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
-| `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-master.md` | 稳定性与中断恢复总计划；基础、消费、运维三个独立子计划及验收边界 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询和真实中断验证计划 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面消费与领域恢复入口计划 |
 | `docs/superpowers/plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据与恢复演练；C2 承接普通 TEST FULL 发布静默验收 |
 | `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、按需详情、共享 SSE 与四类现场调试的前后端设计真源 |
-| `docs/superpowers/plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施、验证和现场交接计划 |
 | `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；Phase 12 人工分拣引用严格出库合同，Phase 13 自动上架仍待评审 |
 | `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖容器中间位置事件和搬运最终结果的客户端生成，搬运提交服务端合同由 WMS 交付 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |

@@ -159,7 +159,7 @@ A2 冻结：修改原 get_task_with_latest_evidence/get_task_snapshot、Transpor
 新增原 service 内收据 DTO/query 与 tasks.py 固定只读 route。Repository 返回元组从二项扩为四项，
 唯一生产消费者为 get_task_snapshot，唯一直接数据库测试为 test_transport_repository.py 的 coherent snapshot。
 已有 PostgreSQL owner 承接聚合，不创建计划中重复的新文件。测试 owner 为 observability/API/repository；
-API/Service 间接消费者包括 workline_integration_debug refresh_transport_action，纳入领域回归。
+当时的 API/Service 间接消费者包括 workline_integration_debug refresh_transport_action；该联调台后端已随 #271 退役，当前领域回归以存续消费者为准。
 无 schema、身份、摘要和写入状态变化；HEAVY 沿用 repository/service/API 映射。OpenAPI 随 A3 一次导出。
 
 A2 聚焦验证 65 项通过；原持久拒绝 API 的 payload=None/response_code=REJECTED 合同用于收据测试，未改变 ingress。

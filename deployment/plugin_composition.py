@@ -10,6 +10,7 @@ from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import StaticPluginBinding
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
+from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 from src.app.execution.services.reliable_rack_transport import ReliableBinTransportCreator, ReliableRackTransportCreator
 from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationLifecycleService,
@@ -144,7 +145,9 @@ def build_deployment_runtime(
         prepare_workline_reserved = drains.is_reserved
 
         batch_scheduler = BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner))
-        rack_creator = ReliableRackTransportCreator(transport_runtime.service)
+        rack_creator = ReliableRackTransportCreator(
+            transport_runtime.service, inbound_window=RackInboundWindowService()
+        )
         batch_repository = BatchRepository(batch_reader)
         batch_result = ManualPickingBatchResultFlow(
             batch_reader, ReliableBinTransportCreator(transport_runtime.service), passages
@@ -252,7 +255,9 @@ def build_deployment_runtime(
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory,
             plugins=plugins,
-            transport_creator=ReliableRackTransportCreator(transport_runtime.service),
+            transport_creator=ReliableRackTransportCreator(
+                transport_runtime.service, inbound_window=RackInboundWindowService()
+            ),
         ),
     )
 

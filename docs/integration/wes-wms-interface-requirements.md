@@ -2541,7 +2541,7 @@ WES 选中工作线后，以 `task_id + workline_code` 调用 `outbound.picking_
 WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为 WES 的缓存位增加预留或租约字段。
 
 `inbound_batch` 返回 `READY` 后，所选 Bin 不再撤销或改选。Bin 到达 SCAN2 时，WMS 通过 `work_plan READY | NO_WORK | WAIT`
-给出结果；如果已经没有取料需求，返回 `NO_WORK`，Bin 继续正常退箱。`READY.cell_ids[]` 首次接收后不可撤销、删减或改写。
+给出结果；如果已经没有取料需求，返回 `NO_WORK`，Bin 继续正常退箱。WMS 已接受的 `READY` 给出单个编码 `cell_id`、独立 `cell_index` 和物理参数，WES 按本次 Passage 执行。
 
 五层来源货架到位后，WES 检查当前面能否为 `RETURN_BUFFER` FIFO 队首形成可执行批次：
 
@@ -2575,8 +2575,8 @@ Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 
 
 ### WMS 逐盘决定目标，WES 上报实际位置
 
-料盘到达扫码位后，WES 调用 `outbound.material.decide@v1`。现行 wire 包含 `task_id + source_locator + PkgID`，但这不足以区分跨 revision 再次安排的 `RACK_SLOT` 成员，或同任务同箱多次经过的 `BIN_CELL` 工作。目标关联分别需要成员 `plan_revision` 与本次 Passage/Work 身份；完整字段、示例和待决状态见[出库主合同 §6.1、§9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)及[修订提案](wms-joint-confirmation-automatic-picking.md)，提案字段尚非现行 wire。
-`PkgID` 来自硬件扫码结果，在本项目中是料盘的唯一编号。请求同时携带六合一码和扫码时间，但不再生成
+料盘到达扫码位后，WES 调用 `outbound.material.decide@v1`。WMS 已接受的目标请求使用 `task_id + source_locator + barcode + scanned_at`；`RACK_SLOT` 来源还携带原成员 `plan_revision`。`BIN_CELL` 由 WMS 按来源、扫码原文和当前业务事实决定，WES 在本地关联 Passage 与 Action。完整字段、示例和接线状态见[出库主合同 §6.1、§9.3、§10.2](../contracts/wms-outbound-picking-task-integration-requirements.md)及[WMS 确认记录](wms-joint-confirmation-automatic-picking.md)。
+`PkgID` 来自硬件扫码结果，在本项目中是料盘的唯一编号。请求携带完整条码原文和扫码时间，但不再生成
 `scan_evidence_id`、`source_lock_generation` 或 `face_window_generation`。
 
 WMS 返回精确的目标货架、货架面和目标格。物理放置完成后，WES 调用

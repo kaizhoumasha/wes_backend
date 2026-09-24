@@ -78,6 +78,7 @@ class ManualPickingTransportOutcomePublisher:
         rack_steps = {
             "PICKING_TASK_TARGET_RACK_IN",
             "PICKING_TASK_BIN_SOURCE_RACK_IN",
+            "PICKING_TASK_RETURN_RACK_IN",
             SOURCE_RACK_ROTATE_STEP,
             RETURN_RACK_ROTATE_STEP,
         }

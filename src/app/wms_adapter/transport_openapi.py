@@ -196,7 +196,7 @@ def _rack_result_data_schema() -> dict[str, object]:
         ]
         + [
             _closed_object(
-                ["transport_task_id", "kind", "outcome_revision", "rack_id", "status"],
+                ["transport_task_id", "kind", "outcome_revision", "rack_id", "status", "final_position"],
                 {
                     **common_properties,
                     "rack_id": _OBJECT_ID_SCHEMA,

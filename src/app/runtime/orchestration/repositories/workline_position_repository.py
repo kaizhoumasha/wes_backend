@@ -122,6 +122,25 @@ class WorkLinePositionRepository(BaseRepository[WorkLinePosition]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_workline_logic_location_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        logic_location_code: str,
+    ) -> WorkLinePosition | None:
+        columns = cast("Any", WorkLinePosition).__table__.c
+        result = await db.execute(
+            select(WorkLinePosition)
+            .where(
+                columns.workline_code == workline_code,
+                columns.logic_location_code == logic_location_code,
+                columns.enabled.is_(True),
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
 
 workline_position_repository = WorkLinePositionRepository()
 

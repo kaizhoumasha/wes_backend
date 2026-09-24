@@ -1413,6 +1413,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py",
         "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
         "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py",
+        "migrations/versions/20260923_1700_c41df10527aa_货架进场窗口生命周期.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)

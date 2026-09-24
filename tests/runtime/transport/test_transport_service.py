@@ -6,7 +6,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
@@ -908,6 +908,49 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
     assert snapshot.status == "ACCEPTED"
     assert snapshot.submit_attempt_count == 1
     assert snapshot.result_deadline_at is not None
+
+
+@pytest.mark.asyncio
+async def test_leave_acceptance_releases_window_and_wakes_refill(service: TransportService) -> None:
+    window = SimpleNamespace(release_on_departure_accepted=AsyncMock(return_value=True))
+    queue = SimpleNamespace(
+        enqueue_transport_submit=Mock(),
+        enqueue_transport_debug=Mock(),
+        enqueue_transport_outcomes=Mock(),
+        enqueue_picking_task_plans=Mock(),
+    )
+    service._rack_inbound_window = window
+    service._task_queue = queue
+    service._window_refill_wakeup = queue.enqueue_picking_task_plans
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-leave", RackPosition("A"), RackPosition("B"), "90")
+
+    assert await service.submit_pending_tasks(1) == 1
+    window.release_on_departure_accepted.assert_awaited_once()
+    assert window.release_on_departure_accepted.await_args.kwargs["client_request_id"] == handle.client_request_id
+    queue.enqueue_picking_task_plans.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_rejected_inbound_releases_window_and_wakes_refill(service: TransportService) -> None:
+    window = SimpleNamespace(release_unarrived_terminal=AsyncMock(return_value=True))
+    queue = SimpleNamespace(
+        enqueue_transport_submit=Mock(),
+        enqueue_transport_debug=Mock(),
+        enqueue_transport_outcomes=Mock(),
+        enqueue_picking_task_plans=Mock(),
+    )
+    service._rack_inbound_window = window
+    service._task_queue = queue
+    service._window_refill_wakeup = queue.enqueue_picking_task_plans
+    service.provider.code = TransportSubmitCode.REJECTED
+    handle = await service.move_rack(
+        new_uuid7(), _caller(), "rack-rejected", RackPosition("A"), RackPosition("B"), "90"
+    )
+
+    assert await service.submit_pending_tasks(1) == 1
+    window.release_unarrived_terminal.assert_awaited_once()
+    assert window.release_unarrived_terminal.await_args.args[1].client_request_id == handle.client_request_id
+    queue.enqueue_picking_task_plans.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,17 @@ def _session_factory(database_url: str) -> tuple[async_sessionmaker[AsyncSession
 async def _seed_master_and_runtime(session: AsyncSession) -> None:
     await session.execute(
         text(
+            "INSERT INTO wes_biz.work_lines ("
+            "created_at, line_code, line_name, line_type, runtime_config_json, "
+            "run_mode, diagnostic_profile, device_contracts, position_bindings, is_active, version"
+            ") VALUES ("
+            "CURRENT_TIMESTAMP, 'RESET-WORKLINE', 'Reset workline', 'MANUAL', '{}'::json, "
+            "'AUTO', '{}'::json, '{}'::json, '{}'::json, true, 3"
+            ")"
+        )
+    )
+    await session.execute(
+        text(
             "INSERT INTO wes_biz.resource_bin_types "
             "(created_at, bin_type_code, bin_type_name, active, metadata_json) "
             "VALUES (CURRENT_TIMESTAMP, 'RESET-MASTER', 'Reset master survives', true, '{}'::json)"
@@ -107,6 +118,12 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         for row in dry_summary.truncated
                     )
                     assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 1
+                    assert (
+                        await session.scalar(
+                            text("SELECT is_active FROM wes_biz.work_lines WHERE line_code = 'RESET-WORKLINE'")
+                        )
+                        is True
+                    )
 
                     await reset_runtime_data(
                         session,
@@ -115,6 +132,18 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         reset_mocks=False,
                     )
                     assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 0
+                    workline = (
+                        await session.execute(
+                            text(
+                                "SELECT wl.is_active, wl.version, projection.runtime_status "
+                                "FROM wes_biz.work_lines wl "
+                                "JOIN wes_biz.workline_runtime_status_projections projection "
+                                "ON projection.workline_id = wl.id "
+                                "WHERE wl.line_code = 'RESET-WORKLINE'"
+                            )
+                        )
+                    ).one()
+                    assert workline == (False, 4, "STOPPED")
                     assert (
                         await session.scalar(
                             text("SELECT count(*) FROM wes_biz.resource_bin_types WHERE bin_type_code = 'RESET-MASTER'")
