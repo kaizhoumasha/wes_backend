@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.6.0] - 2026-09-23
+
+### Changed
+
+- 按目标点容量滚动下发货架进场，离场接纳后释放窗口；CTU01/CTU03 与 F01/F01 按货架角色配对。
+- 料箱完成通知按 `task_id + bin_code` 关联当前开放 Passage，并使用 WMS 的 `NORMAL/NG` 结果推进。
+- 将 KT16 联调成功场景和货架容量回归固化到 WMS Mock。
+
+### Fixed
+
+- 货架窗口迁移在旧进场未闭合或缺少权威离位事实时拒绝升级，避免旧货架漏计容量。
+
 ## [0.48.5.0] - 2026-09-23
 
 ### Changed
