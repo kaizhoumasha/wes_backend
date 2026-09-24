@@ -120,6 +120,10 @@ class PositionProjectionService:
     async def get_current(self, db, object_type, object_id, *, for_update=False):
         return await self._repository.get(db, object_type, object_id, for_update=for_update)
 
+    async def lock_workline_authority(self, db, workline_id: int) -> None:
+        if await self._repository.get_workline_for_update(db, workline_id) is None:
+            raise PositionProjectionInvariantViolation("projection authority WorkLine is missing")
+
     async def _lock_object_authority(self, db, object_type, object_id):
         if object_type not in {"RACK", "BIN"}:
             raise PositionProjectionAuthorityError("unsupported projection object_type")

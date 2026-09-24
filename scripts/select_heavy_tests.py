@@ -22,6 +22,7 @@ RETIRED_REMOVED_ROOTS = (
     "docs/archive/",
     "docs/superpowers/archive/",
     "packages/wes_plugin_sdk/",
+    "src/app/resource/",
 )
 RETIRED_REMOVED_PATHS = frozenset(
     {
@@ -36,7 +37,15 @@ RETIRED_REMOVED_PATHS = frozenset(
         "src/app/admin/services/menu_service.py",
         "src/app/admin/services/menu_sync_service.py",
         "src/app/admin/v1/menu.py",
+        "src/app/transport/debug_reset.py",
+        "src/app/transport/debug_run_contracts.py",
+        "src/app/transport/debug_run_evidence.py",
+        "src/app/transport/debug_run_repository.py",
+        "src/app/transport/debug_run_service.py",
+        "src/app/transport/debug_run_state_machine.py",
+        "src/app/transport/v1/debug_runs.py",
         "src/utils/frontend_menu_parser.py",
+        "tests/integration/transport/debug_return_support.py",
     }
 )
 CANDIDATE_GLOBS = (

@@ -6,9 +6,9 @@ from typing import Any
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.app.resource.models import RackKind
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.runtime.orchestration.repositories.workline_position_repository import WorkLinePositionRepository
+from src.app.workline.models.rack_kind import RackKind
 from src.app.workline.services.workline_position_service import WorkLinePositionService
 
 

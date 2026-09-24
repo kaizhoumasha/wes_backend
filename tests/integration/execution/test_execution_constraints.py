@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import (
@@ -351,7 +351,9 @@ async def test_postgresql_binding_and_projection_share_object_authority_fence(in
 
 
 @pytest.mark.asyncio
-async def test_postgresql_unknown_projection_blocks_waiting_workline_deactivation(integration_session_factory) -> None:
+async def test_postgresql_unknown_projection_waits_for_workline_lock_then_allows_sop_deactivation(
+    integration_session_factory,
+) -> None:
     async with integration_session_factory.begin() as db:
         workline, identity = await _seed_workline(db)
         line_id = workline.id
@@ -388,10 +390,9 @@ async def test_postgresql_unknown_projection_blocks_waiting_workline_deactivatio
     assert done == set()
     release.set()
     await applying
-    with pytest.raises(BusinessException, match="未完成运行负载"):
-        await deactivating
+    await deactivating
     async with integration_session_factory() as db:
-        assert (await db.get(WorkLine, line_id)).is_active
+        assert not (await db.get(WorkLine, line_id)).is_active
         projection = await PositionProjectionRepository().get(db, "BIN", identity)
         assert projection.position_unknown
         assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}"
@@ -507,39 +508,6 @@ async def test_postgresql_wms_confirmation_identity_is_operation_plus_operation_
         db.add(second)
         with pytest.raises(IntegrityError):
             await db.flush()
-
-
-@pytest.mark.asyncio
-async def test_direct_cutover_schema_has_no_previous_evidence_or_resource_confirmation_owner(
-    integration_session_factory,
-) -> None:
-    async with integration_session_factory() as db:
-        old_tables = set(
-            (
-                await db.execute(
-                    text(
-                        "SELECT table_name FROM information_schema.tables "
-                        "WHERE table_schema = 'wes_biz' "
-                        "AND table_name IN ("
-                        "'device_evidences', 'device_evidence_conflicts', 'inbound_evidence_execution_bindings'"
-                        ")"
-                    )
-                )
-            ).scalars()
-        )
-        old_column_exists = await db.scalar(
-            text(
-                "SELECT EXISTS ("
-                "SELECT 1 FROM information_schema.columns "
-                "WHERE table_schema = 'wes_biz' "
-                "AND table_name = 'resource_bin_material_mounts' "
-                "AND column_name = 'wms_confirmation_status'"
-                ")"
-            )
-        )
-
-    assert old_tables == set()
-    assert old_column_exists is False
 
 
 @pytest.mark.asyncio

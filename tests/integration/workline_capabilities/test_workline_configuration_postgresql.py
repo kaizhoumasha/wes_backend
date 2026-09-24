@@ -17,7 +17,6 @@ from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus
 from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
-from src.app.resource.models.resource import RackPlacement
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
@@ -246,32 +245,31 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     device = await db.get(Device, device_id)
                     assert device is not None and device.work_line_id == winner_id
 
-                # 没有通用位置投影时，货架到位记录仍禁止删除或改写基础工作位。
+                # 孤立位置投影仅供诊断；清线由现场 SOP 负责。
                 async with sessions.begin() as db:
                     db.add(
-                        RackPlacement(
-                            rack_code="CONFIG-OCCUPIED",
+                        PositionProjection(
+                            object_type="RACK",
+                            object_id="CONFIG-UNKNOWN",
                             workline_id=winner_id,
-                            position_code="WORK-1",
-                            placement_status="ARRIVED",
-                            source_system="ECS",
-                            source_event_id="config-arrived",
-                            started_at=datetime(2026, 9, 8),
+                            position_json=None,
+                            position_unknown=True,
+                            source_operation_id="019d0000-0000-7000-8000-000000000004",
+                            source_transport_task_id="CONFIG-UNKNOWN-TRANSPORT",
                         )
                     )
                 async with sessions() as db:
                     line = await db.get(WorkLine, winner_id)
                     assert line is not None
-                    with pytest.raises(BusinessException, match="货架或料箱占位"):
-                        await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
-                            db,
-                            workline_id=winner_id,
-                            version=line.version,
-                            device_codes=(),
-                            positions=(),
-                        )
+                    await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
+                        db,
+                        workline_id=winner_id,
+                        version=line.version,
+                        device_codes=(),
+                        positions=(),
+                    )
                     await db.rollback()
-                    assert len(list((await db.scalars(select(WorkLinePosition))).all())) == 4
+                    assert list((await db.scalars(select(WorkLinePosition))).all()) == []
 
             finally:
                 await engine.dispose()
@@ -340,7 +338,7 @@ def test_configuration_can_claim_the_active_replacement_for_a_deleted_device_cod
     asyncio.run(scenario())
 
 
-def test_position_projection_blocker_reports_workline_positions_and_unknown_only() -> None:
+def test_position_projection_reports_workline_positions_and_unknown_without_blocking_sop() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -408,6 +406,7 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                             "identity": "RACK:RACK-ON-LINE",
                         },
                     }
+                    assert (await WorkLineRepository().get_unfinished_workload_summary(db, workline.id))["count"] == 0
             finally:
                 await engine.dispose()
 
@@ -628,7 +627,8 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
 def test_base_position_device_migration_refuses_lossy_downgrade(position_type: str) -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
-            run_alembic("upgrade", "head", database_url=database_url)
+            # 仅验证工作位迁移本身；后续资源表退役迁移明确不可逆。
+            run_alembic("upgrade", "d11f8c6fdb0d", database_url=database_url)
             engine = create_async_engine(database_url)
             sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
             try:
@@ -667,7 +667,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                         assert tuple(legacy) == (position.id, line.id, device.id)
                         assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_positions')")) is None
                     await engine.dispose()
-                    run_alembic("upgrade", "head", database_url=database_url)
+                    run_alembic("upgrade", "d11f8c6fdb0d", database_url=database_url)
                     async with sessions() as db:
                         restored = await db.get(WorkLinePosition, position.id)
                         assert restored is not None

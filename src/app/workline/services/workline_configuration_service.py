@@ -65,8 +65,6 @@ class CacheInvalidatorPort(Protocol):
 
 
 class PositionConfigurationRepositoryPort(Protocol):
-    async def has_active_placements(self, db: Any, workline_id: int) -> bool: ...
-
     async def list_for_workline(self, db: Any, workline_id: int, *, for_update: bool = False) -> list[Any]: ...
 
     async def replace_for_workline(
@@ -203,8 +201,6 @@ class WorkLineConfigurationService:
     ) -> WorkLineBaseConfigurationResponse:
         """原子替换基础配置；保持当前插件选择和角色绑定。"""
         workline, existing_positions = await self._lock_editable(db, workline_id=workline_id, version=version)
-        if await self._positions.has_active_placements(db, workline_id):
-            raise BusinessException(message="存在货架或料箱占位，不能修改基础配置")
         normalized_codes = self._normalize_device_codes(device_codes)
         devices = await self._devices.list_for_workline_configuration_update(
             db,

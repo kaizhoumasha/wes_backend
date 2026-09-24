@@ -295,10 +295,10 @@ def test_start_asgi_contract_serializes_stable_error_reason(monkeypatch: pytest.
     assert response.json()["data"] == {"reason": "INVALID_STATE"}
 
 
-def test_start_asgi_rejects_retired_request_identity(monkeypatch):
+def test_start_asgi_rejects_unknown_request_field(monkeypatch):
     service = StartService(_line())
     app = _asgi_app(monkeypatch, db=Db(), service=service, permissions={"biz:workline:start"}, authenticated=True)
     with TestClient(app) as client:
-        response = client.post("/api/v1/workline/operations/worklines/7/start", json={"request_id": "REQUEST-1"})
+        response = client.post("/api/v1/workline/operations/worklines/7/start", json={"unexpected": "VALUE"})
     assert response.status_code == 422
     assert service.calls == []

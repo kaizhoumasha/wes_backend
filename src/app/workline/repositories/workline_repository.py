@@ -13,8 +13,8 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
+from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
-from src.app.resource.models.resource import BinPlacement, BinPlacementStatus, RackPlacement, RackPlacementStatus
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
@@ -430,12 +430,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 "status": row.status,
                 "identity": row.identity,
             }
-        from src.app.execution.repositories.position_projection_repository import position_projection_repository
-
-        positions = await position_projection_repository.get_active_workline_summary(db, workline_id)
-        by_type["position_projections"] = positions["count"]
-        if positions["sample"] is not None:
-            samples["position_projections"] = positions["sample"]
         return {
             "count": sum(by_type.values()),
             "sample": next(iter(samples.values()), None),
@@ -457,8 +451,14 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         command = cast("Any", DeviceCommand).__table__.c
         transport = cast("Any", TransportTask).__table__.c
         confirmation = cast("Any", WmsConfirmation).__table__.c
-        bin_placement = cast("Any", BinPlacement).__table__.c
-        rack_placement = cast("Any", RackPlacement).__table__.c
+        projection = cast("Any", PositionProjection).__table__.c
+        line = await db.get(WorkLine, workline_id)
+        locations = tuple(binding["location_id"] for binding in line.position_bindings.values()) if line else ()
+        at_workline = projection.position_json["location_code"].as_string().in_(locations)
+        current_location = case(
+            (projection.position_unknown.is_(True), None),
+            else_=projection.position_json["location_code"].as_string(),
+        )
 
         target_rows = union_all(
             self._active_object_query(
@@ -526,34 +526,16 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 from_models=(WmsConfirmation, WorkLine),
             ),
             self._active_object_query(
-                "BIN_RESOURCE",
-                func.coalesce(bin_placement.bin_code, bin_placement.placeholder_key),
-                "BIN_PLACEMENT",
-                bin_placement.position_code,
-                literal("resource_bin_placement:") + sa_cast(bin_placement.id, String),
-                bin_placement.workline_id == workline_id,
-                bin_placement.ended_at.is_(None),
-                location_scope=bin_placement.position_type,
-                location_code=bin_placement.position_code,
-                location_conflict=case(
-                    (bin_placement.placement_status == BinPlacementStatus.UNKNOWN, True),
-                    else_=False,
-                ),
-            ),
-            self._active_object_query(
-                "RACK_RESOURCE",
-                rack_placement.rack_code,
-                "RACK_PLACEMENT",
-                func.coalesce(rack_placement.position_code, rack_placement.location_code),
-                literal("resource_rack_placement:") + sa_cast(rack_placement.id, String),
-                rack_placement.workline_id == workline_id,
-                rack_placement.ended_at.is_(None),
-                location_scope=literal("WORKLINE_POSITION"),
-                location_code=func.coalesce(rack_placement.position_code, rack_placement.location_code),
-                location_conflict=case(
-                    (rack_placement.placement_status == RackPlacementStatus.UNKNOWN, True),
-                    else_=False,
-                ),
+                projection.object_type,
+                projection.object_id,
+                "POSITION_PROJECTION",
+                projection.object_id,
+                literal("position_projection:") + sa_cast(projection.id, String),
+                projection.workline_id == workline_id,
+                or_(projection.position_unknown.is_(True), at_workline),
+                location_scope=case((projection.position_unknown.is_(True), None), else_="WORKLINE_POSITION"),
+                location_code=current_location,
+                location_conflict=projection.position_unknown,
             ),
         ).subquery("target_active_object_facts")
         result = await db.execute(
@@ -566,7 +548,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
 
     @staticmethod
     def _active_object_query(
-        object_type: str,
+        object_type: Any,
         object_key: Any,
         owner_kind: str,
         owner_code: Any,
@@ -580,7 +562,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         transient_until: Any = None,
     ) -> Any:
         query = select(
-            literal(object_type).label("object_type"),
+            sa_cast(object_type, String).label("object_type"),
             sa_cast(object_key, String).label("object_key"),
             literal(owner_kind).label("owner_kind"),
             sa_cast(owner_code, String).label("owner_code"),

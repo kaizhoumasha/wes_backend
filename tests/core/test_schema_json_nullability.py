@@ -4,16 +4,6 @@ from __future__ import annotations
 
 from src.app.device.models import Device, DeviceCommand
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, WmsConfirmation
-from src.app.resource.models import (
-    Bin,
-    BinPlacement,
-    BinSlotTemplate,
-    BinType,
-    Rack,
-    RackSlotTemplate,
-    RackType,
-    ResourceStateEvent,
-)
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.workline.models import WorkLine
 
@@ -24,15 +14,6 @@ def test_non_optional_json_columns_are_not_nullable() -> None:
         Device.__table__.c.diagnostic_profile,
         InboundEvidenceConflict.__table__.c.normalized_payload,
         InboundEvidence.__table__.c.normalized_payload,
-        BinPlacement.__table__.c.metadata_json,
-        BinSlotTemplate.__table__.c.metadata_json,
-        BinType.__table__.c.metadata_json,
-        Bin.__table__.c.metadata_json,
-        RackSlotTemplate.__table__.c.allowed_bin_types,
-        RackSlotTemplate.__table__.c.allowed_material_carrier_types,
-        RackType.__table__.c.metadata_json,
-        Rack.__table__.c.metadata_json,
-        ResourceStateEvent.__table__.c.payload_json,
         WmsConfirmation.__table__.c.request_payload,
         WorkLine.__table__.c.diagnostic_profile,
         WorkLine.__table__.c.runtime_config_json,

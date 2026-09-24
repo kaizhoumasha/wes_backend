@@ -338,8 +338,7 @@ def test_transport_debug_run_scanner_uses_current_runtime_with_fixed_batch(
 ) -> None:
     module = importlib.import_module("src.celery_app.tasks.transport")
     debug_run_service = SimpleNamespace(advance_active_runs=AsyncMock(return_value=17))
-    runtime = SimpleNamespace(debug_run_service=debug_run_service)
-    monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_runtime=runtime))
+    monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_debug_run_service=debug_run_service))
     monkeypatch.setattr(module, "run_async", lambda factory: asyncio.run(factory()))
 
     assert module.advance_transport_debug_runs_batch.run(limit=100) == 17

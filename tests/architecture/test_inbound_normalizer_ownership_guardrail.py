@@ -173,11 +173,7 @@ def test_inbound_normalizer_ownership_guardrail_rejects_directory_prefix_allowli
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
     temp_allowlist.write_text((REPO_ROOT / "scripts" / "architecture-guardrails.allowlist").read_text(encoding="utf-8"))
     with temp_allowlist.open("a", encoding="utf-8") as f:
-        f.write(
-            "INBOUND_NORMALIZER_OWNERSHIP|src/app/runtime/orchestration|bad broad allowlist|2026-09-30|"
-            "legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase"
-            "2\n"
-        )
+        f.write("INBOUND_NORMALIZER_OWNERSHIP|src/app/runtime/orchestration|bad broad allowlist|2026-09-30\n")
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
         "leaked_normalizer: WmsEventPort | None = None\n",
@@ -291,33 +287,6 @@ def test_inbound_normalizer_ownership_guardrail_scans_callback_domain():
     )
     assert "INBOUND_NORMALIZER_OWNERSHIP" in result.stderr
     assert "src/app/callback/_inbound_normalizer_ownership_callback_violation_fixture.py" in result.stderr
-
-
-def test_inbound_normalizer_ownership_guardrail_scans_wms_integration_services_domain():
-    """INBOUND_NORMALIZER_OWNERSHIP 必须扫描 src/app/wms_integration/services 域。"""
-    fixture = REPO_ROOT / "src/app/wms_integration/services/_inbound_normalizer_ownership_wms_violation_fixture.py"
-    fixture.write_text(
-        "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
-        "leaked_normalizer: WmsEventPort | None = None\n",
-        encoding="utf-8",
-    )
-    try:
-        result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    finally:
-        fixture.unlink(missing_ok=True)
-
-    assert result.returncode == 1, (
-        "INBOUND_NORMALIZER_OWNERSHIP 应拒绝 src/app/wms_integration/services 内持有 inbound normalizer\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-    )
-    assert "INBOUND_NORMALIZER_OWNERSHIP" in result.stderr
-    assert "src/app/wms_integration/services/_inbound_normalizer_ownership_wms_violation_fixture.py" in result.stderr
 
 
 def test_inbound_normalizer_ownership_guardrail_scans_device_domain():

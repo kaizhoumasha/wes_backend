@@ -222,7 +222,9 @@ def test_replay_task_has_fixed_batch_contract():
 async def test_picking_parent_status_does_not_discard_authoritative_final_position(picking_status):
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), apply_transport_result=AsyncMock(return_value=None)
+    )
     service = TransportService(
         _Sessions(_DbForReplay(picking_status)),
         _FinalBatchReplayRepository(),
@@ -233,13 +235,16 @@ async def test_picking_parent_status_does_not_discard_authoritative_final_positi
 
     assert await service.replay_final_result_projections(100) == 2
     assert position_port.apply_transport_result.await_count == 2
+    assert position_port.lock_workline_authority.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_ack_replay_delegates_to_invalidation_owner_without_provider_submit():
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(invalidate_transport_member=AsyncMock(return_value=None))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), invalidate_transport_member=AsyncMock(return_value=None)
+    )
     service = TransportService(
         _Sessions(_DbForReplay()),
         _ReplayRepository(),
@@ -257,9 +262,10 @@ async def test_ack_replay_rolls_back_retryable_candidate_and_continues_batch(cap
     from src.app.transport.service import TransportService
 
     position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(),
         invalidate_transport_member=AsyncMock(
             side_effect=(PositionProjectionRetryableError("serialization retry"), None)
-        )
+        ),
     )
     service = TransportService(
         _Sessions(_DbForReplay()),
@@ -286,7 +292,8 @@ async def test_final_replay_continues_after_retryable_candidate(caplog):
     from src.app.transport.service import TransportService
 
     position_port = SimpleNamespace(
-        apply_transport_result=AsyncMock(side_effect=(PositionProjectionRetryableError("serialization retry"), None))
+        lock_workline_authority=AsyncMock(),
+        apply_transport_result=AsyncMock(side_effect=(PositionProjectionRetryableError("serialization retry"), None)),
     )
     service = TransportService(
         _Sessions(_DbForReplay()),
@@ -310,7 +317,9 @@ async def test_final_replay_continues_after_retryable_candidate(caplog):
 async def test_final_replay_passes_taskless_drain_fact_to_causal_projection():
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), apply_transport_result=AsyncMock(return_value=None)
+    )
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
         _DrainReplayRepository(),
@@ -327,7 +336,9 @@ async def test_final_replay_passes_taskless_drain_fact_to_causal_projection():
 async def test_direct_result_passes_historical_taskless_drain_fact_to_causal_projection():
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(apply_transport_result=AsyncMock(return_value=None))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), apply_transport_result=AsyncMock(return_value=None)
+    )
     repository = _DrainReplayRepository()
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
@@ -362,7 +373,8 @@ async def test_direct_result_records_superseded_projection(monkeypatch):
     superseded = AsyncMock()
     monkeypatch.setattr(service_module, "record_superseded", superseded)
     position_port = SimpleNamespace(
-        apply_transport_result=AsyncMock(return_value=SimpleNamespace(source_transport_task_id="task-newer"))
+        lock_workline_authority=AsyncMock(),
+        apply_transport_result=AsyncMock(return_value=SimpleNamespace(source_transport_task_id="task-newer")),
     )
     repository = _DrainReplayRepository()
     service = TransportService(
@@ -442,7 +454,9 @@ async def test_projection_recovery_metrics_round_trip_through_redis(monkeypatch)
 async def test_ack_replay_passes_taskless_drain_uncertainty_to_causal_projection():
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(invalidate_transport_member=AsyncMock(return_value=None))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), invalidate_transport_member=AsyncMock(return_value=None)
+    )
     service = TransportService(
         _Sessions(_DbForDrainReplay()),
         _DrainAckReplayRepository(),
@@ -459,7 +473,9 @@ async def test_ack_replay_passes_taskless_drain_uncertainty_to_causal_projection
 async def test_ack_replay_does_not_swallow_unknown_candidate_failure():
     from src.app.transport.service import TransportService
 
-    position_port = SimpleNamespace(invalidate_transport_member=AsyncMock(side_effect=RuntimeError("bug")))
+    position_port = SimpleNamespace(
+        lock_workline_authority=AsyncMock(), invalidate_transport_member=AsyncMock(side_effect=RuntimeError("bug"))
+    )
     service = TransportService(
         _Sessions(_DbForReplay()),
         _ReplayRepository(),

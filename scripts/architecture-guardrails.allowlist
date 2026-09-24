@@ -1,41 +1,8 @@
-# Architecture guardrails seed allowlist (legacy matrix bootstrap)
-#
-# 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
-#   rule_id          含 PLUGIN_SDK_DEPENDENCY_BOUNDARY/CORE_PLUGIN_DEPENDENCY_BOUNDARY/WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY 等 architecture-guardrails.sh 已声明规则
-#   path             违规文件路径 (CAPABILITY_IMPLEMENTATION_IMPORT / INBOUND_NORMALIZER_OWNERSHIP 必须逐文件枚举)
-#   reason           豁免原因
-#   expires_at       过期日期 YYYY-MM-DD (无过期视为失败)
-#   legacy_entry_id  关联 docs/architecture/legacy-cleanup-matrix.csv 的 entry_id
-#   drop_phase       必须与 legacy-cleanup-matrix.csv 对应 entry 的 drop_phase 一致
-#
-# baseline validation: 所有 seed 条目引用存在的 legacy_entry_id, drop_phase 与 matrix 一致
-# enforced mode: allowlist 之外违规阻塞 PR
-# expiry-check mode: 过期 allowlist 阻塞 PR
-# 新 SDK、核心→插件和具体插件依赖方向不设 seed 豁免，任何命中都直接阻塞。
-#
-# 删除任意一行后, --mode enforced 必须对对应历史违规返回非零 (证明 enforcement 生效)
-
-# WMS_INTEGRATION_BOUNDARY: 跨域 WMS import (2 文件, drop_phase=phase2/phase5-tech)
-
-# EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (resource/wms_integration, drop_phase=phase1)
-EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/projection_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/projection_integrity_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_integrity_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/relation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/relation_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/models/resource.py:<file>|phase1
-
-# EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (workline runtime, drop_phase=phase2)
-EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/models/object_transition_event.py)|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/repositories/object_transition_event_repository.py)|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/services/inbox/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:<file>|phase2
-
-# CAPABILITY_FORBIDDEN_DEPENDENCY/CAPABILITY_IMPLEMENTATION_IMPORT: Phase 0 时 src/app/runtime/ 不存在, 预期 0 命中
-# workline 域 legacy capability import wms_integration/device services/models, Phase 2 迁 runtime 时消除。
-# 必须逐文件枚举，禁止目录前缀吞掉未来新增违规。
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py|批准的四账本只读 release read model，只读 ORM metadata，无 dispatch/write|2026-09-30|legacy:src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py:ReleaseOperationalReadinessRepository|phase10
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/session_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/repositories/workline_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/workline_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-
-# LEGACY_RUNTIME_IMPORT: src.workline_runtime production import 严格型 (Phase 2 launch PR, §10.3 启动条件)
-# 唯一允许入口: src/app/runtime/orchestration/consumers/ (单点), tests/, migrations/
-# 当前 29 处 production import src.workline_runtime 全部为 workline domain / celery_app / workline_plugins 内部代理,
-# runtime migration 阶段把它们的 legacy runtime import 收敛到 runtime/orchestration/consumers/ 单点入口后消除。
+# rule_id|path|reason|expires_at
+# 每个豁免必须逐文件说明原因和到期日；到期后由 expiry-check 阻断。
+EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/models/object_transition_event.py|对象转换事件仍引用跨域 session|2026-09-30
+EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/repositories/object_transition_event_repository.py|对象转换事件仓储仍引用跨域 session|2026-09-30
+EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/services/inbox/object_transition_event_service.py|对象转换事件服务仍引用跨域 session|2026-09-30
+CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py|批准的四账本只读 release read model，只读 ORM metadata，无 dispatch/write|2026-09-30
+CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/session_repository.py|现存跨域设备模型引用，按能力边界收敛|2026-09-30
+CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/repositories/workline_repository.py|现存跨域设备模型引用，按能力边界收敛|2026-09-30

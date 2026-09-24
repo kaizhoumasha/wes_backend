@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.resource.repositories.resource_repository import bin_placement_repository, rack_placement_repository
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.database.base_repository import BaseRepository
 
@@ -21,14 +20,6 @@ class WorkLinePositionRepository(BaseRepository[WorkLinePosition]):
 
     def __init__(self) -> None:
         super().__init__(WorkLinePosition)
-
-    async def has_active_placements(self, db: AsyncSession, workline_id: int) -> bool:
-        """基础配置变更前复用资源投影查询，包含未知但尚未离位的关系。"""
-        for repository in (rack_placement_repository, bin_placement_repository):
-            summary = await repository.get_active_workline_summary(db, workline_id)
-            if summary["count"] > 0:
-                return True
-        return False
 
     async def list_for_workline(
         self, db: AsyncSession, workline_id: int, *, for_update: bool = False

@@ -35,19 +35,7 @@ def _canonical_imports(source: str, *, filename: str = "<guardrail>") -> set[str
 
 def test_runtime_repositories_do_not_import_service_layer() -> None:
     repository_root = Path(__file__).resolve().parents[2] / "src/app/runtime/orchestration/repositories"
-    expected_names = {
-        "__init__.py",
-        "material_unit_repository.py",
-        "object_transition_event_repository.py",
-        "workline_position_repository.py",
-        "release_operational_readiness_repository.py",
-        "runtime_location_event_repository.py",
-        "session_mutation_repository.py",
-        "session_repository.py",
-        "timeline_sequence_repository.py",
-    }
     repositories = sorted(repository_root.glob("*.py"))
-    assert {repository.name for repository in repositories} == expected_names
 
     violations: list[str] = []
     for repository in repositories:

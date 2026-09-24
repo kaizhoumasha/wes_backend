@@ -57,6 +57,7 @@ class CeleryAsyncRuntime:
         self._runner_generation: str | None = None
         self._owner_pid: int | None = None
         self._transport_runtime: Any | None = None
+        self._transport_debug_run_service: Any | None = None
         self._device_command_runtime: Any | None = None
         self._execution_runtime: Any | None = None
         self._state_lock = threading.RLock()
@@ -96,6 +97,14 @@ class CeleryAsyncRuntime:
             return self._device_command_runtime
 
     @property
+    def transport_debug_run_service(self) -> Any | None:
+        with self._state_lock:
+            self._assert_owner_pid()
+            if self._state is not RuntimeState.READY:
+                return None
+            return self._transport_debug_run_service
+
+    @property
     def execution_runtime(self) -> Any | None:
         """返回部署组合已显式绑定的 execution processing runtime。"""
 
@@ -131,6 +140,7 @@ class CeleryAsyncRuntime:
         self._runner_generation = None
         self._owner_pid = None
         self._transport_runtime = None
+        self._transport_debug_run_service = None
         self._device_command_runtime = None
         self._execution_runtime = None
         self._state = RuntimeState.NEW
@@ -182,8 +192,11 @@ class CeleryAsyncRuntime:
         deadline: float,
         progress: dict[str, Any],
     ) -> None:
+        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
         from src.app.transport.composition import build_transport_runtime
+        from src.app.transport_debug.repository import TransportDebugRunRepository
         from src.core.conf import settings
+        from src.core.task_queue_gateway import task_queue_gateway
         from src.database import db as db_module
 
         database_budget = max(deadline - time.monotonic(), 0.0)
@@ -198,11 +211,18 @@ class CeleryAsyncRuntime:
             wms_base_url=settings.WMS_BASE_URL,
             transport_submit_path=settings.TRANSPORT_SUBMIT_PATH,
             session_factory=db_module.AsyncSessionLocal,
+            dispatch_gate=TransportDebugRunRepository(),
+            progress_hook=RackInboundWindowService().on_transport_progress,
+            progress_wakeup=task_queue_gateway.enqueue_picking_task_plans,
         )
         progress["transport_runtime"] = transport_runtime
-        _log_worker_stage("transport_ready")
+        from src.app.transport_debug.composition import build_transport_debug_run_service
 
-        from src.core.task_queue_gateway import task_queue_gateway
+        progress["transport_debug_run_service"] = build_transport_debug_run_service(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+        )
+        _log_worker_stage("transport_ready")
 
         worker_queues = _configured_worker_queues()
         device_command_worker = worker_queues not in {frozenset({"celery"}), frozenset({"wms-fulfillment"})}
@@ -218,7 +238,7 @@ class CeleryAsyncRuntime:
                 session_factory=db_module.AsyncSessionLocal,
                 timeout_seconds=device_config.timeout_seconds,
                 task_queue_gateway=task_queue_gateway,
-                event_debug_mode_policy=transport_runtime.debug_run_service,
+                event_debug_mode_policy=progress["transport_debug_run_service"],
             )
             _log_worker_stage("device_ready")
 
@@ -361,6 +381,7 @@ class CeleryAsyncRuntime:
         progress = {
             "database": False,
             "transport_runtime": None,
+            "transport_debug_run_service": None,
             "device_command_runtime": None,
             "execution_runtime": None,
         }
@@ -393,6 +414,7 @@ class CeleryAsyncRuntime:
                 self._runner_generation = None
                 self._owner_pid = None
                 self._transport_runtime = None
+                self._transport_debug_run_service = None
                 self._device_command_runtime = None
                 self._execution_runtime = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
@@ -403,6 +425,7 @@ class CeleryAsyncRuntime:
             self._runner_generation = candidate_runner_generation
             self._owner_pid = os.getpid()
             self._transport_runtime = progress["transport_runtime"]
+            self._transport_debug_run_service = progress["transport_debug_run_service"]
             self._device_command_runtime = progress["device_command_runtime"]
             self._execution_runtime = progress.get("execution_runtime")
             self._state = RuntimeState.READY
@@ -559,6 +582,7 @@ class CeleryAsyncRuntime:
                 self._runner_generation = None
                 self._owner_pid = None
                 self._transport_runtime = None
+                self._transport_debug_run_service = None
                 self._device_command_runtime = None
                 self._execution_runtime = None
                 self._state = RuntimeState.CLOSED

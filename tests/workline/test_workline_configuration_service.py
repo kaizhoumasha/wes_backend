@@ -709,9 +709,6 @@ class _RackPositions:
     def __init__(self) -> None:
         self.saved: tuple[WorkLinePositionInput, ...] = ()
 
-    async def has_active_placements(self, db: object, workline_id: int) -> bool:
-        return False
-
     async def list_for_workline(
         self, db: object, workline_id: int, *, for_update: bool = False
     ) -> list[WorkLinePositionInput]:

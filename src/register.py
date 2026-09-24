@@ -43,6 +43,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         # 先清空前一轮 lifecycle 可能遗留的策略；初始化失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.transport_debug_run_service = None
+        _app.state.transport_debug_reset_service = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
@@ -62,14 +64,33 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         if db_module.AsyncSessionLocal is None:
             raise RuntimeError("Database session factory is unavailable after initialization")
 
+        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
         from src.app.transport.composition import build_transport_runtime
+        from src.app.transport_debug.repository import TransportDebugRunRepository
 
         transport_runtime = await build_transport_runtime(
             wms_base_url=settings.WMS_BASE_URL,
             transport_submit_path=settings.TRANSPORT_SUBMIT_PATH,
             session_factory=db_module.AsyncSessionLocal,
+            dispatch_gate=TransportDebugRunRepository(),
+            progress_hook=RackInboundWindowService().on_transport_progress,
+            progress_wakeup=task_queue_gateway.enqueue_picking_task_plans,
         )
         _app.state.transport_runtime = transport_runtime
+        from src.app.transport_debug.composition import (
+            build_transport_debug_reset_service,
+            build_transport_debug_run_service,
+        )
+
+        transport_debug_run_service = build_transport_debug_run_service(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+        )
+        _app.state.transport_debug_run_service = transport_debug_run_service
+        _app.state.transport_debug_reset_service = build_transport_debug_reset_service(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+        )
 
         from src.app.device.composition import (
             build_device_command_runtime,
@@ -81,7 +102,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             session_factory=db_module.AsyncSessionLocal,
             timeout_seconds=device_config.timeout_seconds,
             task_queue_gateway=task_queue_gateway,
-            event_debug_mode_policy=transport_runtime.debug_run_service,
+            event_debug_mode_policy=transport_debug_run_service,
         )
         _app.state.device_command_runtime = device_command_runtime
         _app.state.device_evidence_service = device_command_runtime.evidence_service
@@ -143,6 +164,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.transport_debug_run_service = None
+        _app.state.transport_debug_reset_service = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
@@ -233,9 +256,9 @@ def register_routers(app: FastAPI) -> None:
     from src.app.callback import router_v1 as callback_router
     from src.app.device import router_v1 as device_router
     from src.app.material import router_v1 as material_router
-    from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
     from src.app.transport.v1 import router as transport_router
+    from src.app.transport_debug.v1 import router as transport_debug_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.wms_diagnostics.v1 import router as wms_diagnostics_router
     from src.app.workline import router_v1 as workline_router
@@ -245,13 +268,13 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(sys_router, prefix=settings.API_PATH)
     app.include_router(workline_router, prefix=settings.API_PATH)
     app.include_router(device_router, prefix=settings.API_PATH)
-    app.include_router(resource_router, prefix=settings.API_PATH)
     app.include_router(material_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
     app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
+    app.include_router(transport_debug_router, prefix=f"{settings.API_PATH}/v1/transport")
 
 
 def register_exception(app: FastAPI) -> None:

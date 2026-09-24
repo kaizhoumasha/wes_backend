@@ -54,6 +54,23 @@ class _Bindings:
 
 
 @pytest.mark.asyncio
+async def test_transport_progress_routes_release_decision_to_window_owner():
+    window = RackInboundWindowService(positions=_Positions(), bindings=_Bindings())
+    window.release_on_departure_accepted = AsyncMock(return_value=True)
+    window.release_unarrived_terminal = AsyncMock(return_value=True)
+    db = object()
+    task = SimpleNamespace(status="ACCEPTED", client_request_id="leave-1")
+
+    assert await window.on_transport_progress(db, task) is True
+    window.release_on_departure_accepted.assert_awaited_once_with(db, client_request_id="leave-1")
+    task.status = "FAILED"
+    assert await window.on_transport_progress(db, task) is True
+    window.release_unarrived_terminal.assert_awaited_once_with(db, task)
+    task.status = "RECONCILING"
+    assert await window.on_transport_progress(db, task) is False
+
+
+@pytest.mark.asyncio
 async def test_window_refills_only_after_leave_accepted_and_reuses_cross_revision_rack():
     bindings = _Bindings()
     window = RackInboundWindowService(positions=_Positions(), bindings=bindings)

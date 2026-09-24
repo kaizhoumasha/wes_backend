@@ -55,10 +55,10 @@ def advance_transport_debug_runs_batch(limit: int = 100) -> int:
     _require_fixed_batch(limit)
 
     async def _advance() -> int:
-        runtime = celery_async_runtime.transport_runtime
-        if runtime is None:
-            raise RuntimeError("Transport runtime is unavailable in the current Celery child")
-        return await runtime.debug_run_service.advance_active_runs(limit)
+        service = celery_async_runtime.transport_debug_run_service
+        if service is None:
+            raise RuntimeError("Transport debug run service is unavailable in the current Celery child")
+        return await service.advance_active_runs(limit)
 
     return run_async(_advance)
 

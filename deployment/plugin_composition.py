@@ -16,8 +16,8 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationLifecycleService,
     WorkLineConfirmationOwnerPort,
 )
-from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.transport.repository import TransportRepository
+from src.app.transport_debug.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 
 # Web/worker 组合根注册共享外键目标；不依赖具体插件是否安装或启用。

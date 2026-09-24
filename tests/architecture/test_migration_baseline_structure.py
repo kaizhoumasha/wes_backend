@@ -45,7 +45,13 @@ def test_migration_history_keeps_one_immutable_root_and_one_reachable_head() -> 
 
     assert roots == ["f9c7c2e5f501"]
     assert all(
-        values["down_revision"] is None or values["down_revision"] in assignments for values in assignments.values()
+        parent in assignments
+        for values in assignments.values()
+        for parent in (
+            values["down_revision"]
+            if isinstance(values["down_revision"], tuple)
+            else (() if values["down_revision"] is None else (values["down_revision"],))
+        )
     )
 
     config = Config(str(REPO_ROOT / "alembic.ini"))

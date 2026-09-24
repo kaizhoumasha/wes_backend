@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -34,7 +33,6 @@ from src.app.transport.contracts import (
 )
 from src.app.transport.models import (
     TransportCallbackReceipt,
-    TransportDebugRun,
     TransportEvidence,
     TransportMember,
     TransportTask,
@@ -911,45 +909,45 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
 
 
 @pytest.mark.asyncio
-async def test_leave_acceptance_releases_window_and_wakes_refill(service: TransportService) -> None:
-    window = SimpleNamespace(release_on_departure_accepted=AsyncMock(return_value=True))
+async def test_accepted_progress_notifies_hook_and_wakes_owner(service: TransportService) -> None:
+    progress_hook = AsyncMock(return_value=True)
     queue = SimpleNamespace(
         enqueue_transport_submit=Mock(),
         enqueue_transport_debug=Mock(),
         enqueue_transport_outcomes=Mock(),
         enqueue_picking_task_plans=Mock(),
     )
-    service._rack_inbound_window = window
+    service._progress_hook = progress_hook
     service._task_queue = queue
-    service._window_refill_wakeup = queue.enqueue_picking_task_plans
+    service._progress_wakeup = queue.enqueue_picking_task_plans
     handle = await service.move_rack(new_uuid7(), _caller(), "rack-leave", RackPosition("A"), RackPosition("B"), "90")
 
     assert await service.submit_pending_tasks(1) == 1
-    window.release_on_departure_accepted.assert_awaited_once()
-    assert window.release_on_departure_accepted.await_args.kwargs["client_request_id"] == handle.client_request_id
+    progress_hook.assert_awaited_once()
+    assert progress_hook.await_args.args[1].client_request_id == handle.client_request_id
     queue.enqueue_picking_task_plans.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_rejected_inbound_releases_window_and_wakes_refill(service: TransportService) -> None:
-    window = SimpleNamespace(release_unarrived_terminal=AsyncMock(return_value=True))
+async def test_rejected_progress_notifies_hook_and_wakes_owner(service: TransportService) -> None:
+    progress_hook = AsyncMock(return_value=True)
     queue = SimpleNamespace(
         enqueue_transport_submit=Mock(),
         enqueue_transport_debug=Mock(),
         enqueue_transport_outcomes=Mock(),
         enqueue_picking_task_plans=Mock(),
     )
-    service._rack_inbound_window = window
+    service._progress_hook = progress_hook
     service._task_queue = queue
-    service._window_refill_wakeup = queue.enqueue_picking_task_plans
+    service._progress_wakeup = queue.enqueue_picking_task_plans
     service.provider.code = TransportSubmitCode.REJECTED
     handle = await service.move_rack(
         new_uuid7(), _caller(), "rack-rejected", RackPosition("A"), RackPosition("B"), "90"
     )
 
     assert await service.submit_pending_tasks(1) == 1
-    window.release_unarrived_terminal.assert_awaited_once()
-    assert window.release_unarrived_terminal.await_args.args[1].client_request_id == handle.client_request_id
+    progress_hook.assert_awaited_once()
+    assert progress_hook.await_args.args[1].client_request_id == handle.client_request_id
     queue.enqueue_picking_task_plans.assert_called_once()
 
 
@@ -1036,13 +1034,10 @@ async def test_submit_skips_task_fenced_by_debug_run_and_dispatches_the_next_tas
     )
 
     class _Guard:
-        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
-            return False
-
         async def is_task_dispatch_allowed(self, _db: object, transport_task_id: str) -> bool:
             return transport_task_id != first.transport_task_id
 
-    service._debug_run_guard = _Guard()  # type: ignore[assignment]
+    service._dispatch_gate = _Guard()  # type: ignore[assignment]
 
     assert await service.submit_pending_tasks(1) == 1
     assert service.provider.calls == [second.transport_task_id]
@@ -1054,46 +1049,49 @@ async def test_submit_skips_task_fenced_by_debug_run_and_dispatches_the_next_tas
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("workline_id", ["TRANSPORT_DEBUG", "SORTER"])
-async def test_transport_task_can_submit_same_rack_as_active_auto_run(
+async def test_standalone_transport_skips_debug_task_and_dispatches_normal_task(
     service: TransportService,
     db_engine: object,
-    workline_id: str,
 ) -> None:
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    run_id = new_uuid7()
-    now = timezone.now_for_db()
-    async with sessions.begin() as db:
-        db.add(
-            TransportDebugRun(
-                run_id=run_id,
-                status="RUNNING",
-                active_scope="GLOBAL",
-                rack_id="rack-auto-owned",
-                configuration_json={},
-                current_phase="RACK_TO_STATION",
-                created_by_user_id=7,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-    try:
-        handle = await service.move_rack(
-            new_uuid7(),
-            TransportCaller(workline_id, "STATION-DEBUG"),
-            "rack-auto-owned",
-            RackPosition("A"),
-            RackPosition("B"),
-            "90",
-        )
-        assert await service.submit_pending_tasks(1) == 1
-        assert service.provider.calls == [handle.transport_task_id]
-        async with sessions() as db:
-            run = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
-            assert run is not None and run.status == "RUNNING" and run.active_scope == "GLOBAL"
-    finally:
-        async with sessions.begin() as db:
-            await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
+    debug = await service.move_rack(
+        new_uuid7(),
+        TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO"),
+        "rack-debug",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    normal = await service.move_rack(
+        new_uuid7(),
+        TransportCaller("SORTER", "STATION"),
+        "rack-normal",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [normal.transport_task_id]
+    assert (await _load_task(db_engine, debug.transport_task_id)).status == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_injected_dispatch_gate_can_admit_debug_task(service: TransportService) -> None:
+    class _AllowDebug:
+        async def is_task_dispatch_allowed(self, _db: object, _task_id: str) -> bool:
+            return True
+
+    service._dispatch_gate = _AllowDebug()  # type: ignore[assignment]
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO"),
+        "rack-debug",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [handle.transport_task_id]
 
 
 @pytest.mark.asyncio
@@ -1760,52 +1758,6 @@ def _is_uuid7(value: object) -> bool:
     except ValueError:
         return False
     return candidate.version == 7 and candidate.variant == "specified in RFC 4122"
-
-
-@pytest.mark.asyncio
-async def test_debug_reset_rejects_task_linked_to_active_debug_run_before_delete() -> None:
-    class _Task:
-        transport_task_id = "transport-guarded"
-        status = "RECONCILING"
-        outcome_version = 1
-
-    class _Repository:
-        delete_called = False
-
-        async def get_task(self, _db: object, _task_id: str, *, for_update: bool = False) -> object:
-            assert for_update is True
-            return _Task()
-
-        async def get_debug_reset_counts(self, _db: object, _task_id: str) -> tuple[int, ...]:
-            return (0, 0, 0, 0)
-
-        async def delete_debug_task_aggregate(self, _db: object, _task_id: str) -> tuple[int, ...]:
-            self.delete_called = True
-            return (0, 0, 0, 0, 1, 1)
-
-    class _Guard:
-        async def is_task_linked_to_active_run(self, _db: object, transport_task_id: str) -> bool:
-            assert transport_task_id == "transport-guarded"
-            return True
-
-    class _Sessions:
-        @asynccontextmanager
-        async def begin(self):
-            yield object()
-
-    repository = _Repository()
-    service = TransportService(  # type: ignore[arg-type]
-        _Sessions(),
-        repository,
-        FakeProvider(),
-        result_timeout=timedelta(seconds=420),
-        debug_run_guard=_Guard(),
-    )
-
-    with pytest.raises(TransportContractError, match="active transport debug run task cannot be reset"):
-        await service.reset_debug_task("transport-guarded")
-
-    assert repository.delete_called is False
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,955 @@
+from __future__ import annotations
+
+import asyncio
+import uuid
+from dataclasses import asdict
+from datetime import timedelta
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+from sqlalchemy import delete, func, select
+
+from src.app.execution.models import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+    InboundEvidenceConflict,
+    InboundEvidenceKind,
+    WmsConfirmation,
+)
+from src.app.execution.services import WmsConfirmationService
+from src.app.transport.contracts import (
+    MoveBinsRequest,
+    MoveRackRequest,
+    RackBinSlot,
+    RackPosition,
+    RackReference,
+    RcsTemplateId,
+    RotateRackRequest,
+    TransportHandle,
+    TransportRequest,
+)
+from src.app.transport.models import (
+    TransportEvidence,
+    TransportMember,
+    TransportTask,
+)
+from src.app.transport_debug.debug_run_contracts import (
+    CreateTransportDebugRun,
+    TransportDebugBinSelection,
+    TransportDebugFaceGroup,
+)
+from src.app.transport_debug.debug_run_service import TransportDebugRunConflict, TransportDebugRunService
+from src.app.transport_debug.models import TransportDebugRun, TransportDebugRunStep
+from src.app.transport_debug.repository import TransportDebugRunRepository
+from src.app.wms_adapter.dispatch import WmsDispatchCode, WmsDispatchResult
+from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_integration.outbound_picking.services import ReturnBatchOwnerService
+from src.core.uuid7 import new_uuid7
+from src.utils.timezone import timezone
+from tests.integration.transport_debug.debug_return_support import debug_workline, freeze_return_allocation
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio, pytest.mark.usefixtures("debug_workline")]
+
+
+class _Publisher:
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool:
+        del channel, event_type, payload
+        return True
+
+
+class _PersistingTransport:
+    """在同一事务内冻结 Transport task/member，WMS 结果由测试显式写入。"""
+
+    def __init__(self) -> None:
+        self.created: list[tuple[str, TransportRequest]] = []
+
+    async def assert_debug_rack_position_in_session(
+        self,
+        db: Any,
+        rack_id: str,
+        expected_position: RackPosition,
+        expected_face: str,
+    ) -> None:
+        del db, rack_id, expected_position, expected_face
+
+    async def create_debug_task_in_session(self, db: Any, request: TransportRequest) -> TransportHandle:
+        task_id = f"transport-acceptance-{uuid.uuid4()}"
+        now = timezone.now_for_db()
+        task = TransportTask(
+            transport_task_id=task_id,
+            client_request_id=request.client_request_id,
+            request_digest="0" * 64,
+            kind=request.kind.value,
+            caller_json=asdict(request.caller),
+            request_json={},
+            submit_operation_id=new_uuid7(),
+            submit_timestamp_ms=int(timezone.now_utc().timestamp() * 1000),
+            submit_request_body="{}",
+            submit_request_body_digest="1" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(task)
+        await db.flush()
+        for ordinal, (object_type, object_id, source, target) in enumerate(_request_members(request)):
+            db.add(
+                TransportMember(
+                    transport_task_id=task_id,
+                    ordinal=ordinal,
+                    object_type=object_type,
+                    object_id=object_id,
+                    source_json=asdict(source),
+                    target_json=asdict(target),
+                    updated_at=now,
+                )
+            )
+        await db.flush()
+        self.created.append((task_id, request))
+        return TransportHandle(task_id, request.client_request_id)
+
+    async def is_unsent_task_finalizable_in_session(self, db: Any, task_id: str) -> bool:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
+        if task is None:
+            return False
+        evidence_id = await db.scalar(
+            select(TransportEvidence.id).where(TransportEvidence.transport_task_id == task_id).limit(1)
+        )
+        return (
+            task.caller_json.get("workline_id") == "TRANSPORT_DEBUG"
+            and task.status == "PENDING"
+            and task.send_started_at is None
+            and task.submit_claim_token is None
+            and task.submit_claim_until is None
+            and evidence_id is None
+        )
+
+
+def _request_members(request: TransportRequest) -> list[tuple[str, str, object, object]]:
+    if isinstance(request, MoveRackRequest):
+        return [("RACK", request.rack_id, request.source, request.target)]
+    if isinstance(request, RotateRackRequest):
+        frozen_position = request.position
+        return [("RACK", request.rack_id, frozen_position, frozen_position)]
+    assert isinstance(request, MoveBinsRequest)
+    return [("BIN", move.bin_code, move.source, move.target) for move in request.moves]
+
+
+def _service(session_factory: Any, transport: _PersistingTransport) -> TransportDebugRunService:
+    return TransportDebugRunService(
+        session_factory,
+        TransportDebugRunRepository(),
+        transport,  # type: ignore[arg-type]
+        event_publisher=_Publisher(),
+    )
+
+
+def _configuration(suffix: str, *, faces: tuple[str, ...]) -> tuple[str, CreateTransportDebugRun]:
+    rack_id = f"rack-auto-{suffix}"
+    groups = tuple(
+        TransportDebugFaceGroup(
+            face=face,
+            bins=tuple(
+                TransportDebugBinSelection(
+                    bin_code=f"bin-{suffix}-{group_index}-{bin_index}",
+                    slot_id=f"slot-{group_index}-{bin_index}",
+                )
+                for bin_index in range(1, 5 if group_index == 0 else 2)
+            ),
+        )
+        for group_index, face in enumerate(faces)
+    )
+    return rack_id, CreateTransportDebugRun(workline_code="DEBUG-LINE", rack_id=rack_id, face_groups=groups)
+
+
+async def _persist_scan12(
+    session_factory: Any,
+    *,
+    source_event_id: str,
+    bin_code: str,
+    timestamp_ms: int,
+    device_code: str = "STATION_SCAN12",
+    apply_status: InboundEvidenceApplyStatus = InboundEvidenceApplyStatus.APPLIED,
+) -> None:
+    async with session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=source_event_id,
+                payload_digest="a" * 64,
+                normalized_payload={
+                    "device_code": device_code,
+                    "contract_key": "device.event",
+                    "contract_version": "1.0",
+                    "event_type": "SCAN_COMPLETED",
+                    "timestamp": timestamp_ms,
+                    "source_event_id": source_event_id,
+                    "is_debug": True,
+                    "data": {"bin_code": bin_code},
+                },
+                received_at=timezone.now_for_db(),
+                device_code=device_code,
+                contract_key="device.event",
+                contract_version="1.0",
+                apply_status=apply_status,
+            )
+        )
+
+
+async def _complete_current_transport(
+    session_factory: Any,
+    service: TransportDebugRunService,
+    run_id: str,
+    transport: _PersistingTransport,
+    *,
+    storage_position: str = "WH05-01",
+    arrival_face_override: str | None = None,
+    position_unknown: bool = False,
+) -> None:
+    snapshot = await service.get_run(run_id)
+    assert snapshot.current_step is not None and snapshot.current_step.transport_task_id is not None
+    task_id = snapshot.current_step.transport_task_id
+    request = dict(transport.created)[task_id]
+    async with session_factory.begin() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
+        members = list(
+            await db.scalars(
+                select(TransportMember)
+                .where(TransportMember.transport_task_id == task_id)
+                .order_by(TransportMember.ordinal.asc())
+            )
+        )
+        assert task is not None and members
+        task.status = "SUCCEEDED"
+        task.updated_at = timezone.now_for_db()
+        for member in members:
+            member.status = "SUCCEEDED"
+            member.position_unknown = position_unknown
+            member.updated_at = timezone.now_for_db()
+            if position_unknown:
+                member.final_position_json = None
+                member.arrival_face = None
+                continue
+            if isinstance(request, RotateRackRequest):
+                member.final_position_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
+                member.arrival_face = arrival_face_override or request.target_face
+            elif isinstance(request, MoveRackRequest) and request.rcs_template_id is RcsTemplateId.CTU03:
+                member.final_position_json = {"kind": "RACK_POSITION", "location_code": storage_position}
+                member.arrival_face = arrival_face_override or request.target_face
+            elif isinstance(request, MoveRackRequest):
+                member.final_position_json = member.target_json
+                member.arrival_face = arrival_face_override or request.target_face
+            else:
+                member.final_position_json = member.target_json
+                member.arrival_face = None
+
+
+async def _partially_complete_current_bin_transport(
+    session_factory: Any,
+    service: TransportDebugRunService,
+    run_id: str,
+    transport: _PersistingTransport,
+) -> None:
+    snapshot = await service.get_run(run_id)
+    assert snapshot.current_step is not None and snapshot.current_step.transport_task_id is not None
+    task_id = snapshot.current_step.transport_task_id
+    request = dict(transport.created)[task_id]
+    assert isinstance(request, MoveBinsRequest) and len(request.moves) > 1
+    async with session_factory.begin() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
+        member = await db.scalar(
+            select(TransportMember)
+            .where(TransportMember.transport_task_id == task_id)
+            .order_by(TransportMember.ordinal.asc())
+            .limit(1)
+        )
+        assert task is not None and member is not None
+        task.status = "ACCEPTED"
+        task.updated_at = timezone.now_for_db()
+        member.status = "SUCCEEDED"
+        member.final_position_json = member.target_json
+        member.arrival_face = None
+        member.updated_at = timezone.now_for_db()
+
+
+async def _advance_to_scan_wait(
+    session_factory: Any,
+    service: TransportDebugRunService,
+    transport: _PersistingTransport,
+    run_id: str,
+) -> None:
+    await _complete_current_transport(session_factory, service, run_id, transport)
+    assert await service.advance_run(run_id) is True
+    assert await service.advance_run(run_id) is True
+    await _complete_current_transport(session_factory, service, run_id, transport)
+    assert await service.advance_run(run_id) is True
+    assert (await service.get_run(run_id)).current_phase == "WAIT_SCAN12"
+
+
+async def _cleanup(session_factory: Any, *, rack_id: str, source_prefix: str) -> None:
+    async with session_factory.begin() as db:
+        evidence_ids = list(
+            await db.scalars(
+                select(InboundEvidence.id).where(InboundEvidence.source_identity.like(f"{source_prefix}%"))
+            )
+        )
+        if evidence_ids:
+            await db.execute(
+                delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+            )
+        run_ids = list(await db.scalars(select(TransportDebugRun.run_id).where(TransportDebugRun.rack_id == rack_id)))
+        task_ids: list[str] = []
+        if run_ids:
+            task_ids = list(
+                await db.scalars(
+                    select(TransportDebugRunStep.transport_task_id).where(
+                        TransportDebugRunStep.run_id.in_(run_ids),
+                        TransportDebugRunStep.transport_task_id.is_not(None),
+                    )
+                )
+            )
+        if task_ids:
+            await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
+            await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
+        if run_ids:
+            await db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id.in_(run_ids)))
+            await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id.in_(run_ids)))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{source_prefix}%")))
+
+
+@pytest.mark.parametrize("faces", [("90",), ("90", "270")], ids=["single-face", "two-faces"])
+async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_is_back(
+    integration_session_factory: Any,
+    faces: tuple[str, ...],
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"auto-{suffix}"
+    rack_id, request = _configuration(suffix, faces=faces)
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+    await _persist_scan12(
+        integration_session_factory,
+        source_event_id=f"{source_prefix}-old",
+        bin_code=request.face_groups[0].bins[0].bin_code,
+        timestamp_ms=int(timezone.now_utc().timestamp() * 1000),
+    )
+    try:
+        run = await service.create_run(request, actor_id=7)
+        expected_kinds: list[str] = []
+        for group_index, group in enumerate(request.face_groups):
+            if group_index == 0:
+                expected_kinds.append("RACK_MOVE")
+                rack_out = transport.created[-1][1]
+                assert isinstance(rack_out, MoveRackRequest)
+                assert rack_out.rcs_template_id is RcsTemplateId.CTU01
+                assert asdict(rack_out.source) == {"kind": "RACK", "location_code": rack_id}
+                assert asdict(rack_out.target) == {"kind": "RACK_POSITION", "location_code": "KT16"}
+                assert rack_out.target_face == group.face
+                await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+                assert await service.advance_run(run.run_id) is True
+            else:
+                assert await service.advance_run(run.run_id) is True
+                expected_kinds.append("RACK_ROTATE")
+                rotate = transport.created[-1][1]
+                assert isinstance(rotate, RotateRackRequest)
+                assert asdict(rotate.position) == {"kind": "RACK_POSITION", "location_code": "KT16"}
+                assert rotate.target_face == group.face
+                await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+                assert await service.advance_run(run.run_id) is True
+
+            assert await service.advance_run(run.run_id) is True
+            expected_kinds.append("BIN_MOVE")
+            to_infeed = transport.created[-1][1]
+            assert isinstance(to_infeed, MoveBinsRequest)
+            assert 1 <= len(to_infeed.moves) <= 4
+            assert {move.target.location_code for move in to_infeed.moves} == {"CNV0301"}  # type: ignore[attr-defined]
+            await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+            assert await service.advance_run(run.run_id) is True
+
+            scan_wait = await service.get_run(run.run_id)
+            assert scan_wait.current_phase == "WAIT_SCAN12"
+            assert scan_wait.observed_bin_codes == ()
+            assert scan_wait.current_step is not None and scan_wait.current_step.evidence_not_before_ms is not None
+            scan_timestamp = scan_wait.current_step.evidence_not_before_ms
+            for bin_index, selection in enumerate(group.bins):
+                scanned_bin_code = f"{selection.bin_code}-{'ABCD'[bin_index % 4]}"
+                await _persist_scan12(
+                    integration_session_factory,
+                    source_event_id=f"{source_prefix}-g{group_index}-scan{bin_index}",
+                    bin_code=scanned_bin_code,
+                    timestamp_ms=scan_timestamp,
+                    device_code="STATION_SCAN12",
+                )
+                if bin_index == 0:
+                    await _persist_scan12(
+                        integration_session_factory,
+                        source_event_id=f"{source_prefix}-g{group_index}-duplicate",
+                        bin_code=scanned_bin_code,
+                        timestamp_ms=scan_timestamp,
+                    )
+            assert await service.advance_run(run.run_id) is True
+            assert (await service.get_run(run.run_id)).current_phase == "BINS_TO_RACK"
+            await freeze_return_allocation(service, run.run_id)
+            assert await service.advance_run(run.run_id) is True
+            expected_kinds.append("BIN_MOVE")
+            to_rack = transport.created[-1][1]
+            assert isinstance(to_rack, MoveBinsRequest)
+            assert {move.source.location_code for move in to_rack.moves} == {"CNV0302"}  # type: ignore[attr-defined]
+            assert {
+                (move.bin_code, move.target.rack_face, move.target.slot_id)
+                for move in to_rack.moves
+                if isinstance(move.target, RackBinSlot)
+            } == {(selection.bin_code, group.face, selection.slot_id) for selection in group.bins}
+            assert all(
+                not isinstance(created_request, MoveRackRequest)
+                or created_request.rcs_template_id is not RcsTemplateId.CTU03
+                for _, created_request in transport.created
+            )
+            if len(group.bins) > 1:
+                created_count = len(transport.created)
+                await _partially_complete_current_bin_transport(
+                    integration_session_factory,
+                    service,
+                    run.run_id,
+                    transport,
+                )
+                assert await service.advance_run(run.run_id) is True
+                partial = await service.get_run(run.run_id)
+                assert partial.current_phase == "BINS_TO_RACK"
+                assert partial.observed_bin_codes == (group.bins[0].bin_code,)
+                assert len(transport.created) == created_count
+            await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+            assert await service.advance_run(run.run_id) is True
+
+        assert (await service.get_run(run.run_id)).current_phase == "RACK_TO_STORAGE"
+        assert await service.advance_run(run.run_id) is True
+        expected_kinds.append("RACK_MOVE")
+        rack_return = transport.created[-1][1]
+        assert isinstance(rack_return, MoveRackRequest)
+        assert rack_return.rcs_template_id is RcsTemplateId.CTU03
+        assert asdict(rack_return.source) == {"kind": "RACK", "location_code": rack_id}
+        assert asdict(rack_return.target) == {"kind": "ZONE", "location_code": "WH05"}
+        assert rack_return.target_face is None
+        assert [created_request.kind.value for _, created_request in transport.created] == expected_kinds
+        await _complete_current_transport(
+            integration_session_factory,
+            service,
+            run.run_id,
+            transport,
+            storage_position="WH05-01",
+            arrival_face_override="RCS_CHOSEN",
+        )
+        assert await service.advance_run(run.run_id) is True
+        assert (await service.get_run(run.run_id)).status == "COMPLETED"
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_restart_reuses_the_persisted_step_and_does_not_create_a_second_transport_task(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"restart-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    first_transport = _PersistingTransport()
+    first_service = _service(integration_session_factory, first_transport)
+    try:
+        run = await first_service.create_run(request, actor_id=7)
+        async with integration_session_factory() as db:
+            before = int(await db.scalar(select(func.count()).select_from(TransportTask)) or 0)
+
+        restarted_transport = _PersistingTransport()
+        restarted_service = _service(integration_session_factory, restarted_transport)
+        assert await restarted_service.advance_run(run.run_id) is False
+        async with integration_session_factory() as db:
+            after = int(await db.scalar(select(func.count()).select_from(TransportTask)) or 0)
+
+        assert after == before
+        assert restarted_transport.created == []
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_only_one_debug_run_can_hold_the_global_active_scope(integration_session_factory: Any) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"single-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    service = _service(integration_session_factory, _PersistingTransport())
+    try:
+        await service.create_run(request, actor_id=7)
+        with pytest.raises(TransportDebugRunConflict, match="active debug run"):
+            await service.create_run(request, actor_id=8)
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_persisted_transport_callback_conflict_blocks_the_next_physical_step(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"transport-conflict-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        current = await service.get_run(run.run_id)
+        assert current.current_step is not None and current.current_step.transport_task_id is not None
+        task_id = current.current_step.transport_task_id
+        now = timezone.now_for_db()
+        async with integration_session_factory.begin() as db:
+            db.add(
+                TransportEvidence(
+                    operation_id=new_uuid7(),
+                    transport_task_id=task_id,
+                    operation=RESULT_OPERATION,
+                    outcome_revision=2,
+                    event_timestamp_ms=1,
+                    message_digest="c" * 64,
+                    payload_json={},
+                    ack_timestamp_ms=1,
+                    ack_data_json={},
+                    status="CONFLICT",
+                    received_at=now,
+                    processed_at=now,
+                    conflict_code="TRANSPORT_EVIDENCE_CONFLICT",
+                )
+            )
+
+        assert await service.advance_run(run.run_id) is True
+        blocked = await service.get_run(run.run_id)
+        assert blocked.status == "NEEDS_ATTENTION"
+        assert blocked.attention_code == "TRANSPORT_EVIDENCE_CONFLICT"
+        assert blocked.current_phase == "RACK_TO_STATION"
+        assert len(transport.created) == 1
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_delivery_unknown_holds_the_same_task_until_a_definite_result_arrives(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"unknown-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        task_id = transport.created[-1][0]
+        async with integration_session_factory.begin() as db:
+            task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
+            assert task is not None
+            task.status = "RECONCILING"
+            task.reason_code = "TRANSPORT_DELIVERY_UNKNOWN"
+        assert await service.advance_run(run.run_id) is True
+        attention = await service.get_run(run.run_id)
+        assert attention.status == "NEEDS_ATTENTION"
+        assert attention.attention_code == "TRANSPORT_DELIVERY_UNKNOWN"
+        assert len(transport.created) == 1
+
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        assert await service.advance_run(run.run_id) is True
+        recovered = await service.get_run(run.run_id)
+        assert recovered.status == "RUNNING"
+        assert recovered.current_phase == "BINS_TO_INFEED"
+        assert len(transport.created) == 1
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+@pytest.mark.parametrize(
+    ("arrival_face", "position_unknown"),
+    [("wrong-face", False), (None, True)],
+    ids=["face-mismatch", "position-unknown"],
+)
+async def test_ambiguous_rack_result_never_creates_the_next_task(
+    integration_session_factory: Any,
+    arrival_face: str | None,
+    position_unknown: bool,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"result-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _complete_current_transport(
+            integration_session_factory,
+            service,
+            run.run_id,
+            transport,
+            arrival_face_override=arrival_face,
+            position_unknown=position_unknown,
+        )
+        assert await service.advance_run(run.run_id) is True
+        snapshot = await service.get_run(run.run_id)
+        assert snapshot.status == "NEEDS_ATTENTION"
+        assert snapshot.current_phase == "RACK_TO_STATION"
+        assert len(transport.created) == 1
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_reconciling_scan12_evidence_stops_before_bin_return(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"scan-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        snapshot = await service.get_run(run.run_id)
+        assert snapshot.current_step is not None and snapshot.current_step.evidence_not_before_ms is not None
+        await _persist_scan12(
+            integration_session_factory,
+            source_event_id=f"{source_prefix}-reconciling",
+            bin_code=request.face_groups[0].bins[0].bin_code,
+            timestamp_ms=snapshot.current_step.evidence_not_before_ms,
+            apply_status=InboundEvidenceApplyStatus.RECONCILING,
+        )
+
+        assert await service.advance_run(run.run_id) is True
+        attention = await service.get_run(run.run_id)
+        assert attention.status == "NEEDS_ATTENTION"
+        assert attention.attention_code == "EVIDENCE_RECONCILING"
+        assert len(transport.created) == 2
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_conflicting_scan12_evidence_stops_before_bin_return(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"scan-conflict-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        snapshot = await service.get_run(run.run_id)
+        assert snapshot.current_step is not None and snapshot.current_step.evidence_not_before_ms is not None
+        for bin_index, selection in enumerate(request.face_groups[0].bins):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{bin_index}",
+                bin_code=selection.bin_code,
+                timestamp_ms=snapshot.current_step.evidence_not_before_ms,
+            )
+        async with integration_session_factory.begin() as db:
+            first = await db.scalar(
+                select(InboundEvidence).where(InboundEvidence.source_identity == f"{source_prefix}-0")
+            )
+            assert first is not None and first.id is not None
+            db.add(
+                InboundEvidenceConflict(
+                    source_identity=first.source_identity,
+                    first_evidence_id=first.id,
+                    conflicting_digest="b" * 64,
+                    normalized_payload={**first.normalized_payload, "data": {"bin_code": "OTHER-BIN"}},
+                    reason_code="SOURCE_IDENTITY_PAYLOAD_CONFLICT",
+                    received_at=timezone.now_for_db(),
+                )
+            )
+
+        assert await service.advance_run(run.run_id) is True
+        attention = await service.get_run(run.run_id)
+        assert attention.status == "NEEDS_ATTENTION"
+        assert attention.attention_code == "EVIDENCE_SOURCE_EVENT_CONFLICT"
+        assert len(transport.created) == 2
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_late_scan12_conflict_stops_after_bin_return_task_is_bound(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"scan-late-conflict-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        snapshot = await service.get_run(run.run_id)
+        assert snapshot.current_step is not None and snapshot.current_step.evidence_not_before_ms is not None
+        for bin_index, selection in enumerate(request.face_groups[0].bins):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{bin_index}",
+                bin_code=selection.bin_code,
+                timestamp_ms=snapshot.current_step.evidence_not_before_ms,
+            )
+        assert await service.advance_run(run.run_id) is True
+        await freeze_return_allocation(service, run.run_id)
+        assert await service.advance_run(run.run_id) is True
+        bound = await service.get_run(run.run_id)
+        assert bound.current_phase == "BINS_TO_RACK"
+        assert bound.current_step is not None and bound.current_step.transport_task_id is not None
+
+        async with integration_session_factory.begin() as db:
+            first = await db.scalar(
+                select(InboundEvidence).where(InboundEvidence.source_identity == f"{source_prefix}-0")
+            )
+            assert first is not None and first.id is not None
+            db.add(
+                InboundEvidenceConflict(
+                    source_identity=first.source_identity,
+                    first_evidence_id=first.id,
+                    conflicting_digest="b" * 64,
+                    normalized_payload={**first.normalized_payload, "data": {"bin_code": "OTHER-BIN"}},
+                    reason_code="SOURCE_IDENTITY_PAYLOAD_CONFLICT",
+                    received_at=timezone.now_for_db(),
+                )
+            )
+
+        assert await service.advance_run(run.run_id) is True
+        attention = await service.get_run(run.run_id)
+        assert attention.status == "NEEDS_ATTENTION"
+        assert attention.attention_code == "EVIDENCE_SOURCE_EVENT_CONFLICT"
+        assert len(transport.created) == 3
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_partial_wms_batches_survive_restart_and_delay_ctu03(integration_session_factory: Any) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"auto-partial-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        waiting = await service.get_run(run.run_id)
+        for index, selection in enumerate(request.face_groups[0].bins):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{index}",
+                bin_code=selection.bin_code,
+                timestamp_ms=waiting.current_step.evidence_not_before_ms,
+            )
+        assert await service.advance_run(run.run_id)
+        for index in range(4):
+            await freeze_return_allocation(service, run.run_id, max_count=1)
+            service = _service(integration_session_factory, transport)
+            assert await service.advance_run(run.run_id)
+            move = transport.created[-1][1]
+            assert isinstance(move, MoveBinsRequest)
+            assert [item.bin_code for item in move.moves] == [request.face_groups[0].bins[index].bin_code]
+            assert (await service.get_run(run.run_id)).current_phase == "BINS_TO_RACK"
+            await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+            assert await service.advance_run(run.run_id)
+            snapshot = await service.get_run(run.run_id)
+            assert len(snapshot.returned_bins) == index + 1
+            assert snapshot.current_phase == ("RACK_TO_STORAGE" if index == 3 else "BINS_TO_RACK")
+        assert await service.advance_run(run.run_id)
+        assert transport.created[-1][1].rcs_template_id == RcsTemplateId.CTU03
+        await _complete_current_transport(
+            integration_session_factory, service, run.run_id, transport, arrival_face_override="RCS_CHOSEN"
+        )
+        assert await service.advance_run(run.run_id)
+        assert (await service.get_run(run.run_id)).status == "COMPLETED"
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+@pytest.mark.parametrize("invalidate_candidate", [False, True])
+async def test_no_batch_deadline_restart_and_concurrent_new_decision(
+    integration_session_factory: Any, invalidate_candidate
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"auto-no-batch-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+
+    class Adapter:
+        result = "NO_BATCH"
+
+        async def dispatch(self, *, operation, operation_id, request_payload, request_digest, observation=None):
+            data = request_payload["data"]
+            response_data = {"result": "NO_BATCH", "retry_after_ms": 1000}
+            if self.result == "READY":
+                response_data = {
+                    "result": "READY",
+                    "moves": [
+                        {
+                            "sequence_no": item["sequence_no"],
+                            "bin_code": item["bin_code"],
+                            "target": {
+                                "type": "RACK_BIN_SLOT",
+                                "rack_id": data["rack_id"],
+                                "rack_face": data["rack_face"],
+                                "slot_id": f"WMS-{item['sequence_no']}",
+                            },
+                        }
+                        for item in data["return_candidates"]
+                    ],
+                }
+            return WmsDispatchResult(
+                WmsDispatchCode.DETERMINATE,
+                response_result=self.result,
+                normalized_response={
+                    "operation_id": operation_id,
+                    "code": "DECIDED",
+                    "timestamp": request_payload["timestamp"],
+                    "data": response_data,
+                },
+            )
+
+    adapter = Adapter()
+    dispatcher = WmsConfirmationService(
+        session_factory=integration_session_factory,
+        adapter=adapter,
+        workline_owner=ReturnBatchOwnerService(),
+        task_queue_gateway=Mock(),
+    )
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        waiting = await service.get_run(run.run_id)
+        for index, selection in enumerate(request.face_groups[0].bins):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{index}",
+                bin_code=selection.bin_code,
+                timestamp_ms=waiting.current_step.evidence_not_before_ms,
+            )
+        assert await service.advance_run(run.run_id)
+        now = timezone.now_for_db()
+        service._clock = lambda: now
+        assert await service.advance_run(run.run_id)
+        assert await dispatcher.dispatch_batch(limit=1, now=now) == 1
+        assert await service.advance_run(run.run_id)
+        count_before = len(transport.created)
+        async with integration_session_factory() as db:
+            persisted = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            batch = persisted.configuration_json["return_batches"][str(persisted.current_step_ordinal)]
+            assert batch["retry_at"] == (now + timedelta(seconds=1)).isoformat()
+            original_id = batch["operation_id"]
+            original = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == original_id))
+            frozen = (
+                original.request_payload,
+                original.request_digest,
+                original.response_evidence_id,
+                original.completed_at,
+            )
+        restarted = _service(integration_session_factory, transport)
+        restarted._clock = lambda: now + timedelta(milliseconds=999)
+        assert not await restarted.advance_run(run.run_id)
+        assert not await dispatcher.dispatch_batch(limit=1, now=now + timedelta(seconds=1))
+        assert len(transport.created) == count_before
+        if invalidate_candidate:
+            async with integration_session_factory.begin() as db:
+                persisted = await db.scalar(
+                    select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id).with_for_update()
+                )
+                persisted.configuration_json = {
+                    **persisted.configuration_json,
+                    "returned_bins": [{"bin_code": request.face_groups[0].bins[0].bin_code}],
+                }
+        service._clock = restarted._clock = lambda: now + timedelta(seconds=1)
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(service.advance_run(run.run_id), restarted.advance_run(run.run_id)), 5
+        )
+        assert sum(outcomes) == 1
+        async with integration_session_factory() as db:
+            persisted = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            operation_ids = tuple(persisted.configuration_json["return_requests"])
+            assert len(operation_ids) == (1 if invalidate_candidate else 2)
+            original = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == original_id))
+            assert original.status == "COMPLETED"
+            assert (
+                original.request_payload,
+                original.request_digest,
+                original.response_evidence_id,
+                original.completed_at,
+            ) == frozen
+        if invalidate_candidate:
+            assert (await restarted.get_run(run.run_id)).status == "NEEDS_ATTENTION"
+        else:
+            adapter.result = "READY"
+            assert await dispatcher.dispatch_batch(limit=1, now=now + timedelta(seconds=1)) == 1
+            assert await restarted.advance_run(run.run_id)
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(service.advance_run(run.run_id), restarted.advance_run(run.run_id)), 5
+            )
+            assert sum(outcomes) == 1
+            assert len(transport.created) == count_before + 1
+            assert not await restarted.advance_run(run.run_id)
+        assert len(transport.created) == count_before + (0 if invalidate_candidate else 1)
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_three_scanned_bins_return_before_fourth_and_late_scan_survives_restart(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"partial-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    group = request.face_groups[0]
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        scan = await service.get_run(run.run_id)
+        assert scan.current_step is not None
+        boundary = scan.current_step.evidence_not_before_ms
+        assert boundary is not None
+        first = [group.bins[i].bin_code for i in (0, 2, 1)]
+        for i, code in enumerate(first):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{i}",
+                bin_code=code,
+                timestamp_ms=boundary,
+            )
+        assert await service.advance_run(run.run_id)
+        assert (await service.get_run(run.run_id)).current_phase == "BINS_TO_RACK"
+        await freeze_return_allocation(service, run.run_id)
+        assert await service.advance_run(run.run_id)
+        batch = transport.created[-1][1]
+        assert isinstance(batch, MoveBinsRequest)
+        assert [move.bin_code for move in batch.moves] == first
+        # 第四箱在上一批搬运期间扫码；恢复等待时不可重置时间边界。
+        await _persist_scan12(
+            integration_session_factory,
+            source_event_id=f"{source_prefix}-last",
+            bin_code=group.bins[3].bin_code,
+            timestamp_ms=boundary,
+        )
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        assert await service.advance_run(run.run_id)
+        waiting = await service.get_run(run.run_id)
+        assert waiting.current_phase == "WAIT_SCAN12"
+        assert waiting.current_step is not None and waiting.current_step.evidence_not_before_ms == boundary
+        service = _service(integration_session_factory, transport)
+        assert await service.advance_run(run.run_id)
+        await freeze_return_allocation(service, run.run_id)
+        assert await service.advance_run(run.run_id)
+        second = transport.created[-1][1]
+        assert isinstance(second, MoveBinsRequest)
+        assert [move.bin_code for move in second.moves] == [group.bins[3].bin_code]
+        assert all(
+            not isinstance(req, MoveRackRequest) or req.rcs_template_id is not RcsTemplateId.CTU03
+            for _, req in transport.created
+        )
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        assert await service.advance_run(run.run_id)
+        assert (await service.get_run(run.run_id)).current_phase == "RACK_TO_STORAGE"
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)

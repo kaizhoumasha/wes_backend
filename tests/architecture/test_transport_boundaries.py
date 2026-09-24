@@ -20,8 +20,13 @@ def test_transport_core_has_no_business_device_or_http_client_dependency() -> No
         "PickingTask",
         "workline_plugins",
         "src.app.device",
+        "src.app.transport_debug",
+        "TransportDebugRun",
+        "debug_run_repository",
+        "RackInboundWindowService",
+        "src.app.execution.services.rack_inbound_window",
     )
-    for path in (ROOT / "src/app/transport").glob("*.py"):
+    for path in (ROOT / "src/app/transport").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert not any(value in source for value in forbidden), path
 
@@ -132,16 +137,29 @@ def test_transport_api_and_celery_use_only_production_composition_root() -> None
     expected_imports = {
         "src/register.py": {
             ("src.app.transport.composition", "build_transport_runtime"),
+            ("src.app.transport_debug.composition", "build_transport_debug_run_service"),
+            ("src.app.transport_debug.composition", "build_transport_debug_reset_service"),
+            ("src.app.transport_debug.repository", "TransportDebugRunRepository"),
+            ("src.app.transport_debug.v1", "router"),
             ("src.app.transport.v1", "router"),
         },
         "src/celery_app/async_runtime.py": {
             ("src.app.transport.composition", "build_transport_runtime"),
+            ("src.app.transport_debug.composition", "build_transport_debug_run_service"),
+            ("src.app.transport_debug.repository", "TransportDebugRunRepository"),
         },
     }
     for relative_path in ("src/register.py", "src/celery_app/async_runtime.py"):
         imports, calls = _transport_imports_and_constructor_calls(ROOT / relative_path)
         assert imports == expected_imports[relative_path], relative_path
         assert calls.count("build_transport_runtime") == 1, relative_path
+        assert calls.count("build_transport_debug_run_service") == 1, relative_path
+        if relative_path == "src/register.py":
+            assert calls.count("build_transport_debug_reset_service") == 1
+        assert calls.count("TransportDebugRunRepository") == 1, relative_path
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "progress_hook=RackInboundWindowService().on_transport_progress" in source
+        assert "progress_wakeup=task_queue_gateway.enqueue_picking_task_plans" in source
         assert "TransportService" not in calls, relative_path
 
 

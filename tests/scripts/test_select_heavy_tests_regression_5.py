@@ -31,12 +31,9 @@ def test_convergence_governance_and_mock_assets_have_complete_heavy_ownership() 
 
     changed_paths = [
         "scripts/architecture-guardrails.sh",
-        "scripts/check_business_legacy_absence_gate.py",
         "scripts/check_fast_test_budget.py",
-        "scripts/generate_legacy_matrix.py",
         "scripts/run_selected_heavy_tests.py",
         "scripts/test_live_suite.sh",
-        "scripts/workline_inbox_retirement_guardrail.py",
         "tests/mock/Dockerfile",
         "tests/mock/ecs_mock_catalog.py",
         "tests/mock/ecs_mock_server.py",
