@@ -31,7 +31,6 @@ def _body() -> dict[str, object]:
         "operation": "outbound.manual_bin.work_completed@v1",
         "timestamp": 1_788_390_000_000,
         "data": {
-            "admission_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
             "task_id": "PICK-001",
             "bin_code": "BIN-001",
             "result": "NORMAL",

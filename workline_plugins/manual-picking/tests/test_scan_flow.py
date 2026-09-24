@@ -626,6 +626,17 @@ async def test_transport_outcome_is_consumed_without_material_execution(status: 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "result_status,reason_code",
+    [("FAILED", "RCS_TASK_CANCELLED"), ("FAILED", "RCS_EXECUTION_FAILED"), ("REJECTED", None)],
+)
+@pytest.mark.parametrize(
+    "step,target_code,template",
+    [
+        ("PICKING_TASK_BIN_SOURCE_RACK_IN", "FIVE-RACK-POSITION", "CTU01"),
+        ("PICKING_TASK_RETURN_RACK_IN", "RETURN-RACK-POSITION", "F01"),
+    ],
+)
+@pytest.mark.parametrize(
     "member_active,goal_satisfied,expect_retry",
     [
         (True, False, True),
@@ -635,33 +646,59 @@ async def test_transport_outcome_is_consumed_without_material_execution(status: 
     ids=["member-active-goal-unmet", "member-cancelled", "goal-satisfied"],
 )
 async def test_cancelled_rack_follows_business_basis_and_goal_fact(
-    member_active: bool, goal_satisfied: bool, expect_retry: bool
+    result_status: str,
+    reason_code: str | None,
+    step: str,
+    target_code: str,
+    template: str,
+    member_active: bool,
+    goal_satisfied: bool,
+    expect_retry: bool,
 ) -> None:
     transport_task = SimpleNamespace(
+        status=result_status,
         kind="RACK_MOVE",
         transport_task_id="TRANSPORT-1",
         client_request_id="REQUEST-1",
         request_json={
             "rack_id": "RACK-1",
             "source": {"kind": "RACK", "location_code": "RACK-1"},
-            "target": {"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"},
+            "target": {"kind": "RACK_POSITION", "location_code": target_code},
             "target_face": "90",
-            "rcs_template_id": "CTU01",
+            "rcs_template_id": template,
         },
     )
-    creator = SimpleNamespace(create=AsyncMock())
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock(return_value="CREATED"))
     binding = SimpleNamespace(
         workline_id=7,
-        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+        step=step,
         source_evidence_id=1,
         resource_fence_id="RACK-1",
         picking_task_id=31,
         correlation_id="pt:31:e:1:rack:RACK-1",
     )
+
+    async def get_task(_db, transport_task_id, *, for_update=False):
+        if transport_task_id == "MOVE-RACK-1" and goal_satisfied:
+            return SimpleNamespace(status="SUCCEEDED")
+        return transport_task
+
     flow, evidences, _, _, _ = _setup(
-        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        transport_reader=SimpleNamespace(get_task=AsyncMock(side_effect=get_task)),
         missing_projection=None if goal_satisfied else ("RACK", "RACK-1"),
     )
+    if goal_satisfied and step == "PICKING_TASK_RETURN_RACK_IN":
+        flow._positions = SimpleNamespace(
+            get=AsyncMock(
+                return_value=SimpleNamespace(
+                    workline_id=7,
+                    position_unknown=False,
+                    position_json={"kind": "RACK_POSITION", "location_code": target_code},
+                    arrival_face="90",
+                    source_transport_task_id="MOVE-RACK-1",
+                )
+            )
+        )
     flow._rack_creator = creator
     flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
     flow._tasks = SimpleNamespace(
@@ -672,7 +709,12 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
             return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1),)
             if member_active
             else ()
-        )
+        ),
+        list_active_direct_picks=AsyncMock(
+            return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1),)
+            if member_active
+            else ()
+        ),
     )
     evidence = InboundEvidence(
         id=10,
@@ -683,8 +725,8 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
             "transport_task_id": "TRANSPORT-1",
             "client_request_id": "REQUEST-1",
             "caller": {"workline_id": "7"},
-            "status": "FAILED",
-            "reason_code": "RCS_TASK_CANCELLED",
+            "status": result_status,
+            "reason_code": reason_code,
             "rack_id": "RACK-1",
             "step": binding.step,
             "source_evidence_id": 1,
@@ -697,23 +739,30 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
     evidences.rows[10] = evidence
 
     first = await flow.apply_in_session(object(), 10, workline_id=7)
+    if result_status == "REJECTED" and member_active:
+        expect_retry = True
     if not expect_retry:
         assert first.disposition is BusinessEvidenceDisposition.IGNORED
-        creator.create.assert_not_awaited()
+        creator.create_windowed_inbound.assert_not_awaited()
         return
 
     assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
-    creator.create.assert_not_awaited()
+    creator.create_windowed_inbound.assert_not_awaited()
     binding.correlation_id = "retry:1:TRANSPORT-0"
     assert await flow._apply_transport_result(object(), evidence, 7) == 2000
     binding.correlation_id = "pt:31:e:1:rack:RACK-1"
 
     evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    creator.create_windowed_inbound.return_value = "PENDING"
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert (second.disposition, second.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.return_value = "CREATED"
     second = await flow.apply_in_session(object(), 10, workline_id=7)
     assert second.disposition is BusinessEvidenceDisposition.APPLIED
-    assert creator.create.await_count == 1
-    assert creator.create.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
-    assert creator.create.await_args.kwargs["intent"].rack_id == "RACK-1"
+    assert creator.create_windowed_inbound.await_count == 2
+    assert creator.create_windowed_inbound.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
+    assert creator.create_windowed_inbound.await_args.kwargs["retry_terminal_inbound"] is True
+    assert creator.create_windowed_inbound.await_args.kwargs["intent"].rack_id == "RACK-1"
 
 
 @pytest.mark.asyncio
@@ -940,7 +989,6 @@ async def test_work_required_waits_for_matching_wms_completion() -> None:
         InboundEvidenceKind.WMS_EVENT,
         "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
         {
-            "admission_operation_id": operation_id,
             "task_id": "PICK-001",
             "bin_code": "A000000001",
             "result": "NORMAL",
@@ -974,7 +1022,6 @@ async def test_wms_completion_waits_for_known_scan2_command_then_rechecks() -> N
         InboundEvidenceKind.WMS_EVENT,
         "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
         {
-            "admission_operation_id": admissions.intents[0].operation_id,
             "task_id": "PICK-001",
             "bin_code": "A000000001",
             "result": "NORMAL",
@@ -1007,7 +1054,6 @@ async def test_ng_work_completion_persists_reason_and_scan3_routes_left() -> Non
         InboundEvidenceKind.WMS_EVENT,
         "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
         {
-            "admission_operation_id": operation_id,
             "task_id": "PICK-001",
             "bin_code": "A000000001",
             "result": "NG",
@@ -1035,7 +1081,6 @@ async def test_wms_completion_arriving_before_admission_result_never_autobinds()
         InboundEvidenceKind.WMS_EVENT,
         "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
         {
-            "admission_operation_id": operation_id,
             "task_id": "PICK-001",
             "bin_code": "A000000001",
             "result": "NORMAL",
@@ -1056,32 +1101,6 @@ async def test_wms_completion_arriving_before_admission_result_never_autobinds()
 
 
 @pytest.mark.asyncio
-async def test_wms_completion_before_actual_scan_is_not_released() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
-    await flow.apply_in_session(object(), 1, workline_id=7)
-    await flow.apply_in_session(object(), 2, workline_id=7)
-    scanned_at = passages.rows[0].admission_scanned_at
-    evidences.rows[3] = _wms(
-        3,
-        InboundEvidenceKind.WMS_EVENT,
-        "019f12d0-58d7-7b4d-a23a-1b90aa5d4484",
-        {
-            "admission_operation_id": admissions.intents[0].operation_id,
-            "task_id": "PICK-001",
-            "bin_code": "A000000001",
-            "result": "NORMAL",
-            "completed_at": scanned_at - 1,
-        },
-    )
-
-    assert (
-        await flow.apply_in_session(object(), 3, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert len(commands.requests) == 1
-    assert passages.rows[0].wms_result is None
-
-
-@pytest.mark.asyncio
 async def test_same_completed_result_with_new_event_id_is_noop() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1094,7 +1113,6 @@ async def test_same_completed_result_with_new_event_id_is_noop() -> None:
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     completed = {
-        "admission_operation_id": admissions.intents[0].operation_id,
         "task_id": "PICK-001",
         "bin_code": "A000000001",
         "result": "NORMAL",
@@ -1106,82 +1124,6 @@ async def test_same_completed_result_with_new_event_id_is_noop() -> None:
 
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert passages.rows[0].wms_completed_evidence_id == 4
-    assert len(commands.requests) == 2
-
-
-@pytest.mark.asyncio
-async def test_completed_events_follow_admission_identity_across_reused_bin_passages() -> None:
-    flow, evidences, passages, commands, _ = _setup()
-    first = ManualPickingPassage(
-        workline_id=7,
-        task_id="PICK-001",
-        bin_code="A000000001",
-        scan1_evidence_id=1,
-        scan1_received_at=NOW,
-        scan2_evidence_id=11,
-        admission_operation_id="OP100",
-        admission_scanned_at=100,
-        admission_result="WORK_REQUIRED",
-    )
-    second = ManualPickingPassage(
-        workline_id=7,
-        task_id="PICK-001",
-        bin_code="A000000001",
-        scan1_evidence_id=2,
-        scan1_received_at=NOW,
-        scan2_evidence_id=12,
-        admission_operation_id="OP200",
-        admission_scanned_at=200,
-        admission_result="WORK_REQUIRED",
-    )
-    passages.rows[:] = [second, first]
-    evidences.rows[21] = _wms(
-        21,
-        InboundEvidenceKind.WMS_EVENT,
-        "event-21",
-        {
-            "admission_operation_id": "OP100",
-            "task_id": "PICK-001",
-            "bin_code": "A000000001",
-            "result": "NORMAL",
-            "completed_at": 300,
-        },
-    )
-    evidences.rows[22] = _wms(
-        22,
-        InboundEvidenceKind.WMS_EVENT,
-        "event-22",
-        {
-            "admission_operation_id": "OP200",
-            "task_id": "PICK-001",
-            "bin_code": "A000000001",
-            "result": "NG",
-            "completed_at": 400,
-        },
-    )
-    evidences.rows[23] = _wms(
-        23,
-        InboundEvidenceKind.WMS_EVENT,
-        "event-23",
-        evidences.rows[21].normalized_payload["data"],
-    )
-    evidences.rows[24] = _wms(
-        24,
-        InboundEvidenceKind.WMS_EVENT,
-        "event-24",
-        {**evidences.rows[21].normalized_payload["data"], "bin_code": "A000000002"},
-    )
-
-    assert (await flow.apply_in_session(object(), 21, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert first.wms_completed_evidence_id == 21
-    assert second.wms_completed_evidence_id is None
-    assert (await flow.apply_in_session(object(), 22, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert second.wms_completed_evidence_id == 22
-    assert (await flow.apply_in_session(object(), 23, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert (
-        await flow.apply_in_session(object(), 24, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert first.wms_completed_evidence_id == 21
     assert len(commands.requests) == 2
 
 

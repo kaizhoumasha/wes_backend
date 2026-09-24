@@ -79,8 +79,9 @@ class Flow:
         self.calls.append(kwargs)
         return self.created
 
-    async def face_progress(self, _db, _line_id, _task_id, _plan_revision, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
-        return SimpleNamespace(complete=False, feed_complete=True) if (rack_id, face) in self.complete else None
+    async def face_progress(self, _db, _line_id, _task_id, plan_revision, rack_id, face, _inlet_location):  # type: ignore[no-untyped-def]
+        completed = (rack_id, face) in self.complete or (plan_revision, rack_id, face) in self.complete
+        return SimpleNamespace(complete=False, feed_complete=True) if completed else None
 
     async def has_unclosed_action_for_face(self, _db, _line_id, _task_id, _plan_revision, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
         return self.face_busy
@@ -91,6 +92,15 @@ class Creator:
         self.rotate = []
         self.depart = []
         self.transfer_depart = []
+        self.created = []
+
+    async def create(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        self.created.append(kwargs)
+
+    async def create_windowed_inbound(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.pop("workline_code")
+        await self.create(db, **kwargs)
+        return "CREATED"
 
     async def create_rotate(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.rotate.append(kwargs)
@@ -157,7 +167,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
             ready_return_prefix_for_update=AsyncMock(return_value=()),
         ),
         tasks=tasks,
-        bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(51, "R1"), (52, "R2")})),
+        bindings=SimpleNamespace(
+            list_task_member_bindings=AsyncMock(return_value={(51, "R1"), (52, "R2")}),
+            get_by_decision_identity_for_update=AsyncMock(return_value=None),
+        ),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000001",
     )
     return driver, line, task, positions, plans, flow, creator, departure_reader, departure_scheduler
@@ -221,7 +234,8 @@ async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain
 
 
 @pytest.mark.asyncio
-async def test_empty_reserved_drain_rack_waits_for_bins_before_departure() -> None:
+@pytest.mark.parametrize("blocking_state", ["READY", "RETURN_REQUESTED"])
+async def test_drain_rack_waits_for_buffered_bin_but_not_upstream_bin(blocking_state: str) -> None:
     driver, line, _, positions, _, _, _, _, departure_scheduler = setup_driver()
     row = SimpleNamespace(
         intent=SimpleNamespace(operation_id="drain-1"),
@@ -241,14 +255,16 @@ async def test_empty_reserved_drain_rack_waits_for_bins_before_departure() -> No
     )
     positions.source.source_transport_task_id = "arrival-1"
     driver._passages.has_bin_before_return_buffer.return_value = True
-    driver._passages.unfinished_return_prefix_for_update = AsyncMock(return_value=())
+    driver._passages.unfinished_return_prefix_for_update = AsyncMock(
+        return_value=(SimpleNamespace(return_state=blocking_state),)
+    )
 
     assert await driver._advance_drain(object(), line) == 0
     departure_scheduler.create_in_session.assert_not_awaited()
 
-    driver._passages.has_bin_before_return_buffer.return_value = False
-    driver._passages.unfinished_return_prefix_for_update.return_value = ()
+    driver._passages.unfinished_return_prefix_for_update.return_value = (SimpleNamespace(return_state="MOVE_PENDING"),)
     assert await driver._advance_drain(object(), line) == 1
+    driver._passages.has_bin_before_return_buffer.assert_not_awaited()
     departure_scheduler.create_in_session.assert_awaited_once()
 
 
@@ -619,7 +635,7 @@ async def test_source_submits_stable_plan_order_once_without_target_readiness():
 
 
 @pytest.mark.asyncio
-async def test_ctu01_submits_same_rack_once_per_revision_member():
+async def test_ctu01_reuses_same_physical_rack_across_revisions():
     driver, line, task, positions, plans, _, creator, _, _ = setup_driver()
     task.last_applied_plan_revision = 3
     plans.rows = [
@@ -638,19 +654,30 @@ async def test_ctu01_submits_same_rack_once_per_revision_member():
         submitted.add((kwargs["source_evidence_id"], kwargs["resource_fence_id"]))
 
     creator.create = create
-    assert await driver.advance_in_session(object(), line, task) == 4
+    active_racks = set()
+
+    async def windowed(db, **kwargs):
+        rack_id = kwargs["resource_fence_id"]
+        if rack_id in active_racks:
+            return "REUSED"
+        active_racks.add(rack_id)
+        kwargs.pop("workline_code")
+        await creator.create(db, **kwargs)
+        return "CREATED"
+
+    creator.create_windowed_inbound = windowed
+    assert await driver.advance_in_session(object(), line, task) == 3
     assert [(call["source_evidence_id"], call["resource_fence_id"]) for call in calls] == [
         (51, "A"),
-        (52, "A"),
         (53, "B"),
         (53, "C"),
     ]
-    assert len({call["correlation_id"] for call in calls}) == 4
+    assert len({call["correlation_id"] for call in calls}) == 3
     assert await driver.advance_in_session(object(), line, task) == 0
 
 
 @pytest.mark.asyncio
-async def test_same_rack_next_revision_is_not_a_face_rotation() -> None:
+async def test_same_rack_next_revision_uses_arrival_fact_before_departure() -> None:
     driver, line, task, positions, plans, flow, creator, _, departure_scheduler = setup_driver()
     positions.source.updated_at = timezone.now_for_db()
     task.last_applied_plan_revision = 2
@@ -658,10 +685,12 @@ async def test_same_rack_next_revision_is_not_a_face_rotation() -> None:
         SimpleNamespace(id=11, rack_id="R1", rack_face="90", source_evidence_id=51, plan_revision=1),
         SimpleNamespace(id=12, rack_id="R1", rack_face="90", source_evidence_id=52, plan_revision=2),
     ]
-    flow.complete.add(("R1", "90"))
+    flow.complete = {(1, "R1", "90")}
+    flow.created = True
     assert await driver._advance_current_rack(object(), line, task) == 1
     assert creator.rotate == []
-    departure_scheduler.create_in_session.assert_awaited_once()
+    departure_scheduler.create_in_session.assert_not_awaited()
+    assert flow.calls[-1]["plan_revision"] == 2
 
 
 @pytest.mark.asyncio
@@ -686,8 +715,63 @@ async def test_source_departure_uses_authoritative_departure_evidence_and_destin
     )
     assert await driver.advance_in_session(object(), line, task) == 1
     assert creator.depart[0]["source_evidence_id"] == 88
-    assert creator.depart[0]["correlation_id"] == "pt:31:e:99:source-out:R1"
+    assert creator.depart[0]["correlation_id"] == (
+        "pt:31:e:99:source-out:R1:departure:019f3405-2200-7b01-8b01-000000000001"
+    )
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
+    assert creator.depart[0]["rcs_template_id"] == sdk.TransportRcsTemplateId.CTU03
+
+
+@pytest.mark.asyncio
+async def test_rejected_source_departure_requests_new_wms_decision() -> None:
+    driver, line, task, positions, plans, flow, creator, reader, scheduler = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.rows[1].source_evidence_id = 99
+    positions.source.arrival_face = "270"
+    flow.complete.add(("R1", "270"))
+    reader.latest_for_workline.return_value = SimpleNamespace(
+        intent=sdk.RackDepartureIntent(
+            operation_id="old-op",
+            task_id=None,
+            rack_id="R1",
+            current_location=sdk.TransportRackPosition("FIVE-POS"),
+            current_face="270",
+        ),
+        status=WmsConfirmationStatus.COMPLETED,
+        outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
+        evidence_id=88,
+    )
+    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(client_request_id="old-request")
+    driver._transports.get_task_by_client_request = AsyncMock(return_value=SimpleNamespace(status="REJECTED"))
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert creator.depart == []
+    assert scheduler.create_in_session.await_args.args[1].operation_id != "old-op"
+
+
+@pytest.mark.asyncio
+async def test_rejected_transfer_departure_requests_new_wms_decision() -> None:
+    driver, line, task, _, plans, _, creator, reader, scheduler = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    plans.transfer_owner = task
+    reader.latest.return_value = SimpleNamespace(
+        intent=sdk.wms_operations.outbound_rack_departure_decide(
+            operation_id="old-op",
+            task_id="PICK-1",
+            rack_id="TARGET",
+            current_location=sdk.TransportRackPosition("TRANSFER-POS"),
+            current_face="A",
+        ),
+        status=WmsConfirmationStatus.COMPLETED,
+        outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportRackPosition("STORE-POS"))),
+        evidence_id=71,
+    )
+    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(client_request_id="old-request")
+    driver._transports.get_task_by_client_request = AsyncMock(return_value=SimpleNamespace(status="REJECTED"))
+
+    assert await driver.advance_completed_in_session(object(), line) == 1
+    assert creator.transfer_depart == []
+    assert scheduler.create_in_session.await_args.args[1].operation_id != "old-op"
 
 
 @pytest.mark.asyncio

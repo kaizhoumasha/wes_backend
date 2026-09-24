@@ -25,8 +25,11 @@ from src.app.execution.models import (
     InboundEvidenceApplyStatus as Status,
 )
 from src.app.execution.services import InboundEvidenceService
+from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.sys.models.audit_log import AuditLog
+from src.app.transport.contracts import TransportHandle
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import (
     PickingTaskPlanDeltaEvent,
 )
@@ -56,8 +59,9 @@ class _CaptureTransport:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def move_rack_in_session(self, _db: Any, **kwargs: Any) -> None:
+    async def move_rack_in_session(self, _db: Any, **kwargs: Any) -> TransportHandle:
         self.calls.append(kwargs)
+        return TransportHandle(f"transport:{kwargs['client_request_id']}", kwargs["client_request_id"])
 
 
 class _StubDriver:
@@ -103,6 +107,22 @@ async def _setup_line_task(
     )
     db.add(line)
     await db.flush()
+    db.add_all(
+        WorkLinePosition(
+            workline_id=line.id,
+            workline_code=line.line_code,
+            position_code=code,
+            position_name=code,
+            position_role=role,
+            allowed_rack_kind=kind,
+            logic_location_code=location,
+            capacity=1,
+        )
+        for code, role, kind, location in (
+            ("TRANSFER", "SMT_TRANSFER_RACK_POSITION", "TRANSFER", "TRANSFER-POS"),
+            ("RETURN", "SMT_RETURN_RACK_POSITION", "RETURN", "RETURN-POS"),
+        )
+    )
 
     issued_op_id = new_uuid7()
     plan_op_id = new_uuid7()
@@ -126,7 +146,7 @@ async def _setup_line_task(
             "plan_revision": 1,
             "target_rack": {"rack_id": "TRANSFER-1", "rack_face": "90"},
             "added_bin_source_racks": [
-                {"rack_id": "FIVE-1", "rack_faces": ["90"]},
+                {"rack_id": "FIVE-1", "rack_face": ["90"]},
             ],
         },
     }
@@ -210,7 +230,7 @@ async def test_activation_creates_return_rack_transport_binding_from_direct_pick
         service = PickingTaskPlanActivationService(
             sessions,
             plugins=(_plugin(handler),),
-            transport_creator=ReliableRackTransportCreator(transport),
+            transport_creator=ReliableRackTransportCreator(transport, inbound_window=RackInboundWindowService()),
         )
         created = await service.activate_batch()
         assert created > 0, "activation should emit at least one transport"
@@ -256,6 +276,7 @@ async def test_activation_creates_return_rack_transport_binding_from_direct_pick
                 await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == task_id))
                 if line_id:
                     await db.execute(delete(PositionProjection).where(PositionProjection.workline_id == line_id))
+                    await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
                 await db.execute(delete(AuditLog).where(AuditLog.args["task_id"].as_string() == task_name))
                 await db.execute(delete(PickingTask).where(PickingTask.id == task_id))
                 await db.execute(
@@ -283,7 +304,7 @@ async def test_activation_skips_return_rack_when_no_direct_picks(integration_ses
         service = PickingTaskPlanActivationService(
             sessions,
             plugins=(_plugin(handler),),
-            transport_creator=ReliableRackTransportCreator(transport),
+            transport_creator=ReliableRackTransportCreator(transport, inbound_window=RackInboundWindowService()),
         )
         await service.activate_batch()
         async with sessions() as db:
@@ -308,6 +329,7 @@ async def test_activation_skips_return_rack_when_no_direct_picks(integration_ses
                 await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == task_id))
                 if line_id:
                     await db.execute(delete(PositionProjection).where(PositionProjection.workline_id == line_id))
+                    await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
                 await db.execute(delete(AuditLog).where(AuditLog.args["task_id"].as_string() == task_name))
                 await db.execute(delete(PickingTask).where(PickingTask.id == task_id))
                 await db.execute(

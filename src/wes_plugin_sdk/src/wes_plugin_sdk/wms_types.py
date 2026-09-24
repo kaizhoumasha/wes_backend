@@ -623,14 +623,12 @@ class ManualBinAdmissionOutcome:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ManualBinCompletedFact:
-    admission_operation_id: str
     task_id: str
     bin_code: str
     result: Literal["NORMAL", "NG"]
     completed_at: int
 
     def __post_init__(self) -> None:
-        _ = _required(self.admission_operation_id, "admission_operation_id")
         _ = _required(self.task_id, "task_id")
         _ = _required(self.bin_code, "bin_code")
         if self.result not in {"NORMAL", "NG"}:

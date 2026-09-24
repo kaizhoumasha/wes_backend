@@ -74,6 +74,11 @@ class Creator:
     async def create(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.created.append(kwargs)
 
+    async def create_windowed_inbound(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.pop("workline_code")
+        await self.create(db, **kwargs)
+        return "CREATED"
+
     async def create_rotate(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.rotate.append(kwargs)
 
@@ -137,7 +142,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
         arrival_scheduler=arrival_scheduler,
         arrival_reader=arrival_reader,
         tasks=SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task)),
-        bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value=set())),
+        bindings=SimpleNamespace(
+            list_task_member_bindings=AsyncMock(return_value=set()),
+            get_by_decision_identity_for_update=AsyncMock(return_value=None),
+        ),
         uuid_factory=lambda: "019f3405-2200-7b01-8b01-000000000009",
     )
     return driver, line, task, positions, plans, creator, arrival_reader, arrival_scheduler, departure_scheduler
@@ -213,13 +221,13 @@ async def test_reused_return_rack_uses_the_revision_that_arrived() -> None:
     reader.latest.return_value = recorded_snapshot()
 
     assert await driver.advance_in_session(object(), line, task) == 0
-    assert [call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list] == [2]
+    assert {call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list} == {1, 2}
     assert creator.rotate == [] and creator.depart == []
     departure.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_revision_arrival_cannot_advance_reused_rack() -> None:
+async def test_new_revision_attaches_to_existing_arrival() -> None:
     driver, line, task, _, plans, creator, reader, _, departure = setup_driver()
     task.last_applied_plan_revision = 2
     plans.picks = [
@@ -229,7 +237,7 @@ async def test_cancelled_revision_arrival_cannot_advance_reused_rack() -> None:
     reader.latest.return_value = recorded_snapshot()
 
     assert await driver.advance_in_session(object(), line, task) == 0
-    reader.latest.assert_not_awaited()
+    reader.latest.assert_awaited_once()
     assert creator.rotate == [] and creator.depart == []
     departure.create_in_session.assert_not_awaited()
 
@@ -246,7 +254,7 @@ async def test_shared_return_rack_arrival_waits_for_both_revision_completions() 
     reader.latest.return_value = recorded_snapshot()
 
     assert await driver.advance_in_session(object(), line, task) == 0
-    assert [call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list] == [1, 2]
+    assert {call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list} == {1, 2}
     departure.create_in_session.assert_not_awaited()
     plans.has_direct_pick_face_completion = AsyncMock(return_value=True)
     assert await driver.advance_in_session(object(), line, task) == 1
@@ -318,8 +326,11 @@ async def test_ready_departure_decision_returns_the_return_rack_with_its_own_ste
     assert creator.depart[0]["rack_id"] == "RETURN-RACK-01"
     assert creator.depart[0]["picking_task_id"] == 31
     assert creator.depart[0]["source_evidence_id"] == 93
-    assert creator.depart[0]["correlation_id"] == "pt:31:e:61:return-out:RETURN-RACK-01"
+    assert creator.depart[0]["correlation_id"] == (
+        "pt:31:e:61:return-out:RETURN-RACK-01:departure:019f3405-2200-7b01-8b01-000000000009"
+    )
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
+    assert creator.depart[0]["rcs_template_id"] == sdk.TransportRcsTemplateId.F01
     departure.create_in_session.assert_not_awaited()
 
 

@@ -46,7 +46,6 @@ def decode_admission_outcome(payload: object) -> sdk.ManualBinAdmissionOutcome:
 def decode_completed_fact(payload: object) -> sdk.ManualBinCompletedFact:
     event = ManualBinCompletedEvent.model_validate(payload)
     return sdk.ManualBinCompletedFact(
-        admission_operation_id=event.data.admission_operation_id,
         task_id=event.data.task_id,
         bin_code=event.data.bin_code,
         result=event.data.result,

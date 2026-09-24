@@ -48,6 +48,7 @@ NEW_MIGRATION_REVISION_PATHS = frozenset(
         "migrations/versions/20260923_2257_4ef64c642313_移除人工料箱任务箱码终态唯一约束.py",
         "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
         "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py",
+        "migrations/versions/20260923_1700_c41df10527aa_货架进场窗口生命周期.py",
     }
 )
 FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "e5120e17cfea3aafa26ef51d1e4429a2c09117c7443f3cc316b01e6c55cc291a"

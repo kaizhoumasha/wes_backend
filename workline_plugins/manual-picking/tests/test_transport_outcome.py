@@ -110,6 +110,14 @@ async def test_transport_result_rejects_other_plugin_step_before_acceptance() ->
 
 
 @pytest.mark.asyncio
+async def test_return_rack_inbound_result_is_published_for_api_recovery() -> None:
+    publisher, accept = _publisher(step="PICKING_TASK_RETURN_RACK_IN")
+
+    assert await publisher.publish(object(), _outcome()) is True
+    assert accept.await_args.kwargs["normalized_payload"]["step"] == "PICKING_TASK_RETURN_RACK_IN"
+
+
+@pytest.mark.asyncio
 async def test_inbound_batch_transport_result_matches_all_frozen_bin_members() -> None:
     from manual_picking.application.transport_outcome import ManualPickingTransportOutcomePublisher
 
