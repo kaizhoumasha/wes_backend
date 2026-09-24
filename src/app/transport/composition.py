@@ -93,6 +93,7 @@ async def build_transport_runtime(
     try:
         from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
         from src.app.execution.services.position_projection_service import PositionProjectionService
+        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 
         repository = TransportRepository()
         from src.app.transport.debug_run_repository import TransportDebugRunRepository
@@ -111,6 +112,8 @@ async def build_transport_runtime(
             task_queue_gateway=task_queue_gateway,
             position_projections=position_projection_service,
             debug_run_guard=debug_run_repository,
+            rack_inbound_window=RackInboundWindowService(),
+            window_refill_wakeup=task_queue_gateway.enqueue_picking_task_plans,
         )
         from src.app.transport.debug_run_service import TransportDebugRunService
 

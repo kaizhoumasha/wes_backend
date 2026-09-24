@@ -169,6 +169,7 @@ class PickingTaskPlanActivationService:
             )
             result = handler(fact)
             self._validate_result(fact, result)
+            inbound_count = 0
             for intent in result.transports:
                 if fact.target_rack is not None and intent.rack_id == fact.target_rack.rack_id:
                     step = TARGET_RACK_IN_STEP
@@ -176,9 +177,10 @@ class PickingTaskPlanActivationService:
                     step = RETURN_RACK_IN_STEP
                 else:
                     step = BIN_SOURCE_RACK_IN_STEP
-                _ = await self._transport_creator.create(
+                admission = await self._transport_creator.create_windowed_inbound(
                     db,
                     workline_id=workline_id,
+                    workline_code=line.line_code,
                     picking_task_id=task.id,
                     source_evidence_id=int(intent.source_evidence_id),
                     correlation_id=(f"pt:{task.id}:e:{intent.source_evidence_id}:rack:{intent.rack_id}"),
@@ -186,10 +188,11 @@ class PickingTaskPlanActivationService:
                     resource_fence_id=intent.rack_id,
                     intent=intent,
                 )
+                inbound_count += admission == "CREATED"
             completion = self._completion_drivers.get(plugin_identity)
             batch_count = await driver.advance_in_session(db, line, task) if driver is not None else 0
             completion_count = await completion.advance_in_session(db, line, task) if completion is not None else 0
-            return old_count + len(result.transports) + batch_count + completion_count
+            return old_count + inbound_count + batch_count + completion_count
 
     async def _pending_bin_racks(
         self, db: Any, task: Any, decided_members: set[tuple[int, str]]

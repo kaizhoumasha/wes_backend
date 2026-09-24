@@ -496,7 +496,8 @@
                               "kind",
                               "outcome_revision",
                               "rack_id",
-                              "status"
+                              "status",
+                              "final_position"
                             ],
                             "properties": {
                               "transport_task_id": {

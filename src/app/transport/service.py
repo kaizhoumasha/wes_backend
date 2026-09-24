@@ -90,11 +90,12 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from _typeshed import DataclassInstance
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.execution.services.rack_inbound_window import RackInboundWindowService
     from src.app.transport.contracts import TransportOutcomePublisher, TransportProviderPort
     from src.app.transport.repository import TransportRepository
     from src.core.task_queue_gateway import TaskQueueGateway
@@ -256,6 +257,8 @@ class TransportService:
         debug_run_guard: TransportDebugRunGuardPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         diagnostics: WmsDiagnosticsService | None = None,
+        rack_inbound_window: RackInboundWindowService | None = None,
+        window_refill_wakeup: Callable[[], None] | None = None,
     ) -> None:
         if position_projections is None:
             from src.app.execution.services.position_projection_service import position_projection_service
@@ -274,6 +277,8 @@ class TransportService:
         self._debug_run_guard = debug_run_guard
         self._task_queue = task_queue_gateway
         self._diagnostics = diagnostics
+        self._rack_inbound_window = rack_inbound_window
+        self._window_refill_wakeup = window_refill_wakeup
 
     async def move_rack(
         self,
@@ -859,6 +864,7 @@ class TransportService:
                     operation_id=operation_id,
                     updated_at=writeback_now,
                 )
+                await self._release_rack_window_if_ready(db, current)
                 if self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     if current.outcome_version > current.published_outcome_version:
@@ -940,6 +946,7 @@ class TransportService:
                         evidence.processed_at = timezone.now_for_db()
                         evidence.claim_token = None
                         evidence.claim_until = None
+                    await self._release_rack_window_if_ready(db, task)
                     update_event = _evidence_update_event(
                         evidence,
                         task_status=task.status,
@@ -965,6 +972,20 @@ class TransportService:
                     },
                 )
         return processed
+
+    async def _release_rack_window_if_ready(self, db: AsyncSession, task: TransportTask) -> None:
+        if self._rack_inbound_window is None:
+            return
+        if task.status in {"ACCEPTED", "SUCCEEDED"}:
+            released = await self._rack_inbound_window.release_on_departure_accepted(
+                db, client_request_id=task.client_request_id
+            )
+        elif task.status in {"REJECTED", "FAILED"}:
+            released = await self._rack_inbound_window.release_unarrived_terminal(db, task)
+        else:
+            return
+        if released and self._window_refill_wakeup is not None:
+            defer_wakeup(db, self._window_refill_wakeup)
 
     async def record_callback(
         self,
@@ -1799,6 +1820,7 @@ class TransportService:
             if cancelled:
                 if (
                     task.kind not in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
+                    or not has_position
                     or position_unknown
                     or result.get("failure_code") is not None
                     or result.get("arrival_face") is not None
@@ -1843,17 +1865,16 @@ class TransportService:
             member.arrival_face = arrival_face
             member.last_operation_id = evidence.operation_id
             member.updated_at = now
-            if not cancelled or final_position is not None:
-                await self._apply_member_position_projection(
-                    db,
-                    task,
-                    member,
-                    evidence,
-                    position_json=final_position,
-                    position_unknown=position_unknown,
-                    arrival_face=arrival_face,
-                    updated_at=now,
-                )
+            await self._apply_member_position_projection(
+                db,
+                task,
+                member,
+                evidence,
+                position_json=final_position,
+                position_unknown=position_unknown,
+                arrival_face=arrival_face,
+                updated_at=now,
+            )
             outcomes.append(outcome)
 
         if any_unknown:

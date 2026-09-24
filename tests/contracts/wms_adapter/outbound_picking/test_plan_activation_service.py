@@ -100,6 +100,11 @@ class _Creator:
     async def create(self, _db, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append(kwargs)
 
+    async def create_windowed_inbound(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.pop("workline_code")
+        await self.create(db, **kwargs)
+        return "CREATED"
+
 
 class _BatchDriver:
     def __init__(self, completed_count: int = 0) -> None:
@@ -342,6 +347,7 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
 async def test_old_transport_failure_does_not_block_new_rack_submission() -> None:
     line = SimpleNamespace(
         id=7,
+        line_code="L-1",
         is_active=True,
         is_deleted=False,
         plugin_key="sample_plugin",

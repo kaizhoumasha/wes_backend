@@ -32,7 +32,7 @@ MEMBER_BATCH_SIZE = 250
 
 class PickingTaskPlanDeltaRepository:
     async def source_transport_matches(
-        self, db: AsyncSession, workline_id: int, rack_id: str, source_evidence_id: int, transport_task_id: str
+        self, db: AsyncSession, workline_id: int, rack_id: str, picking_task_id: int, transport_task_id: str
     ) -> bool:
         bindings = TransportDecisionBinding.__table__.c
         transports = TransportTask.__table__.c
@@ -43,7 +43,7 @@ class PickingTaskPlanDeltaRepository:
                 .where(
                     bindings.workline_id == workline_id,
                     bindings.resource_fence_id == rack_id,
-                    bindings.source_evidence_id == source_evidence_id,
+                    bindings.picking_task_id == picking_task_id,
                     bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
                     transports.transport_task_id == transport_task_id,
                     transports.status == "SUCCEEDED",
@@ -85,7 +85,7 @@ class PickingTaskPlanDeltaRepository:
             .join(PickingTaskBinSourceRack, members.picking_task_id == tasks.id)
             .join(
                 TransportDecisionBinding,
-                (bindings.source_evidence_id == members.source_evidence_id)
+                (bindings.picking_task_id == tasks.id)
                 & (bindings.resource_fence_id == members.rack_id)
                 & (bindings.workline_id == tasks.workline_id),
             )
@@ -100,6 +100,7 @@ class PickingTaskPlanDeltaRepository:
             .where(
                 tasks.workline_id == workline_id,
                 tasks.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                members.cancelled_evidence_id.is_(None),
                 members.rack_face == projections.arrival_face,
                 members.plan_revision <= tasks.last_applied_plan_revision,
                 bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
@@ -128,7 +129,6 @@ class PickingTaskPlanDeltaRepository:
                 TransportDecisionBinding,
                 (bindings.picking_task_id == tasks.id)
                 & (bindings.resource_fence_id == picks.rack_id)
-                & (bindings.source_evidence_id == picks.source_evidence_id)
                 & (bindings.workline_id == tasks.workline_id),
             )
             .join(TransportTask, transports.client_request_id == bindings.client_request_id)

@@ -43,7 +43,7 @@ class WorkLinePositionBase(BaseMixin):
         sa_type=cast("Any", SQLAEnum(RackKind, native_enum=False, create_constraint=True, length=50)),
         description="允许货架类型",
     )
-    capacity: int = Field(default=1, ge=1, description="位置容量；货架位按可容纳货架数量计")
+    capacity: int = Field(default=1, ge=1, description="目标点滚动进场 Transport 下发窗口；按物理货架生命周期计数")
     logic_location_code: str | None = Field(default=None, max_length=120, index=True, description="WES 逻辑位置")
     external_location_code: str | None = Field(default=None, max_length=120, index=True, description="外部地码证据")
     device_id: int | None = Field(

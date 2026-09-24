@@ -21,7 +21,10 @@ from src.app.execution.models import (
 )
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.services import InboundEvidenceService
+from src.app.execution.services.rack_inbound_window import RackInboundWindowService
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.sys.models.audit_log import AuditLog
+from src.app.transport.contracts import TransportHandle
 from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelEvent
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
@@ -160,6 +163,87 @@ async def prepared(integration_session_factory):
         )
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidences)))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_rack_inbound_window_persists_capacity_and_cross_revision_reuse(integration_session_factory, prepared):
+    task_name, (task_id, line_id, evidence_id, *_rest) = prepared
+    target = f"WINDOW-{new_uuid7()}"
+    window = RackInboundWindowService()
+    async with integration_session_factory.begin() as db:
+        db.add(
+            WorkLinePosition(
+                workline_id=line_id,
+                workline_code=task_name,
+                position_code="WINDOW",
+                position_name="窗口测试目标点",
+                position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                allowed_rack_kind="FIVE_LAYER",
+                logic_location_code=target,
+                capacity=3,
+            )
+        )
+
+    async def admit(db, rack_id, revision):
+        async def create():
+            request_id = new_uuid7()
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=line_id,
+                    picking_task_id=task_id,
+                    source_evidence_id=evidence_id,
+                    correlation_id=f"window:{revision}:{rack_id}",
+                    step="TEST_RACK_IN",
+                    resource_fence_id=rack_id,
+                    client_request_id=request_id,
+                )
+            )
+            await db.flush()
+            return TransportHandle(f"transport:{request_id}", request_id)
+
+        return await window.admit(
+            db,
+            workline_id=line_id,
+            workline_code=task_name,
+            target_location_code=target,
+            rack_id=rack_id,
+            picking_task_id=task_id,
+            create=create,
+        )
+
+    try:
+        async with integration_session_factory.begin() as db:
+            assert [await admit(db, f"RACK-{index}", 1) for index in range(5)] == [
+                "CREATED",
+                "CREATED",
+                "CREATED",
+                "PENDING",
+                "PENDING",
+            ]
+            assert await admit(db, "RACK-0", 2) == "REUSED"
+            assert await window.attach_departure(
+                db, workline_id=line_id, rack_id="RACK-0", client_request_id="leave-window-0"
+            )
+            assert await admit(db, "RACK-3", 1) == "PENDING"
+        async with integration_session_factory.begin() as db:
+            assert await window.release_on_departure_accepted(db, client_request_id="leave-window-0")
+            assert await admit(db, "RACK-3", 1) == "CREATED"
+            assert await admit(db, "RACK-4", 1) == "PENDING"
+            assert await admit(db, "RACK-0", 2) == "PENDING"  # 释放名额已被 RACK-3 补占
+            failed_inbound = await db.scalar(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.workline_id == line_id,
+                    TransportDecisionBinding.resource_fence_id == "RACK-1",
+                )
+            )
+            assert await window.release_unarrived_terminal(
+                db, Mock(client_request_id=failed_inbound.client_request_id, status="REJECTED")
+            )
+            assert await admit(db, "RACK-4", 1) == "CREATED"
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
+            await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
 
 
 async def test_concurrent_revision_replay_and_business_duplicate(integration_session_factory, prepared):
@@ -838,7 +922,6 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
     async with integration_session_factory.begin() as db:
         task = await db.get(PickingTask, ids[0])
         task.status = "EXECUTION_COMPLETED"
-        source = (await PickingTaskPlanDeltaRepository().list_bin_source_racks(db, ids[0]))[0]
         db.add(
             TransportTask(
                 transport_task_id=transport_task_id,
@@ -877,12 +960,13 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
         )
         db.add(
             TransportDecisionBinding(
-                correlation_id=f"pt:{ids[0]}:e:{source.source_evidence_id}:rack:SOURCE",
+                correlation_id=f"pt:{ids[0]}:e:{task.initial_plan_evidence_id}:rack:SOURCE",
                 step="PICKING_TASK_BIN_SOURCE_RACK_IN",
                 workline_id=ids[1],
+                picking_task_id=ids[0],
                 resource_fence_id="SOURCE",
                 client_request_id=client_request_id,
-                source_evidence_id=source.source_evidence_id,
+                source_evidence_id=task.initial_plan_evidence_id,
             )
         )
         db.add(
@@ -890,6 +974,7 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
                 correlation_id=f"pt:{ids[0]}:e:{task.initial_plan_evidence_id}:rack:TARGET",
                 step="PICKING_TASK_TARGET_RACK_IN",
                 workline_id=ids[1],
+                picking_task_id=ids[0],
                 resource_fence_id="TARGET",
                 client_request_id=target_request_id,
                 source_evidence_id=task.initial_plan_evidence_id,
@@ -920,9 +1005,7 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
     try:
         async with integration_session_factory() as db:
             repository = PickingTaskPlanDeltaRepository()
-            assert await repository.source_transport_matches(
-                db, ids[1], "SOURCE", source.source_evidence_id, transport_task_id
-            )
+            assert await repository.source_transport_matches(db, ids[1], "SOURCE", ids[0], transport_task_id)
             owner = await repository.first_completed_source_owner_at_position(db, ids[1], "FIVE-POS")
             assert owner is not None and owner.id == ids[0]
             assert await repository.first_completed_source_owner_at_position(db, ids[1], "OTHER-POS") is None
@@ -989,13 +1072,13 @@ async def test_reused_direct_pick_owner_uses_current_arrival_transport(integrati
         )
         db.add(
             TransportDecisionBinding(
-                correlation_id=f"pt:{ids[0]}:e:{picks[1].source_evidence_id}:rack:RETURN-A",
+                correlation_id=f"pt:{ids[0]}:e:{picks[0].source_evidence_id}:rack:RETURN-A",
                 step="PICKING_TASK_RETURN_RACK_IN",
                 workline_id=ids[1],
                 picking_task_id=ids[0],
                 resource_fence_id="RETURN-A",
                 client_request_id=client_request_id,
-                source_evidence_id=picks[1].source_evidence_id,
+                source_evidence_id=picks[0].source_evidence_id,
             )
         )
         db.add(
@@ -1014,7 +1097,7 @@ async def test_reused_direct_pick_owner_uses_current_arrival_transport(integrati
             repository = PickingTaskPlanDeltaRepository()
             assert (
                 await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", transport_task_id)
-                == picks[1].source_evidence_id
+                == picks[0].source_evidence_id
             )
             assert (await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS")).id == ids[
                 0
@@ -1024,14 +1107,19 @@ async def test_reused_direct_pick_owner_uses_current_arrival_transport(integrati
             )
         async with integration_session_factory.begin() as db:
             await db.execute(
-                update(TransportDecisionBinding)
-                .where(TransportDecisionBinding.client_request_id == client_request_id)
-                .values(source_evidence_id=picks[0].source_evidence_id)
-            )
-            await db.execute(
                 update(DirectPickExecution)
                 .where(DirectPickExecution.id == picks[0].id)
                 .values(cancelled_evidence_id=picks[0].source_evidence_id)
+            )
+        async with integration_session_factory() as db:
+            assert (await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS")).id == ids[
+                0
+            ]
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(DirectPickExecution)
+                .where(DirectPickExecution.id == picks[1].id)
+                .values(cancelled_evidence_id=picks[1].source_evidence_id)
             )
         async with integration_session_factory() as db:
             assert await repository.first_completed_direct_pick_owner_at_position(db, ids[1], "RETURN-POS") is None

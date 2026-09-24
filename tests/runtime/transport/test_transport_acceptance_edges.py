@@ -1506,10 +1506,8 @@ async def test_known_partial_failure_forms_failed_outcome_with_member_facts(db_e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("final_position", [None, {"kind": "RACK_POSITION", "location_code": "KT16"}])
-async def test_cancelled_rack_result_maps_to_failed_with_optional_position(
-    db_engine: object, final_position: dict[str, str] | None
-) -> None:
+async def test_cancelled_rack_result_maps_to_failed_with_final_position(db_engine: object) -> None:
+    final_position = {"kind": "RACK_POSITION", "location_code": "KT16"}
     publisher = RecordingPublisher()
     service = _service(db_engine)
     handle = await service.move_rack(
@@ -1526,8 +1524,7 @@ async def test_cancelled_rack_result_maps_to_failed_with_optional_position(
         "rack_id": "510028",
         "status": "CANCELLED",
     }
-    if final_position is not None:
-        payload["final_position"] = final_position
+    payload["final_position"] = final_position
     await record_valid_callback(
         service,
         operation_id=new_uuid7(),

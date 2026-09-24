@@ -42,7 +42,7 @@ def test_transport_openapi_exposes_only_v03_callback_identity_shapes() -> None:
     assert '"BUSY"' not in serialized
 
 
-def test_transport_openapi_exposes_cancelled_rack_result_with_optional_position() -> None:
+def test_transport_openapi_requires_cancelled_rack_final_position() -> None:
     variants = [
         schema
         for schema in _walk_schemas(build_transport_openapi_document())
@@ -52,7 +52,7 @@ def test_transport_openapi_exposes_cancelled_rack_result_with_optional_position(
     assert len(variants) == 1
     variant = variants[0]
     assert variant["properties"]["kind"]["enum"] == ["RACK_MOVE", "RACK_ROTATE"]
-    assert "final_position" not in variant["required"]
+    assert "final_position" in variant["required"]
     assert variant["properties"]["final_position"] == {
         "type": "object",
         "additionalProperties": True,

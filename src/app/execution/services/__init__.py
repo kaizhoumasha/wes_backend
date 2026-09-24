@@ -29,6 +29,7 @@ from .position_projection_service import (
     compare_projection_sources,
     position_projection_service,
 )
+from .rack_inbound_window import RackInboundWindowService
 from .reliable_rack_transport import ReliableRackTransportCreator
 from .wms_confirmation_service import (
     WmsConfirmationAcceptance,
@@ -63,6 +64,7 @@ __all__ = [
     "ProjectionCausalRelation",
     "ProjectionEffectPhase",
     "ProjectionSource",
+    "RackInboundWindowService",
     "ReliableRackTransportCreator",
     "WmsConfirmationAcceptance",
     "WmsConfirmationFollowUp",
