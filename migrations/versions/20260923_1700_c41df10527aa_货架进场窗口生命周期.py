@@ -17,6 +17,46 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # 旧进场没有窗口身份；存在未闭合或未被更新因果位置证明已离开的货架时，不能从零开始计数。
+    op.execute("LOCK TABLE wes_biz.transport_decision_bindings IN ACCESS EXCLUSIVE MODE")
+    op.execute(
+        """
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM wes_biz.transport_decision_bindings AS binding
+                LEFT JOIN wes_biz.transport_tasks AS task
+                    ON task.client_request_id = binding.client_request_id
+                LEFT JOIN wes_biz.position_projections AS position
+                    ON position.object_type = 'RACK'
+                    AND position.object_id = binding.resource_fence_id
+                WHERE binding.step IN (
+                    'PICKING_TASK_TARGET_RACK_IN',
+                    'PICKING_TASK_BIN_SOURCE_RACK_IN',
+                    'PICKING_TASK_RETURN_RACK_IN',
+                    'MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN'
+                )
+                AND (
+                    task.id IS NULL
+                    OR task.status IN ('PENDING', 'ACCEPTED', 'RECONCILING')
+                    OR (
+                        task.status IN ('SUCCEEDED', 'FAILED')
+                        AND (
+                            position.position_unknown = FALSE
+                            AND task.request_json->'target'->>'kind' = 'RACK_POSITION'
+                            AND position.position_json->>'kind' = 'RACK_POSITION'
+                            AND position.position_json->>'location_code'
+                                IS DISTINCT FROM task.request_json->'target'->>'location_code'
+                            AND position.source_causal_token > binding.causal_token
+                        ) IS NOT TRUE
+                    )
+                )
+            ) THEN
+                RAISE EXCEPTION 'rack inbound window migration requires closed legacy rack lifecycles';
+            END IF;
+        END $$
+        """
+    )
     for column in (
         sa.Column("window_target_location_code", sa.String(length=120), nullable=True),
         sa.Column("window_departure_client_request_id", sa.String(length=120), nullable=True),

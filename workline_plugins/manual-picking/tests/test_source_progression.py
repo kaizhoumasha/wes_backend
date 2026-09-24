@@ -715,9 +715,7 @@ async def test_source_departure_uses_authoritative_departure_evidence_and_destin
     )
     assert await driver.advance_in_session(object(), line, task) == 1
     assert creator.depart[0]["source_evidence_id"] == 88
-    assert creator.depart[0]["correlation_id"] == (
-        "pt:31:e:99:source-out:R1:departure:019f3405-2200-7b01-8b01-000000000001"
-    )
+    assert creator.depart[0]["correlation_id"] == ("departure:019f3405-2200-7b01-8b01-000000000001")
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
     assert creator.depart[0]["rcs_template_id"] == sdk.TransportRcsTemplateId.CTU03
 

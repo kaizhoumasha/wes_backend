@@ -326,9 +326,7 @@ async def test_ready_departure_decision_returns_the_return_rack_with_its_own_ste
     assert creator.depart[0]["rack_id"] == "RETURN-RACK-01"
     assert creator.depart[0]["picking_task_id"] == 31
     assert creator.depart[0]["source_evidence_id"] == 93
-    assert creator.depart[0]["correlation_id"] == (
-        "pt:31:e:61:return-out:RETURN-RACK-01:departure:019f3405-2200-7b01-8b01-000000000009"
-    )
+    assert creator.depart[0]["correlation_id"] == ("departure:019f3405-2200-7b01-8b01-000000000009")
     assert creator.depart[0]["destination"] == sdk.TransportZonePosition("WH05")
     assert creator.depart[0]["rcs_template_id"] == sdk.TransportRcsTemplateId.F01
     departure.create_in_session.assert_not_awaited()

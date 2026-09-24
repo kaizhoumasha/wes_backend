@@ -270,7 +270,6 @@ class ManualPickingBatchDriver:
                 line,
                 rack_id=rack_id,
                 current_face=projection.arrival_face,
-                correlation_id=f"drain:{decision.intent.operation_id}:rack:{rack_id}",
                 step=DRAIN_RACK_OUT_STEP,
                 picking_task_id=None,
                 source_evidence_id=decision.evidence_id,
@@ -440,7 +439,6 @@ class ManualPickingBatchDriver:
             line,
             rack_id=current.rack_id,
             current_face=projection.arrival_face,
-            correlation_id=f"pt:{task.id}:e:{current.source_evidence_id}:source-out:{current.rack_id}",
             step=SOURCE_RACK_OUT_STEP,
             picking_task_id=task.id,
             arrival_transport_task_id=projection.source_transport_task_id,
@@ -586,7 +584,6 @@ class ManualPickingBatchDriver:
             line,
             rack_id=current.rack_id,
             current_face=projection.arrival_face,
-            correlation_id=f"pt:{task.id}:e:{current.source_evidence_id}:return-out:{current.rack_id}",
             step=RETURN_RACK_OUT_STEP,
             picking_task_id=task.id,
             arrival_transport_task_id=projection.source_transport_task_id,
@@ -601,7 +598,6 @@ class ManualPickingBatchDriver:
         *,
         rack_id: str,
         current_face: str,
-        correlation_id: str,
         step: str,
         picking_task_id: int | None,
         arrival_transport_task_id: str,
@@ -643,7 +639,7 @@ class ManualPickingBatchDriver:
             return 1
         if not isinstance(result, RackDepartureReady) or snapshot.evidence_id is None:
             return 0
-        departure_identity = f"{correlation_id}:departure:{snapshot.intent.operation_id}"
+        departure_identity = f"departure:{snapshot.intent.operation_id}"
         if await self._departure_rejected(db, line.id, departure_identity, step):
             intent = wms_operations.outbound_rack_departure_decide(
                 operation_id=self._uuid_factory(),

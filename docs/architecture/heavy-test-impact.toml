@@ -3057,6 +3057,10 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "tests/mock/data/kt16_manual_picking_good_case.json"
+heavy_tests = ["tests/mock/test_wms_transport_mock_server.py"]
+
+[[mapping]]
 source_glob = "src/database/base_repository.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
