@@ -10,7 +10,7 @@
 | [Callback/Event 验证原则](callback_event_validation_principles.md) | 设备 callback/event 的合同校验、身份和冲突原则 | 当前设备集成规则 |
 | [WorkLine 设备错误码标准化](workline_device_error_code_standardization.md) | 设备错误码归一化与业务映射边界 | 当前设备集成规则 |
 | [设备合同附录：自动拣料机械臂](device-annex-automatic-picking-arms.md) | ARM01/ARM02 的 `PICK_AND_PUT` 参数、结果与扫码事件字段 | `Draft`；待供应商确认后才可实现 |
-| [WMS/WES 主合同修订提案：自动拣料](wms-joint-confirmation-automatic-picking.md) | 逐项确认来源成员、Passage 身份与 automatic-picking wire；获批内容回写出库主合同 | `Draft`；非当前接口真源，获批回写后归档 |
+| [WMS/WES 自动拣料联合确认记录](wms-joint-confirmation-automatic-picking.md) | WMS 已接受来源成员、Passage 规则与 automatic-picking 目标 wire；出库主合同承接已确认内容 | `WMSAccepted`；WES 严格 DTO、OpenAPI、生产接线及联合验收待完成 |
 | [WMS Caller Checklist](wms_caller_checklist.md) | 收敛前 typed port 调用方的异常处理基线 | `implementation_baseline`，不是目标业务合同 |
 
 使用顺序：
