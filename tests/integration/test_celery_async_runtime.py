@@ -109,6 +109,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     from deployment import plugin_composition
     from src.app.device import composition as device_composition
     from src.app.transport import composition as transport_composition
+    from src.app.transport_debug import composition as transport_debug_composition
     from src.database import db as db_module
     from src.database import redis_client as redis_module
 
@@ -132,7 +133,6 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
             service=object(),
             repository=object(),
             client=object(),
-            debug_run_service=object(),
         )
         infra.transport_runtimes.append(runtime)
         return runtime
@@ -162,6 +162,9 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         transport_composition,
         "build_transport_runtime",
         infra.build_transport_runtime,
+    )
+    monkeypatch.setattr(
+        transport_debug_composition, "build_transport_debug_run_service", MagicMock(return_value=object())
     )
     monkeypatch.setattr(
         device_composition,

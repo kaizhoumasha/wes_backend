@@ -31,9 +31,9 @@ async def _seed_master_and_runtime(session: AsyncSession) -> None:
     )
     await session.execute(
         text(
-            "INSERT INTO wes_biz.resource_bin_types "
-            "(created_at, bin_type_code, bin_type_name, active, metadata_json) "
-            "VALUES (CURRENT_TIMESTAMP, 'RESET-MASTER', 'Reset master survives', true, '{}'::json)"
+            "INSERT INTO wes_biz.devices "
+            "(created_at, updated_at, device_code, device_name, is_active, sort_order, diagnostic_profile, is_deleted) "
+            "VALUES (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'RESET-MASTER', 'Reset master survives', true, 0, '{}'::json, false)"
         )
     )
     await session.execute(
@@ -146,7 +146,7 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                     assert workline == (False, 4, "STOPPED")
                     assert (
                         await session.scalar(
-                            text("SELECT count(*) FROM wes_biz.resource_bin_types WHERE bin_type_code = 'RESET-MASTER'")
+                            text("SELECT count(*) FROM wes_biz.devices WHERE device_code = 'RESET-MASTER'")
                         )
                         == 1
                     )
@@ -174,9 +174,9 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
                 if failure_mode == "schema-mismatch":
                     await connection.execute("CREATE TABLE wes_sys.callback_logs (id bigint primary key)")
                 await connection.execute(
-                    "INSERT INTO wes_biz.resource_bin_types "
-                    "(created_at, bin_type_code, bin_type_name, active, metadata_json) "
-                    "VALUES (CURRENT_TIMESTAMP, 'RESET-GUARD', 'Reset guard survives', true, '{}'::json)"
+                    "INSERT INTO wes_biz.devices "
+                    "(created_at, updated_at, device_code, device_name, is_active, sort_order, diagnostic_profile, is_deleted) "
+                    "VALUES (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'RESET-GUARD', 'Reset guard survives', true, 0, '{}'::json, false)"
                 )
             finally:
                 await connection.close()
@@ -195,7 +195,7 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
                     await session.rollback()
                     assert (
                         await session.scalar(
-                            text("SELECT count(*) FROM wes_biz.resource_bin_types WHERE bin_type_code = 'RESET-GUARD'")
+                            text("SELECT count(*) FROM wes_biz.devices WHERE device_code = 'RESET-GUARD'")
                         )
                         == 1
                     )

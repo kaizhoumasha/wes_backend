@@ -321,7 +321,7 @@ class _BlockingEvidenceInsertRepository(TransportRepository):
         await self.release.wait()
 
 
-class _FailingProjectionPort:
+class _FailingProjectionPort(PositionProjectionService):
     async def get_current(self, *args: object, **kwargs: object) -> object:
         raise RuntimeError("forced projection failure")
 
@@ -671,7 +671,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         TransportRepository(),
         _UnusedProvider(),
         result_timeout=timedelta(seconds=420),
-        position_projections=_FailingProjectionPort(),
+        position_projections=_FailingProjectionPort(binding_repository=_RuntimeBindingRepository()),
     )
 
     try:

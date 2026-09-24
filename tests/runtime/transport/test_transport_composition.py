@@ -64,9 +64,9 @@ async def test_explicit_endpoint_builds_one_closed_transport_runtime_without_pub
     assert runtime.service._position_projections is runtime.position_projection_service
     assert runtime.service.provider is runtime.adapter
     assert runtime.handler._recorder is runtime.service
-    assert runtime.debug_run_service._sessions is runtime.service._sessions
-    assert runtime.debug_run_service._transport is runtime.service
-    assert runtime.service._debug_run_guard is runtime.debug_run_service._repository
+    assert not hasattr(runtime, "debug_run_service")
+    assert runtime.service._dispatch_gate is None
+    assert runtime.service._progress_hook is None
     assert not hasattr(runtime.service, "_outcome_publisher")
 
     await runtime.aclose()
@@ -81,6 +81,9 @@ def test_runtime_builder_has_no_preconstructed_client_injection_seam() -> None:
         "wms_base_url",
         "transport_submit_path",
         "session_factory",
+        "dispatch_gate",
+        "progress_hook",
+        "progress_wakeup",
     )
 
 

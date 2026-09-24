@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,10 +20,6 @@ def _run_guardrail_fixture(tmp_path: Path, operation_line: str) -> subprocess.Co
     scripts_dir.mkdir()
     fixture_guardrail = scripts_dir / "architecture-guardrails.sh"
     fixture_guardrail.write_text(GUARDRAIL.read_text())
-    shutil.copy(
-        REPO_ROOT / "scripts" / "workline_inbox_retirement_guardrail.py",
-        scripts_dir / "workline_inbox_retirement_guardrail.py",
-    )
     allowlist = scripts_dir / "architecture-guardrails.allowlist"
     allowlist.write_text("")
     operation = tmp_path / "src/app/workline/v1/operation.py"

@@ -43,6 +43,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         # 先清空前一轮 lifecycle 可能遗留的策略；初始化失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.transport_debug_run_service = None
+        _app.state.transport_debug_reset_service = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
@@ -62,14 +64,33 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         if db_module.AsyncSessionLocal is None:
             raise RuntimeError("Database session factory is unavailable after initialization")
 
+        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
         from src.app.transport.composition import build_transport_runtime
+        from src.app.transport_debug.repository import TransportDebugRunRepository
 
         transport_runtime = await build_transport_runtime(
             wms_base_url=settings.WMS_BASE_URL,
             transport_submit_path=settings.TRANSPORT_SUBMIT_PATH,
             session_factory=db_module.AsyncSessionLocal,
+            dispatch_gate=TransportDebugRunRepository(),
+            progress_hook=RackInboundWindowService().on_transport_progress,
+            progress_wakeup=task_queue_gateway.enqueue_picking_task_plans,
         )
         _app.state.transport_runtime = transport_runtime
+        from src.app.transport_debug.composition import (
+            build_transport_debug_reset_service,
+            build_transport_debug_run_service,
+        )
+
+        transport_debug_run_service = build_transport_debug_run_service(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+        )
+        _app.state.transport_debug_run_service = transport_debug_run_service
+        _app.state.transport_debug_reset_service = build_transport_debug_reset_service(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+        )
 
         from src.app.device.composition import (
             build_device_command_runtime,
@@ -81,7 +102,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             session_factory=db_module.AsyncSessionLocal,
             timeout_seconds=device_config.timeout_seconds,
             task_queue_gateway=task_queue_gateway,
-            event_debug_mode_policy=transport_runtime.debug_run_service,
+            event_debug_mode_policy=transport_debug_run_service,
         )
         _app.state.device_command_runtime = device_command_runtime
         _app.state.device_evidence_service = device_command_runtime.evidence_service
@@ -124,11 +145,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_manual_rack_direct_pick_handler = outbound_picking_runtime.manual_rack_direct_pick_handler
         await init_redis()
 
-        # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
-        from src.core.health import system_health
-
-        system_health.update(db_ok=True, redis_ok=True, celery_ok=True)
-
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except BaseException as exc:
@@ -143,6 +159,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.transport_debug_run_service = None
+        _app.state.transport_debug_reset_service = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.deployment_runtime = None
@@ -233,9 +251,9 @@ def register_routers(app: FastAPI) -> None:
     from src.app.callback import router_v1 as callback_router
     from src.app.device import router_v1 as device_router
     from src.app.material import router_v1 as material_router
-    from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
     from src.app.transport.v1 import router as transport_router
+    from src.app.transport_debug.v1 import router as transport_debug_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.wms_diagnostics.v1 import router as wms_diagnostics_router
     from src.app.workline import router_v1 as workline_router
@@ -245,13 +263,13 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(sys_router, prefix=settings.API_PATH)
     app.include_router(workline_router, prefix=settings.API_PATH)
     app.include_router(device_router, prefix=settings.API_PATH)
-    app.include_router(resource_router, prefix=settings.API_PATH)
     app.include_router(material_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
     app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
+    app.include_router(transport_debug_router, prefix=f"{settings.API_PATH}/v1/transport")
 
 
 def register_exception(app: FastAPI) -> None:
@@ -263,7 +281,9 @@ def register_exception(app: FastAPI) -> None:
 
 def register_health_route(app: FastAPI) -> None:
     """注册公共健康检查路由。"""
-    from src.core.health import system_health
+    from src.database.dependencies import AsyncSessionDep
+    from src.utils.health import check_database_health
+    from src.utils.timezone import timezone
 
     def _basic_health_payload() -> dict[str, str]:
         return {
@@ -283,38 +303,17 @@ def register_health_route(app: FastAPI) -> None:
         return JSONResponse(status_code=200, content=_basic_health_payload())
 
     @app.get("/ready", include_in_schema=False)
-    async def readiness_check() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """
-        就绪检查（基于进程内健康缓存）。
-
-        由 Celery health_check 任务异步更新缓存，适合运维观察和详细排障。
-        """
-        is_stale = system_health.is_stale
-        is_ready = system_health.is_ready
-
-        if is_stale:
-            status = "stale"
-            status_code = 200
-        elif is_ready:
-            status = "healthy"
-            status_code = 200
-        else:
-            status = "unhealthy"
-            status_code = 503
-
+    async def readiness_check(db: AsyncSessionDep) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """本 API 实例直接验证数据库；结果仅对本次响应有效。"""
+        is_ready = (await check_database_health(db))["status"] == "healthy"
         return JSONResponse(
-            status_code=status_code,
+            status_code=200 if is_ready else 503,
             content={
-                "status": status,
-                "ready": is_ready,
-                "stale": is_stale,
-                "components": {
-                    "database": system_health.db_ok,
-                    "redis": system_health.redis_ok,
-                    "celery": system_health.celery_ok,
-                },
-                "version": settings.VERSION,
+                "status": "ready" if is_ready else "not_ready",
+                "observed_at": timezone.now_utc().isoformat(),
+                "valid_for_seconds": 0,
             },
+            headers={"Cache-Control": "no-store"},
         )
 
 

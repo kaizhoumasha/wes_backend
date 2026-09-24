@@ -632,10 +632,9 @@ curl --fail --output /dev/null "http://127.0.0.1:${NGINX_HTTP_PORT}/health"
 curl --fail --output /dev/null "http://127.0.0.1:${NGINX_HTTP_PORT}/"
 ```
 
-四条请求全部成功才通过。`/health` 只证明进程存活，首页成功只证明前端入口可访问。当前后端版本的 `/ready` 是进程内缓存快照：
-HTTP `200`、`ready=true` 且三个 `components` 均为 `true` 时可以放行；`stale=true` 表示快照已过期，必须记录，不能描述成实时依赖
-探测通过。数据库、Redis 和 Celery 的实时技术状态以容器健康检查及本手册对应的直接检查为准。上述结果都不等于 ECS 或 WMS
-业务验收。
+四条请求全部成功才通过。`/health` 只证明进程存活，首页成功只证明前端入口可访问。`/ready` 每次由当前 API 实例查询其必需的数据库连接；
+只有查询成功才返回 HTTP `200` 和 `status=ready`，否则返回 `503` 和 `status=not_ready`。响应的 `observed_at` 是本次观察时间，
+`valid_for_seconds=0` 表示不能复用作后续健康事实。Redis、Celery、Beat 等组件须分别检查；上述结果都不等于 ECS 或 WMS 业务验收。
 
 ### 16.2 最终容器和镜像检查
 

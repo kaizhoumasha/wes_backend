@@ -9,8 +9,8 @@ from wes_plugin_sdk import BinReturnCandidate, wms_operations
 
 from src.app.execution.models import InboundEvidence, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import WmsConfirmationService
-from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
-from src.app.transport.models import TransportDebugRun
+from src.app.transport_debug.debug_run_service import TransportDebugReturnBatchOwner
+from src.app.transport_debug.models import TransportDebugRun
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 from src.app.wms_adapter.factory import build_wms_client
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request

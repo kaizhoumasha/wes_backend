@@ -1,7 +1,7 @@
 ---
 status: stable architecture guardrails
 created_at: 2026-06-25
-related: docs/architecture/legacy-cleanup-matrix.csv, scripts/generate_legacy_matrix.py
+related: scripts/architecture-guardrails.allowlist
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 note: |
   将当前架构不变量映射到脚本、测试和 review checklist。
@@ -56,7 +56,7 @@ bash scripts/architecture-guardrails.sh --mode expiry-check
 ## 5. Allowlist Contract
 
 ```text
-rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
+rule_id|path|reason|expires_at
 ```
 
 | 字段 | 要求 |
@@ -65,13 +65,9 @@ rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
 | `path` | 违规文件路径；`CAPABILITY_IMPLEMENTATION_IMPORT` / `INBOUND_NORMALIZER_OWNERSHIP` 必须逐文件枚举 |
 | `reason` | 豁免原因 |
 | `expires_at` | 过期日期 `YYYY-MM-DD` |
-| `legacy_entry_id` | 精确关联 `legacy-cleanup-matrix.csv` 第一列 entry_id |
-| `drop_phase` | 必须与 matrix 对应 entry 的审计字段一致 |
 
 脚本内置校验：
 
-- `legacy_entry_id` 必须精确匹配 matrix。
-- `drop_phase` 必须与 matrix 对应 entry 一致。
 - `expires_at` 必须存在且可解析。
 - capability implementation import 与 inbound normalizer ownership 不允许目录前缀 allowlist。
 

@@ -2,12 +2,44 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 
-from scripts.check_business_legacy_absence_gate import material_flow_contract_layer_violations
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CONTRACTS = Path("src/app/runtime/capabilities/material_flow/contracts")
+PACKAGE = "src.app.runtime.capabilities.material_flow.contracts"
+FORBIDDEN = (
+    "sqlalchemy",
+    "src.database",
+    "src.app.runtime.orchestration.repositories",
+    "src.app.runtime.orchestration.services",
+    "src.app.workline.repositories",
+    "src.app.workline.services",
+)
+
+
+def material_flow_contract_layer_violations(repo_root: Path) -> tuple[str, ...]:
+    violations = []
+    for path in sorted((repo_root / CONTRACTS).rglob("*.py")):
+        module = ".".join(path.relative_to(repo_root).with_suffix("").parts)
+        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imports = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                parts = package.split(".")[: -(node.level - 1)] if node.level > 1 else package.split(".")
+                imports = [".".join((*parts, node.module or ""))] if node.level else [node.module or ""]
+            else:
+                continue
+            for imported in imports:
+                if imported == PACKAGE or imported.startswith(f"{PACKAGE}."):
+                    continue
+                if imported.startswith("src.app.runtime.capabilities.material_flow.") or any(
+                    imported == prefix or imported.startswith(f"{prefix}.") for prefix in FORBIDDEN
+                ):
+                    violations.append(f"{path.relative_to(repo_root)}:{imported}")
+    return tuple(violations)
 
 
 def test_material_flow_business_contract_package_imports_without_service_side_effects() -> None:

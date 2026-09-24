@@ -134,6 +134,7 @@ API → Service → Repository → Database
   越过未闭合栈顶；`UNKNOWN`、`RECONCILING`、ESTOP、retry 或人工处理不会自动成为越序条件。WMS 决定业务准入与优先级，
   WES 冻结并执行可靠顺序，ECS/PLC 提供实际运动与位置事实；计划与现场冲突时以物理事实冻结对账。
 - `TransportTask` 与 `DeviceCommand` 是并行概念，不能用一个替代另一个。
+- 遵守 SRS 第 0 章的“Closed history is not a runtime dependency”：已闭合历史不得支撑新业务或当前恢复；无记录不是 `EMPTY`，当前投影不得成为资源主账。设计和 Review 必须检查清空可清理已闭合历史后能否继续运行。
 - 本项目尚未发布；除用户明确要求外，不新增 v2、别名、shim、双路径、兼容 wrapper、迁移式兼容或 no-op consumer。目标合同直接替换旧合同。
 - 新增 WMS operation 按同一 `<domain_key>` 分别放入 `wms_adapter/<domain_key>/`（wire/OpenAPI/Adapter/Handler）和确有持久化需求时的
   `wms_integration/<domain_key>/`（model/Repository/Service/Composition），测试镜像相同域目录。Event route 保持唯一静态

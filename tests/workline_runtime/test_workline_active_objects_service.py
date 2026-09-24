@@ -149,6 +149,21 @@ async def test_workline_active_objects_promotes_location_reconciling_to_object_s
 
 
 @pytest.mark.asyncio
+async def test_unknown_position_without_location_is_not_reported_as_empty_or_ok() -> None:
+    service = WorklineActiveObjectsService(
+        target_repository=_TargetRows(
+            [ActiveObjectFact("RACK-UNKNOWN", "POSITION_PROJECTION", "UNKNOWN", "position:1", object_type="RACK")],
+            location_conflict=True,
+        ),
+    )
+
+    response = await service.get_active_objects(None, workline_id=1)
+
+    assert response.objects[0].conflict_state == WorklineActiveObjectConflictState.RECONCILING
+    assert response.objects[0].location_summary is None
+
+
+@pytest.mark.asyncio
 async def test_workline_active_objects_exposes_device_command_codes_for_resource_association() -> None:
     """DEVICE_COMMAND 来源的真实设备编码只供内部关联，不改变 v1 公开响应。"""
 

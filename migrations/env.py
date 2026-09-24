@@ -41,22 +41,6 @@ from src.app.execution.models import (  # noqa: F401
     TransportDecisionBinding,
     WmsConfirmation,
 )
-from src.app.resource.models import (  # noqa: F401
-    Bin,
-    BinCellOccupancy,
-    BinContentSnapshot,
-    BinContentSnapshotItem,
-    BinMaterialMount,
-    BinPlacement,
-    BinSlotTemplate,
-    BinType,
-    Rack,
-    RackBinMount,
-    RackPlacement,
-    RackSlotTemplate,
-    RackType,
-    ResourceStateEvent,
-)
 from src.app.runtime.orchestration.models.session import WorklineSession  # noqa: F401
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline  # noqa: F401
 
@@ -71,6 +55,7 @@ from src.app.transport.models import (  # noqa: F401
     TransportMember,
     TransportTask,
 )
+from src.app.transport_debug.models import TransportDebugRun, TransportDebugRunStep  # noqa: F401
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.app.workline.models import (  # noqa: F401
     WorkLine,

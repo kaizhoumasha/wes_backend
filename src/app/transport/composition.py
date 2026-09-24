@@ -14,11 +14,14 @@ from src.core.logger import logger
 from src.core.task_queue_gateway import task_queue_gateway
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.execution.services.position_projection_service import PositionProjectionService
     from src.app.transport.contracts import TransportPort
-    from src.app.transport.debug_run_service import TransportDebugRunService
+    from src.app.transport.models import TransportTask
+    from src.app.transport.service import TransportDispatchGatePort
     from src.app.wms_adapter.client import WmsClient
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler
@@ -34,7 +37,6 @@ class TransportRuntime:
         repository: TransportRepository,
         adapter: WmsTransportAdapter,
         service: TransportService,
-        debug_run_service: TransportDebugRunService,
         handler: TransportEventHandler,
         position_projection_service: PositionProjectionService,
     ) -> None:
@@ -42,7 +44,6 @@ class TransportRuntime:
         self.repository = repository
         self.adapter = adapter
         self.service = service
-        self.debug_run_service = debug_run_service
         self.port: TransportPort = service
         self.handler = handler
         self.position_projection_service = position_projection_service
@@ -78,6 +79,9 @@ async def build_transport_runtime(
     wms_base_url: str,
     transport_submit_path: str,
     session_factory: async_sessionmaker[AsyncSession],
+    dispatch_gate: TransportDispatchGatePort | None = None,
+    progress_hook: Callable[[AsyncSession, TransportTask], Awaitable[bool]] | None = None,
+    progress_wakeup: Callable[[], None] | None = None,
 ) -> TransportRuntime:
     """构造一个进程/事件循环唯一的 Transport 运行时。"""
 
@@ -93,12 +97,8 @@ async def build_transport_runtime(
     try:
         from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
         from src.app.execution.services.position_projection_service import PositionProjectionService
-        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 
         repository = TransportRepository()
-        from src.app.transport.debug_run_repository import TransportDebugRunRepository
-
-        debug_run_repository = TransportDebugRunRepository()
         position_projection_service = PositionProjectionService(repository=PositionProjectionRepository())
         adapter = WmsTransportAdapter(
             client,
@@ -111,17 +111,9 @@ async def build_transport_runtime(
             result_timeout=timedelta(seconds=settings.TRANSPORT_RESULT_TIMEOUT_SECONDS),
             task_queue_gateway=task_queue_gateway,
             position_projections=position_projection_service,
-            debug_run_guard=debug_run_repository,
-            rack_inbound_window=RackInboundWindowService(),
-            window_refill_wakeup=task_queue_gateway.enqueue_picking_task_plans,
-        )
-        from src.app.transport.debug_run_service import TransportDebugRunService
-
-        debug_run_service = TransportDebugRunService(
-            session_factory,
-            debug_run_repository,
-            service,
-            task_queue_gateway=task_queue_gateway,
+            dispatch_gate=dispatch_gate,
+            progress_hook=progress_hook,
+            progress_wakeup=progress_wakeup,
         )
         handler = TransportEventHandler(service)
         return TransportRuntime(
@@ -129,7 +121,6 @@ async def build_transport_runtime(
             repository=repository,
             adapter=adapter,
             service=service,
-            debug_run_service=debug_run_service,
             handler=handler,
             position_projection_service=position_projection_service,
         )

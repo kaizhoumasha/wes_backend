@@ -9,7 +9,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
 
-from src.app.resource.models import RackKind
+from src.app.workline.models.rack_kind import RackKind
 from src.app.workline.rack_position_role import WorklineRackPositionRole
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory

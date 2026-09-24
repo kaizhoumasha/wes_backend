@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 
+from src.app.execution.services.rack_inbound_window import RackInboundWindowService
+from src.app.transport_debug.repository import TransportDebugRunRepository
 from src.app.wms_adapter import WmsInboundAuthPolicy
+from src.core.task_queue_gateway import task_queue_gateway
 
 
 @pytest.fixture(autouse=True)
@@ -74,8 +77,13 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_fixed_wms_policy() 
     ):
         assert getattr(app.state, handler_name) is None
     transport_runtime.aclose.assert_awaited_once()
-    build_transport_runtime.assert_awaited_once_with(
-        wms_base_url=register.settings.WMS_BASE_URL,
-        transport_submit_path=register.settings.TRANSPORT_SUBMIT_PATH,
-        session_factory=session_factory,
-    )
+    build_transport_runtime.assert_awaited_once()
+    kwargs = dict(build_transport_runtime.await_args.kwargs)
+    assert isinstance(kwargs.pop("dispatch_gate"), TransportDebugRunRepository)
+    assert isinstance(kwargs.pop("progress_hook").__self__, RackInboundWindowService)
+    assert kwargs.pop("progress_wakeup").__self__ is task_queue_gateway
+    assert kwargs == {
+        "wms_base_url": register.settings.WMS_BASE_URL,
+        "transport_submit_path": register.settings.TRANSPORT_SUBMIT_PATH,
+        "session_factory": session_factory,
+    }

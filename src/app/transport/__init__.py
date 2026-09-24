@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         TransportPort,
         ZonePosition,
     )
-    from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 
 __all__ = [
     "BinExchangePair",
@@ -42,7 +41,6 @@ __all__ = [
     "RcsTemplateId",
     "RotateRackRequest",
     "TransportCaller",
-    "TransportDebugReturnBatchOwner",
     "TransportHandle",
     "TransportOutcome",
     "TransportPort",
@@ -54,16 +52,13 @@ __all__ = [
 _CONTRACT_EXPORTS = frozenset(__all__) - {
     "TransportRuntime",
     "build_transport_runtime",
-    "TransportDebugReturnBatchOwner",
 }
 
 
 def __getattr__(name: str) -> Any:
     """按需装载合同或运行时，避免纯 wire import 提前连接数据库配置。"""
 
-    if name == "TransportDebugReturnBatchOwner":
-        module_name = "src.app.transport.debug_run_service"
-    elif name in _CONTRACT_EXPORTS:
+    if name in _CONTRACT_EXPORTS:
         module_name = "src.app.transport.contracts"
     elif name in {"TransportRuntime", "build_transport_runtime"}:
         module_name = "src.app.transport.composition"

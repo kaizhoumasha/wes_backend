@@ -53,6 +53,19 @@ class Bindings:
         return self.binding
 
 
+@pytest.mark.asyncio
+async def test_projection_owner_locks_workline_authority_and_rejects_missing_line() -> None:
+    repository = Repository()
+    service = PositionProjectionService(repository=repository)
+
+    await service.lock_workline_authority(object(), 7)
+    assert repository.calls == ["workline"]
+
+    repository.line = None
+    with pytest.raises(PositionProjectionInvariantViolation, match="WorkLine is missing"):
+        await service.lock_workline_authority(object(), 7)
+
+
 async def apply(
     repo,
     *,

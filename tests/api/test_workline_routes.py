@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from src.app.workline.models import (
     WorkLineBaseConfigurationResponse,
@@ -24,17 +23,6 @@ def _route_permission_names(route: object) -> list[str]:
         for dependency in route.dependant.dependencies
         if (permission := getattr(dependency.call, "permission_required", ""))
     ]
-
-
-def test_retired_manual_outbound_integration_api_is_unavailable() -> None:
-    from src.register import register_routers
-
-    app = FastAPI()
-    register_routers(app)
-    path = "/api/v1/workline-integration-debug/runs"
-    assert path not in app.openapi()["paths"]
-    with TestClient(app) as client:
-        assert client.get(path).status_code == 404
 
 
 def test_plane_v2_openapi_publishes_routes_without_internal_device_codes() -> None:

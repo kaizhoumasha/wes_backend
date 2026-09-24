@@ -56,8 +56,6 @@ def test_health_check_reconnects_redis_inside_runtime_owner_loop(monkeypatch: py
     )
     monkeypatch.setattr(task_module, "is_redis_available", lambda: redis_available)
     monkeypatch.setattr(task_module, "get_redis", lambda: redis_client if redis_available else None)
-    monkeypatch.setattr(task_module, "_update_health_cache", MagicMock())
-
     result = task_module.health_check.run()
 
     assert result["status"] == "healthy"

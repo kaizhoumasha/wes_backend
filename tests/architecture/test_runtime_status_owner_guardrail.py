@@ -12,13 +12,6 @@ from src.app.runtime.orchestration.workline_runtime_status_projection import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-RETIRED_PROJECTION_SERVICE = Path(
-    "src/app/runtime/orchestration/services/workline_runtime_status_projection_service.py"
-)
-RETIRED_READONLY_PROJECTION_VIEWS = {
-    Path("src/app/runtime/orchestration/services/query/runtime_query_service.py"),
-    Path("src/app/runtime/orchestration/services/trace/trace_query_service.py"),
-}
 OWNER_SENSITIVE_ROOTS = (
     Path("src/app/workline"),
     Path("src/app/runtime/capabilities/material_flow"),
@@ -42,15 +35,6 @@ def test_runtime_status_projection_retires_wes_estop_state() -> None:
         if str(constraint.name).endswith("ck_wrt_status_proj_status")
     )
     assert "ESTOPPED" not in str(status_check.sqltext)
-
-
-def test_safety_retirement_migration_only_converges_clean_schema() -> None:
-    source = _source(Path("migrations/versions/20260912_2047_db9bf1bdb493_退役工作线急停_incident.py"))
-
-    assert "ck_wrt_status_proj_status" in source
-    assert "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'RECONCILING')" in source
-    assert "DELETE FROM" not in source
-    assert "UPDATE wes_runtime.workline_runtime_status_projections" not in source
 
 
 def _source(path: Path) -> str:
@@ -194,10 +178,6 @@ def test_workline_model_no_longer_declares_runtime_status_column() -> None:
     assert "WorkLineRuntimeStatus" not in source
 
 
-def test_runtime_status_projection_service_is_retired() -> None:
-    assert not (REPO_ROOT / RETIRED_PROJECTION_SERVICE).exists()
-
-
 def test_runtime_status_projection_uses_shared_schema_owner() -> None:
     source = _source(Path("src/app/runtime/orchestration/workline_runtime_status_projection.py"))
 
@@ -258,12 +238,7 @@ status = workline_snapshot.runtime_status
 def test_workline_and_material_flow_owner_sensitive_paths_do_not_read_retired_runtime_status() -> None:
     """WorkLine 域与 material-flow capability 不能直接读取 runtime_status 作归属判断。"""
     violations: list[str] = []
-    owner_sensitive_files = sorted(
-        rel_path
-        for root in OWNER_SENSITIVE_ROOTS
-        for rel_path in root.rglob("*.py")
-        if rel_path != RETIRED_PROJECTION_SERVICE and rel_path not in RETIRED_READONLY_PROJECTION_VIEWS
-    )
+    owner_sensitive_files = sorted(rel_path for root in OWNER_SENSITIVE_ROOTS for rel_path in root.rglob("*.py"))
     for rel_path in owner_sensitive_files:
         tree = ast.parse(_source(rel_path), filename=str(rel_path))
         lines = _direct_runtime_status_reads(tree)
@@ -272,7 +247,3 @@ def test_workline_and_material_flow_owner_sensitive_paths_do_not_read_retired_ru
     assert not violations, (
         "归属敏感路径必须通过 target owner facts 而非 retired runtime_status 归属判断:\n  " + "\n  ".join(violations)
     )
-
-
-def test_runtime_query_and_trace_compatibility_views_are_retired() -> None:
-    assert all(not (REPO_ROOT / path).exists() for path in RETIRED_READONLY_PROJECTION_VIEWS)

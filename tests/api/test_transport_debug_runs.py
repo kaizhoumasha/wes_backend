@@ -11,13 +11,13 @@ from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
 from src.app.sys.services.event_stream_service import TRANSPORT_DEBUG_RUN_STREAM_CHANNEL
-from src.app.transport.debug_run_contracts import (
+from src.app.transport_debug.debug_run_contracts import (
     TransportDebugBinSelection,
     TransportDebugFaceGroup,
     TransportDebugRunPhase,
     TransportDebugRunStatus,
 )
-from src.app.transport.debug_run_service import (
+from src.app.transport_debug.debug_run_service import (
     TransportDebugRunConflict,
     TransportDebugRunContractError,
     TransportDebugRunPage,
@@ -76,7 +76,8 @@ def _app(service: SimpleNamespace | None) -> FastAPI:
     app = FastAPI()
     register_exception(app)
     register_routers(app)
-    app.state.transport_runtime = None if service is None else SimpleNamespace(closed=False, debug_run_service=service)
+    app.state.transport_runtime = None if service is None else SimpleNamespace(closed=False)
+    app.state.transport_debug_run_service = service
     for route in app.routes:
         if not isinstance(route, APIRoute) or not route.path.startswith("/api/v1/transport/debug-runs"):
             continue

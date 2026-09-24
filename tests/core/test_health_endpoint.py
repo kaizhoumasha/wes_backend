@@ -1,38 +1,19 @@
-import time
-from collections.abc import Generator
-from typing import Any
+from datetime import datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.core.conf import settings
-from src.core.health import system_health
+from src.database.db import get_db
 from src.register import register_health_route
-
-
-@pytest.fixture(autouse=True)
-def restore_system_health() -> Generator[Any, Any, Any]:
-    previous = {
-        "db_ok": system_health.db_ok,
-        "redis_ok": system_health.redis_ok,
-        "celery_ok": system_health.celery_ok,
-        "last_check": system_health.last_check,
-        "ttl": system_health.ttl,
-    }
-    try:
-        yield
-    finally:
-        system_health.db_ok = previous["db_ok"]
-        system_health.redis_ok = previous["redis_ok"]
-        system_health.celery_ok = previous["celery_ok"]
-        system_health.last_check = previous["last_check"]
-        system_health.ttl = previous["ttl"]
 
 
 def _build_client() -> TestClient:
     app = FastAPI()
     register_health_route(app)
+    app.dependency_overrides[get_db] = lambda: object()
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -47,67 +28,30 @@ def test_health_endpoint_returns_basic_liveness_payload() -> None:
     }
 
 
-def test_ready_endpoint_returns_healthy_when_ready_and_fresh() -> None:
-    system_health.db_ok = True
-    system_health.redis_ok = True
-    system_health.celery_ok = True
-    system_health.last_check = time.time()
+def test_ready_checks_this_api_instance_on_every_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = AsyncMock(side_effect=[{"status": "healthy"}, {"status": "unhealthy"}])
+    monkeypatch.setattr("src.utils.health.check_database_health", probe)
+    client = _build_client()
 
-    response = _build_client().get("/ready")
+    first = client.get("/ready")
+    second = client.get("/ready")
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "healthy",
-        "ready": True,
-        "stale": False,
-        "components": {
-            "database": True,
-            "redis": True,
-            "celery": True,
-        },
-        "version": settings.VERSION,
-    }
+    assert first.status_code == 200
+    assert second.status_code == 503
+    assert first.json()["status"] == "ready"
+    assert second.json()["status"] == "not_ready"
+    for response in (first, second):
+        assert set(response.json()) == {"status", "observed_at", "valid_for_seconds"}
+        assert datetime.fromisoformat(response.json()["observed_at"]).tzinfo is not None
+        assert response.json()["valid_for_seconds"] == 0
+        assert response.headers["cache-control"] == "no-store"
+    assert probe.await_count == 2
 
 
-def test_ready_endpoint_returns_503_when_unhealthy_and_fresh() -> None:
-    system_health.db_ok = False
-    system_health.redis_ok = True
-    system_health.celery_ok = False
-    system_health.last_check = time.time()
+def test_ready_treats_unknown_database_fact_as_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.utils.health.check_database_health", AsyncMock(return_value={"status": "unknown"}))
 
     response = _build_client().get("/ready")
 
     assert response.status_code == 503
-    assert response.json() == {
-        "status": "unhealthy",
-        "ready": False,
-        "stale": False,
-        "components": {
-            "database": False,
-            "redis": True,
-            "celery": False,
-        },
-        "version": settings.VERSION,
-    }
-
-
-def test_ready_endpoint_returns_200_when_status_cache_is_stale() -> None:
-    system_health.db_ok = False
-    system_health.redis_ok = False
-    system_health.celery_ok = False
-    system_health.last_check = time.time() - system_health.ttl - 1
-
-    response = _build_client().get("/ready")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "stale",
-        "ready": False,
-        "stale": True,
-        "components": {
-            "database": False,
-            "redis": False,
-            "celery": False,
-        },
-        "version": settings.VERSION,
-    }
+    assert response.json()["status"] == "not_ready"

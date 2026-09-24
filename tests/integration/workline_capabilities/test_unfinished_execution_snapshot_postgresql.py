@@ -19,8 +19,6 @@ from src.app.execution.models import (
     WmsConfirmation,
 )
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
-from src.app.resource.models import BinPlacement, RackPlacement, ResourceSourceSystem
-from src.app.resource.repositories import bin_placement_repository, rack_placement_repository
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
@@ -43,6 +41,7 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 line_code=f"UNFINISHED-{identity[:20]}",
                 line_name="Unfinished execution snapshot",
                 line_type=LineType.AUTO,
+                position_bindings={"RACK": {"location_id": "TARGET-RACK-POSITION"}},
             )
             db.add(line)
             await db.flush()
@@ -126,26 +125,7 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 request_payload={},
                 deadline_at=now + timedelta(minutes=1),
             )
-            bin_placement = BinPlacement(
-                bin_code=projection.object_id,
-                position_type="WORKLINE_POSITION",
-                position_code="TARGET-BIN-POSITION",
-                workline_id=line.id,
-                placement_status="ARRIVED",
-                source_system=ResourceSourceSystem.WES_RUNTIME,
-                source_event_id=f"TARGET-BIN-EVIDENCE-{identity}",
-                started_at=now,
-            )
-            rack_placement = RackPlacement(
-                rack_code=f"TARGET-RACK-{identity}",
-                workline_id=line.id,
-                position_code="TARGET-RACK-POSITION",
-                placement_status="ARRIVED",
-                source_system=ResourceSourceSystem.WES_RUNTIME,
-                source_event_id=f"TARGET-RACK-EVIDENCE-{identity}",
-                started_at=now,
-            )
-            db.add_all([command, transport, confirmation, bin_placement, rack_placement])
+            db.add_all([command, transport, confirmation])
             await db.flush()
 
             repository = WorkLineRepository()
@@ -158,9 +138,8 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 "inbound_evidences": 1,
                 "wms_confirmations": 1,
                 "picking_tasks": 0,
-                "position_projections": 1,
             }
-            assert summary["count"] == 6
+            assert summary["count"] == 5
             assert summary["sample"] == {
                 "type": "material_execution",
                 "id": str(material.id),
@@ -173,47 +152,16 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 "status": "PENDING",
                 "identity": transport.transport_task_id,
             }
-            second_bin_placement = BinPlacement(
-                placeholder_key=f"TARGET-BIN-PLACEHOLDER-{identity}",
-                position_type="WORKLINE_POSITION",
-                position_code="TARGET-BIN-POSITION-2",
+            rack_projection = PositionProjection(
+                object_type="RACK",
+                object_id=f"TARGET-RACK-{identity}",
                 workline_id=line.id,
-                placement_status="UNKNOWN",
-                source_system=ResourceSourceSystem.WES_RUNTIME,
-                source_event_id=f"TARGET-BIN-EVIDENCE-2-{identity}",
-                started_at=now,
+                position_json={"kind": "RACK_POSITION", "location_code": "TARGET-RACK-POSITION"},
+                position_unknown=False,
+                source_operation_id=str(uuid4()),
+                source_transport_task_id=f"RACK-MOVE-{identity}",
             )
-            second_rack_placement = RackPlacement(
-                rack_code=f"TARGET-RACK-2-{identity}",
-                workline_id=line.id,
-                position_code="TARGET-RACK-POSITION-2",
-                placement_status="UNKNOWN",
-                source_system=ResourceSourceSystem.WES_RUNTIME,
-                source_event_id=f"TARGET-RACK-EVIDENCE-2-{identity}",
-                started_at=now,
-            )
-            db.add_all([second_bin_placement, second_rack_placement])
-            await db.flush()
-            assert await bin_placement_repository.get_active_workline_summary(db, line.id) == {
-                "count": 2,
-                "sample": {
-                    "type": "bin_placement",
-                    "id": str(bin_placement.id),
-                    "status": "ARRIVED",
-                    "identity": bin_placement.bin_code,
-                },
-            }
-            assert await rack_placement_repository.get_active_workline_summary(db, line.id) == {
-                "count": 2,
-                "sample": {
-                    "type": "rack_placement",
-                    "id": str(rack_placement.id),
-                    "status": "ARRIVED",
-                    "identity": rack_placement.rack_code,
-                },
-            }
-            second_bin_placement.ended_at = now
-            second_rack_placement.ended_at = now
+            db.add(rack_projection)
             await db.flush()
             active_objects = await repository.list_target_active_object_facts(db, workline_id=line.id)
             assert {(row["object_type"], row["object_key"]) for row in active_objects} == {
@@ -221,22 +169,25 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
                 ("DEVICE_COMMAND", command.command_code),
                 ("TRANSPORT_TASK", transport.transport_task_id),
                 ("WMS_CONFIRMATION", confirmation.operation_id),
-                ("BIN_RESOURCE", bin_placement.bin_code),
-                ("RACK_RESOURCE", rack_placement.rack_code),
+                ("BIN", projection.object_id),
+                ("RACK", rack_projection.object_id),
             }
             assert {row["owner_kind"] for row in active_objects} == {
                 "MATERIAL_EXECUTION",
                 "DEVICE_COMMAND",
                 "TRANSPORT_TASK",
                 "WMS_CONFIRMATION",
-                "BIN_PLACEMENT",
-                "RACK_PLACEMENT",
+                "POSITION_PROJECTION",
             }
+            unknown_row = next(row for row in active_objects if row["object_key"] == projection.object_id)
+            assert unknown_row["location_conflict"] is True
+            assert unknown_row["location_code"] is None
 
             material.status = MaterialExecutionStatus.CLOSED
             material.closed_at = now
             projection.position_unknown = False
             projection.position_json = {"kind": "HANDOFF", "location_code": "OUTSIDE"}
+            rack_projection.position_json = {"kind": "RACK_POSITION", "location_code": "OUTSIDE"}
             command.status = CommandStatus.SUCCEEDED
             command.completed_at = now
             transport.status = TransportTaskStatus.SUCCEEDED
@@ -293,7 +244,7 @@ async def test_snapshot_reports_execution_owners_and_positions_and_excludes_term
             projection.position_unknown = True
             projection.position_json = None
             await db.flush()
-            await assert_only("position_projections")
+            assert (await repository.get_unfinished_workload_summary(db, line.id))["count"] == 0
             projection.position_unknown = False
             projection.position_json = {"kind": "HANDOFF", "location_code": "OUTSIDE"}
 

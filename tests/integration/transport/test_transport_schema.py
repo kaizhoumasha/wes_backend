@@ -381,7 +381,7 @@ async def test_face_migration_rejects_invalid_history_without_truncation(invalid
                     text("DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :task_id"),
                     {"task_id": task_id},
                 )
-            run_alembic("upgrade", "head", database_url=database_url)
+            run_alembic("upgrade", "3d040b37c049", database_url=database_url)
             run_alembic("downgrade", "864351b8d0c6", database_url=database_url)
             run_alembic("upgrade", "head", database_url=database_url)
             run_alembic("check", database_url=database_url)

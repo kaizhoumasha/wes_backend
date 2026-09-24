@@ -36,7 +36,6 @@ RULE_CAPABILITY_FORBIDDEN_DEPENDENCY="CAPABILITY_FORBIDDEN_DEPENDENCY"
 RULE_CAPABILITY_IMPLEMENTATION_IMPORT="CAPABILITY_IMPLEMENTATION_IMPORT"
 RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
 RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
-RULE_WORKLINE_INBOX_RETIREMENT="WORKLINE_INBOX_RETIREMENT"
 RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY="WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY"
 RULE_PLUGIN_SDK_DEPENDENCY_BOUNDARY="PLUGIN_SDK_DEPENDENCY_BOUNDARY"
 RULE_CORE_PLUGIN_DEPENDENCY_BOUNDARY="CORE_PLUGIN_DEPENDENCY_BOUNDARY"
@@ -52,7 +51,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT PLUGIN_SDK_DEPENDENCY_BOUNDARY CORE_PLUGIN_DEPENDENCY_BOUNDARY WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY RUNTIME_GENERATED_INDEX_STATICITY RUNTIME_EXTENSION_GENERIC_ORCHESTRATION LEGACY_CAPABILITY_ROUTING_IMPORT
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT PLUGIN_SDK_DEPENDENCY_BOUNDARY CORE_PLUGIN_DEPENDENCY_BOUNDARY WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY RUNTIME_GENERATED_INDEX_STATICITY RUNTIME_EXTENSION_GENERIC_ORCHESTRATION LEGACY_CAPABILITY_ROUTING_IMPORT
 EOF
 }
 
@@ -84,7 +83,7 @@ load_allowlist() {
     if [[ ! -f "$ALLOWLIST" ]]; then
         return
     fi
-    # 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
+    # 格式: rule_id|path|reason|expires_at
     ALLOWLIST_KEYS="$(awk -F'|' 'NF>=2 && $1 !~ /^#/ {print $1":"$2}' "$ALLOWLIST" 2>/dev/null || true)"
 }
 
@@ -137,25 +136,8 @@ run_python() {
         python "$@"
         return
     fi
-    echo "[ALLOWLIST] 未找到 Python 3 解释器，无法解析 legacy-cleanup-matrix.csv" >&2
+    echo "[GUARDRAIL] 未找到 Python 3 解释器" >&2
     return 127
-}
-
-matrix_drop_marker_for_entry() {
-    local legacy_entry_id="$1"
-    [[ -z "$legacy_entry_id" || ! -f docs/architecture/legacy-cleanup-matrix.csv ]] && return 1
-    run_python - "$legacy_entry_id" <<'PY'
-import csv
-import sys
-
-legacy_entry_id = sys.argv[1]
-with open("docs/architecture/legacy-cleanup-matrix.csv", newline="", encoding="utf-8") as f:
-    for row in csv.DictReader(f):
-        if row["entry_id"] == legacy_entry_id:
-            print(row["drop_phase"])
-            sys.exit(0)
-sys.exit(1)
-PY
 }
 
 is_valid_date() {
@@ -259,27 +241,6 @@ rule_legacy_runtime_import() {
             "production code import src.workline_runtime (legacy runtime import boundary 违规)" \
             "src/workline_runtime/ 整目录已删,不可直接 import; 改用 src.app.runtime.orchestration 或 src.app.workline 域内 mirror"
     done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
-}
-
-# --- WORKLINE_INBOX_RETIREMENT: active Python/Shell/current Markdown 旧入口零引用 ---
-rule_workline_inbox_retirement() {
-    local scanner_output="" scanner_status=0
-    set +e
-    scanner_output="$(run_python scripts/workline_inbox_retirement_guardrail.py --format tsv)"
-    scanner_status=$?
-    set -e
-    if [[ $scanner_status -ne 0 && -z "$scanner_output" ]]; then
-        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "scripts/workline_inbox_retirement_guardrail.py" "1" \
-            "旧入口 scanner 执行失败，拒绝 fail open" \
-            "修复 scanner 后重新运行 architecture guardrail"
-        return
-    fi
-    while IFS=$'\t' read -r file line reason; do
-        [[ -z "$file" ]] && continue
-        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "$file" "$line" \
-            "$reason" \
-            "改用 RuntimeInbox 当前入口；历史证据只能加入精确文件/签名 allowlist"
-    done <<<"$scanner_output"
 }
 
 # --- 独立 SDK、核心与具体插件依赖方向 ---
@@ -1375,12 +1336,12 @@ validate_allowlist() {
         [[ "$row" =~ ^# ]] && continue
         [[ -z "$row" ]] && continue
         field_count="$(awk -F'|' '{print NF}' <<<"$row")"
-        if [[ "$field_count" -ne 6 ]]; then
-            echo "[ALLOWLIST] 行 $lineno: 必须严格为 6 列, 实际 $field_count 列" >&2
+        if [[ "$field_count" -ne 4 ]]; then
+            echo "[ALLOWLIST] 行 $lineno: 必须严格为 4 列, 实际 $field_count 列" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
             continue
         fi
-        IFS='|' read -r rule_id path reason expires_at legacy_entry_id drop_phase <<<"$row"
+        IFS='|' read -r rule_id path reason expires_at <<<"$row"
         if [[ -z "$rule_id" || -z "$path" ]]; then
             echo "[ALLOWLIST] 行 $lineno: 缺 rule_id 或 path" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
@@ -1388,14 +1349,6 @@ validate_allowlist() {
         fi
         if [[ -z "${reason//[[:space:]]/}" ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 reason" >&2
-            VIOLATIONS=$((VIOLATIONS + 1))
-        fi
-        if [[ -z "$legacy_entry_id" ]]; then
-            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 legacy_entry_id" >&2
-            VIOLATIONS=$((VIOLATIONS + 1))
-        fi
-        if [[ -z "$drop_phase" ]]; then
-            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
         if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule_id" == "$RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY" || "$rule_id" == "$RULE_SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY" || "$rule_id" == "$RULE_RUNTIME_GENERATED_INDEX_STATICITY" || "$rule_id" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule_id" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ) && "$path" != *.py ]]; then
@@ -1421,19 +1374,6 @@ validate_allowlist() {
                 WARNINGS=$((WARNINGS + 1))
             fi
         fi
-        # legacy_entry_id 必须能在 legacy-cleanup-matrix.csv 找到
-        # 例外: legacy runtime import 的 legacy_entry_id 是导入点自描述,
-        #       指向"反向 import src.workline_runtime 的文件"本身,不属于迁移对象矩阵。
-        if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv && "$rule_id" != "$RULE_LEGACY_RUNTIME_IMPORT" ]]; then
-            matrix_drop_phase="$(matrix_drop_marker_for_entry "$legacy_entry_id" || true)"
-            if [[ -z "$matrix_drop_phase" ]]; then
-                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id 精确匹配失败 '$legacy_entry_id'" >&2
-                VIOLATIONS=$((VIOLATIONS + 1))
-            elif [[ -n "$drop_phase" && "$drop_phase" != "$matrix_drop_phase" ]]; then
-                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): drop_phase 不一致 allowlist=$drop_phase matrix=$matrix_drop_phase" >&2
-                VIOLATIONS=$((VIOLATIONS + 1))
-            fi
-        fi
     done < "$ALLOWLIST"
 }
 
@@ -1447,7 +1387,6 @@ rule_authority_metadata_boundary
 rule_device_command_boundary
 rule_capability_forbidden_dependency
 rule_legacy_runtime_import
-rule_workline_inbox_retirement
 rule_capability_implementation_import
 rule_inbound_normalizer_ownership
 }

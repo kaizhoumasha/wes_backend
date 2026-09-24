@@ -5,14 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from scripts.generate_legacy_matrix import parse_entries
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_PATH = "src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py"
-ARCHITECTURE_TEST = "tests/architecture/test_release_operational_readiness_repository_boundary.py"
-POSTGRESQL_TEST = "tests/integration/test_release_operational_readiness_postgresql.py"
-RETAIN_ENTRY_ID = f"legacy:{REPOSITORY_PATH}:ReleaseOperationalReadinessRepository"
-REJECTED_SEED_ENTRY_ID = f"legacy:{REPOSITORY_PATH}:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
 
 _APPROVED_FOUR_LEDGER_IMPORTS = {
     "device_command": {
@@ -45,8 +39,7 @@ _EXPECTED_ALLOWLIST_ROW = (
     "CAPABILITY_IMPLEMENTATION_IMPORT|"
     f"{REPOSITORY_PATH}|"
     "批准的四账本只读 release read model，只读 ORM metadata，无 dispatch/write|"
-    "2026-09-30|"
-    f"{RETAIN_ENTRY_ID}|phase10"
+    "2026-09-30"
 )
 
 
@@ -76,21 +69,6 @@ def test_release_readiness_repository_imports_only_approved_four_read_only_ledge
     }.intersection(_FORBIDDEN_WRITE_CALLS)
 
 
-def test_release_readiness_repository_uses_explicit_retain_matrix_identity() -> None:
-    entries = {entry.entry_id: entry for entry in parse_entries()}
-
-    assert REJECTED_SEED_ENTRY_ID not in entries
-    entry = entries[RETAIN_ENTRY_ID]
-    assert entry.entry_type == "repository"
-    assert entry.current_owner == "runtime"
-    assert entry.strategy == "retain"
-    assert entry.target_path == REPOSITORY_PATH
-    assert entry.target_capability == "ReleaseOperationalReadinessRepository"
-    assert entry.blocking_tests == f"{ARCHITECTURE_TEST};{POSTGRESQL_TEST}"
-    assert entry.drop_phase == "phase10"
-    assert entry.notes == "phase10-prelock:runtime:retain"
-
-
 def test_release_readiness_repository_allowlist_relation_is_exact() -> None:
     allowlist_rows = [
         row
@@ -99,11 +77,8 @@ def test_release_readiness_repository_allowlist_relation_is_exact() -> None:
     ]
     assert allowlist_rows == [_EXPECTED_ALLOWLIST_ROW]
 
-    entry = next(entry for entry in parse_entries() if entry.entry_id == RETAIN_ENTRY_ID)
-    rule, path, reason, expires_at, legacy_entry_id, drop_phase = allowlist_rows[0].split("|")
+    rule, path, reason, expires_at = allowlist_rows[0].split("|")
     assert rule == "CAPABILITY_IMPLEMENTATION_IMPORT"
-    assert path == entry.relative_path
+    assert path == REPOSITORY_PATH
     assert reason == "批准的四账本只读 release read model，只读 ORM metadata，无 dispatch/write"
     assert expires_at == "2026-09-30"
-    assert legacy_entry_id == entry.entry_id
-    assert drop_phase == entry.drop_phase

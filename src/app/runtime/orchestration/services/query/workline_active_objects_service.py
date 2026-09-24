@@ -115,7 +115,7 @@ class WorklineActiveObjectsService:
             if (
                 location_summary is not None
                 and location_summary.conflict_state == WorklineActiveObjectConflictState.RECONCILING
-            ):
+            ) or any(bool(row.get("location_conflict")) for row in object_rows):
                 conflict_state = WorklineActiveObjectConflictState.RECONCILING
             view = WorklineActiveObjectView(
                 object_type=object_type,

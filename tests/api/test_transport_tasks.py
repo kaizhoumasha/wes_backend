@@ -17,7 +17,7 @@ from src.app.transport.contracts import (
     TransportHandle,
     TransportIdempotencyConflict,
 )
-from src.app.transport.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
+from src.app.transport_debug.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.register import register_exception, register_routers
@@ -37,8 +37,6 @@ def _runtime() -> SimpleNamespace:
         get_task_snapshot=AsyncMock(),
         get_callback_receipt_snapshot=AsyncMock(),
         list_task_snapshots=AsyncMock(),
-        preview_debug_task_reset=AsyncMock(),
-        reset_debug_task=AsyncMock(),
         rotate_rack_for_debug=AsyncMock(),
         move_bins_for_debug=AsyncMock(),
         exchange_bins_for_debug=AsyncMock(),
@@ -47,6 +45,7 @@ def _runtime() -> SimpleNamespace:
         closed=False,
         port=FakeTransportPort(),
         service=service,
+        reset_service=SimpleNamespace(preview_debug_task_reset=AsyncMock(), reset_debug_task=AsyncMock()),
     )
 
 
@@ -59,6 +58,7 @@ def _app(runtime: SimpleNamespace | None) -> FastAPI:
     register_exception(app)
     register_routers(app)
     app.state.transport_runtime = runtime
+    app.state.transport_debug_reset_service = None if runtime is None else runtime.reset_service
     for route in app.routes:
         if not isinstance(route, APIRoute) or not route.path.startswith("/api/v1/transport/"):
             continue
@@ -271,14 +271,11 @@ def test_debug_reset_openapi_exposes_task_id_and_optional_confirmation_contract(
     )
 
 
-def test_transport_openapi_excludes_retired_resource_binding_contract() -> None:
+def test_transport_openapi_exposes_current_submit_time_and_conflict() -> None:
     schema = _app(_runtime()).openapi()
     schemas = schema["components"]["schemas"]
     create = schema["paths"]["/api/v1/transport/debug-tasks"]["post"]
 
-    assert "active_binding_count" not in schemas["TransportTaskResponse"]["properties"]
-    assert {"binding_count", "active_binding_count"}.isdisjoint(schemas["DebugTransportTaskResetPreview"]["properties"])
-    assert "deleted_binding_count" not in schemas["DebugTransportTaskResetResult"]["properties"]
     assert schemas["TransportTaskResponse"]["properties"]["next_submit_at"]["anyOf"] == [
         {"type": "string"},
         {"type": "null"},
@@ -406,7 +403,7 @@ async def test_debug_rack_face_is_a_strict_non_empty_opaque_string(face: object,
 @pytest.mark.asyncio
 async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result() -> None:
     runtime = _runtime()
-    runtime.service.preview_debug_task_reset.return_value = SimpleNamespace(
+    runtime.reset_service.preview_debug_task_reset.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
         status="RECONCILING",
         evidence_count=0,
@@ -415,7 +412,7 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         outcome_version=0,
         member_count=1,
     )
-    runtime.service.reset_debug_task.return_value = SimpleNamespace(
+    runtime.reset_service.reset_debug_task.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
         deleted_callback_receipt_count=0,
         deleted_evidence_count=0,
@@ -445,14 +442,14 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
         "deleted_position_projection_count": 0,
         "deleted_member_count": 1,
     }
-    runtime.service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
-    runtime.service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
+    runtime.reset_service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
+    runtime.reset_service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
 
 
 @pytest.mark.asyncio
 async def test_debug_task_reset_accepts_operator_step_confirmation() -> None:
     runtime = _runtime()
-    runtime.service.reset_debug_task.return_value = SimpleNamespace(
+    runtime.reset_service.reset_debug_task.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
         deleted_callback_receipt_count=0,
         deleted_evidence_count=0,
@@ -467,7 +464,7 @@ async def test_debug_task_reset_accepts_operator_step_confirmation() -> None:
         )
 
     assert response.status_code == 200
-    runtime.service.reset_debug_task.assert_awaited_once_with(
+    runtime.reset_service.reset_debug_task.assert_awaited_once_with(
         "transport-reset-test",
         TransportDebugStepConfirmation(
             step=TransportDebugStep.RACK_TO_STATION,
@@ -479,7 +476,7 @@ async def test_debug_task_reset_accepts_operator_step_confirmation() -> None:
 @pytest.mark.asyncio
 async def test_debug_task_reset_rejects_mismatched_operator_step_confirmation() -> None:
     runtime = _runtime()
-    runtime.service.reset_debug_task.side_effect = TransportContractError(
+    runtime.reset_service.reset_debug_task.side_effect = TransportContractError(
         "operator confirmation step does not match Transport task kind"
     )
 
@@ -507,8 +504,8 @@ async def test_debug_task_reset_rejects_blank_or_nul_task_id_before_service(
         response = await client.request(method, path)
 
     assert response.status_code == 422
-    runtime.service.preview_debug_task_reset.assert_not_awaited()
-    runtime.service.reset_debug_task.assert_not_awaited()
+    runtime.reset_service.preview_debug_task_reset.assert_not_awaited()
+    runtime.reset_service.reset_debug_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -12,8 +12,8 @@ from src.app.runtime.orchestration.repositories.workline_position_repository imp
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.resource.models import RackKind
     from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
+    from src.app.workline.models.rack_kind import RackKind
 
 
 class WorkLinePositionService:

@@ -97,12 +97,15 @@ def _assert_target_beat_contract(
 
 
 def test_target_wms_composition_accepts_only_explicit_endpoint_inputs() -> None:
-    """Transport composition 直接消费最小 endpoint settings，不接收 compiled provider profile。"""
+    """Transport composition 消费最小 endpoint settings 和可选派发 Gate。"""
 
     assert tuple(signature(build_transport_runtime).parameters) == (
         "wms_base_url",
         "transport_submit_path",
         "session_factory",
+        "dispatch_gate",
+        "progress_hook",
+        "progress_wakeup",
     )
 
 

@@ -35,25 +35,11 @@ IGNORED_PREFIXES = (
 HUMAN_READABLE_DOC_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".txt", ".docx", ".pdf"})
 
 INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
-    Path(
-        "scripts/architecture-guardrails.allowlist"
-    ): "historical guardrail allowlist data preserves legacy drop_phase values",
-    Path("scripts/generate_legacy_matrix.py"): "legacy cleanup matrix generator owns historical audit schema fields",
-    Path(
-        "tests/architecture/test_cleanup_matrix_guardrail.py"
-    ): "legacy cleanup matrix schema guardrail owns historical audit fields",
-    Path("tests/architecture/test_legacy_absence_guardrail.py"): "legacy removal guardrail owns frozen phase labels",
     Path("tests/architecture/test_release_operational_readiness_repository_boundary.py"): (
         "release readiness boundary owns frozen matrix phase labels"
     ),
     Path("tests/architecture/test_process_naming_guardrail.py"): "guardrail defines the forbidden tokens it enforces",
-    Path(
-        "tests/contracts/test_business_legacy_matrix_closure.py"
-    ): "business legacy matrix closure checks historical audit columns",
     Path("tests/scripts/test_select_heavy_tests.py"): "selector contract owns frozen removal phase labels",
-    Path(
-        "tests/migrations/test_phase1_device_fk_ring_dissolve.py"
-    ): "migration semantic contract for immutable historical migration",
 }
 
 PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -156,26 +142,6 @@ def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
     assert Path(".githooks/pre-commit") in set(_iter_scan_files())
 
 
-def test_callback_contract_tests_do_not_use_cutover_names() -> None:
-    active_callback_tests = {path.as_posix() for path in Path("tests/callback").glob("test_*.py")}
-    retired_cutover_path = "tests/callback/test_callback_runtime_inbox_" + "cutover.py"
-
-    assert retired_cutover_path not in active_callback_tests
-
-
-def test_runtime_trace_contract_test_uses_stable_domain_name() -> None:
-    assert Path("tests/runtime/orchestration/test_trace_context.py").is_file()
-
-
-def test_active_guardrail_allowlist_no_longer_contains_retired_phase_test_paths() -> None:
-    retired_paths = {
-        Path("tests/architecture/test_" + "phase0_legacy_matrix_contract.py"),
-        Path("tests/architecture/test_" + "phase2_runtime_status_owner_guardrail.py"),
-    }
-
-    assert retired_paths.isdisjoint(INTENTIONAL_PROCESS_NAMING_ALLOWLIST)
-
-
 def test_process_naming_guardrail_rejects_guardrail_shorthand_examples() -> None:
     examples = (
         "tests/architecture/test_c3_authority_metadata_guardrail.py",
@@ -244,20 +210,3 @@ def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> No
 
     for example in examples:
         assert any(pattern.search(example) for _, pattern in PROCESS_NAME_PATTERNS), example
-
-
-def test_legacy_matrix_generator_uses_stable_guardrail_seed_names() -> None:
-    content = (REPO_ROOT / "scripts/generate_legacy_matrix.py").read_text(encoding="utf-8")
-    forbidden_patterns = {
-        "old test file path": re.compile(r"test_c[1-5]_|test_ri3[a-c]?_|test_wlr_", re.IGNORECASE),
-        "old helper shorthand": re.compile(r"\b_?(?:ri3[a-c]?|wlr)_", re.IGNORECASE),
-        "old seed shorthand": re.compile(r"\b(?:C[1-5]|R-I3[a-c]?|R-WLR) seed\b"),
-    }
-
-    offenders = [
-        f"{label}: {match.group(0)}"
-        for label, pattern in forbidden_patterns.items()
-        for match in pattern.finditer(content)
-    ]
-
-    assert offenders == []

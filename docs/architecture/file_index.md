@@ -36,6 +36,7 @@
 | `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；仓库实施已合并，仍承接部署及供应商/现场验收 |
 | `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
+| [资源模型所有权审计](resource-model-ownership-audit.md) | 14 张 `resource_*` 表的事实所有权、调用链与收敛结论；架构规则仍以 SRS 为准 |
 | [WES 职责收敛执行账本](wes-responsibility-convergence-ledger.md) | 19 项职责候选的权威 owner、处置分类、调用与测试所有权；CTU01 第一切片和四个实施 Wave |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
@@ -94,11 +95,13 @@ API → Service → Repository → Database
 | `src/app/execution/` | 通用执行对象、RACK/BIN 当前位置投影、可靠 WMS confirmation 生命周期与静态插件事实处理；不拥有具体 operation 的请求重建、顺序或结果语义 |
 | `src/app/runtime/` | 保留当前 Session/Timeline/位置事件、诊断与最小能力合同；Phase 10 旧 Runtime/Intent/Effect/Hold/Provider 应用消费者与 Phase 11 终裁删除的 legacy model identity 均已移出活动源码 |
 | `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，`TRANSPORT_DEBUG` 终态只更新 Transport 自有的可丢弃联调投影；业务 producer 由当前启用的插件装配 |
-| `src/app/transport/debug_run_contracts.py` | Transport 自动联调轮次、面组、选中料箱、步骤与状态的稳定内部合同 |
-| `src/app/transport/debug_run_state_machine.py` | `CTU01 → 分面料箱 → SCAN12 → 原 slot 回架 → CTU02/CTU03` 的纯状态迁移和正式 Transport request 构造 |
-| `src/app/transport/debug_run_evidence.py` | 从中性 `InboundEvidence` 严格筛选 `SCAN12` 扫码事实，不拥有 ECS 入站协议 |
-| `src/app/transport/debug_run_repository.py` / `debug_run_service.py` | 自动联调轮次的持久化、全局单活动约束、claim lease、幂等推进、恢复和安全 abort |
-| `src/app/transport/v1/debug_runs.py` | `/api/v1/transport/debug-runs` 创建、列表、详情、SSE 与 abort 接口；API 只调用 Service |
+| `src/app/transport_debug/debug_run_contracts.py` | Transport 自动联调轮次、面组、选中料箱、步骤与状态的稳定内部合同 |
+| `src/app/transport_debug/debug_run_state_machine.py` | `CTU01 → 分面料箱 → SCAN12 → 原 slot 回架 → CTU02/CTU03` 的纯状态迁移和正式 Transport request 构造 |
+| `src/app/transport_debug/debug_run_evidence.py` | 从中性 `InboundEvidence` 严格筛选 `SCAN12` 扫码事实，不拥有 ECS 入站协议 |
+| `src/app/transport_debug/models.py` / `repository.py` / `debug_run_service.py` | 自动联调轮次的持久化、全局单活动约束、claim lease、幂等推进、恢复和安全 abort；应用编排依赖 Transport 基础能力 |
+| `src/app/transport_debug/debug_reset.py` / `reset_service.py` | 联调任务清理预检、活动轮次保护和原子删除 |
+| `src/app/transport_debug/composition.py` | 在部署入口将自动联调服务装配到独立 Transport 运行时 |
+| `src/app/transport_debug/v1.py` / `v1_tasks.py` | `/api/v1/transport/debug-runs` 与 `/debug-tasks` 联调接口；API 只调用 Service |
 | `migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py` | 自动联调 run/step 表、活动轮次唯一约束、步骤幂等身份及 claim 索引 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/activation.py` | WorkLine 当前设备/位置绑定和启动计划的纯值合同；不建立独立运行实体 |
@@ -166,9 +169,7 @@ tests/integration/wms_adapter/<domain_key>/
 | `docs/devops/prod-release-deploy.md` | 生产独立 release orchestrator 的 scope、FAST/FULL、兼容报告、维护态和恢复 Runbook |
 | `scripts/wait_for_http.py` | 生产发布入口恢复后的 HTTP health/frontend 等待门禁；由 Runbook 直接调用 |
 | `scripts/check_bootstrap_admin_login.py` | 生产发布固定版本的超级管理员真实登录门禁；由 Runbook 直接调用 |
-| `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `docs/architecture/phase10-legacy-cutover-manifest.json` | Phase 10 producer seal、legacy task/broker identity 与 Task 7 维护态 cutover 机器清单；不代表现场已执行 |
-| `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |
 | `scripts/fix-integration-nginx-logs.sh` | 联调服务器 NGINX 容器日志目录与文件权限修复；让 `/api/v1/callback/{result,event}` 的 access_log 能正常写入，并保留 CANTAISYS 在 host 侧直接读日志的能力 |
 | `tools/release_checker/` | 独立、stdlib-only 的前端 consumer → 后端 provider 方向兼容检查器；固定 oasdiff，运行时不导入 WES 应用或前端源码 |

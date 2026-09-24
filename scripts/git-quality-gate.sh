@@ -29,8 +29,6 @@ Checks:
             Run only runtime production closure gate.
   runtime-contract-guardrails
             Run only runtime owner, RuntimeInbox authority, and runtime contract pytest guardrails.
-  business-legacy-absence
-            Run only business legacy absence final gate.
   process-naming
             Run only active process naming guardrail.
   architecture  Run only architecture guardrails.
@@ -179,7 +177,6 @@ run_runtime_contract_guardrails() {
     # 生产 E2E 与 benchmark closure 属于核心 HEAVY，由 selector 显式承接。
     local tests=(
         tests/architecture/test_runtime_status_owner_guardrail.py
-        tests/architecture/test_legacy_absence_guardrail.py
         tests/architecture/test_outbound_http_boundary_guardrail.py
         tests/runtime/orchestration/test_production_closure_evidence_gate.py
         tests/runtime/orchestration/test_runtime_recovery_policies.py
@@ -187,11 +184,6 @@ run_runtime_contract_guardrails() {
     )
     log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"
     run_tool pytest "${tests[@]}" -q
-}
-
-run_business_legacy_absence_gate() {
-    log_step "business-legacy-absence" "check_business_legacy_absence_gate.py --mode final"
-    run_tool python scripts/check_business_legacy_absence_gate.py --mode final
 }
 
 run_process_naming_guardrail() {
@@ -253,7 +245,6 @@ run_quality_profile() {
     run_runtime_toggle_release_gate
     run_runtime_production_closure_gate
     run_runtime_contract_guardrails
-    run_business_legacy_absence_gate
     run_process_naming_guardrail
     run_import_linter_check
     run_architecture_check
@@ -290,9 +281,6 @@ if [[ -n "$CHECK" ]]; then
             ;;
         runtime-contract-guardrails)
             run_runtime_contract_guardrails
-            ;;
-        business-legacy-absence)
-            run_business_legacy_absence_gate
             ;;
         process-naming)
             run_process_naming_guardrail

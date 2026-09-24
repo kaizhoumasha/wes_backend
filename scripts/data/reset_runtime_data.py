@@ -51,7 +51,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.app.transport.debug_reset import normalize_transport_task_id
+from src.app.transport_debug.debug_reset import normalize_transport_task_id
 from src.core.conf import settings
 from src.core.outbound_http.contracts import (
     OutboundHttpDeliveryState,
@@ -105,14 +105,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "picking_task_bin_source_racks",
             "picking_tasks",
             "position_projections",
-            "resource_bin_cell_occupancies",
-            "resource_bin_content_snapshot_items",
-            "resource_bin_content_snapshots",
-            "resource_bin_material_mounts",
-            "resource_bin_placements",
-            "resource_rack_bin_mounts",
-            "resource_rack_placements",
-            "resource_state_events",
             "transport_decision_bindings",
             "wms_confirmations",
             "workline_sessions",
@@ -142,12 +134,6 @@ MASTER_DATA_TABLES: frozenset[TableTarget] = frozenset(
         _biz("work_lines"),
         _biz("devices"),
         _biz("workline_positions"),
-        _biz("resource_racks"),
-        _biz("resource_rack_types"),
-        _biz("resource_rack_slot_templates"),
-        _biz("resource_bins"),
-        _biz("resource_bin_types"),
-        _biz("resource_bin_slot_templates"),
         _sys("alembic_version"),
         _sys("api_app_permissions"),
         _sys("api_applications"),

@@ -69,7 +69,7 @@ TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evid
 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST = "tests/integration/wms_adapter/test_transport_callback_receipts.py"
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
-TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport/test_transport_debug_reset.py"
+TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport_debug/test_transport_debug_reset.py"
 RESET_RUNTIME_DATA_HEAVY_TEST = "tests/integration/test_reset_runtime_data_postgresql.py"
 INITIAL_SCHEMA_BASELINE_HEAVY_TEST = "tests/integration/test_initial_schema_baseline_postgresql.py"
 INITIAL_SCHEMA_REVISION_PATH = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
@@ -80,10 +80,10 @@ TRANSPORT_DEBUG_PROJECTION_REVISION_PATH = (
 TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH = "migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py"
 TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS = (
     "tests/integration/test_initial_schema_baseline_postgresql.py",
-    "tests/integration/transport/test_transport_debug_auto_run.py",
-    "tests/integration/transport/test_transport_debug_run_repository.py",
-    "tests/integration/transport/test_transport_debug_run_schema.py",
-    "tests/integration/transport/test_transport_debug_run_service.py",
+    "tests/integration/transport_debug/test_transport_debug_auto_run.py",
+    "tests/integration/transport_debug/test_transport_debug_run_repository.py",
+    "tests/integration/transport_debug/test_transport_debug_run_schema.py",
+    "tests/integration/transport_debug/test_transport_debug_run_service.py",
 )
 PICKING_TASK_REVISION_PATH = "migrations/versions/20260904_0458_a0f4b56d0f50_添加_pickingtask_发布接收.py"
 PICKING_TASK_PREPARE_REVISION_PATH = (
@@ -135,11 +135,7 @@ TRACE_REVIEWED_NONE_PATHS = (
     "src/app/runtime/orchestration/trace_context.py",
     "src/app/workline/outbox_dispatch_support.py",
 )
-VALUE_NORMALIZATION_REVIEWED_NONE_PATHS = (
-    "src/app/resource/services/projection_service.py",
-    "src/app/resource/services/relation_service.py",
-    "src/app/sys/services/audit_service.py",
-)
+VALUE_NORMALIZATION_REVIEWED_NONE_PATHS = ("src/app/sys/services/audit_service.py",)
 SYSTEM_CAPABILITY_IDENTITY_REVIEWED_NONE_PATHS = (
     "src/app/runtime/extension_identity.py",
     "src/app/runtime/system_capabilities/definition.py",
@@ -411,8 +407,11 @@ def test_deleted_menu_runtime_assets_are_retired_only_while_absent(tmp_path: Pat
     assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == [retired_path]
 
 
-def test_deleted_legacy_plugin_sdk_root_is_retired_only_while_absent(tmp_path: Path) -> None:
-    retired_path = "packages/wes_plugin_sdk/pyproject.toml"
+@pytest.mark.parametrize(
+    "retired_path",
+    ["packages/wes_plugin_sdk/pyproject.toml", "src/app/resource/models/resource.py"],
+)
+def test_deleted_legacy_roots_are_retired_only_while_absent(tmp_path: Path, retired_path: str) -> None:
 
     assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == []
 
@@ -1414,6 +1413,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260924_0058_dfd0c2e671d1_按计划版本区分重复来源成员.py",
         "migrations/versions/20260924_0900_aa4d58c0be72_合并计划版本与运行时清理迁移.py",
         "migrations/versions/20260923_1700_c41df10527aa_货架进场窗口生命周期.py",
+        "migrations/versions/20260924_1200_b6b5d9240f51_移除重复资源模型.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
@@ -1425,9 +1425,9 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     )
     assert mappings_by_path[TRANSPORT_DEBUG_PROJECTION_REVISION_PATH].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
-        TRANSPORT_DEBUG_RESET_HEAVY_TEST,
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
+        TRANSPORT_DEBUG_RESET_HEAVY_TEST,
     )
     assert mappings_by_path[TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH].heavy_tests == TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
     assert mappings_by_path[PICKING_TASK_REVISION_PATH].heavy_tests == (PICKING_TASK_SCHEMA_HEAVY_TEST,)
@@ -1469,9 +1469,9 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     ]
     assert select_heavy_tests([TRANSPORT_DEBUG_PROJECTION_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
-        TRANSPORT_DEBUG_RESET_HEAVY_TEST,
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
+        TRANSPORT_DEBUG_RESET_HEAVY_TEST,
     ]
     assert select_heavy_tests([TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH], config, repo_root=REPO_ROOT) == list(
         TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS

@@ -31,6 +31,13 @@ class RackInboundWindowService:
         self._bindings = bindings
         self._transports = transports or TransportRepository()
 
+    async def on_transport_progress(self, db: Any, task: Any) -> bool:
+        if task.status in {"ACCEPTED", "SUCCEEDED"}:
+            return await self.release_on_departure_accepted(db, client_request_id=task.client_request_id)
+        if task.status in {"REJECTED", "FAILED"}:
+            return await self.release_unarrived_terminal(db, task)
+        return False
+
     async def admit(
         self,
         db: Any,
