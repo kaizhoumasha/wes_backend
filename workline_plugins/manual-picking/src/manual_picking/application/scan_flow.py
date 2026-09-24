@@ -576,6 +576,8 @@ class ManualPickingScanFlow:
             if code is not None
             else None
         )
+        if passage is not None and passage.scan3_evidence_id == evidence.id and passage.scan3_command_code is not None:
+            return passage.scan3_route
         if passage is not None and passage.scan3_evidence_id not in (None, evidence.id):
             status = await self._command_status(db, passage.scan3_command_code)
             if status is None or status == CommandStatus.SUCCEEDED:
@@ -635,6 +637,12 @@ class ManualPickingScanFlow:
         )
         is_retry = passage is not None and passage.scan4_evidence_id not in (None, evidence.id)
         if is_retry:
+            if passage.scan4_command_code is not None:
+                command = await self._command_reader.get_by_command_code(db, passage.scan4_command_code)
+                if command is not None and command.execution_ref_id == self._command_execution_ref(
+                    evidence.id, "SCAN4"
+                ):
+                    return "MOVE_FORWARD"
             # scan4_evidence_id/scan4_received_at 是 return_batch FIFO 排序锚点（SRS §0）
             # 重试只替换 scan4_command_code，不改写这两个首次到位事实字段。
             status = await self._command_status(db, passage.scan4_command_code)
@@ -964,7 +972,7 @@ class ManualPickingScanFlow:
                 device_code=device_code,
                 workline_id=workline_id,
                 execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
-                execution_ref_id=f"manual-picking:{evidence_id}:{role}",
+                execution_ref_id=self._command_execution_ref(evidence_id, role),
                 material_execution_id=None,
                 contract_key=binding.contract_key,
                 contract_version=binding.contract_version,
@@ -974,6 +982,10 @@ class ManualPickingScanFlow:
             ),
         )
         return cast("str", handle.command_code)
+
+    @staticmethod
+    def _command_execution_ref(evidence_id: int, role: str) -> str:
+        return f"manual-picking:{evidence_id}:{role}"
 
 
 __all__ = ["ManualPickingScanFlow"]

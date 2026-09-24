@@ -1,6 +1,6 @@
 ---
 title: 回程段扫码重试修正：命令终态后为同一 Requirement 创建新 Action
-status: Plan — 工程评审闭合，实施中
+status: Plan — 工程评审闭合，重扫行为已实施；拆表待实施
 created_at: 2026-09-22
 updated_at: 2026-09-24
 audience: WES 架构、WMS 对接开发、手工/自动拣料插件二次开发人员
@@ -17,7 +17,7 @@ related:
 
 # 回程段扫码重试修正：命令终态后为同一 Requirement 创建新 Action
 
-> **工程评审已闭合。** 重扫行为正在实施；Passage/Return 生命周期和 FIFO 排序以
+> **工程评审已闭合。** 重扫行为已在当前 Passage 实现中落地；Passage/Return 生命周期和 FIFO 排序以
 > [09-24 拆表方案](2026-09-24-return-segment-cycle-table-split.md)为准，拆表尚待实施。
 > 2026-09-22 首版的结论"新的物理扫码事件覆盖旧决定"表述过宽：SRS §0 明确"首次 SCAN4 到位顺序保留首次权威事实，
 > 重复到位不重新排序"（[SRS.md:39](../../architecture/SRS.md:39)、[:43](../../architecture/SRS.md:43)），账本 R09/Causality 把这条判
@@ -48,17 +48,17 @@ related:
 
 ## 1. 问题
 
-现有合同 §3.3/§3.4（`wms-manual-outbound-picking-integration-requirements.md`，均为 `APPROVED`）规定"点3/点4
+修正前合同 §3.3/§3.4（`wms-manual-outbound-picking-integration-requirements.md`，均为 `APPROVED`）规定"点3/点4
 首次扫码决定与命令一经冻结，新事件不得重新分流或覆盖原命令"。这是防抖动的安全设计，但导致真实场景卡死：
 滚筒线因料箱物理错位未能推进（如 SCAN4 出错），工人把料箱移回 SCAN3 之前重新走一遍是唯一现场恢复手段。
 
-现有代码的问题不是"规则过严"，而是**规则实现比合同措辞还宽**：`_apply_scan3`
+修正前代码的问题不是"规则过严"，而是**规则实现比合同措辞还宽**：`_apply_scan3`
 （[scan_flow.py:573](../../../workline_plugins/manual-picking/src/manual_picking/application/scan_flow.py:573)）
 与 `_apply_scan4`（[scan_flow.py:626](../../../workline_plugins/manual-picking/src/manual_picking/application/scan_flow.py:626)）
 只要 `scan3_evidence_id`/`scan4_evidence_id` 已经写入，第二次扫码就直接 `return None`——**不检查对应命令
 （`scan3_command_code`/`scan4_command_code`）是否已经到达确定终态**（`FAILED`/`TIMED_OUT`/`SUCCEEDED`）。
 不创建任何命令，也不报错，现场表现为"扫了没反应"。这与 SRS §0 第 35 行的通用重试规则直接冲突：SRS 允许
-"前一次 Action 已明确终态"后为同一 Requirement 创建新 Action，现有代码却连终态判断都没做，无条件拒绝。
+"前一次 Action 已明确终态"后为同一 Requirement 创建新 Action，修正前代码却连终态判断都没做，无条件拒绝。
 
 ```
 修正前后对比（以 SCAN3 为例，SCAN4 同构，但 SCAN4 额外保留首次到位排序锚点，见下一节）
