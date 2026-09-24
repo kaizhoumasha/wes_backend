@@ -36,21 +36,6 @@ class HealthCheckResult(TypedDict, total=False):
 # ============================================
 
 
-def _update_health_cache(result: HealthCheckResult) -> None:
-    """更新 API 层的健康状态缓存"""
-    try:
-        from src.core.health import system_health
-
-        checks = result.get("checks", {})
-        system_health.update(
-            db_ok=checks.get("database", {}).get("status") == "connected",
-            redis_ok=checks.get("redis", {}).get("status") == "connected",
-            celery_ok=result.get("status") != "error",
-        )
-    except Exception as e:
-        logger.warning(f"更新健康缓存失败: {e}")
-
-
 @celery_app.task(name="src.celery_app.tasks.core.health_check")
 def health_check() -> HealthCheckResult:
     """
@@ -110,9 +95,6 @@ def health_check() -> HealthCheckResult:
         result["checks"]["redis"] = redis_status
         if db_status.get("status") != "connected" or redis_status.get("status") != "connected":
             result["status"] = "degraded"
-
-        # 更新 API 层健康缓存
-        _update_health_cache(result)
 
         logger.info(f"健康检查完成: {result['status']}")
         return result

@@ -2423,6 +2423,11 @@ heavy_tests = []
 source_glob = "src/celery_app/tasks/core.py"
 heavy_tests = []
 
+# 旧进程内健康缓存已退役；API 实时数据库探测由 register.py 的 HEAVY 映射承接。
+[[mapping]]
+source_glob = "src/core/health.py"
+heavy_tests = []
+
 [[mapping]]
 source_glob = "src/celery_app/tasks/handling.py"
 heavy_tests = []

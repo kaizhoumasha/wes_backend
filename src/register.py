@@ -145,11 +145,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_manual_rack_direct_pick_handler = outbound_picking_runtime.manual_rack_direct_pick_handler
         await init_redis()
 
-        # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
-        from src.core.health import system_health
-
-        system_health.update(db_ok=True, redis_ok=True, celery_ok=True)
-
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except BaseException as exc:
@@ -286,7 +281,9 @@ def register_exception(app: FastAPI) -> None:
 
 def register_health_route(app: FastAPI) -> None:
     """注册公共健康检查路由。"""
-    from src.core.health import system_health
+    from src.database.dependencies import AsyncSessionDep
+    from src.utils.health import check_database_health
+    from src.utils.timezone import timezone
 
     def _basic_health_payload() -> dict[str, str]:
         return {
@@ -306,38 +303,17 @@ def register_health_route(app: FastAPI) -> None:
         return JSONResponse(status_code=200, content=_basic_health_payload())
 
     @app.get("/ready", include_in_schema=False)
-    async def readiness_check() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """
-        就绪检查（基于进程内健康缓存）。
-
-        由 Celery health_check 任务异步更新缓存，适合运维观察和详细排障。
-        """
-        is_stale = system_health.is_stale
-        is_ready = system_health.is_ready
-
-        if is_stale:
-            status = "stale"
-            status_code = 200
-        elif is_ready:
-            status = "healthy"
-            status_code = 200
-        else:
-            status = "unhealthy"
-            status_code = 503
-
+    async def readiness_check(db: AsyncSessionDep) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """本 API 实例直接验证数据库；结果仅对本次响应有效。"""
+        is_ready = (await check_database_health(db))["status"] == "healthy"
         return JSONResponse(
-            status_code=status_code,
+            status_code=200 if is_ready else 503,
             content={
-                "status": status,
-                "ready": is_ready,
-                "stale": is_stale,
-                "components": {
-                    "database": system_health.db_ok,
-                    "redis": system_health.redis_ok,
-                    "celery": system_health.celery_ok,
-                },
-                "version": settings.VERSION,
+                "status": "ready" if is_ready else "not_ready",
+                "observed_at": timezone.now_utc().isoformat(),
+                "valid_for_seconds": 0,
             },
+            headers={"Cache-Control": "no-store"},
         )
 
 

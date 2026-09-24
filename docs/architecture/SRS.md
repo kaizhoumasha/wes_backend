@@ -62,6 +62,10 @@ WMS 决定业务意图、变化与终态；WES 把当前意图编排为自动化
 
 过程数据的概念生命周期为 `ACTIVE → CLOSING → CLOSED → PURGEABLE`。`ACTIVE` / `CLOSING` 仍可属于运行依赖；`CLOSED` 已是历史；`PURGEABLE` 可按清理策略物理删除。这个生命周期是所有权和清理判定规则，**不要求为每张表新增四态字段或通用状态机**。若当前 Projection 所保存的事实仍对未闭合执行必要，必须能说明其当前权威依据；不能仅因原始记录尚在就把已闭合历史解释为当前事实。
 
+### 健康事实所有权
+
+每项健康事实须有唯一生产者、观察时间和有效期；跨进程消费者不得依赖其他进程的内存状态，也不得把 `UNKNOWN` / `STALE` 推断为 `HEALTHY`。`/ready` 只表达当前 API 实例能够直接证明的接流量条件；Celery、Beat、ECS、RCS、WMS 的健康及业务运行义务分别观察，不合并为 API Readiness。过期健康记录不得成为当前运行依赖。
+
 RCS 已确认同一货架或料箱的前一 Transport 未释放时会拒绝第二个 Transport，因此同对象不会有两个并发实际执行的搬运任务。WES 的 Binding `causal_token` 只用于区分已接纳动作的迟到/重复投影结果，不代表物理到位顺序，也不用于资源准入。
 
 | WES MAY decide | WES MUST NOT decide |
