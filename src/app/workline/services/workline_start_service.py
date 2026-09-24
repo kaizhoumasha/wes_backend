@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.device.contracts import DEVICE_INTEGRATION_CONTRACT_KEY, DEVICE_INTEGRATION_CONTRACT_VERSION
 from src.app.device.repositories.device_repository import device_repository
 from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
+from src.app.transport_debug.repository import TransportDebugRunRepository
 from src.app.workline.activation import WorkLineActivationPlan, WorkLineDeviceBinding, WorkLinePositionBinding
 from src.app.workline.domain.ecs_test import EcsTestRule, parse_ecs_test_rules
 from src.app.workline.installed_plugin import (
@@ -52,6 +53,7 @@ class WorkLineStartService:
         device_repository=device_repository,
         device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
+        transport_debug_runs: TransportDebugRunRepository | None = None,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
@@ -59,6 +61,7 @@ class WorkLineStartService:
         self._devices = device_repository
         self._adapter_provider = device_adapter_provider
         self._task_queue = task_queue_gateway
+        self._transport_debug_runs = transport_debug_runs or TransportDebugRunRepository()
 
     async def assert_execution_worker_startable(self, db: Any) -> None:
         for plugin_key, plugin_version in await self._worklines.list_active_plugin_identities(db):
@@ -206,6 +209,12 @@ class WorkLineStartService:
             rules = parse_ecs_test_rules(workline.runtime_config_json)
         except ValueError as exc:
             raise WorkLineStartConfigurationError(str(exc)) from exc
+        active_debug_run = await self._transport_debug_runs.get_active_run(db)
+        if active_debug_run is not None:
+            source_devices = {rule.source_device_code for rule in rules}
+            debug_scan_devices = set(active_debug_run.configuration_json.get("scan_device_codes", ()))
+            if source_devices & debug_scan_devices:
+                raise WorkLineStartConfigurationError("来源设备与活动 Transport debug-run 冲突，不能同时接管")
         bindings = await self._build_ecs_test_bindings(db, workline, rules)
         contracts: dict[str, Any] = {}
         for binding in bindings:

@@ -106,6 +106,7 @@ def setup_ecs_test_start(*, rules=None, source_device_missing=False):
         workline_repository=repository,
         device_repository=device_repo,
         device_adapter_provider=provider,
+        transport_debug_runs=_FakeDebugRuns(),
     )
     return service, line, repository, device_repo, provider
 
@@ -160,6 +161,33 @@ async def test_ecs_test_start_rejects_target_without_task_type_capability():
     with pytest.raises(WorkLineStartConfigurationError, match="task_type"):
         await service.start(object(), workline_id=11, version=1)
     assert not line.is_active
+
+
+class _FakeDebugRuns:
+    def __init__(self, scan_device_codes: list[str] | None = None) -> None:
+        self.scan_device_codes = scan_device_codes
+
+    async def get_active_run(self, _db: object):
+        if self.scan_device_codes is None:
+            return None
+        return SimpleNamespace(configuration_json={"scan_device_codes": self.scan_device_codes})
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_rejects_when_transport_debug_run_claims_same_source():
+    service, line, *_ = setup_ecs_test_start()
+    service._transport_debug_runs = _FakeDebugRuns(["SCAN-1", "STATION_SCAN9"])
+    with pytest.raises(WorkLineStartConfigurationError, match="debug-run"):
+        await service.start(object(), workline_id=11, version=1)
+    assert not line.is_active
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_allows_transport_debug_run_without_source_overlap():
+    service, _line, *_ = setup_ecs_test_start()
+    service._transport_debug_runs = _FakeDebugRuns(["STATION_SCAN9"])
+    started = await service.start(object(), workline_id=11, version=1)
+    assert started.is_active
 
 
 def setup_start():

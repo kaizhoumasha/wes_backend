@@ -25,6 +25,7 @@ from src.app.wms_adapter.v1.events import router as wms_event_router
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services import PickingTaskIssuedService
 from src.app.workline.models import LineType, WorkLine
+from src.app.workline.models.workline import WorkLineRunMode
 from src.core.uuid7 import new_uuid7
 
 pytest_plugins = ("tests.integration.conftest",)
@@ -36,7 +37,8 @@ async def _seed_workline(
     is_active: bool = True,
     line_type: LineType = LineType.HYBRID,
     plugin_key: str = "manual-picking",
-    plugin_version: str = "0.1.0",
+    plugin_version: str | None = "0.1.0",
+    run_mode: WorkLineRunMode = WorkLineRunMode.AUTO,
 ) -> str:
     """issued 要求 workline_code 指向已存在、匹配的 WorkLine；HYBRID 同时满足 MANUAL/AUTO。"""
     line_code = f"ISSUED-{new_uuid7()[-12:]}"
@@ -48,6 +50,7 @@ async def _seed_workline(
             is_active=is_active,
             plugin_key=plugin_key,
             plugin_version=plugin_version,
+            run_mode=run_mode,
         )
     )
     await db.flush()
@@ -123,6 +126,51 @@ async def test_new_task_is_state_conflict_when_workline_is_inactive(integration_
         result = await service.record(
             _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence(), workline_code=workline_code),
             received_at=datetime(2026, 9, 12, 10),
+        )
+
+        assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")
+        async with integration_session_factory() as db:
+            task_count = await db.scalar(
+                select(func.count()).select_from(PickingTask).where(PickingTask.task_id == task_id)
+            )
+        assert task_count == 0
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence)
+                .where(
+                    InboundEvidence.picking_task_id.in_(select(PickingTask.id).where(PickingTask.task_id == task_id))
+                )
+                .values(picking_task_id=None)
+            )
+            await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            if workline_code is not None:
+                await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
+
+
+@pytest.mark.asyncio
+async def test_new_task_is_state_conflict_when_workline_is_ecs_test_mode(integration_session_factory) -> None:
+    """ECS_TEST 启动清空 plugin_version 后，(plugin_key, None) 永远不在
+    prepare_plugin_identities 里——活动测试线自然拒绝新 issued，不需要专门的 run_mode 分支。"""
+
+    task_id = f"PICK-{new_uuid7()}"
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    service = PickingTaskIssuedService(
+        integration_session_factory,
+        prepare_plugin_identities=(("manual-picking", "0.1.0"),),
+    )
+    workline_code = None
+
+    try:
+        async with integration_session_factory.begin() as db:
+            workline_code = await _seed_workline(
+                db, is_active=True, plugin_version=None, run_mode=WorkLineRunMode.ECS_TEST
+            )
+        result = await service.record(
+            _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence(), workline_code=workline_code),
+            received_at=datetime(2026, 9, 24, 10),
         )
 
         assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")

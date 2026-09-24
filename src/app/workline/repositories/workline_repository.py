@@ -19,6 +19,7 @@ from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
+from src.app.workline.domain.ecs_test import parse_ecs_test_rules
 from src.app.workline.models.workline import WorkLine, WorkLineRunMode
 from src.database.base_repository import BaseRepository
 
@@ -145,6 +146,23 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             .distinct()
         )
         return list(result.tuples())
+
+    async def list_active_ecs_test_source_devices(self, db: AsyncSession) -> frozenset[str]:
+        """活动 `ECS_TEST` 线冻结规则声明的全部来源设备码，供 Transport debug-run 互斥检查。"""
+
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(columns.runtime_config_json).where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                columns.run_mode == WorkLineRunMode.ECS_TEST,
+            )
+        )
+        return frozenset(
+            rule.source_device_code
+            for (runtime_config_json,) in result.tuples()
+            for rule in parse_ecs_test_rules(runtime_config_json)
+        )
 
     async def list_active_for_plugin_identities(
         self,

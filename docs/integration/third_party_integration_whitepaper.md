@@ -426,6 +426,12 @@ POST <WES_BASE_URL>/api/v1/callback/event
 不以 ECS Status 或同设备未终态命令作为发送前门禁。ECS 在接纳时原子判断在线状态、模式、容量和物理互斥；明确未接纳时按原命令身份及
 合同处理，不换身份绕过。重复 EVENT 最多创建一条命令。
 
+当上报设备当前是某条活动 `ECS_TEST` WorkLine 冻结规则的来源（`ecs_test_rules[].source_device_code`）且显式传入
+`is_debug=true` 时，例外于上一段：仓库执行系统拒绝该事件，返回 `409 ECS_TEST_SOURCE_EXPLICIT_DEBUG`，事件只留存诊断、
+不创建任何命令、不进入上述 `MOVE_FORWARD` 联调路径。省略 `is_debug` 或显式 `false` 的正常测试事件不受影响，仍按
+`ECS_TEST` 固定规则处理；未被该 WorkLine 声明为来源的其它设备（包括同线的目标设备）不受此例外影响，仍走本节
+`EVENT_DEBUG` 语义。这条例外只改变判定路径，不改变本节其它场景的 `EVENT_DEBUG` 行为，也不改变四个固定接口或顶层 wire。
+
 仓库执行系统成功接收并保存结果回调或事件回调后，统一返回：
 
 ```json

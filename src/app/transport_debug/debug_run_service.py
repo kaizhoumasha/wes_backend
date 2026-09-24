@@ -254,6 +254,11 @@ class TransportDebugRunService:
             async with self._sessions.begin() as db:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
+                ecs_test_sources = await self._worklines.list_active_ecs_test_source_devices(db)
+                if ecs_test_sources.intersection(request.scan_device_codes):
+                    raise TransportDebugRunConflict(
+                        "scan_device_codes overlap with an active ECS_TEST WorkLine source device"
+                    )
                 workline = await self._worklines.get_by_line_code(db, request.workline_code)
                 if workline is None:
                     raise TransportDebugRunContractError("联调 WMS 归属工作线未登记")

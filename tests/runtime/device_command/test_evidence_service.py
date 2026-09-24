@@ -19,6 +19,7 @@ from src.app.device.ecs_test_contracts import EcsTestCommandReady
 from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_evidence_service import (
+    DeviceEventEcsTestDebugConflictError,
     DeviceEventNotAdmittedError,
     DeviceEvidenceService,
     DeviceResultConflictError,
@@ -890,6 +891,40 @@ async def test_ecs_test_reused_or_non_pending_command_does_not_wake_dispatch(out
     assert await service.process_one() is True
 
     assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_active_source_explicit_debug_flag_is_rejected_with_zero_commands() -> None:
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+
+    with pytest.raises(DeviceEventEcsTestDebugConflictError):
+        await service.accept_event(_event(is_debug=True))
+
+    evidence = next(iter(repository.evidences.values()))
+    assert evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
+    assert ecs_test_commands.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_target_only_device_explicit_debug_is_not_rejected_by_source_rule() -> None:
+    """TARGET-1 不是任何规则的 source_device_code；来源限定的拒绝规则不应误伤目标设备。"""
+
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+
+    receipt = await service.accept_event(_event(device_code="TARGET-1", is_debug=True))
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.normalized_payload["is_debug"] is True
 
 
 @pytest.mark.asyncio

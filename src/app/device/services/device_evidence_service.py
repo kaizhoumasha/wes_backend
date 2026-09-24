@@ -71,6 +71,10 @@ class DeviceEventNotAdmittedError(_DeviceEvidenceRejectedError):
     """非调试事件缺少活动工作线准入。"""
 
 
+class DeviceEventEcsTestDebugConflictError(_DeviceEvidenceRejectedError):
+    """活动 ECS_TEST 来源显式携带 is_debug=true，按合同拒绝且零命令。"""
+
+
 class DeviceEvidenceConflictError(_DeviceEvidenceRejectedError):
     """同一 source_event_id 被用于不同语义载荷。"""
 
@@ -264,6 +268,15 @@ class DeviceEvidenceService:
                     device_code=report.device_code,
                 )
             binding = await self._worklines.get_active_binding_for_device(db, report.device_code)
+            if report.is_debug and binding is not None:
+                workline = await self._worklines.get_for_update(db, binding.workline_id)
+                if workline is not None and workline.run_mode == WorkLineRunMode.ECS_TEST:
+                    is_ecs_test_source = any(
+                        item.source_device_code == report.device_code
+                        for item in parse_ecs_test_rules(workline.runtime_config_json)
+                    )
+                    if is_ecs_test_source:
+                        rejection = DeviceEventEcsTestDebugConflictError("ECS_TEST_SOURCE_EXPLICIT_DEBUG")
             contract_key = (
                 existing.contract_key
                 if existing is not None and existing.contract_key is not None
