@@ -40,6 +40,8 @@ from src.app.execution.services.inbound_evidence_service import (
 from src.app.execution.services.inbound_evidence_service import (
     inbound_evidence_service as default_inbound_evidence_service,
 )
+from src.app.workline.domain.ecs_test import parse_ecs_test_rules
+from src.app.workline.models.workline import WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.transaction_wakeup import defer_wakeup
 from src.utils.canonical_json import canonical_json_digest
@@ -50,8 +52,10 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.device.ecs_test_contracts import EcsTestCommandReady
     from src.app.device.event_debug_contracts import EventDebugCommandReady
     from src.app.workline.activation import WorkLineDeviceBinding
+    from src.app.workline.domain.ecs_test import EcsTestRule
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
@@ -121,6 +125,8 @@ class EvidenceWorkLineRepositoryPort(Protocol):
 
     async def get_by_id(self, db: AsyncSession, id: int) -> object | None: ...
 
+    async def get_for_update(self, db: AsyncSession, workline_id: int) -> object | None: ...
+
 
 class EventDebugCommandServicePort(Protocol):
     async def create_event_debug_command_in_session(
@@ -129,6 +135,16 @@ class EventDebugCommandServicePort(Protocol):
         *,
         evidence: InboundEvidence,
     ) -> EventDebugCommandReady: ...
+
+
+class EcsTestCommandServicePort(Protocol):
+    async def create_ecs_test_command_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        evidence: InboundEvidence,
+        rule: EcsTestRule,
+    ) -> EcsTestCommandReady: ...
 
 
 class EventDebugModePolicyPort(Protocol):
@@ -156,6 +172,7 @@ class DeviceEvidenceService:
         event_publisher: DeviceEvidenceEventPublisherPort | None = None,
         event_debug_command_service: EventDebugCommandServicePort | None = None,
         event_debug_mode_policy: EventDebugModePolicyPort | None = None,
+        ecs_test_command_service: EcsTestCommandServicePort | None = None,
     ) -> None:
         self._sessions = session_factory
         self._ingress = inbound_evidence_service or default_inbound_evidence_service
@@ -166,6 +183,7 @@ class DeviceEvidenceService:
         self._event_publisher = event_publisher
         self._event_debug_commands = event_debug_command_service
         self._event_debug_mode_policy = event_debug_mode_policy
+        self._ecs_test_commands = ecs_test_command_service
 
     async def accept_result(self, report: EcsCommandResultReport) -> DeviceEvidenceReceipt:
         rejection: Exception | None = None
@@ -323,6 +341,28 @@ class DeviceEvidenceService:
 
         wake_device_commands = False
         debug_command_code: str | None = None
+        workline = (
+            await self._worklines.get_for_update(db, evidence.workline_id) if evidence.workline_id is not None else None
+        )
+        if workline is not None and workline.run_mode == WorkLineRunMode.ECS_TEST:
+            rule = next(
+                (
+                    item
+                    for item in parse_ecs_test_rules(workline.runtime_config_json)
+                    if item.source_device_code == event.device_code
+                ),
+                None,
+            )
+            if event.event_type == "SCAN_COMPLETED" and rule is not None and self._ecs_test_commands is not None:
+                outcome = await self._ecs_test_commands.create_ecs_test_command_in_session(
+                    db, evidence=evidence, rule=rule
+                )
+                debug_command_code = outcome.command_code
+                wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
+            await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+            if self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_transport_debug)
+            return False, wake_device_commands, debug_command_code
         if event.is_debug:
             await self._commands.lock_creation_for_device(db, event.device_code)
             if self._event_debug_commands is None:

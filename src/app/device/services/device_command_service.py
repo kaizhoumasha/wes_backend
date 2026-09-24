@@ -20,6 +20,7 @@ from src.app.device.contracts import (
     ManualDebugDevicePreflightItem,
     ManualDebugDevicePreflightSnapshot,
 )
+from src.app.device.ecs_test_contracts import EcsTestCommandReady
 from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.evidence_projection import (
@@ -29,6 +30,7 @@ from src.app.device.evidence_projection import (
 )
 from src.app.device.models.command import (
     DIAGNOSTIC_REF_TYPES,
+    ECS_TEST_REF_TYPE,
     EVENT_DEBUG_REF_TYPE,
     MANUAL_DEBUG_REF_TYPE,
     CommandStatus,
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.workline.activation import WorkLineDeviceBinding
+    from src.app.workline.domain.ecs_test import EcsTestRule
     from src.core.task_queue_gateway import TaskQueueGateway
 
 
@@ -443,6 +446,82 @@ class DeviceCommandService:
         )
         persisted = await self._persist_command(db, command)
         return EventDebugCommandReady(
+            command_code=persisted.command_code,
+            status=CommandStatus(persisted.status),
+            created=True,
+        )
+
+    async def create_ecs_test_command_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        evidence: InboundEvidence,
+        rule: EcsTestRule,
+    ) -> EcsTestCommandReady:
+        """从 ECS_TEST 固定规则创建单条命令；精确重入返回原身份，不重算冻结截止时间。"""
+
+        workline_id = cast("int", evidence.workline_id)
+        await self._commands.lock_creation_for_device(db, rule.target_device_code)
+        same_identity = await self._commands.get_by_execution_ref_for_update(
+            db,
+            workline_id=workline_id,
+            device_code=rule.target_device_code,
+            execution_ref_type=ECS_TEST_REF_TYPE,
+            execution_ref_id=evidence.source_identity,
+        )
+        if same_identity is not None:
+            return EcsTestCommandReady(
+                command_code=same_identity.command_code,
+                status=CommandStatus(same_identity.status),
+                created=False,
+            )
+        binding = await self._worklines.get_binding_for_command_creation(
+            db, workline_id=workline_id, device_code=rule.target_device_code
+        )
+        if binding is None:
+            raise DeviceNotFoundError(rule.target_device_code)
+        now = self._clock()
+        validated = DeviceCommandRequestData.model_validate(
+            {
+                "device_code": rule.target_device_code,
+                "workline_id": workline_id,
+                "execution_ref_type": ECS_TEST_REF_TYPE,
+                "execution_ref_id": evidence.source_identity,
+                "material_execution_id": None,
+                "contract_key": binding.contract_key,
+                "contract_version": binding.contract_version,
+                "task_type": rule.task_type,
+                "params": rule.params,
+                "deadline_at": now + timedelta(milliseconds=binding.command_timeout_ms),
+                "trace_id": None,
+                "endpoint_base_url": binding.endpoint_base_url,
+                "command_timeout_ms": binding.command_timeout_ms,
+            }
+        )
+        payload_digest = _command_payload_digest(validated)
+        command = DeviceCommand(
+            command_code=new_uuid7(),
+            device_code=validated.device_code,
+            workline_id=workline_id,
+            execution_ref_type=ECS_TEST_REF_TYPE,
+            execution_ref_id=validated.execution_ref_id,
+            material_execution_id=None,
+            contract_key=validated.contract_key,
+            contract_version=validated.contract_version,
+            task_type=validated.task_type,
+            params=validated.params,
+            payload_digest=payload_digest,
+            deadline_at=validated.deadline_at,
+            trace_id=validated.trace_id,
+            endpoint_base_url=validated.endpoint_base_url,
+            command_timeout_ms=validated.command_timeout_ms,
+            status=CommandStatus.PENDING,
+            next_attempt_at=now,
+            created_at=now,
+            created_by=None,
+        )
+        persisted = await self._persist_command(db, command)
+        return EcsTestCommandReady(
             command_code=persisted.command_code,
             status=CommandStatus(persisted.status),
             created=True,

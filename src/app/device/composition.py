@@ -161,6 +161,7 @@ def build_device_command_runtime(
             event_publisher=event_stream_service,
             event_debug_command_service=command_service,
             event_debug_mode_policy=event_debug_mode_policy,
+            ecs_test_command_service=command_service,
         ),
     )
 

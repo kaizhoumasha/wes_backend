@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceStatus
+from src.app.device.ecs_test_contracts import EcsTestCommandReady
 from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import (
@@ -24,6 +25,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.workline.activation import WorkLineDeviceBinding
+from src.app.workline.domain.ecs_test import EcsTestRule
 
 
 class FakeBegin(AbstractAsyncContextManager[object]):
@@ -724,6 +726,89 @@ async def test_event_debug_command_is_independent_of_old_unclosed_command() -> N
     with pytest.raises(DeviceCommandIdentityConflictError):
         await service.create_event_debug_command_in_session(object(), evidence=evidence)
     assert len(repository.created) == 1
+
+
+def _ecs_test_evidence(source_identity: str = "EVENT:" + "d" * 64, device_code: str = "SCAN-1") -> InboundEvidence:
+    return InboundEvidence(
+        id=101,
+        kind=InboundEvidenceKind.DEVICE_EVENT,
+        source_identity=source_identity,
+        payload_digest="d" * 64,
+        normalized_payload={
+            "device_code": device_code,
+            "contract_key": "third_party_integration",
+            "contract_version": "1.1",
+            "event_type": "SCAN_COMPLETED",
+            "timestamp": 1_787_589_900_163,
+            "source_event_id": source_identity,
+            "is_debug": False,
+            "data": {"event_id": "EVT-1", "location": device_code},
+        },
+        received_at=datetime(2026, 9, 24),
+        workline_id=11,
+        device_code=device_code,
+        contract_key="third_party_integration",
+        contract_version="1.1",
+    )
+
+
+def _ecs_test_rule(
+    source_device_code: str = "SCAN-1", target_device_code: str = "TARGET-1", task_type: str = "MOVE_FORWARD"
+) -> EcsTestRule:
+    return EcsTestRule(
+        source_device_code=source_device_code,
+        target_device_code=target_device_code,
+        task_type=task_type,
+        params={"source": {"location_id": source_device_code}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_command_uses_frozen_rule_params_not_event_data() -> None:
+    service, repository = _service(_binding("TARGET-1"))
+    evidence = _ecs_test_evidence()
+    rule = _ecs_test_rule()
+
+    handle = await service.create_ecs_test_command_in_session(object(), evidence=evidence, rule=rule)
+    duplicate = await service.create_ecs_test_command_in_session(object(), evidence=evidence, rule=rule)
+
+    command = repository.created[0]
+    assert handle == EcsTestCommandReady(command_code=command.command_code, status=CommandStatus.PENDING, created=True)
+    assert duplicate == EcsTestCommandReady(
+        command_code=command.command_code, status=CommandStatus.PENDING, created=False
+    )
+    assert len(repository.created) == 1
+    assert command.execution_ref_type == "ECS_TEST"
+    assert command.execution_ref_id == evidence.source_identity
+    assert command.device_code == "TARGET-1"
+    assert command.workline_id == 11
+    assert command.task_type == "MOVE_FORWARD"
+    assert command.params == rule.params  # 不受 evidence.normalized_payload["data"] 影响
+    assert command.contract_key == "arm.pick"
+    assert command.endpoint_base_url == "http://ecs-command:8080"
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_command_different_events_to_same_target_each_get_own_command() -> None:
+    service, repository = _service(_binding("TARGET-1"))
+    rule = _ecs_test_rule()
+
+    first = await service.create_ecs_test_command_in_session(
+        object(), evidence=_ecs_test_evidence("EVENT:" + "1" * 64), rule=rule
+    )
+    second = await service.create_ecs_test_command_in_session(
+        object(), evidence=_ecs_test_evidence("EVENT:" + "2" * 64), rule=rule
+    )
+
+    assert first.command_code != second.command_code
+    assert len(repository.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_command_rejects_target_without_frozen_binding() -> None:
+    service, _repository = _service()  # 没有为 TARGET-1 冻结 binding
+    with pytest.raises(DeviceNotFoundError):
+        await service.create_ecs_test_command_in_session(object(), evidence=_ecs_test_evidence(), rule=_ecs_test_rule())
 
 
 @pytest.mark.asyncio
