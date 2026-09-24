@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0.0] - 2026-09-24
+
+### Changed
+
+- 工作线配置和位置诊断只依据当前执行事实；位置未知时明确显示 `UNKNOWN`，现场清线按 SOP 确认。
+- Transport 基础能力可独立运行，联调任务由独立模块接入；同步更新当前执行恢复与测试。
+
+### Removed
+
+- 移除 WES 中重复的 14 张资源主账和位置表及旧接口，不再维护第二套 Rack、Bin 和库存资源模型。
+- 清理一次性清理验证门禁与过期过程资料。
+
 ## [0.48.6.0] - 2026-09-23
 
 ### Changed
