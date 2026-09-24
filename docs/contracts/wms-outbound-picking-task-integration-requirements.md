@@ -295,7 +295,7 @@ WMS/WES 接口不传 WES 内部的 PickingTask、Bin、Material 或 DeviceComman
 
 - DirectPick 成员：`task_id + plan_revision + source_locator`
 - 五层来源货架面成员：`task_id + plan_revision + rack_id + rack_face`
-- 物理 Bin：`bin_code` 可重复使用；本次经过与完成结果须使用 Passage/准入 Action 身份，不能仅以 `task_id + bin_code` 判重
+- 物理 Bin：`bin_code` 可重复使用；WES 用本地 Passage/准入 Action 身份关联本次经过与完成结果，WMS 完成通知只需提供 `task_id + bin_code + result + completed_at`，由 WES 匹配当前唯一开放 Passage
 - Cell：本次 WES Passage/Work + WMS 编码 `cell_id`；WMS 按每次请求的实际来源和当前业务事实决定
 - 当前接料货架面：`task_id + rack_id + rack_face`
 - 一盘直接取料物料：`task_id + plan_revision + source_locator + PkgID`；`BIN_CELL` 物料由 WMS 按来源、扫码与逐盘事实处理，WES 本地关联 Passage/Action

@@ -41,6 +41,10 @@ KT16 的确定投影标为 unknown，不推定离位成功；后一架自己的�
 
 基础层按目标点 `capacity` 对五层来源架及同目标点的 drain rack 维护同一个滚动 CTU01 下发窗口；按物理货架进场生命周期占用名额，到位仍占用，对应离场 Transport `ACCEPTED` 后释放并补发 pending。跨 revision 新成员关联仍在占窗的同架进场生命周期，不重复下发 CTU01。RCS 负责实际排队和自主进位；每个架的后续作业仍等待该架自己的权威到位、面向及原 Transport 结果。CTU02 成功表示旋转后已经回到工作位。
 
+本次窗口迁移会拒绝仍在途、位置未知或没有更新的权威位置事实证明已离开原目标点的旧进场；已明确未接纳的旧进场不占窗口。正式发布前须处理这些旧进场生命周期，源码热更新不执行该迁移。
+
 进场明确未接纳或失败且权威终位在目标点外时释放窗口；失败终位仍在目标点的重试沿用原名额。离场明确未接纳后重新请求 WMS `departure_decide`。已接纳离场任务失败且留在目标点、但缺少当前面向时，恢复 API 的权威面向来源尚未确认，WES 不推测面向；见 [Transport 履约合同 §5.3](../contracts/transport-fulfillment-contract.md#53-搬运最终结果)。
 
 共享的幂等、物理事实和可靠接收规则见 [Transport 履约合同](../contracts/transport-fulfillment-contract.md)。
+
+KT16 联调成功场景已固化在 Mock：`POST /debug/good-case/activate` 激活决策序列，`GET /debug/good-case` 查看数据，`POST /debug/good-case/events/{index}/send` 按索引发送记录的回调。数据见 `tests/mock/data/kt16_manual_picking_good_case.json`；其中 `issued`、`plan_delta` 的信封以及五条 `inbound_batch` 是根据已确认业务事实重建的示例，其余记录来自本次联调。
