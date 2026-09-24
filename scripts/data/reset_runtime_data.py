@@ -12,7 +12,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
 - ``--transport-task-id`` 按 ID 清理一个 TransportTask 的完整本地 Transport 链路，
   不重置其它运行数据或 Mock。
-- 清空后将 ``wes_biz.workline_runtime_status_projections`` 重置为 ``STOPPED``，
+- 清空后将 WorkLine 的 ``is_active`` 及运行状态投影重置为停用/``STOPPED``，
   以便干净地重跑 START；Device 主数据不承载运行态，不做改写。
 - 全量 reset 仅在 ``APP_DEBUG=True`` 时允许执行；生产型配置可用 ``--force``
   显式覆盖，供数据可丢弃的联调服务器人工运维。
@@ -547,7 +547,15 @@ async def reset_runtime_data(
             joined = ", ".join(_qualified(target) for target in targets)
             await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
 
-            # WorkLine runtime 投影回到 STOPPED，等待 START 校验并启用当前配置。
+            # WorkLine 启用位与 runtime 投影一起回到 STOPPED，等待 START 重新启用。
+            await db.execute(
+                text(
+                    "UPDATE wes_biz.work_lines "
+                    "SET is_active = false, version = version + 1, "
+                    "updated_at = now() AT TIME ZONE 'UTC' "
+                    "WHERE is_active = true"
+                ),
+            )
             wl_result = await db.execute(
                 text(
                     "INSERT INTO wes_biz.workline_runtime_status_projections ("
