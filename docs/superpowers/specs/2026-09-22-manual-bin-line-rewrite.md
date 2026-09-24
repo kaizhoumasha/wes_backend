@@ -111,7 +111,7 @@ RCS 调度 AGV → 货架实际到位 → WES 启动依赖该货架的下一作�
 2. **`dispatch_scan_event` 分发接缝**：入线（SCAN1）、货架循环、回程（SCAN3/SCAN4）归 `bin-line-common`；工作段
    （SCAN2 之后）归各插件私有方法，通过 `on_scan2` 回调交接。
 3. **回程扫码重试修正内置**：新的物理扫码事件（离场-再进场，或工人手动 PLC 重置，两者按同一规则处理，见
-   [独立文档](2026-09-22-bin-line-scan-retry-fix.md)）覆盖旧决定；`retry_count` 仅诊断，不阻断业务。
+   [独立文档](2026-09-22-bin-line-scan-retry-fix.md)）覆盖旧决定；不增加混合重扫计数或阈值告警。
 4. **revision identity**：`plan_revision` 是人工准入/完成 wire 的显式字段；WMS 完成回调按 `(task_id, plan_revision,
    bin_code)` 精确匹配，不用最新 `id` 或时间顺序猜测轮次。落地前需要 WMS 侧确认这个字段已经/将要携带在真实
    wire 里——这是外部协调项，不是代码问题，会影响阶段二真实 WorkLine 验证的开始时间，不影响阶段一的开发和离线

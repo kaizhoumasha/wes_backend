@@ -484,7 +484,7 @@ WMS 收到 `401` 时必须保留原消息、停止热重试并告警，待配置
 首版不规定 WMS 在取得权威证据后多少毫秒内形成容器中间位置事件/搬运最终结果，只验收消息最终可靠形成和送达。现场 SOP 必须填写 RCS 无结果告警阈值、
 责任人和通知渠道；该运维阈值不是 DTO 字段，也不能把普通 timeout 转换为权威位置或终态。
 
-### 5.2 可选的逐容器中间位置事件
+### 5.2 逐容器中间位置事件（一般可选，回程例外）
 
 首版只接收两个位置变化里程碑和一个位置未知事实。三个枚举值本身均表示 WMS/RCS 已确认的权威事实，不增加永远只能为
 `true` 的 `confirmed` 字段：
@@ -511,6 +511,7 @@ final_position?   # TARGET_PLACED 时必填，且必须等于冻结目标；只�
 重复事实幂等；倒序事实不得让位置回退。导航、升降、到达区域和机械状态等 CTU 内部阶段不进入 WES Transport 合同。
 
 `transport.task.member_position_changed@v1` 一般仍是有权威中间事实时才发送的条件证据，不把它扩展为所有 TransportTask 的必经步骤。
+来源冻结为本 WorkLine `OUTLET` 的回程 `BIN_MOVE` 是限定例外：WMS/RCS 对每个实际从 OUTLET 取走的 BIN 成员，必须依据该成员的权威物理取走事实形成并可靠转发一条 `SOURCE_PICKED`。该回调携带原 `transport_task_id + container_id`，技术重试保持同一 `operation_id` 和完整消息；不得以接单、聚合最终结果或目标到位代替，也不得在尚未取走或取走事实不确定时伪造。WES 在该逐箱 Evidence 已 `APPLIED` 且核对冻结 OUTLET 来源后，才结束对应回程 execution；后续 Transport 完成仍按原最终结果规则处理。本例外不要求所有其它 TransportTask 上报 `SOURCE_PICKED`，也不要求不同成员的回调串行等待 WES ACK。
 但每个成功结果且冻结目标为 `RACK_BIN_SLOT` 的 BIN 成员是明确例外：在该成员的 `transport.task.resulted@v1` 被接纳前，必须已有
 已 `APPLIED`、`milestone=TARGET_PLACED` 且 `final_position` 与冻结目标完全相等的逐箱事件。当前现场 CTU/RCS 会为每个完成的料箱回架
 产生一条该到位事实；WMS 必须原样转发，不能只发送聚合结果、伪造事件或把 ACK 当作已应用。其它没有该回架前置条件的场景仍只在存在

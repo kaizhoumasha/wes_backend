@@ -1606,6 +1606,7 @@ WES 对每次搬运提交 HTTP 访问使用 `10` 秒硬超时，单个任务最�
 ### 容器中间位置事件（可选）：WMS 回调容器位置事实
 
 只有 `BIN_MOVE/BIN_EXCHANGE` 在上游实际形成权威中间位置事实时才可以发送此 operation；它一般不是搬运必经步骤，货架不发送。
+来源冻结为本 WorkLine `OUTLET` 的回程 `BIN_MOVE` 是限定例外：每个实际从 OUTLET 取走的 BIN 成员必须形成并可靠转发逐箱 `SOURCE_PICKED`，以原 `transport_task_id + container_id` 核对来源和成员；技术重试保持该位置事实的原 `operation_id + timestamp + data`。不得以 `transport.task.resulted@v1` 的成功、`TARGET_PLACED` 或预期动作伪造取走。WES 在原 Evidence 已应用后才结束该成员的回程 execution；其它 Transport 仍遵循一般条件事件规则。
 但每个成功且冻结目标为 `RACK_BIN_SLOT` 的料箱回架成员是明确例外：当前 CTU/RCS 为每个完成回架提供一条精确目标到位事实，WMS 必须
 转发对应 `TARGET_PLACED`；所有该事件成功 ACK 后即可发送成功聚合最终结果，是否已经应用由 WES 在接收结果时判断。
 
@@ -1713,7 +1714,7 @@ WMS/RCS 无法确认容器位于来源、目标还是搬运途中，此时不得
 
 | 当前已确认事实 | 允许形成的新容器中间位置事件 | 说明 |
 | --- | --- | --- |
-| 尚无容器中间位置事件 | `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN` | 如果 RCS 首个可靠事实已经是到位，可以直接报告 `TARGET_PLACED`，不得伪造补发 `SOURCE_PICKED` |
+| 尚无容器中间位置事件 | `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN` | 一般场景若首个可靠事实已是到位，可直接报告 `TARGET_PLACED`，不得伪造补发 `SOURCE_PICKED`；本线 OUTLET 回程 `BIN_MOVE` 必须另按实际逐箱取走事实可靠上报 `SOURCE_PICKED` |
 | `SOURCE_PICKED` | `TARGET_PLACED` 或 `POSITION_UNKNOWN` | 对象已经离开来源，后续事实不能让位置回退到来源 |
 | `TARGET_PLACED` | 无 | 容器中间位置事件位置事实已经闭合；同一事实的 HTTP 重试必须使用原完整消息 |
 | `POSITION_UNKNOWN` | 无 | 停止发送普通中间位置事件；当前任务仍发送位置未知的完整搬运最终结果，消歧后再发送新的完整权威结果 |

@@ -559,6 +559,12 @@ class ManualPickingScanFlow:
             )
         return outcome.result
 
+    async def _command_status(self, db: Any, command_code: str | None) -> CommandStatus | None:
+        if command_code is None:
+            return None
+        command = await self._command_reader.get_by_command_code(db, command_code)
+        return command.status if command is not None else None
+
     async def _apply_scan3(
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
@@ -570,8 +576,12 @@ class ManualPickingScanFlow:
             if code is not None
             else None
         )
-        if passage is not None and passage.scan3_evidence_id is not None:
-            return None
+        if passage is not None and passage.scan3_evidence_id not in (None, evidence.id):
+            status = await self._command_status(db, passage.scan3_command_code)
+            if status is None or status == CommandStatus.SUCCEEDED:
+                return None
+            if status not in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
+                return _WAIT_FOR_RESULT
         if passage is None and await self._device_has_unclosed(db, workline_id, bindings, "SCAN3"):
             return None
         if passage is not None and passage.disposition == "OPEN" and passage.scan2_evidence_id is not None:
@@ -623,9 +633,16 @@ class ManualPickingScanFlow:
             if code is not None
             else None
         )
-        if passage is not None and passage.scan4_evidence_id not in (None, evidence.id):
-            return None
-        if passage is not None and passage.scan4_command_code is not None:
+        is_retry = passage is not None and passage.scan4_evidence_id not in (None, evidence.id)
+        if is_retry:
+            # scan4_evidence_id/scan4_received_at 是 return_batch FIFO 排序锚点（SRS §0）
+            # 重试只替换 scan4_command_code，不改写这两个首次到位事实字段。
+            status = await self._command_status(db, passage.scan4_command_code)
+            if status is None or status == CommandStatus.SUCCEEDED:
+                return None
+            if status not in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
+                return _WAIT_FOR_RESULT
+        elif passage is not None and passage.scan4_command_code is not None:
             return "SCAN4_COMMAND_ALREADY_CREATED"
         scan3_forward = False
         preceding_command = None
@@ -658,7 +675,7 @@ class ManualPickingScanFlow:
         if decision.route == "HOLD" or passage is None:
             if (
                 passage is not None
-                and passage.scan4_evidence_id == evidence.id
+                and (passage.scan4_evidence_id == evidence.id or is_retry)
                 and preceding_command is not None
                 and preceding_command.status
                 not in (CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT)

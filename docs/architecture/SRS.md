@@ -38,11 +38,17 @@ WMS 决定业务意图、变化与终态；WES 把当前意图编排为自动化
 
 **Fact Acceptance ≠ Projection Application。**匹配身份的 Response 先可靠保存为历史 Evidence；当前投影只应用最新的权威因果事实，旧 Action 迟到结果不得覆盖新 Action 的位置。Action 的终态不能替代其明确的位置事实。首次 SCAN4 到位顺序保留首次权威事实，重复到位不重新排序；业务资格随后独立闭合。
 
-**Defer processing/action, not reality。** 现场 Event 先可靠保存 Evidence；可关联的首次到位 Fact 及时写入 Passage/Projection。前置 Action 未确定时只延迟依赖它的后继判断或动作，不因其他对象在同设备上的未闭合 Command 推迟记录已发生的事实。重领原 Evidence 时根据当前 Requirement、Fact 和 Action 状态重新判断，不复用旧的等待决定。
+**Defer processing/action, not reality。** 现场 Event 先可靠保存 Evidence；可关联的首次到位 Fact 及时写入所属的当前 execution。前置 Action 未确定时只延迟依赖它的后继判断或动作，不因其他对象在同设备上的未闭合 Command 推迟记录已发生的事实。重领原 Evidence 时根据当前 Requirement、Fact 和 Action 状态重新判断，不复用旧的等待决定。
 
-**Arrival Fact ≠ Business Authorization ≠ Physical Execution Result。** SCAN1～SCAN4 各自上报本点实际到位与当前扫码事实；WMS 业务授权和 ECS 动作终态分别形成独立 Evidence。每个点先可靠记录到位，再根据本点箱码、当前 Requirement 和本料箱真正需要的前置确定结果决定 Action；缺少 SCAN2 不会自行否定允许直达 SCAN3 的现场路径。Passage 只聚合已观察事实和本次动作身份，不保存预期路线作为后续决策的权威。SCAN4 首次到位决定 FIFO 顺序；匹配该点 `MOVE_FORWARD` 的 ECS `SUCCESS` 才使料箱进入 `RETURN_BUFFER` 并具备 `return_batch` 资格。`return_batch` 只消费按首次到位顺序排列后的连续合格队首，后项先成功也不得越过未闭合队首。若 ECS 不保证跨箱回调按现场到位顺序送达，WES 不得把本地 `received_at` 当成物理顺序保证。
+**Arrival Fact ≠ Business Authorization ≠ Physical Execution Result。** SCAN1～SCAN4 各自上报本点实际到位与当前扫码事实；WMS 业务授权和 ECS 动作终态分别形成独立 Evidence。每个点先可靠记录到位，再根据本点箱码、当前 Requirement 和本料箱真正需要的前置确定结果决定 Action；缺少 SCAN2 不会自行否定允许直达 SCAN3 的现场路径。人工线 `ManualPickingPassage` 负责 INLET/SCAN1→SCAN3；首次 SCAN3 到位是前段结束事实，正常箱同事务交接给负责 SCAN3→OUTLET 的 `BinLineReturn`，不等待 SCAN3 Command 成功。SCAN4 首次到位是该 Return 的物理 FIFO admission 与顺序事实；匹配该点 `MOVE_FORWARD` 的 ECS `SUCCESS` 仅使它具备 `return_batch` 资格，不改变首次到位顺序。`return_batch` 只消费全部未退出 Return 的连续合格队首，后项先成功也不得越过未退出队首。OUTLET 来源成员的权威 `SOURCE_PICKED` 已应用后，该 Return 才因物理移出而退出 FIFO；`TARGET_PLACED`/Transport `SUCCEEDED` 只结束后续 Transport。WES 不以本地 `received_at` 推断物理顺序，SCAN4 Event 时间的生成语义和重发稳定性仍以设备合同验收为准。
 
-**Bin identity is reusable; Passage identity is single-use.** Passage 标识一次物理经过，Action/operation 标识其中一次外部逻辑动作。同一任务中的同一 `bin_code` 可有多个 Passage；Evidence 按来源事件身份去重，外部 Action 按自身身份幂等，不以可重复使用的 `bin_code` 判定重复。人工料箱 `work_completed` 通知以 `task_id + bin_code` 匹配当前工作位唯一等待完成的 Passage；WES 本地的 `admission_operation_id` 仍标识准入 Action，不要求 WMS 回传。信封顶层 `operation_id` 是完成通知自身的投递身份。
+**Command Order ≠ Physical Order; Receive Order ≠ Physical Order。** FIFO scope 是实际争用的物理回程通道，不机械等于 WorkLine 或扫码设备编码。WES 不通过命令提交、消息到达时序或事件身份推测物理先后。本轮已确认 SCAN4 Event `timestamp` 在实际触发时生成、同源时间可比较、原事件重发不变且毫秒精度足以区分正常相邻过箱，因此首次有效 Evidence 的该值作为独立于 `received_at` 的 FIFO 排序事实；`received_at` 仅用于接收审计。当前回程通道由 SCAN4 占位阻挡后箱，前箱 Event 耐久接收并放行前，后箱不能触发 SCAN4，因此正常路径无需为防止“后箱先报”增加 ACK 串行合同或缺号机制。人工干预等破坏该物理约束的异常须凭权威事实对账。`source_event_id` 只用于去重，不作为排序键。
+
+**Bin identity is reusable; execution identity is single-use.** 人工线 Passage 标识本箱一次 INLET/SCAN1→SCAN3 前段 execution，Return 记录 ID 标识随后一次 SCAN3→OUTLET 回程 execution；同一 `bin_code` 后续再进入须有新 execution ID，已闭合历史不参与当前运行。Evidence 按来源事件身份去重，外部 Action 按自身身份幂等，不以可重复使用的 `bin_code` 判定重复。人工料箱 `work_completed` 通知以 `task_id + bin_code` 匹配当前工作位唯一等待完成的 Passage；WES 本地的 `admission_operation_id` 仍标识准入 Action，不要求 WMS 回传。信封顶层 `operation_id` 是完成通知自身的投递身份。
+
+**Action Identity = Execution Identity + Action/Role Identity + Trigger Evidence Identity。** 对现场事实触发的 DeviceCommand，本次 execution、稳定逻辑动作点和真实触发 Evidence 共同确定一个幂等 Action；设备实例编码不代替逻辑角色。同一 Evidence 的重放和技术重试复用原 Action 身份与冻结命令；原命令明确失败后，新的物理触发产生新 Evidence，才允许创建新的 Action 身份。Action Ref 的编码与必要解析由所属能力集中维护，业务调用点不得散落字符串拼接或解析。
+
+**派生统计默认不进入核心业务事实表。** 只有统计值直接参与当前运行决策，或已证明无法从现有事实以可接受成本获得时，才考虑持久化。高频 FIFO 使用的 `scan4_event_time` 是必要运行索引投影；未确认需求的重扫累计不是运行事实，原始扫码和 Command 尝试由 Evidence、DeviceCommand 留存。
 
 **Historical lineage explains evidence; current requirement authorizes action。** 历史成员、原 Action 和冻结请求身份用于关联迟到结果及审计，不因历史成员曾经存在就允许新设备动作。创建后继 Action 前检查直接 Requirement 仍有效、目标尚未由权威 Fact 满足、同一次逻辑 Action 没有未决或已创建的身份；物理接纳仍由 ECS/RCS 裁决。前序结果尚未确定不等于确定失败，不得据此下发 NG 或错误方向动作。
 
@@ -607,7 +613,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    WES 校验该线已启用 `manual-picking` 并冻结指派，不再自主选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 按已确认的计划、权威当前架及 transport-only feed_complete 推进货架和投料，投料间隙机会式回架。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
-4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。
+4. WMS 持久化物料子任务结果和 Bin 级释放决定。正常箱首次到达 SCAN3 时结束 Passage 并开始 Return；首次到达 SCAN4 才进入本 WorkLine 跨任务物理 `RETURN_BUFFER` FIFO，匹配 SCAN4 放行结果成功后才可参与 `return_batch`。原任务完成或取消不删除该物理义务。
 5. 退料 Bin 不要求返回原货架或原面。WMS 根据当前权威工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`，WES 可靠执行 `BIN_MOVE`。
    PickingTask 完成后先在同一 WorkLine 锁内原子准备下一任务；已准备任务的后续当前架优先承接 FIFO。无可准备任务且 FIFO 非空时，
    创建 WorkLine-owned `workline.return_buffer.drain_rack_decide@v1`，只上报 `workline_code + required_slot_count`。READY 返回无序的

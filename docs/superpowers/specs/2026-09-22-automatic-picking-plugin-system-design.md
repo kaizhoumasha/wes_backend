@@ -126,7 +126,7 @@ src/(基础能力)  ←  wes_plugin_sdk  ←  bin-line-common(共享包，非插
 | 表 | 字段（要点） | 说明 |
 | --- | --- | --- |
 | `bin_line_passages` | `workline_id`、`task_id`、`bin_code`、SCAN1 证据/命令、SCAN2 到位证据（含异常证据）、点2释放命令、`disposition`（OPEN/NORMAL/NG/CLOSED）、`reason_code`、`archived_at` | 入线段与处置结果的唯一事实；`disposition` 是入线/工作/回程三段共用的处置结果接口 |
-| `bin_line_returns` | `passage_id`（外键）、SCAN3 证据/命令/去向、SCAN4 证据/命令/到达时间、`return_state`、`retry_count`（诊断用，默认 0，见[独立文档](2026-09-22-bin-line-scan-retry-fix.md)） | 回程段状态；只在 SCAN3 首次关联到某次经过后创建；`RETURN_BUFFER` FIFO 索引在这里，不带 `task_id`，可跨任务 |
+| `bin_line_returns` | `passage_id`（外键）、SCAN3 证据/命令/去向、SCAN4 证据/命令/到达时间、`return_state` | 回程段状态；只在 SCAN3 首次关联到某次经过后创建；`RETURN_BUFFER` FIFO 索引在这里，不带 `task_id`，可跨任务。当前拆表字段以 [2026-09-24 回程方案](2026-09-24-return-segment-cycle-table-split.md) 为准 |
 
 从现有 `ManualPickingPassage`（107 行宽表）迁出：`admission_*`、`wms_*`、`wms_completed_*` 全部离开共享表。
 
@@ -352,13 +352,11 @@ or_command`、`test_scan4_rescan_preserves_first_fifo_order_and_command` 当前�
 
 | 新代码路径 | 生产失败方式 | 测试是否覆盖 | 错误处理是否存在 | 用户可见性 |
 | --- | --- | --- | --- | --- |
-| `bin_line_returns` 新物理事件覆盖旧决定 | 扫码器硬件故障反复误触发（非离场-再进场、非手动 PLC 重置这两种现场确认过的合法触发源） | 需新增场景（独立文档 §5），尚未写代码 | 有（§3 告警阈值，log/metric） | 有可观测信号（告警面板），不是静默失败 |
+| `bin_line_returns` 新物理事件覆盖旧决定 | 扫码器硬件故障反复误触发（非离场-再进场、非手动 PLC 重置这两种现场确认过的合法触发源） | 需新增场景（独立文档 §5），尚未写代码 | 原始扫码和 Command 事实保留供诊断；本次无阈值告警需求 | 可从 Evidence/DeviceCommand 追溯，不承诺告警面板 |
 | `automatic_picking_cells/reels` schema（§5.4，TBD） | 无法评估——字段未定 | 无法评估 | 无法评估 | 已知阻塞项，不构成 critical gap |
 | `bin-line-common` 抽取（§6） | 抽取过程引入回归，破坏手工线现有行为 | 有（§12：先内部拆分验证测试全绿，再搬迁） | 有（小步骤+可回滚） | 测试红灯直接暴露 |
-| `retry_count` 告警阈值 | 阈值不合适（过高漏报/过低噪音） | 无调优反馈机制 | 部分（实施时取保守估计，无回调整流程） | 阈值不合适时靠事后调参发现 |
 
-Critical gap 判定（无测试 AND 无错误处理 AND 静默失败三者同时成立）：0 个。`retry_count` 阈值调优缺口是真实
-运维缺口，但不属于"新代码路径静默失败"类别，留给实施阶段处理。
+Critical gap 判定（无测试 AND 无错误处理 AND 静默失败三者同时成立）：0 个。重扫阈值告警未形成验收需求，不作为本次实现范围。
 
 ## Worktree parallelization strategy（eng review 评审产出）
 
@@ -383,10 +381,10 @@ Synthesized from this review's findings.
   - Surfaced by: 测试审查 — `test_scan3_rescan_does_not_change_frozen_route_or_command`/`test_scan4_rescan_preserves_first_fifo_order_and_command` 断言方向与新行为矛盾
   - Files: `workline_plugins/manual-picking/tests/test_scan_flow.py`
   - Verify: `uv run pytest workline_plugins/manual-picking/tests/test_scan_flow.py -k "rescan"`
-- [ ] **T2（P1，human:~2h / CC:~30min）** — manual-picking — 落地回程扫码重试修正（含 `retry_count` 与告警阈值）
+- [ ] **T2（P1，human:~2h / CC:~30min）** — manual-picking — 落地回程扫码重试修正
   - Surfaced by: 独立文档 `2026-09-22-bin-line-scan-retry-fix.md`
   - Files: `application/scan_flow.py`、`application/passage_model.py`
-  - Verify: T1 通过 + 新增覆盖/告警场景测试全绿
+  - Verify: T1 通过 + 新增重扫场景测试全绿
 - [ ] **T3（P2，human:~30min / CC:~5min）** — 合同 — 提交回程重试修正给 WMS/WES 联合评审（§3.3/§3.4 措辞）
   - Surfaced by: 独立文档 §4
   - Files: `docs/contracts/wms-manual-outbound-picking-integration-requirements.md`

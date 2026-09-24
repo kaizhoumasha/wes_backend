@@ -1441,7 +1441,7 @@ async def test_scan1_waits_for_previous_physical_result_and_does_not_duplicate_a
 
 
 @pytest.mark.asyncio
-async def test_scan3_rescan_does_not_change_frozen_route_or_command() -> None:
+async def test_scan3_rescan_waits_while_first_command_is_pending() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S3", "A000000001-B")
@@ -1456,13 +1456,58 @@ async def test_scan3_rescan_does_not_change_frozen_route_or_command() -> None:
     commands.statuses[frozen_command] = "ACKNOWLEDGED"
     before = len(commands.requests)
 
+    assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
+    assert len(commands.requests) == before
+    assert passages.rows[0].scan3_evidence_id == 4
+    assert passages.rows[0].scan3_command_code == frozen_command
+    assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+
+
+@pytest.mark.asyncio
+async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state() -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    evidences.rows[5] = _scan(5, "S3", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    await flow.apply_in_session(object(), 4, workline_id=7)
+    stuck_command = passages.rows[0].scan3_command_code
+    commands.statuses[stuck_command] = "TIMED_OUT"
+    before = len(commands.requests)
+
+    assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert passages.rows[0].scan3_evidence_id == 5
+    assert passages.rows[0].scan3_command_code != stuck_command
+    assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+
+
+@pytest.mark.asyncio
+async def test_scan3_rescan_after_command_success_creates_no_new_action() -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    evidences.rows[5] = _scan(5, "S3", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    await flow.apply_in_session(object(), 4, workline_id=7)
+    succeeded_command = passages.rows[0].scan3_command_code
+    commands.statuses[succeeded_command] = "SUCCEEDED"
+    before = len(commands.requests)
+
     assert (
         await flow.apply_in_session(object(), 5, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
     assert len(commands.requests) == before
     assert passages.rows[0].scan3_evidence_id == 4
-    assert passages.rows[0].scan3_command_code == frozen_command
-    assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+    assert passages.rows[0].scan3_command_code == succeeded_command
 
 
 @pytest.mark.asyncio
