@@ -263,8 +263,9 @@ async def test_dispatch_confirmation_and_activation_lock_order(rack_database, ph
         server.close()
 
 
-async def test_ctu01_creates_each_planned_rack_once_without_local_capacity_admission(rack_database):
+async def test_ctu01_serialized_submission_respects_capacity(rack_database):
     from src.app.execution.models import TransportDecisionBinding
+    from src.app.execution.services.rack_inbound_window import RackInboundWindowService
     from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
 
     _, sessions = rack_database
@@ -291,23 +292,36 @@ async def test_ctu01_creates_each_planned_rack_once_without_local_capacity_admis
                 )
         async with runtime_for(sessions, server.url) as (runtime, _transport):
             driver = runtime.plugins[0].picking_task_batch_driver
+            window = RackInboundWindowService()
 
             async def action(db, line):
                 return await driver._submit_source_racks(db, line, picking)
 
-            assert await serialized_pair(sessions, line.id, action) == (3, 0)
-            async with sessions() as db:
-                bindings = (
-                    await db.scalars(
-                        select(TransportDecisionBinding).where(
-                            TransportDecisionBinding.workline_id == line.id,
-                            TransportDecisionBinding.picking_task_id == picking.id,
+            for index in range(3):
+                assert await serialized_pair(sessions, line.id, action) == (1, 0)
+                async with sessions() as db:
+                    bindings = (
+                        await db.scalars(
+                            select(TransportDecisionBinding).where(
+                                TransportDecisionBinding.workline_id == line.id,
+                                TransportDecisionBinding.picking_task_id == picking.id,
+                            )
                         )
-                    )
-                ).all()
-                assert {binding.resource_fence_id for binding in bindings} == {
-                    f"R{index}-{line.id}" for index in range(3)
-                }
+                    ).all()
+                    assert {binding.resource_fence_id for binding in bindings} == {
+                        f"R{rack_index}-{line.id}" for rack_index in range(index + 1)
+                    }
+                    assert [
+                        binding.resource_fence_id for binding in bindings if binding.window_released_at is None
+                    ] == [f"R{index}-{line.id}"]
+                if index < 2:
+                    async with sessions.begin() as db:
+                        departure_id = f"departure-{index}-{line.id}"
+                        assert await window.attach_departure(
+                            db, workline_id=line.id, rack_id=f"R{index}-{line.id}", client_request_id=departure_id
+                        )
+                        assert await window.release_on_departure_accepted(db, client_request_id=departure_id)
+            assert await serialized_pair(sessions, line.id, action) == (0, 0)
     finally:
         server.close()
 

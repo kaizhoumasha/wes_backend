@@ -164,7 +164,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         departure_reader=departure_reader,
         passages=SimpleNamespace(
             has_bin_before_return_buffer=AsyncMock(return_value=False),
-            ready_return_prefix_for_update=AsyncMock(return_value=()),
+            ready_prefix_for_update=AsyncMock(return_value=()),
         ),
         tasks=tasks,
         bindings=SimpleNamespace(
@@ -217,13 +217,13 @@ async def test_exhausted_drain_rack_starts_departure_even_when_ready_bins_remain
     )
     driver._drain = drain
     driver._passages.has_bin_before_return_buffer.return_value = True
-    driver._passages.unfinished_return_prefix_for_update = AsyncMock(return_value=(SimpleNamespace(),))
+    driver._passages.unfinished_prefix_for_update = AsyncMock(return_value=(SimpleNamespace(),))
     positions.source.source_transport_task_id = "arrival-1"
 
     assert await driver._advance_drain(object(), line) == 1
     drain.return_in_session.assert_not_awaited()
     driver._passages.has_bin_before_return_buffer.assert_not_awaited()
-    driver._passages.unfinished_return_prefix_for_update.assert_not_awaited()
+    driver._passages.unfinished_prefix_for_update.assert_not_awaited()
     departure_scheduler.create_in_session.assert_awaited_once()
     intent = departure_scheduler.create_in_session.await_args.args[1]
     assert intent.task_id is None and intent.rack_id == "R1"
@@ -255,14 +255,14 @@ async def test_drain_rack_waits_for_buffered_bin_but_not_upstream_bin(blocking_s
     )
     positions.source.source_transport_task_id = "arrival-1"
     driver._passages.has_bin_before_return_buffer.return_value = True
-    driver._passages.unfinished_return_prefix_for_update = AsyncMock(
+    driver._passages.unfinished_prefix_for_update = AsyncMock(
         return_value=(SimpleNamespace(return_state=blocking_state),)
     )
 
     assert await driver._advance_drain(object(), line) == 0
     departure_scheduler.create_in_session.assert_not_awaited()
 
-    driver._passages.unfinished_return_prefix_for_update.return_value = (SimpleNamespace(return_state="MOVE_PENDING"),)
+    driver._passages.unfinished_prefix_for_update.return_value = (SimpleNamespace(return_state="MOVE_PENDING"),)
     assert await driver._advance_drain(object(), line) == 1
     driver._passages.has_bin_before_return_buffer.assert_not_awaited()
     departure_scheduler.create_in_session.assert_awaited_once()
@@ -500,7 +500,7 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
     positions.target = None
     flow.complete.clear()
     flow.created = True
-    driver._passages.ready_return_prefix_for_update.return_value = (SimpleNamespace(bin_code="RETURN-1"),)
+    driver._passages.ready_prefix_for_update.return_value = (SimpleNamespace(bin_code="RETURN-1"),)
 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["rack_id"] == "R1"
@@ -553,7 +553,7 @@ async def test_source_rack_checks_return_buffer_before_rotation() -> None:
     driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
     flow.complete.add(("R1", "90"))
     flow.created = True
-    driver._passages.ready_return_prefix_for_update.return_value = (SimpleNamespace(bin_code="BIN-1"),)
+    driver._passages.ready_prefix_for_update.return_value = (SimpleNamespace(bin_code="BIN-1"),)
 
     assert await driver.advance_in_session(object(), line, task) == 1
     assert flow.calls[0]["allow_inbound"] is False

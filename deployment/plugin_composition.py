@@ -120,11 +120,11 @@ def build_deployment_runtime(
         from manual_picking.application.batch_flow import ManualPickingBatchFlow
         from manual_picking.application.batch_repository import BatchRepository
         from manual_picking.application.batch_result import ManualPickingBatchResultFlow
+        from manual_picking.application.bin_line.return_repository import ReturnRepository
         from manual_picking.application.completion_flow import ManualPickingCompletionFlow
         from manual_picking.application.completion_repository import ManualPickingCompletionRepository
         from manual_picking.application.drain_flow import ManualPickingDrainFlow
         from manual_picking.application.drain_repository import DrainRepository
-        from manual_picking.application.passage_repository import PassageRepository
         from manual_picking.application.plugin import build_plugin
         from manual_picking.application.scan_flow import ManualPickingScanFlow
         from manual_picking.prepare_policy import ManualPickingPreparePolicy
@@ -137,7 +137,7 @@ def build_deployment_runtime(
         )
 
         workline_owner = CombinedWorkLineConfirmationOwner(workline_owner, ManualBinAdmissionOwnerService())
-        passages = PassageRepository()
+        returns = ReturnRepository()
         batch_reader = BinBatchResultReader()
         drain_reader = ReturnBufferDrainResultReader()
         drains = DrainRepository(drain_reader)
@@ -150,11 +150,11 @@ def build_deployment_runtime(
         )
         batch_repository = BatchRepository(batch_reader)
         batch_result = ManualPickingBatchResultFlow(
-            batch_reader, ReliableBinTransportCreator(transport_runtime.service), passages
+            batch_reader, ReliableBinTransportCreator(transport_runtime.service), returns, batch_repository
         )
         drain_flow = ManualPickingDrainFlow(
             drains,
-            passages,
+            returns,
             PickingTaskPrepareCoordinator(
                 session_factory,
                 policy=ManualPickingPreparePolicy(),
@@ -168,7 +168,7 @@ def build_deployment_runtime(
         batch_driver = ManualPickingBatchDriver(
             ManualPickingBatchFlow(
                 batch_repository,
-                passages,
+                returns,
                 batch_scheduler,
                 batch_result,
                 uuid_factory=new_uuid7,
@@ -181,7 +181,7 @@ def build_deployment_runtime(
             departure_reader=RackDepartureResultReader(),
             arrival_scheduler=ReturnRackArrivalScheduler(WmsConfirmationLifecycleService()),
             arrival_reader=ReturnRackArrivalResultReader(),
-            passages=passages,
+            passages=returns,
             drain=drain_flow,
         )
         scan_flow = ManualPickingScanFlow(
@@ -193,6 +193,7 @@ def build_deployment_runtime(
             drain_repository=drains,
             drain_reader=drain_reader,
             rack_creator=rack_creator,
+            returns=returns,
         )
         completion_driver = ManualPickingCompletionFlow(
             ManualPickingCompletionRepository(history=batch_reader),

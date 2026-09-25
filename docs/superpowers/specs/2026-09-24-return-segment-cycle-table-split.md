@@ -1,6 +1,6 @@
 ---
 title: 回程段拆表：bin_line_returns（一次回程 execution，一张事实表）
-status: Plan — 工程评审闭合，待实施
+status: 本分支已实施并完成本地验证；尚未合入
 created_at: 2026-09-24
 audience: WES 架构、人工拣料及后续使用同一回程通道的插件开发人员
 scope: 只拆 SCAN3/SCAN4/RETURN_BUFFER 结构；不实现再次进入的触发规则
@@ -13,7 +13,7 @@ related:
 
 # 回程段拆表：`bin_line_returns`
 
-> 本文是实施计划；代码和迁移尚未实施。WES 不引入全局 cycle/revision 领域概念。
+> 本文是实施与验收基线；代码和迁移已在本分支实施并完成本地验证，尚未合入或发布。WES 不引入全局 cycle/revision 领域概念。
 
 ## 1. 事实边界与范围
 
@@ -28,7 +28,7 @@ related:
 
 本次只拆结构并把 FIFO key 从 WES 接收时间改为经确认的设备事件时间；不实现“旧 execution 退出后再次进入”的新触发逻辑，不改变 SCAN1/SCAN2/WMS 准入或物理放行规则。`bin_line_returns` 是唯一持久化回程事实；不建独立 queue 表、缓存或第二份业务队列真相。
 
-**SCAN3 实际到位是执行段结束事实。** `ManualPickingPassage` 负责 INLET→SCAN3，匹配的首次 SCAN3 到位 Evidence 应用时同事务置为 `CLOSED`；不等待 SCAN3 方向 Command 成功。对已识别的正常料箱，同一事务创建 `BinLineReturn(NONE)` 接管 SCAN3→OUTLET；SCAN3 `MOVE_FORWARD` 是 Return 的 Action，命令可以因点2结果未决而稍后创建。已明确走 `MOVE_LEFT` 的 NG 分支不进入 SCAN4 回程通道，仍由原 Evidence/DeviceCommand 跟踪，不创建 Return。`Passage CLOSED + BinLineReturn OPEN + Transport EXECUTING` 是合法组合；任一段的结束不等待下一段完成。跨段 ownership handoff 原子提交，CLOSED Passage 不参与后续运行判断。
+**SCAN3 实际到位是执行段结束事实。** `ManualPickingPassage` 负责 INLET→SCAN3，匹配的首次 SCAN3 到位 Evidence 应用时同事务置为 `CLOSED`；不等待 SCAN2 或 SCAN3 方向 Command 终态。经过 SCAN2 的箱仍须先取得 WMS 确定的 NORMAL/NG 业务决定；这与 SCAN2 Command 终态是两种不同事实。对已识别且获正常授权的料箱，同一事务创建 `BinLineReturn(NONE)` 接管 SCAN3→OUTLET，SCAN3 `MOVE_FORWARD` 是 Return 的 Action；SCAN2 Command 的迟到终态只留在原 DeviceCommand 供审计，不再决定回程 Action。已明确走 `MOVE_LEFT` 的 NG 分支不进入 SCAN4 回程通道，仍由原 Evidence/DeviceCommand 跟踪，不创建 Return。`Passage CLOSED + BinLineReturn OPEN + Transport EXECUTING` 是合法组合；任一段的结束不等待下一段完成。跨段 ownership handoff 原子提交，CLOSED Passage 不参与后续运行判断。
 
 ## 2. 最小数据结构
 
@@ -45,7 +45,7 @@ related:
 | B. 当前 Action Pointer | `scan3_command_code`、`scan4_command_code`（string，可空） | 当前 SCAN3/SCAN4 Command；符合重扫条件的新真实 Evidence 创建新 Command 后，可更新当前指针，旧 Command 留在 DeviceCommand 历史 |
 | C. 当前状态 | `return_state`（enum/string） | `NONE / MOVE_PENDING / READY / RETURN_REQUESTED / EXITED / VOIDED`；`EXITED` 替代旧 `RETURNED`，不增加状态数 |
 
-候选核心字段仅为 `id`、`workline_id`、`bin_code` 和表中七项；不加入 `retry_count`、`scan3_route`、`return_transport_task_id`、`exit_evidence_id` 或 cycle/revision。状态表示当前阶段，A 类事实表示已发生的生命周期与直接因果，B 类指针表示当前尝试；不能用当前指针覆写首次物理事实。
+候选核心字段仅为 `id`、`workline_id`、`bin_code` 和表中七项；不加入 `scan2_command_code`、`batch_id`、SCAN1 历史、`retry_count`、`scan3_route`、`return_transport_task_id`、`exit_evidence_id` 或 cycle/revision。状态表示当前阶段，A 类事实表示已发生的生命周期与直接因果，B 类指针表示当前尝试；不能用当前指针覆写首次物理事实。
 
 此表是当前运行所需的最小字段集。诊断累计不进入 Return；真实扫码和新 Command 的历史由 Evidence/DeviceCommand 保留，`DeviceCommand.attempt_count` 只表示同一 Command 的技术派发尝试，不表示物理重扫。
 
@@ -76,7 +76,7 @@ SCAN3/SCAN4 DeviceCommand 沿用当前 Evidence-based `execution_ref_id = manual
 
 ```text
 已识别正常箱首次 SCAN3 到位 → 同事务冻结 Return.scan3_evidence_id、创建 Return（NONE）并 CLOSED Passage
-SCAN3 前置结果确定后 → 在原 Return 创建 MOVE_FORWARD Command、更新 scan3_command_code
+SCAN3 当前扫码及 WMS 业务决定允许正常放行 → 在原 Return 创建 MOVE_FORWARD Command、更新 scan3_command_code；不等待 SCAN2 Command 终态
 SCAN3 MOVE_LEFT 判定 + Command 创建 → 同事务 CLOSED Passage；不创建 Return
 SCAN3 当前 Command 明确失败后真实重扫 → 原 Return 保持 NONE，仅更新 scan3_command_code；scan3_evidence_id 保持首次值
 首次有效 SCAN4              → 冻结 scan4_evidence_id + scan4_event_time；MOVE_PENDING，进入物理 FIFO
@@ -98,13 +98,14 @@ WES 将 RETURN_BUFFER 连续 READY 前缀提交 return_batch，请 WMS 分配回
 
 `unfinished_prefix_for_update(workline_id, limit=4)` 先按 `(scan4_event_time, scan4_evidence_id)` 查询并锁定**全部**已到位且未退出的前四条。`ready_prefix_for_update` 只在内存中从该结果的队首连续取 `READY`；遇 `MOVE_PENDING` 或 `RETURN_REQUESTED` 即停止。不得在 SQL 中先筛 `READY`。已应用的取走 Evidence 须经现有 TransportTask、TransportDecisionBinding、原 return_batch Evidence 与 TransportMember 核对本次请求、bin 和冻结 OUTLET 来源，再关闭对应未闭合 execution；不等待同批其他成员到达目标。
 
-SCAN3 handoff 的锁顺序为 WorkLine authority → 当前 Passage → 当前 Return（重扫时）→ Command 创建/核对；正常箱的 SCAN3 到位事实、Return 插入和 Passage `CLOSED` 同事务提交，Command 若须等待前置结果则留给原 Evidence 的可靠重放。SCAN4 到位、Command Result、批次冻结和已应用 `SOURCE_PICKED` 的 Return 投影均先取得同一 WorkLine authority 锁，再锁相关 Return 行；行级 `FOR UPDATE` 锁住所读前缀，不用 `SKIP LOCKED` 跳过队首。数据库局部唯一约束兜住同 bin 并发创建。查询锁仅覆盖已存在的行，不能代替 WorkLine 根锁处理新到位记录与批次冻结的并发；独立 WorkLine 不互相串行。实施前核对现有 DeviceCommand/Evidence/Transport 回调的完整锁顺序，不额外升级根锁强度。
+SCAN3 handoff 的锁顺序为 WorkLine authority → 当前 Passage → 当前 Return（重扫时）→ Command 创建/核对；已取得 WMS 确定正常授权的箱，其 SCAN3 到位事实、Return 插入、Passage `CLOSED` 和 SCAN3 Command 创建同事务提交。WMS 业务决定仍未确定时，原 SCAN3 Evidence 保持可靠待应用，不能提前猜测正常/NG 方向；SCAN2 Command 终态未决本身不延迟 handoff。SCAN4 到位、Command Result、批次冻结和已应用 `SOURCE_PICKED` 的 Return 投影均先取得同一 WorkLine authority 锁，再锁相关 Return 行；行级 `FOR UPDATE` 锁住所读前缀，不用 `SKIP LOCKED` 跳过队首。数据库局部唯一约束兜住同 bin 并发创建。查询锁仅覆盖已存在的行，不能代替 WorkLine 根锁处理新到位记录与批次冻结的并发；独立 WorkLine 不互相串行。实施前核对现有 DeviceCommand/Evidence/Transport 回调的完整锁顺序，不额外升级根锁强度。
 
 ## 4. 代码迁移面
 
 - `passage_model.py` 保留 SCAN1/SCAN2、WMS 准入、`disposition` 和作为前段结束事实的 `scan3_evidence_id`；删除 `scan3_command_code`、`scan3_route`、`scan4_evidence_id`、`scan4_received_at`、`scan4_command_code`、`return_state` 及对应回程约束/FIFO 索引。删除未确认需求下的混合重扫计数及阈值告警，不把诊断聚合搬到 Return，也不影响真实重扫准入和原 Command 幂等。
 - 新增一个 `BinLineReturn` 模型和 Repository；`PassageRepository` 的 SCAN2 在途判断仍用未 CLOSED Passage，SCAN1 当前同箱检查、WorkLine 未完成业务量及前段/回程门禁需分别检查当前未闭合 Passage 与 Return。`NONE` 计入当前回程工作量，但不进入 SCAN4 FIFO。已 CLOSED Passage 历史不参与扫码、重试、恢复、清场或批次判断。
-- `scan_flow.py` 在正常箱首次 SCAN3 到位时交接；若点2结果仍未决，Return 以 `scan3_evidence_id` 保留当前事实，原 Evidence 重放等待结果后创建 Command。新 SCAN3 重扫先查当前未闭合 Return 的 `scan3_command_code`，同 Evidence 重领沿现有 Command identity 幂等处理。SCAN4 只查当前 Return，首次到位先冻结事实，再核对当前 SCAN3 Command 的 `MOVE_FORWARD SUCCESS`；前置结果未到时延迟 SCAN4 Action。Result 按 `command_code` 找原 DeviceCommand，只有它仍是 Return 的当前 SCAN3/SCAN4 Command 且匹配本线、设备、动作时才推进；SCAN3 `MOVE_LEFT` Result 不再关闭或修改 Passage。`SOURCE_PICKED` 已应用后由回程 owner 关闭原 Return；Transport 最终结果仅推进 Transport，不反向改写已退出 Return。
+- 当前未闭合 inbound Batch 以原 `outbound.bin.inbound_batch@v1` 的 `operation_id` 为身份；在结果应用事务中冻结本批的 WorkLine/任务/版本/货架面与响应 Evidence 身份，逐箱 Progress 只保存**已进入执行的 bin_code 集合**。预期成员从已校验的原响应 Evidence 与已冻结 Transport/Binding 读取，不在 Progress 或 Return 复制成员清单、SCAN1 Evidence 历史；已完成的 WMS Confirmation 可清理。SCAN1 应用时以当前箱的来源 Transport → `MANUAL_PICKING_INBOUND_BATCH` Binding 精确关联所属 Batch，核对该箱确属冻结成员，并在同一事务推进 Passage 与 Batch Progress；重复 Evidence/扫码不重复计数。`BatchRepository.inbound_progress` 的 `all_scanned`、下一 chunk 准入和 `CompletionRepository` 的完成门禁只读当前 Batch 身份、响应 Evidence 与逐箱 Progress，不再扫描已 CLOSED Passage 或已完成 WMS Confirmation。所有 chunk 已可靠完成且本批冻结成员均已有 SCAN1 后，Batch 可 CLOSED；之后 Batch 身份与 Progress 可清理，已闭合 Batch 不参与新业务恢复。
+- `scan_flow.py` 在获 WMS 确定正常授权的箱首次 SCAN3 到位时交接并创建 SCAN3 Command，不查询 SCAN2 Command 终态；WMS 决定未决时原 Evidence 等待业务决定。新 SCAN3 重扫先查当前未闭合 Return 的 `scan3_command_code`，同 Evidence 重领沿现有 Command identity 幂等处理。SCAN4 只查当前 Return，首次到位先冻结事实，再核对当前 SCAN3 Command 的 `MOVE_FORWARD SUCCESS`；该结果未到时延迟 SCAN4 Action。Result 按 `command_code` 找原 DeviceCommand，只有它仍是 Return 的当前 SCAN3/SCAN4 Command 且匹配本线、设备、动作时才推进；SCAN2 迟到结果仅留原 Command 审计，SCAN3 `MOVE_LEFT` Result 不再关闭或修改 Passage。`SOURCE_PICKED` 已应用后由回程 owner 关闭原 Return；Transport 最终结果仅推进 Transport，不反向改写已退出 Return。
 - `batch_flow.py`、`batch_result.py`、`batch_driver.py`、`drain_flow.py` 及直接测试消费者改用同一 return Repository 的未退出前缀；`batch_result.py` 将所选 Return 的 `return_batch_evidence_id` 与 `RETURN_REQUESTED`、原 Transport 创建同事务提交，不引入 queue Repository。
 - 现有 `archive-open-work` 可以归档前段 Passage，但 `archived_at` 不构成 Return 的物理退出事实。归档不得关闭未退出 Return；其工作量与停用/切换门禁继续按未闭合 Return 判断，接口成功不表示回程通道已清空。
 - `EXITED` 只在经原 return_batch 关联确认的 `BIN_MOVE` 成员 `SOURCE_PICKED` 已应用且冻结来源为本线 OUTLET 后写入。Transport Evidence 已保存原事实，不复制 `exit_evidence_id`；不要把请求创建、`ACCEPTED` 或最终目标到位当作 Return 正常退出触发。Transport 的 Evidence 接收 ACK 不是已应用事实。正常主路径复用现有 `progress_wakeup → activate_picking_task_plans_batch → picking_task_batch_driver`：Transport Service 成功应用本线权威位置 Evidence 后，在同一事务用现有 `defer_wakeup` 登记无 payload 唤醒；只有提交成功才发布。当前 `progress_hook` 注入点虽属 Transport Service，其实现 `RackInboundWindowService.on_transport_progress` 专管货架进场窗口，不能在里面加入 Return 解释或回箱特例。现有位置事实应用后尚无通用 WorkLine 唤醒条件；在 Transport Service 中对已应用且有 `authority_workline_id` 的位置 Evidence 直接复用已有 `progress_wakeup`，无需新增 hook。现有队列唤醒不带 WorkLine ID，而是令激活任务扫描 active WorkLine；它只表示可能有新持久事实，不携带 `SOURCE_PICKED`、bin 或 task 业务数据，driver 必须重新读库。
@@ -140,7 +141,7 @@ SCAN3 handoff 的锁顺序为 WorkLine authority → 当前 Passage → 当前 R
 
 聚焦验收：
 
-1. 已识别正常箱首次 SCAN3 到位时 Passage `CLOSED`、Return `NONE` 和 `scan3_evidence_id` 原子提交；点2结果未决时 `scan3_command_code` 可空，后续以原 Evidence 恢复并创建 Command。NG Passage 结束但不生成 Return，后续 Result 不修改 Passage。
+1. 已获 WMS 确定正常授权的箱首次 SCAN3 到位时 Passage `CLOSED`、Return `NONE`、`scan3_evidence_id` 与 SCAN3 Command 原子提交；SCAN2 Command 未决、迟到成功或失败不改变该决策。WMS 业务决定未决时原 SCAN3 Evidence 等待该决定，不猜正常/NG。NG Passage 结束但不生成 Return，后续 Result 不修改 Passage。
 2. SCAN3 当前 Command 未终态时重扫等待；明确失败后的新扫码更新同一 Return 的当前 Command；同 Evidence 重领不新建 Command，旧结果不推进当前 Return。
    `E1 → C1 FAILED` 后 `E2 → C2` 必须保持 `scan3_evidence_id=E1`、`scan3_command_code=C2`。
 3. SCAN4 在 SCAN3 Result 未到时先冻结首次到位 Evidence 和 `scan4_event_time`，保持 `MOVE_PENDING` 并等待；`NONE` 不进入 FIFO。A 的 Event 先持久化、ACK 丢失、重试后仍保持同一个 Evidence 和排序时间；B 后到但 HTTP 顺序不决定 FIFO。
@@ -148,7 +149,7 @@ SCAN3 handoff 的锁顺序为 WorkLine authority → 当前 Passage → 当前 R
 4. 前缀分别为 `MOVE_PENDING → READY`、`RETURN_REQUESTED → READY` 时，后项不能进入新 `return_batch`；队首匹配 `SOURCE_PICKED` 已应用后，下一次 driver 唤醒即将它置为 `EXITED`，后项成为物理可选前缀，不等待回架目标到位。若同货架面 CTU 批次门禁仍未释放，后项暂不调度新 `return_batch`，但不得重新视为物理 FIFO 被前箱阻塞。
 5. 同一 bin 的未闭合第二条被数据库拒绝；有权威退出依据关闭后可创建新 ID，但再次进入的业务触发仍另案设计。旧 `SOURCE_PICKED` 的同身份重试只命中原 TransportEvidence，不产生第二次业务应用。
 6. 回程 `BIN_MOVE` 的 `ACCEPTED`、`UNKNOWN`、只有 `TARGET_PLACED`/`SUCCEEDED` 且缺少取走事实时均不作为 Return 正常关闭触发；单个成员的匹配 `SOURCE_PICKED` 已应用且冻结来源为 OUTLET 时仅关闭对应 Return，其余成员保持原状态；Transport 可继续执行。错误任务、错误 bin、错误来源或非本次 return_batch 的位置事实不得关闭当前 Return。
-7. 清理可清理的已闭合 Passage/Return 历史后，当前扫码、重试、恢复、工作量及 FIFO 仍只依赖当前未闭合事实、原 Command/Evidence；NG Command Result 不修改已闭合 Passage。
+7. 清理可清理的已闭合 Passage/Return 历史及已完成 inbound WMS Confirmation 后，当前扫码、重试、恢复、工作量及 FIFO 仍只依赖当前未闭合事实、原 Command/Evidence；NG Command Result 不修改已闭合 Passage。当前未闭合 inbound Batch 的身份和已 SCAN1 集合在这些历史清理后仍保留，`next_offset` 和 `complete` 不变；Batch CLOSED 后其身份与 Progress 可清理，旧 Batch/Passage 不再作为当前运行依据。
 8. 检查 FIFO 查询计划走局部索引；同时间值的第二排序键只提供确定性，不作为物理顺序验收证据。
 9. `archive-open-work` 归档前段 Passage 后，未取得权威退出事实的 Return 仍保持未闭合，并继续计入工作量和停用/切换门禁。
 10. `SOURCE_PICKED` durable commit 后的提交后唤醒是正常主路径；driver 重读原事实并在 CTU/容量门禁之前置 Return `EXITED`。提交前失败不发唤醒；已提交但唤醒丢失、投影前崩溃或 worker 重启时，现有周期计划激活扫描仅从 active WorkLine 的当前未退出 Return 出发恢复。重复唤醒或同 Evidence 重试不重复推进，其他位置事实也不伪造退出。

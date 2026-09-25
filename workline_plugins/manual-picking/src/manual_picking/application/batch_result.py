@@ -19,10 +19,13 @@ RETURN_STEP = "MANUAL_PICKING_RETURN_BATCH"
 
 
 class ManualPickingBatchResultFlow:
-    def __init__(self, reader: Any, transport: Any, passages: Any) -> None:
+    def __init__(self, reader: Any, transport: Any, passages: Any, batches: Any = None) -> None:
+        from .batch_repository import BatchRepository
+
         self._reader = reader
         self._transport = transport
         self._passages = passages
+        self._batches = batches or BatchRepository()
 
     async def apply_inbound_in_session(
         self,
@@ -43,6 +46,9 @@ class ManualPickingBatchResultFlow:
             return None
         result = outcome.result
         if isinstance(result, BinInboundBatchReady):
+            await self._batches.record_allocation(
+                db, workline_id=workline_id, picking_task_id=picking_task_id, intent=intent, evidence_id=evidence.id
+            )
             await self.create_inbound_chunk(
                 db,
                 workline_id=workline_id,
@@ -55,6 +61,9 @@ class ManualPickingBatchResultFlow:
             )
             return "INBOUND_READY"
         if isinstance(result, BinInboundBatchRackFaceDone):
+            await self._batches.record_allocation(
+                db, workline_id=workline_id, picking_task_id=picking_task_id, intent=intent, evidence_id=evidence.id
+            )
             return "RACK_FACE_DONE"
         return None
 
@@ -103,7 +112,7 @@ class ManualPickingBatchResultFlow:
             or any(candidate.source_location_code != return_location for candidate in intent.return_candidates)
         ):
             return None
-        rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+        rows = await self._passages.ready_prefix_for_update(db, workline_id)
         candidates = intent.return_candidates
         if tuple(row.bin_code for row in rows[: len(candidates)]) != tuple(
             candidate.bin_code for candidate in candidates
@@ -123,6 +132,7 @@ class ManualPickingBatchResultFlow:
             )
             for row in rows[: len(moves)]:
                 row.return_state = "RETURN_REQUESTED"
+                row.return_batch_evidence_id = evidence.id
             return "RETURN_READY"
         if isinstance(result, BinBatchNoBatch):
             return "RETURN_NO_BATCH"

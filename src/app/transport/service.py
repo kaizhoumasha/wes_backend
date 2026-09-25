@@ -827,6 +827,12 @@ class TransportService:
                         evidence.processed_at = timezone.now_for_db()
                         evidence.claim_token = None
                         evidence.claim_until = None
+                        if (
+                            evidence.operation == TRANSPORT_POSITION_OPERATION
+                            and task.authority_workline_id is not None
+                            and self._progress_wakeup is not None
+                        ):
+                            defer_wakeup(db, self._progress_wakeup)
                     await self._notify_progress(db, task)
                     update_event = _evidence_update_event(
                         evidence,
