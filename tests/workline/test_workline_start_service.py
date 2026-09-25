@@ -20,7 +20,13 @@ from src.app.workline.services.workline_start_service import (
 from src.utils.timezone import timezone
 
 
-def _ecs_status(device_code: str, *, supported_commands: tuple[str, ...] | None = None, is_online: bool = True):
+def _ecs_status(
+    device_code: str,
+    *,
+    supported_commands: tuple[str, ...] | None = None,
+    supported_events: tuple[str, ...] | None = None,
+    is_online: bool = True,
+):
     return EcsDeviceStatus.model_validate(
         {
             "device": {
@@ -29,7 +35,7 @@ def _ecs_status(device_code: str, *, supported_commands: tuple[str, ...] | None 
                 "device_type": None,
                 "role": None,
                 "supported_commands": supported_commands,
-                "supported_events": None,
+                "supported_events": supported_events,
             },
             "state": {
                 "device_code": device_code,
@@ -159,6 +165,19 @@ async def test_ecs_test_start_rejects_target_without_task_type_capability():
         _ecs_status("TARGET-1", supported_commands=("PICK_AND_PUT",)),
     )
     with pytest.raises(WorkLineStartConfigurationError, match="task_type"):
+        await service.start(object(), workline_id=11, version=1)
+    assert not line.is_active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supported_events", [(), ("OTHER_EVENT",)])
+async def test_ecs_test_start_rejects_source_without_scan_capability(supported_events):
+    service, line, _repo, _devices, provider = setup_ecs_test_start()
+    provider.get_adapter.return_value.fetch_statuses.return_value = (
+        _ecs_status("SCAN-1", supported_events=supported_events),
+        _ecs_status("TARGET-1", supported_commands=("MOVE_FORWARD",)),
+    )
+    with pytest.raises(WorkLineStartConfigurationError, match="SCAN_COMPLETED"):
         await service.start(object(), workline_id=11, version=1)
     assert not line.is_active
 

@@ -960,9 +960,11 @@ async def test_ecs_test_target_only_device_explicit_debug_is_not_rejected_by_sou
     """TARGET-1 不是任何规则的 source_device_code；来源限定的拒绝规则不应误伤目标设备。"""
 
     ecs_test_commands = FakeEcsTestCommandService()
+    debug_commands = FakeEventDebugCommandService()
     service, repository = _service(
         None,
         ecs_test_commands=ecs_test_commands,
+        event_debug_commands=debug_commands,
         workline_repository=_ecs_test_workline_repository(),
     )
 
@@ -970,6 +972,9 @@ async def test_ecs_test_target_only_device_explicit_debug_is_not_rejected_by_sou
 
     evidence = repository.evidences[receipt.source_event_id]
     assert evidence.normalized_payload["is_debug"] is True
+    assert await service.process_one() is True
+    assert debug_commands.evidences == [evidence]
+    assert ecs_test_commands.calls == []
 
 
 @pytest.mark.asyncio

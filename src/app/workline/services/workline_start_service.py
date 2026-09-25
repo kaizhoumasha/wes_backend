@@ -264,6 +264,10 @@ class WorkLineStartService:
                 raise WorkLineStartConfigurationError(str(exc)) from exc
         statuses_by_device = await self._verify_bindings_online(bindings)
         for rule in rules:
+            source_status = statuses_by_device[rule.source_device_code]
+            supported_events = source_status.device.supported_events
+            if supported_events is not None and "SCAN_COMPLETED" not in supported_events:
+                raise WorkLineStartConfigurationError(f"{rule.source_device_code} 不支持 SCAN_COMPLETED")
             status = statuses_by_device.get(rule.target_device_code)
             supported = status.device.supported_commands if status is not None else None
             if supported is not None and rule.task_type not in supported:

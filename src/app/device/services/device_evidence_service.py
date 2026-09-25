@@ -357,7 +357,7 @@ class DeviceEvidenceService:
         workline = (
             await self._worklines.get_for_update(db, evidence.workline_id) if evidence.workline_id is not None else None
         )
-        if workline is not None and workline.run_mode == WorkLineRunMode.ECS_TEST:
+        if not event.is_debug and workline is not None and workline.run_mode == WorkLineRunMode.ECS_TEST:
             rule = next(
                 (
                     item
