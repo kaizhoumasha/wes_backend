@@ -49,7 +49,7 @@ class PassageRow(Protocol):
 
 
 class PassageReader(Protocol):
-    async def ready_return_prefix_for_update(
+    async def ready_prefix_for_update(
         self, db: AsyncSession, workline_id: int, *, limit: int = 4
     ) -> tuple[PassageRow, ...]: ...
 
@@ -143,7 +143,7 @@ class ManualPickingBatchFlow:
         )
         if progress is None:
             if not allow_inbound:
-                rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+                rows = await self._passages.ready_prefix_for_update(db, workline_id)
                 return_bins = tuple(row.bin_code for row in rows)
                 if not return_bins or not await self._repository.return_retry_due(
                     db, workline_id, rack_id, rack_face, source_evidence_id, now, now
@@ -179,7 +179,7 @@ class ManualPickingBatchFlow:
             assert intent is not None
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
-        rows = await self._passages.ready_return_prefix_for_update(db, workline_id)
+        rows = await self._passages.ready_prefix_for_update(db, workline_id)
         return_bins: list[str] = []
         for row in rows:
             if not row.bin_code:

@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, or_, select
-from wes_plugin_sdk import BinBatchNoBatch, BinInboundBatchIntent, BinInboundBatchRackFaceDone, BinInboundBatchReady
+from wes_plugin_sdk import (
+    BinBatchNoBatch,
+    BinInboundBatchIntent,
+    BinInboundBatchRackFaceDone,
+    BinInboundBatchReady,
+    wms_operations,
+)
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -16,12 +22,13 @@ from src.app.execution.models import (
     WmsConfirmationStatus,
 )
 from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
+from src.app.wms_adapter.outbound_picking.inbound_batch_typed import decode_outcome as decode_inbound
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
+from .batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
 from .batch_result import INBOUND_STEP
-from .passage_model import ManualPickingPassage
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -45,6 +52,101 @@ class InboundFaceProgress:
 class BatchRepository:
     def __init__(self, history: BinBatchResultReader | None = None) -> None:
         self._history = history or BinBatchResultReader()
+
+    async def record_allocation(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        picking_task_id: int,
+        intent: BinInboundBatchIntent,
+        evidence_id: int,
+    ) -> None:
+        """冻结仍在运行的 Batch 身份；WMS 确认可在完成后清理。"""
+        batches = cast("Any", ManualPickingInboundBatch).__table__.c
+        row = await db.scalar(select(ManualPickingInboundBatch).where(batches.operation_id == intent.operation_id))
+        identity = (
+            workline_id,
+            picking_task_id,
+            intent.task_id,
+            intent.plan_revision,
+            intent.rack_id,
+            intent.rack_face,
+            evidence_id,
+        )
+        if row is not None:
+            if (
+                row.workline_id,
+                row.picking_task_id,
+                row.task_id,
+                row.plan_revision,
+                row.rack_id,
+                row.rack_face,
+                row.response_evidence_id,
+            ) != identity:
+                raise ValueError("inbound batch identity changed")
+            return
+        db.add(
+            ManualPickingInboundBatch(
+                workline_id=workline_id,
+                picking_task_id=picking_task_id,
+                operation_id=intent.operation_id,
+                task_id=intent.task_id,
+                plan_revision=intent.plan_revision,
+                rack_id=intent.rack_id,
+                rack_face=intent.rack_face,
+                response_evidence_id=evidence_id,
+            )
+        )
+
+    async def record_scan1(
+        self, db: AsyncSession, *, workline_id: int, picking_task_id: int, transport_task_id: str, bin_code: str
+    ) -> bool:
+        """只给来源 Transport 所属的当前 inbound Batch 记录一次进入执行。"""
+        bindings = cast("Any", TransportDecisionBinding).__table__.c
+        transports = cast("Any", TransportTask).__table__.c
+        members = cast("Any", TransportMember).__table__.c
+        binding = await db.scalar(
+            select(TransportDecisionBinding)
+            .join(TransportTask, bindings.client_request_id == transports.client_request_id)
+            .join(TransportMember, members.transport_task_id == transports.transport_task_id)
+            .where(
+                bindings.workline_id == workline_id,
+                bindings.picking_task_id == picking_task_id,
+                bindings.step == INBOUND_STEP,
+                transports.transport_task_id == transport_task_id,
+                members.object_type == "BIN",
+                members.object_id == bin_code,
+            )
+        )
+        if binding is None or not binding.correlation_id.startswith(f"{binding.resource_fence_id}:"):
+            return False
+        batches = cast("Any", ManualPickingInboundBatch).__table__.c
+        current = await db.scalar(
+            select(batches.id).where(
+                batches.workline_id == workline_id,
+                batches.picking_task_id == picking_task_id,
+                batches.operation_id == binding.resource_fence_id,
+                batches.response_evidence_id == binding.source_evidence_id,
+            )
+        )
+        if current is None:
+            return False
+        scans = cast("Any", ManualPickingInboundBatchScan).__table__.c
+        existing = await db.scalar(
+            select(scans.id).where(
+                scans.operation_id == binding.resource_fence_id,
+                scans.bin_code == bin_code,
+            )
+        )
+        if existing is not None:
+            return False
+        db.add(
+            ManualPickingInboundBatchScan(
+                workline_id=workline_id, operation_id=binding.resource_fence_id, bin_code=bin_code
+            )
+        )
+        return True
 
     async def has_unclosed_action_for_face(
         self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
@@ -178,17 +280,38 @@ class BatchRepository:
         rack_face: str,
         inlet_location: str,
     ) -> InboundFaceProgress | None:
-        detail = await self._history.latest_inbound_detail(
-            db,
-            workline_id=workline_id,
-            task_id=task_id,
-            plan_revision=plan_revision,
-            rack_id=rack_id,
-            rack_face=rack_face,
+        batches = cast("Any", ManualPickingInboundBatch).__table__.c
+        batch = await db.scalar(
+            select(ManualPickingInboundBatch).where(
+                batches.workline_id == workline_id,
+                batches.task_id == task_id,
+                batches.plan_revision == plan_revision,
+                batches.rack_id == rack_id,
+                batches.rack_face == rack_face,
+            )
         )
-        if detail is None:
+        if batch is None:
             return None
-        intent, outcome, evidence, _ = detail
+        evidence = await db.get(InboundEvidence, batch.response_evidence_id)
+        if (
+            evidence is None
+            or evidence.workline_id != workline_id
+            or evidence.kind != InboundEvidenceKind.WMS_RESULT
+            or evidence.operation != BIN_INBOUND_BATCH_OPERATION
+            or evidence.operation_id != batch.operation_id
+            or evidence.apply_status != "APPLIED"
+        ):
+            raise ValueError("current inbound batch lacks applied response evidence")
+        if evidence.published_at is None:
+            return None
+        intent = wms_operations.outbound_bin_inbound_batch(
+            operation_id=batch.operation_id,
+            task_id=batch.task_id,
+            plan_revision=batch.plan_revision,
+            rack_id=batch.rack_id,
+            rack_face=batch.rack_face,
+        )
+        outcome = decode_inbound(evidence.normalized_payload)
         result = outcome.result
         bindings = cast("Any", TransportDecisionBinding).__table__.c
         if isinstance(result, BinInboundBatchRackFaceDone):
@@ -206,7 +329,7 @@ class BatchRepository:
         if not isinstance(result, BinInboundBatchReady):
             raise TypeError("inbound face allocation has no determinate result")
         transports = cast("Any", TransportTask).__table__.c
-        passages = cast("Any", ManualPickingPassage).__table__.c
+        scans = cast("Any", ManualPickingInboundBatchScan).__table__.c
         batch_scope = (
             bindings.workline_id == workline_id,
             bindings.step == INBOUND_STEP,
@@ -240,16 +363,9 @@ class BatchRepository:
         scanned = set(
             (
                 await db.scalars(
-                    select(passages.bin_code).where(
-                        passages.workline_id == workline_id,
-                        passages.task_id == task_id,
-                        passages.scan1_evidence_id.is_not(None),
-                        passages.bin_code.in_(
-                            select(TransportMember.object_id).where(
-                                TransportMember.transport_task_id.in_(bound_task_ids),
-                                TransportMember.object_type == "BIN",
-                            )
-                        ),
+                    select(scans.bin_code).where(
+                        scans.workline_id == workline_id,
+                        scans.operation_id == intent.operation_id,
                     )
                 )
             ).all()

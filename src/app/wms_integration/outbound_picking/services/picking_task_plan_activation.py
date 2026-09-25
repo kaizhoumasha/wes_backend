@@ -115,19 +115,21 @@ class PickingTaskPlanActivationService:
                 or (line.plugin_key, line.plugin_version) != plugin_identity
             ):
                 return 0
-            if self._workline_reserved is not None and await self._workline_reserved(db, workline_id):
-                return 0
             driver = self._batch_drivers.get(plugin_identity)
+            project_exits = getattr(driver, "project_exits_in_session", None)
+            exited = await project_exits(db, line) if project_exits is not None else 0
+            if self._workline_reserved is not None and await self._workline_reserved(db, workline_id):
+                return exited
             old_count = await driver.advance_completed_in_session(db, line) if driver is not None else 0
             task = await self._tasks.get_executing_for_workline_for_update(db, workline_id)
             if task is None:
-                return old_count
+                return exited + old_count
             if (
                 task.status != PickingTaskStatus.EXECUTING
                 or task.plan_blocked_evidence_id is not None
                 or task.last_applied_plan_revision < 1
             ):
-                return old_count
+                return exited + old_count
             steps = (TARGET_RACK_IN_STEP, BIN_SOURCE_RACK_IN_STEP, RETURN_RACK_IN_STEP)
             decided_racks = await self._bindings.list_task_resource_fence_ids(
                 db,
@@ -192,7 +194,7 @@ class PickingTaskPlanActivationService:
             completion = self._completion_drivers.get(plugin_identity)
             batch_count = await driver.advance_in_session(db, line, task) if driver is not None else 0
             completion_count = await completion.advance_in_session(db, line, task) if completion is not None else 0
-            return old_count + inbound_count + batch_count + completion_count
+            return exited + old_count + inbound_count + batch_count + completion_count
 
     async def _pending_bin_racks(
         self, db: Any, task: Any, decided_members: set[tuple[int, str]]

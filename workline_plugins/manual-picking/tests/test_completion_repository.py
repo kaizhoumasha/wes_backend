@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 import wes_plugin_sdk as sdk
+from manual_picking.application.batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
+from manual_picking.application.batch_repository import BatchRepository
 from manual_picking.application.completion_flow import ManualPickingCompletionFlow
 from manual_picking.application.completion_repository import ManualPickingCompletionRepository
 from manual_picking.application.passage_model import ManualPickingPassage
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.app.execution.models import InboundEvidence, TransportDecisionBinding
@@ -22,6 +24,46 @@ from src.app.wms_integration.outbound_picking.models import (
 from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
     PickingTaskCancelRepository,
 )
+
+
+async def _record_inbound_decision(db, operation_id, result):  # type: ignore[no-untyped-def]
+    now = datetime(2026, 9, 14, 4)
+    data = (
+        {"result": "RACK_FACE_DONE"}
+        if isinstance(result, sdk.BinInboundBatchRackFaceDone)
+        else {
+            "result": "READY",
+            "bins": [
+                {
+                    "bin_code": "BIN-1",
+                    "source_locator": {"type": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "S-1"},
+                }
+            ],
+        }
+    )
+    evidence = InboundEvidence(
+        kind="WMS_RESULT",
+        source_identity=f"wms:{operation_id}",
+        payload_digest="a" * 64,
+        normalized_payload={"operation_id": operation_id, "code": "DECIDED", "timestamp": 1, "data": data},
+        received_at=now,
+        published_at=now,
+        decision_digest="b" * 64,
+        workline_id=7,
+        operation="outbound.bin.inbound_batch@v1",
+        operation_id=operation_id,
+        apply_status="APPLIED",
+    )
+    db.add(evidence)
+    await db.flush()
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+    )
+    await BatchRepository().record_allocation(
+        db, workline_id=7, picking_task_id=11, intent=intent, evidence_id=evidence.id
+    )
+    await db.flush()
+    return evidence
 
 
 @pytest.mark.asyncio
@@ -39,6 +81,8 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             DirectPickFaceCompletion.__table__,
             PickingTaskBinSourceRack.__table__,
             ManualPickingPassage.__table__,
+            ManualPickingInboundBatch.__table__,
+            ManualPickingInboundBatchScan.__table__,
             TransportDecisionBinding.__table__,
             TransportTask.__table__,
             TransportMember.__table__,
@@ -46,28 +90,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
-    class History:
-        done = False
-        result = sdk.BinInboundBatchRackFaceDone()
-
-        async def latest_inbound_detail(self, _db, *, workline_id, task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
-            assert plan_revision == 1
-            assert (workline_id, task_id, rack_id, rack_face) == (7, "PICK-1", "R1", "90")
-            return (
-                (
-                    sdk.wms_operations.outbound_bin_inbound_batch(
-                        operation_id="batch-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
-                    ),
-                    sdk.BinInboundBatchOutcome(self.result),
-                    SimpleNamespace(id=31),
-                    datetime(2026, 9, 14, 4),
-                )
-                if self.done
-                else None
-            )
-
-    history = History()
-    repository = ManualPickingCompletionRepository(history=history)
+    repository = ManualPickingCompletionRepository()
     line = SimpleNamespace(
         id=7,
         position_bindings={"INLET": {"location_id": "CNV0301"}},
@@ -89,14 +112,14 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             db.add(source_row)
             await db.flush()
             assert not await repository.ready_to_confirm(db, line, task)
-            history.done = True
+            await _record_inbound_decision(
+                db, "019f0000-0000-7000-8000-000000000021", sdk.BinInboundBatchRackFaceDone()
+            )
             assert await repository.ready_to_confirm(db, line, task)
             source_row.cancelled_evidence_id = 99
-            history.done = False
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
             source_row.cancelled_evidence_id = None
-            history.done = True
 
             pending_scan = InboundEvidence(
                 kind="DEVICE_EVENT",
@@ -123,14 +146,12 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
                 scan1_evidence_id=1,
                 scan1_received_at=datetime(2026, 9, 14, 4),
                 disposition="OPEN",
-                return_state="NONE",
             )
             db.add(passage)
             await db.flush()
             assert not await repository.ready_to_confirm(db, line, task)
             passage.wms_result = "NORMAL"
             passage.disposition = "NORMAL"
-            passage.return_state = "READY"
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
 
@@ -187,7 +208,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             await db.delete(second_pick)
             await db.delete(face_completion)
             await db.delete(direct_pick)
-            history.done = False
+            await db.delete(await db.scalar(select(ManualPickingInboundBatch)))
             binding = TransportDecisionBinding(
                 correlation_id="pt:11:e:1:rack:R1",
                 step="PICKING_TASK_BIN_SOURCE_RACK_IN",
@@ -249,10 +270,10 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             transport.published_outcome_version = 1
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
-            history.done = True
-            history.result = sdk.BinInboundBatchReady(
+            ready = sdk.BinInboundBatchReady(
                 (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
             )
+            await _record_inbound_decision(db, "019f0000-0000-7000-8000-000000000022", ready)
             assert not (await repository._batches.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).complete
             assert not await repository.ready_to_confirm(db, line, task)
     finally:
@@ -273,6 +294,8 @@ async def test_target_only_plan_waits_for_confirmed_target_transport() -> None:
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
             ManualPickingPassage.__table__,
+            ManualPickingInboundBatch.__table__,
+            ManualPickingInboundBatchScan.__table__,
         ):
             await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -345,24 +368,14 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
             DirectPickFaceCompletion.__table__,
             PickingTaskBinSourceRack.__table__,
             ManualPickingPassage.__table__,
+            ManualPickingInboundBatch.__table__,
+            ManualPickingInboundBatchScan.__table__,
             TransportDecisionBinding.__table__,
             TransportTask.__table__,
             TransportMember.__table__,
         ):
             await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-
-    class History:
-        async def latest_inbound_detail(self, _db, *, workline_id, task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
-            assert plan_revision == 1
-            return (
-                sdk.wms_operations.outbound_bin_inbound_batch(
-                    operation_id="batch-1", task_id=task_id, plan_revision=1, rack_id=rack_id, rack_face=rack_face
-                ),
-                sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone()),
-                SimpleNamespace(id=31),
-                datetime(2026, 9, 14, 4),
-            )
 
     class Scheduler:
         def __init__(self) -> None:
@@ -376,7 +389,7 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
             return None
 
     scheduler = Scheduler()
-    repository = ManualPickingCompletionRepository(history=History(), completion_reader=Completions())
+    repository = ManualPickingCompletionRepository(completion_reader=Completions())
     flow = ManualPickingCompletionFlow(repository, scheduler, uuid_factory=lambda: "op-complete")
     line = SimpleNamespace(
         id=7,
@@ -409,6 +422,9 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
                 )
             )
             await db.flush()
+            await _record_inbound_decision(
+                db, "019f0000-0000-7000-8000-000000000023", sdk.BinInboundBatchRackFaceDone()
+            )
             # 直接取料面未结清时，完成确认必须等待。
             assert await flow.advance_in_session(db, line, task, now=now) == 0
             assert scheduler.intents == []

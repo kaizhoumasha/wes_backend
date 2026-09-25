@@ -547,6 +547,46 @@ async def test_evidence_update_is_published_only_after_commit_and_failure_is_iso
 
 
 @pytest.mark.asyncio
+async def test_applied_workline_position_evidence_wakes_plan_driver_after_commit(
+    service: TransportService, db_engine: object
+) -> None:
+    wakeup = Mock()
+    service._progress_wakeup = wakeup
+    service._progress_hook = AsyncMock(return_value=False)
+    await confirm_rack_faces(db_engine, {"rack-position-wakeup": "90"})
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        workline_id = await ensure_projection_authority(db)
+        handle = await service.move_bins_in_session(
+            db,
+            new_uuid7(),
+            _caller(),
+            (BinMove("bin-position-wakeup", RackBinSlot("rack-position-wakeup", "90", "1"), HandoffPosition("OUT")),),
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+    message = {
+        "operation_id": new_uuid7(),
+        "operation": "transport.task.member_position_changed@v1",
+        "timestamp": 1,
+        "data": {
+            "transport_task_id": handle.transport_task_id,
+            "container_id": "bin-position-wakeup",
+            "milestone": "SOURCE_PICKED",
+        },
+    }
+    await service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=message["data"],
+        rejection_reason_code=None,
+    )
+    assert wakeup.call_count == 0
+    assert await service.process_pending_evidence(1) == 1
+    wakeup.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_four_public_methods_create_one_reliable_task_each(
     service: TransportService,
     db_engine: object,

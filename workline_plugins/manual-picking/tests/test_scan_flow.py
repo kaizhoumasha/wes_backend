@@ -216,17 +216,56 @@ class _Passages:
             (
                 row
                 for row in self.rows
-                if command_code
+                if row.disposition != "CLOSED"
+                and command_code
                 in (
                     row.scan1_command_code,
                     row.scan2_command_code,
                     row.scan2_fault_command_code,
-                    row.scan3_command_code,
-                    row.scan4_command_code,
                 )
             ),
             None,
         )
+
+
+class _Returns:
+    def __init__(self) -> None:
+        self.rows = []
+
+    async def add(self, db, row):  # type: ignore[no-untyped-def]
+        self.rows.append(row)
+        row.id = len(self.rows)
+        return row
+
+    async def current_bin_for_update(self, db, workline_id, bin_code):  # type: ignore[no-untyped-def]
+        return next(
+            (
+                row
+                for row in self.rows
+                if row.workline_id == workline_id
+                and row.bin_code == bin_code
+                and row.return_state not in {"EXITED", "VOIDED"}
+            ),
+            None,
+        )
+
+    async def by_command_code_for_update(self, db, command_code):  # type: ignore[no-untyped-def]
+        return next(
+            (row for row in self.rows if command_code in (row.scan3_command_code, row.scan4_command_code)),
+            None,
+        )
+
+
+class _BatchProgress:
+    def __init__(self) -> None:
+        self.scanned = set()
+
+    async def record_scan1(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        bin_code = kwargs["bin_code"]
+        if bin_code in self.scanned:
+            return False
+        self.scanned.add(bin_code)
+        return True
 
 
 class _Commands:
@@ -283,7 +322,13 @@ class _WmsReader:
 
 
 def _setup(
-    *, transport_reader=None, missing_projection=None, failed_transport=None, batch_reader=None, batch_result=None
+    *,
+    transport_reader=None,
+    missing_projection=None,
+    failed_transport=None,
+    batch_reader=None,
+    batch_result=None,
+    returns=None,
 ):  # type: ignore[no-untyped-def]
     evidences = _Evidence(_scan(1, "S1", "A000000001-B"), _scan(2, "S2", "A000000001-C"))
     passages = _Passages(evidences)
@@ -294,6 +339,8 @@ def _setup(
         worklines=_WorkLines(),
         tasks=_Tasks(),
         passages=passages,
+        returns=returns or _Returns(),
+        batch_progress=_BatchProgress(),
         commands=commands,
         command_reader=commands,
         admissions=admissions,
@@ -480,7 +527,7 @@ async def test_return_decision_still_applies_for_original_completed_task() -> No
 
 
 @pytest.mark.asyncio
-async def test_return_transport_result_closes_only_matching_requested_fifo_prefix() -> None:
+async def test_return_transport_final_result_does_not_close_fifo_without_source_picked() -> None:
     rows = [
         SimpleNamespace(bin_code="A000000001", return_state="RETURN_REQUESTED", disposition="NORMAL"),
         SimpleNamespace(bin_code="A000000002", return_state="RETURN_REQUESTED", disposition="NORMAL"),
@@ -518,8 +565,7 @@ async def test_return_transport_result_closes_only_matching_requested_fifo_prefi
     evidence = SimpleNamespace(transport_task_id="move-1", normalized_payload=payload)
 
     assert await flow._apply_transport_result(object(), evidence, 7) == "SUCCEEDED"
-    assert [row.return_state for row in rows] == ["RETURNED", "RETURNED", "READY"]
-    assert [row.disposition for row in rows] == ["CLOSED", "CLOSED", "NORMAL"]
+    assert [row.return_state for row in rows] == ["RETURN_REQUESTED", "RETURN_REQUESTED", "READY"]
 
 
 def _wms(evidence_id: int, kind: InboundEvidenceKind, operation_id: str, data: dict) -> InboundEvidence:
@@ -1145,7 +1191,7 @@ async def test_wait_creates_new_due_admission_without_releasing_point2() -> None
 
 @pytest.mark.asyncio
 async def test_scan3_unknown_goes_left_and_scan4_unreadable_holds() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
+    flow, evidences, _passages, commands, admissions = _setup()
     evidences.rows[3] = _scan(3, "S3", "A000000099-B")
     evidences.rows[4] = _scan(4, "S4", "A000000001-C")
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1169,12 +1215,12 @@ async def test_scan3_unknown_goes_left_and_scan4_unreadable_holds() -> None:
         await flow.apply_in_session(object(), 4, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
     assert len(commands.requests) == before
-    assert passages.rows[0].return_state == "NONE"
+    assert flow._returns.rows == []
 
 
 @pytest.mark.asyncio
 async def test_unassociated_unpublished_evidence_does_not_block_any_scan_point() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
+    flow, evidences, _passages, commands, admissions = _setup()
     for evidence_id, device_code in enumerate(("S1", "S2", "S3", "S4"), start=101):
         historical = _scan(evidence_id, device_code, "UNASSOCIATED")
         historical.received_at = NOW - timedelta(seconds=1)
@@ -1191,7 +1237,7 @@ async def test_unassociated_unpublished_evidence_does_not_block_any_scan_point()
     assert (await flow.apply_in_session(object(), 3, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passages.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_evidence_id == 5
     assert [request.task_type for request in commands.requests] == [
         "MOVE_FORWARD",
         "MOVE_FORWARD",
@@ -1211,11 +1257,11 @@ async def test_scan3_current_valid_b_overrides_scan1_direct_route() -> None:
     assert passages.rows[0].bin_code == "A000000001"
     assert passages.rows[0].scan3_evidence_id == 3
     assert [request.task_type for request in commands.requests] == ["MOVE_RIGHT", "MOVE_FORWARD"]
-    assert passages.rows[0].disposition == "NORMAL"
+    assert passages.rows[0].disposition == "CLOSED"
     assert passages.rows[0].scan2_evidence_id is None
     evidences.rows[4] = _scan(4, "S4", "A000000001-B")
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passages.rows[0].scan4_evidence_id == 4
+    assert flow._returns.rows[0].scan4_evidence_id == 4
 
 
 @pytest.mark.asyncio
@@ -1307,12 +1353,12 @@ async def test_scan4_enters_return_buffer_only_after_matching_ecs_success() -> N
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     passage = passages.rows[0]
-    assert passage.return_state == "MOVE_PENDING"
-    assert passage.scan4_command_code == f"COMMAND-{len(commands.requests)}"
-    evidences.rows[6] = _result(6, passage.scan4_command_code)
+    assert flow._returns.rows[0].return_state == "MOVE_PENDING"
+    assert flow._returns.rows[0].scan4_command_code == f"COMMAND-{len(commands.requests)}"
+    evidences.rows[6] = _result(6, flow._returns.rows[0].scan4_command_code)
 
     assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passage.return_state == "READY"
+    assert flow._returns.rows[0].return_state == "READY"
     projection = await flow._positions.get(object(), "BIN", passage.bin_code, for_update=True)
     assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "OUTLET-POSITION"}
     assert projection.position_unknown is False
@@ -1320,7 +1366,7 @@ async def test_scan4_enters_return_buffer_only_after_matching_ecs_success() -> N
 
 @pytest.mark.asyncio
 async def test_scan4_does_not_enter_return_buffer_for_acknowledged_command() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
+    flow, evidences, _passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S4", "A000000001-B")
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1331,19 +1377,19 @@ async def test_scan4_does_not_enter_return_buffer_for_acknowledged_command() -> 
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
     await flow.apply_in_session(object(), 5, workline_id=7)
-    command_code = passages.rows[0].scan4_command_code
+    command_code = flow._returns.rows[0].scan4_command_code
     commands.statuses[command_code] = "ACKNOWLEDGED"
     evidences.rows[6] = _result(6, command_code)
 
     assert (
         await flow.apply_in_session(object(), 6, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert passages.rows[0].return_state == "MOVE_PENDING"
+    assert flow._returns.rows[0].return_state == "MOVE_PENDING"
 
 
 @pytest.mark.asyncio
 async def test_scan4_first_arrival_does_not_wait_for_unrelated_device_command() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
+    flow, evidences, _passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S4", "A000000001-B")
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1357,8 +1403,8 @@ async def test_scan4_first_arrival_does_not_wait_for_unrelated_device_command() 
     commands.statuses["COMMAND-4"] = "ACKNOWLEDGED"
 
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passages.rows[0].scan4_evidence_id == 5
-    assert passages.rows[0].scan4_received_at == evidences.rows[5].received_at
+    assert flow._returns.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_event_time == evidences.rows[5].normalized_payload["timestamp"]
     assert commands.statuses["COMMAND-4"] == "ACKNOWLEDGED"
 
 
@@ -1374,22 +1420,22 @@ async def test_scan4_freezes_first_arrival_while_own_scan3_result_is_pending() -
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
-    passage = passages.rows[0]
-    commands.statuses[passage.scan3_command_code] = "ACKNOWLEDGED"
+    passages.rows[0]
+    commands.statuses[flow._returns.rows[0].scan3_command_code] = "ACKNOWLEDGED"
     before = len(commands.requests)
 
     waiting = await flow.apply_in_session(object(), 5, workline_id=7)
     assert waiting.disposition is BusinessEvidenceDisposition.DEFERRED
-    assert passage.scan4_evidence_id == 5
-    assert passage.scan4_received_at == evidences.rows[5].received_at
-    assert passage.scan4_command_code is None
+    assert flow._returns.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_event_time == evidences.rows[5].normalized_payload["timestamp"]
+    assert flow._returns.rows[0].scan4_command_code is None
     assert len(commands.requests) == before
 
-    first_arrival = passage.scan4_received_at
-    commands.statuses[passage.scan3_command_code] = "SUCCEEDED"
+    first_arrival = flow._returns.rows[0].scan4_event_time
+    commands.statuses[flow._returns.rows[0].scan3_command_code] = "SUCCEEDED"
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passage.scan4_received_at == first_arrival
-    assert passage.scan4_command_code == f"COMMAND-{before + 1}"
+    assert flow._returns.rows[0].scan4_event_time == first_arrival
+    assert flow._returns.rows[0].scan4_command_code == f"COMMAND-{before + 1}"
     assert len(commands.requests) == before + 1
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert len(commands.requests) == before + 1
@@ -1407,16 +1453,16 @@ async def test_scan4_timed_out_scan3_keeps_first_arrival_without_waiting_forever
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
-    passage = passages.rows[0]
-    commands.statuses[passage.scan3_command_code] = "TIMED_OUT"
+    passages.rows[0]
+    commands.statuses[flow._returns.rows[0].scan3_command_code] = "TIMED_OUT"
     before = len(commands.requests)
 
     assert (
         await flow.apply_in_session(object(), 5, workline_id=7)
     ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert passage.scan4_evidence_id == 5
-    assert passage.scan4_received_at == evidences.rows[5].received_at
-    assert passage.scan4_command_code is None
+    assert flow._returns.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_event_time == evidences.rows[5].normalized_payload["timestamp"]
+    assert flow._returns.rows[0].scan4_command_code is None
     assert len(commands.requests) == before
 
 
@@ -1452,19 +1498,20 @@ async def test_scan3_rescan_waits_while_first_command_is_pending() -> None:
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
-    frozen_command = passages.rows[0].scan3_command_code
+    frozen_command = flow._returns.rows[0].scan3_command_code
     commands.statuses[frozen_command] = "ACKNOWLEDGED"
     before = len(commands.requests)
 
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
     assert len(commands.requests) == before
     assert passages.rows[0].scan3_evidence_id == 4
-    assert passages.rows[0].scan3_command_code == frozen_command
-    assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+    assert flow._returns.rows[0].scan3_command_code == frozen_command
+    assert commands.requests[-1].task_type == "MOVE_FORWARD"
 
 
 @pytest.mark.asyncio
-async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state() -> None:
+@pytest.mark.parametrize("terminal_status", ["FAILED", "TIMED_OUT"])
+async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state(terminal_status: str) -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S3", "A000000001-B")
@@ -1475,15 +1522,20 @@ async def test_scan3_rescan_retries_after_first_command_reaches_terminal_state()
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
-    stuck_command = passages.rows[0].scan3_command_code
-    commands.statuses[stuck_command] = "TIMED_OUT"
+    stuck_command = flow._returns.rows[0].scan3_command_code
+    commands.statuses[stuck_command] = terminal_status
     before = len(commands.requests)
 
     assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
     assert len(commands.requests) == before + 1
-    assert passages.rows[0].scan3_evidence_id == 5
-    assert passages.rows[0].scan3_command_code != stuck_command
-    assert passages.rows[0].scan3_route == "MOVE_FORWARD"
+    assert passages.rows[0].scan3_evidence_id == 4
+    assert flow._returns.rows[0].scan3_command_code != stuck_command
+    assert commands.requests[-1].task_type == "MOVE_FORWARD"
+
+    retry_command = flow._returns.rows[0].scan3_command_code
+    assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert flow._returns.rows[0].scan3_command_code == retry_command
 
 
 @pytest.mark.asyncio
@@ -1498,7 +1550,7 @@ async def test_scan3_rescan_after_command_success_creates_no_new_action() -> Non
     )
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
-    succeeded_command = passages.rows[0].scan3_command_code
+    succeeded_command = flow._returns.rows[0].scan3_command_code
     commands.statuses[succeeded_command] = "SUCCEEDED"
     before = len(commands.requests)
 
@@ -1507,7 +1559,7 @@ async def test_scan3_rescan_after_command_success_creates_no_new_action() -> Non
     ).disposition is BusinessEvidenceDisposition.RECONCILING
     assert len(commands.requests) == before
     assert passages.rows[0].scan3_evidence_id == 4
-    assert passages.rows[0].scan3_command_code == succeeded_command
+    assert flow._returns.rows[0].scan3_command_code == succeeded_command
 
 
 @pytest.mark.asyncio
@@ -1559,7 +1611,7 @@ async def test_scan3_known_bin_does_not_wait_for_unrelated_unknown_command() -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unresolved", ["ACKNOWLEDGED", "RECONCILING"])
-async def test_scan3_known_bin_waits_for_own_scan2_result_before_routing(unresolved: str) -> None:
+async def test_scan3_known_bin_does_not_wait_for_own_scan2_result_after_arrival(unresolved: str) -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1572,18 +1624,57 @@ async def test_scan3_known_bin_waits_for_own_scan2_result_before_routing(unresol
     commands.statuses[passage.scan2_command_code] = unresolved
     before = len(commands.requests)
 
-    assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
-    assert passage.scan3_evidence_id is None
-    assert len(commands.requests) == before
-
-    commands.statuses[passage.scan2_command_code] = "SUCCEEDED"
     assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
-    assert passage.scan3_route == "MOVE_FORWARD"
+    assert passage.disposition == "CLOSED"
+    assert flow._returns.rows[0].scan3_command_code is not None
     assert len(commands.requests) == before + 1
 
 
 @pytest.mark.asyncio
-async def test_scan3_timed_out_scan2_does_not_route_to_ng_or_wait_forever() -> None:
+async def test_scan3_arrival_handoff_and_late_scan2_result_do_not_change_return() -> None:
+    returns = _Returns()
+    flow, evidences, passages, commands, admissions = _setup(returns=returns)
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    passage = passages.rows[0]
+    commands.statuses[passage.scan2_command_code] = "RECONCILING"
+
+    assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert passage.disposition == "CLOSED"
+    assert len(returns.rows) == 1
+    row = returns.rows[0]
+    assert row.scan3_evidence_id == 4 and row.scan3_command_code is not None
+
+    passages.rows.clear()  # CLOSED Passage 不再是运行数据。
+    commands.statuses[passage.scan2_command_code] = "FAILED"
+    assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert returns.rows == [row]
+    assert row.return_state == "NONE"
+    evidences.rows[7] = _result(7, passage.scan2_command_code, device_code="S2")
+    assert (await flow.apply_in_session(object(), 7, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert row.return_state == "NONE"
+    evidences.rows[5] = _scan(5, "S4", "A000000001-B")
+    assert (await flow.apply_in_session(object(), 5, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert row.scan4_evidence_id == 5 and row.return_state == "MOVE_PENDING"
+    evidences.rows[6] = _result(6, row.scan4_command_code)
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert row.return_state == "READY"
+    commands.statuses[row.scan3_command_code] = "FAILED"
+    evidences.rows[8] = _scan(8, "S3", "A000000001-B")
+    count = len(commands.requests)
+    assert (
+        await flow.apply_in_session(object(), 8, workline_id=7)
+    ).disposition is BusinessEvidenceDisposition.RECONCILING
+    assert len(commands.requests) == count
+
+
+@pytest.mark.asyncio
+async def test_scan3_timed_out_scan2_result_does_not_override_arrival() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     await flow.apply_in_session(object(), 1, workline_id=7)
@@ -1596,16 +1687,15 @@ async def test_scan3_timed_out_scan2_does_not_route_to_ng_or_wait_forever() -> N
     commands.statuses[passage.scan2_command_code] = "TIMED_OUT"
     before = len(commands.requests)
 
-    assert (
-        await flow.apply_in_session(object(), 4, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert passage.scan3_evidence_id is None
-    assert len(commands.requests) == before
+    assert (await flow.apply_in_session(object(), 4, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert passage.scan3_evidence_id == 4 and passage.disposition == "CLOSED"
+    assert len(commands.requests) == before + 1
+    assert flow._returns.rows[0].scan3_evidence_id == 4
 
 
 @pytest.mark.asyncio
 async def test_scan4_rescan_preserves_first_fifo_order_and_command() -> None:
-    flow, evidences, passages, commands, admissions = _setup()
+    flow, evidences, _passages, commands, admissions = _setup()
     evidences.rows[4] = _scan(4, "S3", "A000000001-B")
     evidences.rows[5] = _scan(5, "S4", "A000000001-B")
     evidences.rows[6] = _scan(6, "S4", "A000000001-B")
@@ -1617,16 +1707,48 @@ async def test_scan4_rescan_preserves_first_fifo_order_and_command() -> None:
     await flow.apply_in_session(object(), 3, workline_id=7)
     await flow.apply_in_session(object(), 4, workline_id=7)
     await flow.apply_in_session(object(), 5, workline_id=7)
-    frozen_command = passages.rows[0].scan4_command_code
+    frozen_command = flow._returns.rows[0].scan4_command_code
+    commands.statuses[frozen_command] = "ACKNOWLEDGED"
     before = len(commands.requests)
 
-    assert (
-        await flow.apply_in_session(object(), 6, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
     assert len(commands.requests) == before
-    assert passages.rows[0].scan4_evidence_id == 5
-    assert passages.rows[0].scan4_command_code == frozen_command
-    assert passages.rows[0].return_state == "MOVE_PENDING"
+    assert flow._returns.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_command_code == frozen_command
+    assert flow._returns.rows[0].return_state == "MOVE_PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["FAILED", "TIMED_OUT"])
+async def test_scan4_rescan_after_terminal_command_preserves_first_arrival(terminal_status: str) -> None:
+    flow, evidences, _, commands, admissions = _setup()
+    evidences.rows[4] = _scan(4, "S3", "A000000001-B")
+    evidences.rows[5] = _scan(5, "S4", "A000000001-B")
+    evidences.rows[6] = _scan(6, "S4", "A000000001-B")
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _wms(
+        3, InboundEvidenceKind.WMS_RESULT, admissions.intents[0].operation_id, {"result": "NO_WORK"}
+    )
+    await flow.apply_in_session(object(), 3, workline_id=7)
+    await flow.apply_in_session(object(), 4, workline_id=7)
+    await flow.apply_in_session(object(), 5, workline_id=7)
+    first_arrival = flow._returns.rows[0].scan4_event_time
+    failed_command = flow._returns.rows[0].scan4_command_code
+    commands.statuses[failed_command] = terminal_status
+    before = len(commands.requests)
+
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert flow._returns.rows[0].scan4_evidence_id == 5
+    assert flow._returns.rows[0].scan4_event_time == first_arrival
+    assert flow._returns.rows[0].scan4_command_code != failed_command
+    assert flow._returns.rows[0].return_state == "MOVE_PENDING"
+
+    retry_command = flow._returns.rows[0].scan4_command_code
+    assert (await flow.apply_in_session(object(), 6, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == before + 1
+    assert flow._returns.rows[0].scan4_command_code == retry_command
 
 
 @pytest.mark.asyncio

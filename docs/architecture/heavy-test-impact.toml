@@ -3069,6 +3069,13 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "migrations/versions/20260925_0615_62bd827f763b_拆分料箱回程事实表.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "tests/mock/data/kt16_manual_picking_good_case.json"
 heavy_tests = ["tests/mock/test_wms_transport_mock_server.py"]
 

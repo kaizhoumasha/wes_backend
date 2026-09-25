@@ -1,7 +1,7 @@
 """add ecs_test run mode
 
 Revision ID: 5bac3de5c2b5
-Revises: b6b5d9240f51
+Revises: 62bd827f763b
 Create Date: 2026-09-25 06:11:28.737557+08:00
 
 """
@@ -14,7 +14,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "5bac3de5c2b5"
-down_revision: Union[str, Sequence[str], None] = "b6b5d9240f51"
+down_revision: Union[str, Sequence[str], None] = "62bd827f763b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

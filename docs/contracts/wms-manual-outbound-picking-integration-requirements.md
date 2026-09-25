@@ -230,7 +230,7 @@ WES 在点2的唯一职责是：
 不可读、后缀错误、身份不唯一或经过点2但缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
 若无法关联任何经过且本点已有未闭合方向命令，新扫码先留证对账，不另下发第二条物理命令；“不停箱”不允许越过结果未知的原命令。
 已关联当前经过的料箱只等待自身因果前置；另一料箱在同设备的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
-已识别正常料箱的点2方向命令尚未取得确定结果时，点3到位 Evidence 仍使 Passage 结束并同事务创建 Return；后续点3 Action 等待原结果，不能把未决状态解释为 NG 或下发 `MOVE_LEFT`。
+已取得 WMS 确定正常授权的料箱到达点3，点2方向命令即使未取得确定结果，点3到位 Evidence 仍使 Passage 结束，并同事务创建 Return 与点3正常方向 Command；点2 Command 迟到终态只保留原命令审计，不再驱动回程状态机。WMS 业务决定未决是另一种情况：原点3 Evidence 等待该决定，不能据此猜 NG、创建正常 Return 或下发方向 Command。
 
 | 当前处置 | 决定来源 | point3 动作 |
 | --- | --- | --- |
@@ -243,13 +243,13 @@ WES 在点2的唯一职责是：
 料箱 NG 作为独立分支保存实际原因、实际扫码、原决定与命令关联，不填充预期条码冒充实际码。
 插件通过 DeviceCommand 完成必要分流，不发送 NG 出口报告，不等待 WMS 人工处理完成。正常业务结束不删除有效位置或解除未决物理动作。
 匹配的权威离位/释放事实解除当前工位等待，同箱后续合法到位才建立新的处理关联。
-点3首次有效到位是 Passage 的闭合点；正常箱在同一事务创建 Return，NG 箱只由原 DeviceCommand 跟踪分流结果，NGZone 后续人工处理不属于本插件。重复投递同一 Evidence 不创建新命令；原命令明确失败后的真实重扫按现有准入规则创建新 Evidence/Command，不能覆写首次到位事实。
+点3首次有效到位是 Passage 的闭合点；正常箱在同一事务创建 Return，NG 箱只由原 DeviceCommand 跟踪分流结果，NGZone 后续人工处理不属于本插件。重复投递同一 Evidence 不创建新命令；原命令未到终态时等待其结果，明确 `FAILED`/`TIMED_OUT` 且目标事实尚未满足时，真实重扫为同一 Requirement 创建新 Command，不能覆写首次到位事实。
 
 ### 3\.4 点4：实际到位后进入物理 FIFO {#34-4}
 
 点4独立校验实际扫码的 `-B` 后缀，并唯一关联当前未退出的 Return。不可读、后缀错误或身份不确定时保持点位占用，不创建 `MOVE_FORWARD`，也不伪造 FIFO admission。已识别正常箱首次有效 SCAN4 到位即冻结 Evidence 和设备扫码发生时间并进入本线物理 FIFO；若前序 SCAN3 放行尚未确定，只延迟后续 Action。匹配 SCAN4 `MOVE_FORWARD` 的 ECS `SUCCESS` 使当前 Return 具备批次资格；ACK 和本地命令创建均不能代替到位或放行事实。队首未取得物理退出事实时不得跳过，后续候选不能越序进入
 `outbound.bin.return_batch@v1`；目标货架分配及搬回货架仍按出库合同 §9.2.2 执行。
-点4首次扫码冻结 FIFO admission/order，重复投递同一 Evidence 不重复建命令；当前命令明确失败后的真实重扫可更新 Command pointer，但不得改变首次 SCAN4 Evidence 和顺序时间。
+点4首次扫码冻结 FIFO admission/order，重复投递同一 Evidence 不重复建命令；当前命令未到终态时等待其结果，明确 `FAILED`/`TIMED_OUT` 且目标事实尚未满足时，真实重扫可为同一 Requirement 创建新 Command 并更新 Command pointer，但不得改变首次 SCAN4 Evidence 和顺序时间。
 **SCAN4 首次实际到位决定物理 FIFO 顺序；匹配的 `MOVE_FORWARD` ECS `SUCCESS` 决定批次资格。** `return_batch` 先按首次到位顺序排列全部未退出的 Return，再从队首取连续已具备资格的前缀；不得先筛 `READY` 再排序，也不得按命令完成顺序重排。`MOVE_PENDING` 或 `RETURN_REQUESTED` 队首在实际退出 OUTLET 前仍阻塞后项；只有冻结来源为本线 OUTLET 的权威逐箱 `SOURCE_PICKED` 已应用，或有明确异常物理退出 Evidence，才可关闭 Return 并释放 FIFO。`TARGET_PLACED`/Transport `SUCCEEDED` 只关闭后续 Transport，不作为 Return 正常关闭条件。
 
 ### 3\.5 退料货架直接取料 {#35-direct-pick}
