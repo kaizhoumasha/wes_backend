@@ -74,6 +74,9 @@ class _Repository:
         del db, for_update
         return next((run for run in self.runs.values() if run.active_scope == "GLOBAL"), None)
 
+    async def lock_ecs_test_mutual_exclusion(self, db: object) -> None:
+        del db
+
     async def add_run(self, db: object, run: TransportDebugRun, first_step: TransportDebugRunStep) -> None:
         del db
         self.runs[run.run_id] = run

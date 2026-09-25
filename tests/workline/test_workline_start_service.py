@@ -174,6 +174,9 @@ class _FakeDebugRuns:
             return None
         return SimpleNamespace(configuration_json={"scan_device_codes": self.scan_device_codes})
 
+    async def lock_ecs_test_mutual_exclusion(self, _db: object) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_ecs_test_start_rejects_when_transport_debug_run_claims_same_source():

@@ -209,6 +209,7 @@ class WorkLineStartService:
             rules = parse_ecs_test_rules(workline.runtime_config_json)
         except ValueError as exc:
             raise WorkLineStartConfigurationError(str(exc)) from exc
+        await self._transport_debug_runs.lock_ecs_test_mutual_exclusion(db)
         active_debug_run = await self._transport_debug_runs.get_active_run(db, for_update=True)
         if active_debug_run is not None:
             source_devices = {rule.source_device_code for rule in rules}

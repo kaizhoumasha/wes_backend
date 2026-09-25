@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -530,3 +530,47 @@ async def test_committed_scan12_conflict_fences_dispatch_before_run_scanner_upda
             await cleanup_db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run_id))
             await cleanup_db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
             await cleanup_db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence.id))
+
+
+async def test_ecs_test_mutual_exclusion_lock_serializes_concurrent_transactions(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """行级 FOR UPDATE 锁不住一个还不存在的行——ECS_TEST START 和 debug-run 创建互相检查
+    对方时，双方可能都读到"对方还不存在"从而同时放行同一来源设备。advisory lock 不依赖
+    任何行是否存在，必须让第二个事务真正阻塞到第一个提交/回滚为止，而不只是"顺序快"。"""
+
+    repository = TransportDebugRunRepository()
+    held, release, waiter_ready = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    pids: dict[str, object] = {}
+
+    async def holder() -> None:
+        async with integration_session_factory.begin() as db:
+            await repository.lock_ecs_test_mutual_exclusion(db)
+            pids["holder"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            held.set()
+            await release.wait()
+
+    async def waiter() -> None:
+        async with integration_session_factory.begin() as db:
+            pids["waiter"] = await db.scalar(text("SELECT pg_backend_pid()"))
+            waiter_ready.set()
+            await repository.lock_ecs_test_mutual_exclusion(db)
+            pids["waiter_acquired"] = True
+
+    first = asyncio.create_task(holder())
+    try:
+        await asyncio.wait_for(held.wait(), 5)
+        second = asyncio.create_task(waiter())
+        await asyncio.wait_for(waiter_ready.wait(), 5)
+        async with asyncio.timeout(5), integration_session_factory() as observer:
+            while True:
+                blocking = await observer.scalar(text("SELECT pg_blocking_pids(:pid)"), {"pid": pids["waiter"]})
+                if pids["holder"] in (blocking or []):
+                    break
+                await asyncio.sleep(0.01)
+        assert "waiter_acquired" not in pids
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 5)
+        assert pids.get("waiter_acquired") is True
+    finally:
+        release.set()

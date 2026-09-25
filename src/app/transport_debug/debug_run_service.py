@@ -252,6 +252,7 @@ class TransportDebugRunService:
         )
         try:
             async with self._sessions.begin() as db:
+                await self._repository.lock_ecs_test_mutual_exclusion(db)
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
                 ecs_test_sources = await self._worklines.list_active_ecs_test_source_devices(db)
