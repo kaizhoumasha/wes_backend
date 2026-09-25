@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1.1] - 2026-09-25
+
+### Fixed
+
+- 无业务插件的 ECS_TEST 工作线启动成功后正常返回当前状态，不再因空插件字段错误返回 422。
+
 ## [0.49.1.0] - 2026-09-24
 
 ### Changed
