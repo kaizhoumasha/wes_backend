@@ -31,11 +31,12 @@ from src.app.device.services.device_evidence_service import (
     DeviceEvidenceService,
     DeviceResultOutOfOrderError,
 )
-from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
+from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict, InboundEvidenceKind
 from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
 from src.app.workline.activation import WorkLineDeviceBinding
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.domain.ecs_test import EcsTestRule
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
@@ -577,6 +578,46 @@ async def test_postgresql_rejects_reason_on_non_manual_command(integration_sessi
         db.add(command)
         with pytest.raises(IntegrityError):
             await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_accepts_ecs_test_command_with_complete_execution_context(
+    integration_session_factory,
+) -> None:
+    """ECS_TEST 不在 MANUAL_DEBUG/EVENT_DEBUG 豁免名单里，必须满足与业务命令相同的
+    workline_id/status_max_age_ms 完整性约束——真实建表约束是唯一能验证这一点的地方。"""
+
+    async with integration_session_factory.begin() as db:
+        line, device, _binding = await _seed_topology(db)
+        line.run_mode = WorkLineRunMode.ECS_TEST
+        await db.flush()
+        evidence = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"EVENT:{uuid4().hex}",
+            device_code=device.device_code,
+            payload_digest="a" * 64,
+            normalized_payload={},
+            received_at=datetime(2026, 9, 25),
+            workline_id=line.id,
+        )
+        db.add(evidence)
+        await db.flush()
+
+        service = DeviceCommandService(session_factory=integration_session_factory)
+        rule = EcsTestRule(
+            source_device_code=device.device_code,
+            target_device_code=device.device_code,
+            task_type="MOVE_FORWARD",
+            params={},
+        )
+        outcome = await service.create_ecs_test_command_in_session(db, evidence=evidence, rule=rule)
+
+        assert outcome.created is True
+        persisted = await device_command_repository.get_by_command_code(db, outcome.command_code)
+        assert persisted is not None
+        assert persisted.status_max_age_ms is not None
+        assert persisted.status_max_age_ms > 0
+        assert persisted.workline_id == line.id
 
 
 @pytest.mark.asyncio

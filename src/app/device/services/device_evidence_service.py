@@ -366,13 +366,23 @@ class DeviceEvidenceService:
                 ),
                 None,
             )
-            if event.event_type == "SCAN_COMPLETED" and rule is not None and self._ecs_test_commands is not None:
-                outcome = await self._ecs_test_commands.create_ecs_test_command_in_session(
-                    db, evidence=evidence, rule=rule
-                )
-                debug_command_code = outcome.command_code
-                wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
-            await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+            if event.event_type == "SCAN_COMPLETED" and rule is not None:
+                if self._ecs_test_commands is None:
+                    await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
+                else:
+                    try:
+                        outcome = await self._ecs_test_commands.create_ecs_test_command_in_session(
+                            db, evidence=evidence, rule=rule
+                        )
+                    except ValueError:
+                        logger.exception("device.ecs_test.command_rejected")
+                        await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
+                    else:
+                        debug_command_code = outcome.command_code
+                        wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
+                        await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
+            else:
+                await self._processing.mark_ignored(db, evidence, processed_at=processed_at)
             if self._task_queue is not None:
                 defer_wakeup(db, self._task_queue.enqueue_transport_debug)
             return False, wake_device_commands, debug_command_code

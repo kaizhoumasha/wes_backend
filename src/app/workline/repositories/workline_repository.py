@@ -1,5 +1,7 @@
 """WorkLine Repository 层"""
 
+import logging
+from collections.abc import Iterable, Mapping
 from typing import Any, cast
 
 from sqlalchemy import String, and_, case, func, literal, or_, select, union_all
@@ -22,6 +24,26 @@ from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionB
 from src.app.workline.domain.ecs_test import parse_ecs_test_rules
 from src.app.workline.models.workline import WorkLine, WorkLineRunMode
 from src.database.base_repository import BaseRepository
+
+logger = logging.getLogger(__name__)
+
+
+def _ecs_test_source_devices(configs: Iterable[Mapping[str, object]]) -> frozenset[str]:
+    """跳过无法解析的 runtime_config_json，不让单条线的坏配置打断整个互斥检查查询。
+
+    活动 ECS_TEST 线的配置在 START 时已校验并冻结，理论上不会出现这里；出现即记录异常留痕，
+    按"没有声明来源设备"处理，而不是让调用方（如 Transport debug-run 创建）收到 500。
+    """
+
+    devices: set[str] = set()
+    for config in configs:
+        try:
+            rules = parse_ecs_test_rules(config)
+        except ValueError:
+            logger.exception("workline.ecs_test_rules.unparseable_active_config")
+            continue
+        devices.update(rule.source_device_code for rule in rules)
+    return frozenset(devices)
 
 
 class WorkLineRepository(BaseRepository[WorkLine]):
@@ -158,11 +180,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 columns.run_mode == WorkLineRunMode.ECS_TEST,
             )
         )
-        return frozenset(
-            rule.source_device_code
-            for (runtime_config_json,) in result.tuples()
-            for rule in parse_ecs_test_rules(runtime_config_json)
-        )
+        return _ecs_test_source_devices(runtime_config_json for (runtime_config_json,) in result.tuples())
 
     async def list_active_for_plugin_identities(
         self,

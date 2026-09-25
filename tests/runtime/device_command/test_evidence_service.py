@@ -246,9 +246,10 @@ class FakeEventDebugCommandService:
 
 
 class FakeEcsTestCommandService:
-    def __init__(self, *, outcome: EcsTestCommandReady | None = None) -> None:
+    def __init__(self, *, outcome: EcsTestCommandReady | None = None, error: Exception | None = None) -> None:
         self.calls: list[tuple[InboundEvidence, object]] = []
         self.outcome = outcome
+        self.error = error
 
     async def create_ecs_test_command_in_session(
         self,
@@ -258,6 +259,8 @@ class FakeEcsTestCommandService:
         rule: object,
     ) -> EcsTestCommandReady:
         self.calls.append((evidence, rule))
+        if self.error is not None:
+            raise self.error
         if self.outcome is not None:
             return self.outcome
         return EcsTestCommandReady(
@@ -827,6 +830,48 @@ async def test_ecs_test_scan_completed_creates_command_without_entering_fact_pro
     assert called_rule.target_device_code == "TARGET-1"
     assert queue.device_command_wakes == 1
     assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_scan_completed_without_command_service_is_reconciling_not_silently_ignored() -> None:
+    """没接线 ecs_test_command_service 时，事件必须留证阻塞 STOP，不能悄悄标 IGNORED 后消失。"""
+
+    queue = FakeTaskQueue()
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=None,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "RECONCILING"
+    assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_command_rejection_is_reconciling_not_a_crashed_transaction() -> None:
+    """create_ecs_test_command_in_session 抛错时必须留证并回退到 RECONCILING，
+    不能让异常逃出事务、把 evidence 卡在 PENDING 造成 worker 死循环重入。"""
+
+    queue = FakeTaskQueue()
+    ecs_test_commands = FakeEcsTestCommandService(error=ValueError("no frozen binding"))
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "RECONCILING"
+    assert queue.device_command_wakes == 0
 
 
 @pytest.mark.asyncio

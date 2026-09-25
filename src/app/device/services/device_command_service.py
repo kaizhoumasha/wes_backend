@@ -496,6 +496,7 @@ class DeviceCommandService:
                 "trace_id": None,
                 "endpoint_base_url": binding.endpoint_base_url,
                 "command_timeout_ms": binding.command_timeout_ms,
+                "status_max_age_ms": binding.status_max_age_ms,
             }
         )
         payload_digest = _command_payload_digest(validated)
@@ -515,6 +516,7 @@ class DeviceCommandService:
             trace_id=validated.trace_id,
             endpoint_base_url=validated.endpoint_base_url,
             command_timeout_ms=validated.command_timeout_ms,
+            status_max_age_ms=validated.status_max_age_ms,
             status=CommandStatus.PENDING,
             next_attempt_at=now,
             created_at=now,

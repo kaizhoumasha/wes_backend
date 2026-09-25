@@ -166,8 +166,10 @@ async def test_ecs_test_start_rejects_target_without_task_type_capability():
 class _FakeDebugRuns:
     def __init__(self, scan_device_codes: list[str] | None = None) -> None:
         self.scan_device_codes = scan_device_codes
+        self.for_update_calls: list[bool] = []
 
-    async def get_active_run(self, _db: object):
+    async def get_active_run(self, _db: object, *, for_update: bool = False):
+        self.for_update_calls.append(for_update)
         if self.scan_device_codes is None:
             return None
         return SimpleNamespace(configuration_json={"scan_device_codes": self.scan_device_codes})
@@ -180,6 +182,17 @@ async def test_ecs_test_start_rejects_when_transport_debug_run_claims_same_sourc
     with pytest.raises(WorkLineStartConfigurationError, match="debug-run"):
         await service.start(object(), workline_id=11, version=1)
     assert not line.is_active
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_start_locks_active_debug_run_row_to_close_toctou_race():
+    """并发场景：START 和 create_run 必须排在同一把锁上，否则两边都读到"对方尚未提交"而双双放行。"""
+
+    service, _line, *_ = setup_ecs_test_start()
+    debug_runs = _FakeDebugRuns()
+    service._transport_debug_runs = debug_runs
+    await service.start(object(), workline_id=11, version=1)
+    assert debug_runs.for_update_calls == [True]
 
 
 @pytest.mark.asyncio
