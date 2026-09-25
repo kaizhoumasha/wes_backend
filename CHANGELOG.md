@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1.0] - 2026-09-24
+
+### Changed
+
+- 料箱到达 SCAN3 且获得 WMS 正常放行决定后进入独立回程段；迟到的 SCAN2 命令结果不再阻塞交接或改写回程状态。
+- 当前投料批次保留最小进度，已完成的扫码经过或 WMS 确认被清理后仍可继续分段进料与完成判断。
+- SCAN3/SCAN4 重扫保留首次到位与 FIFO 顺序；回程按本次搬运已应用的 `SOURCE_PICKED` 事实退出，并修正 CTU01 容量窗口测试。
+
 ## [0.49.0.0] - 2026-09-24
 
 ### Changed
