@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartInvalidStateError,
@@ -233,11 +233,18 @@ def _asgi_app(
     return app
 
 
+@pytest.mark.parametrize("ecs_test", [False, True])
 def test_start_asgi_contract_enforces_auth_permission_and_version_wire(
     monkeypatch: pytest.MonkeyPatch,
+    ecs_test: bool,
 ) -> None:
     path = "/api/v1/workline/operations/worklines/7/start"
-    service = StartService(_line())
+    line = _line()
+    if ecs_test:
+        line.run_mode = WorkLineRunMode.ECS_TEST
+        line.plugin_key = line.plugin_version = line.flow_mode = None
+    service = StartService(line)
+    db = Db()
 
     unauthenticated = _asgi_app(
         monkeypatch,
@@ -253,7 +260,7 @@ def test_start_asgi_contract_enforces_auth_permission_and_version_wire(
     permissions: set[str] = set()
     authorized = _asgi_app(
         monkeypatch,
-        db=Db(),
+        db=db,
         service=service,
         permissions=permissions,
         authenticated=True,
@@ -265,12 +272,13 @@ def test_start_asgi_contract_enforces_auth_permission_and_version_wire(
 
     assert forbidden.status_code == 403
     assert replay.status_code == 200
+    assert db.commits == 1
     assert replay.json()["data"] == {
         "workline_id": 7,
         "version": 4,
-        "plugin_key": "example_plugin",
-        "plugin_version": "1.0",
-        "flow_mode": "GENERIC_FLOW",
+        "plugin_key": line.plugin_key,
+        "plugin_version": line.plugin_version,
+        "flow_mode": line.flow_mode,
         "is_active": True,
     }
 

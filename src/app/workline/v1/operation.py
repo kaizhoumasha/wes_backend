@@ -122,8 +122,8 @@ async def start_workline(
     data = WorkLineStartResponse(
         workline_id=result.id,
         version=result.version,
-        plugin_key=cast("str", result.plugin_key),
-        plugin_version=cast("str", result.plugin_version),
+        plugin_key=result.plugin_key,
+        plugin_version=result.plugin_version,
         flow_mode=result.flow_mode,
         is_active=result.is_active,
     )

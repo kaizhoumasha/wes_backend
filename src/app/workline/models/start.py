@@ -13,8 +13,8 @@ class WorkLineStartRequest(BaseModel):
 class WorkLineStartResponse(BaseModel):
     workline_id: int
     version: int
-    plugin_key: str
-    plugin_version: str
+    plugin_key: str | None
+    plugin_version: str | None
     flow_mode: str | None
     is_active: bool
 
