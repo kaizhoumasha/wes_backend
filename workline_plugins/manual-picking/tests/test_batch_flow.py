@@ -44,7 +44,7 @@ class _Passages:
     def __init__(self, bins):  # type: ignore[no-untyped-def]
         self.rows = tuple(SimpleNamespace(bin_code=code, return_state="READY") for code in bins)
 
-    async def ready_return_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
+    async def ready_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
         return self.rows
 
 
@@ -328,7 +328,8 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
             self.calls.append(kwargs)
 
     transport = Transport()
-    flow = module.ManualPickingBatchResultFlow(Reader(), transport, _Passages(()))
+    batches = SimpleNamespace(record_allocation=AsyncMock())
+    flow = module.ManualPickingBatchResultFlow(Reader(), transport, _Passages(()), batches)
     evidence = SimpleNamespace(id=31, operation_id="batch-1")
 
     assert (
@@ -344,6 +345,7 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
         == "INBOUND_READY"
     )
     assert len(transport.calls) == 1
+    batches.record_allocation.assert_awaited_once()
     assert transport.calls[0]["picking_task_id"] == 31
     assert transport.calls[0]["source_evidence_id"] == 31
     assert transport.calls[0]["correlation_id"] == "batch-1:0"
@@ -382,6 +384,39 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
 
 
 @pytest.mark.asyncio
+async def test_inbound_face_done_records_current_batch_without_transport() -> None:
+    module = import_module("manual_picking.application.batch_result")
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="019f0000-0000-7000-8000-000000000031",
+        task_id="PICK-1",
+        plan_revision=1,
+        rack_id="R1",
+        rack_face="90",
+    )
+    reader = SimpleNamespace(
+        read_inbound=AsyncMock(return_value=(intent, sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone())))
+    )
+    transport = SimpleNamespace(create=AsyncMock())
+    batches = SimpleNamespace(record_allocation=AsyncMock())
+    flow = module.ManualPickingBatchResultFlow(reader, transport, _Passages(()), batches)
+    evidence = SimpleNamespace(id=31, operation_id=intent.operation_id)
+    assert (
+        await flow.apply_inbound_in_session(
+            object(),
+            evidence,
+            workline_id=7,
+            picking_task_id=31,
+            confirmed_rack_id="R1",
+            confirmed_face="90",
+            inlet_location="CNV0301",
+        )
+        == "RACK_FACE_DONE"
+    )
+    batches.record_allocation.assert_awaited_once()
+    transport.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_queue() -> None:
     module = import_module("manual_picking.application.batch_result")
     intent = sdk.wms_operations.outbound_bin_return_batch(
@@ -392,12 +427,18 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
         return_candidates=(
             sdk.BinReturnCandidate(1, "A000000001", "CNV0302"),
             sdk.BinReturnCandidate(2, "A000000002", "CNV0302"),
+            sdk.BinReturnCandidate(3, "A000000003", "CNV0302"),
         ),
     )
 
     class Reader:
         outcome = sdk.BinReturnBatchOutcome(
-            sdk.BinReturnBatchReady((sdk.BinReturnMove(1, "A000000001", sdk.TransportRackBinSlot("R1", "90", "S1")),))
+            sdk.BinReturnBatchReady(
+                (
+                    sdk.BinReturnMove(1, "A000000001", sdk.TransportRackBinSlot("R1", "90", "S1")),
+                    sdk.BinReturnMove(2, "A000000002", sdk.TransportRackBinSlot("R1", "90", "S2")),
+                )
+            )
         )
 
         async def read_return(self, _db, _evidence, *, workline_id):  # type: ignore[no-untyped-def]
@@ -413,7 +454,7 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
 
     reader = Reader()
     transport = Transport()
-    passages = _Passages(("A000000001", "A000000002"))
+    passages = _Passages(("A000000001", "A000000002", "A000000003"))
     flow = module.ManualPickingBatchResultFlow(reader, transport, passages)
     evidence = SimpleNamespace(id=32, operation_id="batch-2")
 
@@ -429,12 +470,14 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
         )
         == "RETURN_READY"
     )
-    assert [row.return_state for row in passages.rows] == ["RETURN_REQUESTED", "READY"]
+    assert [row.return_state for row in passages.rows] == ["RETURN_REQUESTED", "RETURN_REQUESTED", "READY"]
+    assert [getattr(row, "return_batch_evidence_id", None) for row in passages.rows] == [32, 32, None]
     assert transport.calls[0]["moves"] == (
         BinMove("A000000001", HandoffPosition("CNV0302"), RackBinSlot("R1", "90", "S1")),
+        BinMove("A000000002", HandoffPosition("CNV0302"), RackBinSlot("R1", "90", "S2")),
     )
 
-    new_passages = _Passages(("A000000001", "A000000002"))
+    new_passages = _Passages(("A000000001", "A000000002", "A000000003"))
     reader.outcome = sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000))
     flow = module.ManualPickingBatchResultFlow(reader, transport, new_passages)
     assert (
@@ -449,7 +492,8 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
         )
         == "RETURN_NO_BATCH"
     )
-    assert [row.return_state for row in new_passages.rows] == ["READY", "READY"]
+    assert [row.return_state for row in new_passages.rows] == ["READY", "READY", "READY"]
+    assert all(not hasattr(row, "return_batch_evidence_id") for row in new_passages.rows)
     assert len(transport.calls) == 1
 
 
@@ -518,7 +562,7 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         rack_creator=object(),
         departure_scheduler=object(),
         departure_reader=object(),
-        passages=SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=())),
+        passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
         bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(11, "R1")})),
     )
     line = SimpleNamespace(
@@ -607,9 +651,7 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
         rack_creator=object(),
         departure_scheduler=object(),
         departure_reader=object(),
-        passages=SimpleNamespace(
-            ready_return_prefix_for_update=AsyncMock(return_value=(SimpleNamespace(bin_code="BIN-1"),))
-        ),
+        passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=(SimpleNamespace(bin_code="BIN-1"),))),
     )
     line = SimpleNamespace(
         id=7,
@@ -643,7 +685,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
     )
 
     class Passages:
-        async def unfinished_return_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
+        async def unfinished_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
             return (row,)
 
     class Tasks:
@@ -707,7 +749,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         rack_creator=object(),
         departure_scheduler=object(),
         departure_reader=object(),
-        passages=SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=())),
+        passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
     )
     line = SimpleNamespace(
         id=7,
@@ -729,7 +771,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
 @pytest.mark.parametrize("face_done", [False, True])
 async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(face_done: bool) -> None:
     module = import_module("manual_picking.application.batch_flow")
-    passages = SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=()))
+    passages = SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=()))
     repo = _Repository(face_done=face_done)
     scheduler = _Scheduler()
     flow = module.ManualPickingBatchFlow(repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1")

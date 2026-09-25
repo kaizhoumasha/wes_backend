@@ -115,7 +115,10 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
 
     assert {
         ("wes_biz", "inbound_evidences"),
+        ("wes_biz", "bin_line_returns"),
+        ("wes_biz", "manual_picking_inbound_batches"),
         ("wes_biz", "manual_picking_passages"),
+        ("wes_biz", "manual_picking_inbound_batch_scans"),
         ("wes_biz", "picking_tasks"),
         ("wes_biz", "position_projections"),
         ("wes_biz", "transport_decision_bindings"),

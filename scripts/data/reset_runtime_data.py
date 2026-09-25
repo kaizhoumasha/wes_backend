@@ -93,12 +93,15 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
     *(
         _biz(table)
         for table in (
+            "bin_line_returns",
+            "manual_picking_inbound_batches",
             "callback_logs",
             "device_commands",
             "direct_pick_executions",
             "inbound_evidence_conflicts",
             "inbound_evidences",
             "manual_picking_passages",
+            "manual_picking_inbound_batch_scans",
             "material_executions",
             "material_units",
             "object_transition_events",

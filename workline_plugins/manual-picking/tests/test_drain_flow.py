@@ -33,7 +33,7 @@ def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
     repository = SimpleNamespace(
         current=AsyncMock(return_value=current), has_completed_task=AsyncMock(return_value=completed_task)
     )
-    passages = SimpleNamespace(ready_return_prefix_for_update=AsyncMock(return_value=list(rows)))
+    passages = SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=list(rows)))
     prepare = SimpleNamespace(prepare_next_in_session=AsyncMock(return_value=SimpleNamespace(prepared=False)))
     scheduler = SimpleNamespace(create_in_session=AsyncMock())
     batch_scheduler = SimpleNamespace(create_in_session=AsyncMock())
@@ -208,7 +208,7 @@ async def test_decide_passes_default_limit_to_passages() -> None:
 
     await flow.decide_in_session(object(), _line(), NOW)
 
-    assert flow._passages.ready_return_prefix_for_update.await_args.kwargs["limit"] == 4
+    assert flow._passages.ready_prefix_for_update.await_args.kwargs["limit"] == 4
 
 
 @pytest.mark.asyncio
@@ -217,7 +217,7 @@ async def test_trigger_full_drain_asks_for_the_full_return_buffer_not_just_one_b
 
     await flow.trigger_full_drain_in_session(object(), _line(), NOW)
 
-    assert flow._passages.ready_return_prefix_for_update.await_args.kwargs["limit"] == FULL_DRAIN_LIMIT
+    assert flow._passages.ready_prefix_for_update.await_args.kwargs["limit"] == FULL_DRAIN_LIMIT
     intent = scheduler.create_in_session.await_args.args[1]
     assert intent.required_slot_count == 10
 

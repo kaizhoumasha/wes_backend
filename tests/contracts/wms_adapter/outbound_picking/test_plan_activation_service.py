@@ -204,6 +204,34 @@ async def test_reserved_workline_does_not_create_rack_transport() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reserved_workline_projects_applied_exit_before_scheduling_gate() -> None:
+    driver = SimpleNamespace(
+        project_exits_in_session=AsyncMock(return_value=1),
+        advance_completed_in_session=AsyncMock(),
+    )
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="sample_plugin",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=_Handler(),
+                picking_task_batch_driver=driver,
+            ),
+        ),
+        transport_creator=_Creator(),
+        workline_repository=_Worklines(
+            SimpleNamespace(is_active=True, is_deleted=False, plugin_key="sample_plugin", plugin_version="0.1.0")
+        ),
+        workline_reserved=AsyncMock(return_value=True),
+    )
+
+    assert await service.activate_batch() == 1
+    driver.project_exits_in_session.assert_awaited_once()
+    driver.advance_completed_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_completed_task_source_obligation_does_not_block_new_executing_task() -> None:
     driver = _BatchDriver(completed_count=1)
     handler = _Handler()

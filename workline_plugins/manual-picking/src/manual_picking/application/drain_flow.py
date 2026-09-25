@@ -64,7 +64,7 @@ class ManualPickingDrainFlow:
                 return 0, None
         elif not allow_active_task and not await self.repository.has_completed_task(db, line.id):
             return 0, None
-        rows = await self._passages.ready_return_prefix_for_update(db, line.id, limit=limit)
+        rows = await self._passages.ready_prefix_for_update(db, line.id, limit=limit)
         if not rows:
             return 0, None
         if current is None:
@@ -104,7 +104,7 @@ class ManualPickingDrainFlow:
             outcome, _ = latest
             if isinstance(outcome.result, BinBatchNoBatch):
                 return False
-        rows = await self._passages.ready_return_prefix_for_update(db, line.id)
+        rows = await self._passages.ready_prefix_for_update(db, line.id)
         if not rows:
             return False
         intent = wms_operations.outbound_bin_return_batch(
@@ -120,7 +120,7 @@ class ManualPickingDrainFlow:
     async def active_rack_face(self, db: Any, line: Any, decision: Any, rack_id: str) -> tuple[str, str, bool] | None:
         if not isinstance(decision.result, ReturnBufferDrainReady):
             return None
-        rows = await self._passages.ready_return_prefix_for_update(db, line.id)
+        rows = await self._passages.ready_prefix_for_update(db, line.id)
         last_exhausted: tuple[str, str] | None = None
         for rack in decision.result.racks:
             if rack.rack_id != rack_id:

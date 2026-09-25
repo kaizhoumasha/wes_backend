@@ -6,10 +6,11 @@ from datetime import timedelta
 
 import pytest
 from manual_picking.application.batch_driver import SOURCE_RACK_OUT_STEP
+from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DrainRepository
 from manual_picking.application.passage_model import ManualPickingPassage
 from rack_cycle_support import BusinessServer, rack_database, runtime_for, seed_line, seed_task
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -234,9 +235,15 @@ async def test_scan4_first_arrival_survives_deferred_worker_reclaim(rack_databas
                 scan1_received_at=now,
                 scan2_evidence_id=prior[1].id,
                 scan3_evidence_id=prior[2].id,
+                disposition="CLOSED",
+            )
+        )
+        db.add(
+            BinLineReturn(
+                workline_id=line.id,
+                bin_code="A000000001",
+                scan3_evidence_id=prior[2].id,
                 scan3_command_code=prior_command.command_code,
-                scan3_route="MOVE_FORWARD",
-                disposition="NORMAL",
             )
         )
         incoming_event = EcsDeviceEvent(
@@ -272,10 +279,10 @@ async def test_scan4_first_arrival_survives_deferred_worker_reclaim(rack_databas
         assert first_count == 1
         async with sessions() as db:
             waiting = await db.get(InboundEvidence, evidence_id)
-            passage = await db.scalar(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line_id))
+            row = await db.scalar(select(BinLineReturn).where(BinLineReturn.workline_id == line_id))
             assert waiting.decision_next_attempt_at is not None and waiting.published_at is None
-            assert passage.scan4_evidence_id == evidence_id and passage.scan4_received_at == now
-            assert passage.scan4_command_code is None
+            assert row.scan4_evidence_id == evidence_id and row.scan4_event_time == incoming_event.timestamp
+            assert row.scan4_command_code is None
         async with sessions.begin() as db:
             command = await db.get(DeviceCommand, command_id)
             command.status = CommandStatus.SUCCEEDED
@@ -285,10 +292,10 @@ async def test_scan4_first_arrival_survives_deferred_worker_reclaim(rack_databas
         assert second_count == 1
         async with sessions() as db:
             completed = await db.get(InboundEvidence, evidence_id)
-            passage = await db.scalar(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line_id))
+            row = await db.scalar(select(BinLineReturn).where(BinLineReturn.workline_id == line_id))
             assert completed.published_at is not None
-            assert passage.scan4_received_at == now and passage.scan4_evidence_id == evidence_id
-            assert passage.scan4_command_code is not None and passage.return_state == "MOVE_PENDING"
+            assert row.scan4_event_time == incoming_event.timestamp and row.scan4_evidence_id == evidence_id
+            assert row.scan4_command_code is not None and row.return_state == "MOVE_PENDING"
             commands = (
                 await db.scalars(
                     select(DeviceCommand).where(
@@ -428,15 +435,24 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         run(worker, EXECUTE)
         returned = await bound_transport(sessions, line.id, "MANUAL_PICKING_RETURN_BATCH")
         async with sessions() as db:
-            passages = (
+            returns = (
                 await db.scalars(
-                    select(ManualPickingPassage)
-                    .where(ManualPickingPassage.workline_id == line.id)
-                    .order_by(ManualPickingPassage.scan4_received_at)
+                    select(BinLineReturn)
+                    .where(BinLineReturn.workline_id == line.id)
+                    .order_by(BinLineReturn.scan4_event_time)
                 )
             ).all()
-            assert [move["bin_code"] for move in returned.request_json["moves"]] == [p.bin_code for p in passages]
-            assert {p.return_state for p in passages} == {"RETURN_REQUESTED"}
+            assert [move["bin_code"] for move in returned.request_json["moves"]] == [row.bin_code for row in returns]
+            assert {row.return_state for row in returns} == {"RETURN_REQUESTED"}
+        async with sessions.begin() as db:
+            removed = await db.execute(
+                delete(WmsConfirmation).where(
+                    WmsConfirmation.workline_id == line.id,
+                    WmsConfirmation.operation == "outbound.bin.return_batch@v1",
+                    WmsConfirmation.status == "COMPLETED",
+                )
+            )
+            assert removed.rowcount == 1
         run(worker, SUBMIT)
         assert run(worker, ACTIVATE) == 0
         result = {
@@ -447,6 +463,21 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
                 for move in returned.request_json["moves"]
             ],
         }
+        for move in returned.request_json["moves"]:
+            picked = await record_valid_callback(
+                transport.service,
+                operation_id=new_uuid7(),
+                transport_task_id=returned.transport_task_id,
+                operation=POSITION_OPERATION,
+                timestamp=1,
+                payload={"container_id": move["bin_code"], "milestone": "SOURCE_PICKED"},
+            )
+            assert picked["http_status"] == 202
+        run(worker, APPLY)
+        run(worker, ACTIVATE)
+        async with sessions() as db:
+            returns = (await db.scalars(select(BinLineReturn).where(BinLineReturn.workline_id == line.id))).all()
+            assert {row.return_state for row in returns} == {"EXITED"}
         for move in returned.request_json["moves"]:
             ack = await record_valid_callback(
                 transport.service,
@@ -490,10 +521,8 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
         run(worker, PUBLISH)
         async with sessions() as db:
             assert await DrainRepository().current(db, line.id) is None
-            passages = (
-                await db.scalars(select(ManualPickingPassage).where(ManualPickingPassage.workline_id == line.id))
-            ).all()
-            assert {(p.return_state, p.disposition) for p in passages} == {("RETURNED", "CLOSED")}
+            returns = (await db.scalars(select(BinLineReturn).where(BinLineReturn.workline_id == line.id))).all()
+            assert {row.return_state for row in returns} == {"EXITED"}
             drain = await db.scalar(
                 select(WmsConfirmation).where(
                     WmsConfirmation.workline_id == line.id,

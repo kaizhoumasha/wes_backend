@@ -46,6 +46,9 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
+from .batch_repository import BatchRepository
+from .bin_line.return_model import BinLineReturn
+from .bin_line.return_repository import ReturnRepository
 from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
@@ -79,6 +82,8 @@ class ManualPickingScanFlow:
         worklines: Any = workline_repository,
         tasks: Any = picking_task_repository,
         passages: Any = None,
+        returns: Any = None,
+        batch_progress: Any = None,
         command_reader: Any = device_command_repository,
         wms_reader: Any = None,
         transport_reader: Any = None,
@@ -102,6 +107,8 @@ class ManualPickingScanFlow:
         self._worklines = worklines
         self._tasks = tasks
         self._passages = passages or PassageRepository()
+        self._returns = returns or ReturnRepository()
+        self._batch_progress = batch_progress or BatchRepository()
         self._command_reader = command_reader
         self._wms_reader = wms_reader
         self._transport_reader = transport_reader or TransportRepository()
@@ -476,16 +483,6 @@ class ManualPickingScanFlow:
             )
         ):
             return None
-        if payload["step"] == "MANUAL_PICKING_RETURN_BATCH":
-            rows = await self._passages.unfinished_return_prefix_for_update(db, workline_id)
-            if len(rows) < len(moves) or any(
-                row.return_state != "RETURN_REQUESTED" or row.bin_code != move["bin_code"]
-                for row, move in zip(rows, moves, strict=False)
-            ):
-                return None
-            for row in rows[: len(moves)]:
-                row.return_state = "RETURNED"
-                row.disposition = "CLOSED"
         return status
 
     async def _apply_device_event(
@@ -509,7 +506,7 @@ class ManualPickingScanFlow:
         elif role == "SCAN3":
             result = await self._apply_scan3(db, evidence, workline_id, bindings, raw_code)
         elif role == "SCAN4":
-            result = await self._apply_scan4(db, evidence, workline_id, bindings, raw_code)
+            result = await self._apply_scan4(db, evidence, workline_id, bindings, raw_code, event.timestamp)
         else:
             return None, role
         return result, role
@@ -565,10 +562,29 @@ class ManualPickingScanFlow:
         command = await self._command_reader.get_by_command_code(db, command_code)
         return command.status if command is not None else None
 
-    async def _apply_scan3(
+    async def _apply_scan3(  # noqa: PLR0911
         self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
     ) -> str | None:
         code = normal_bin_code(raw_code, "-B")
+        row = await self._returns.current_bin_for_update(db, workline_id, code) if code is not None else None
+        if row is not None:
+            if row.scan3_evidence_id == evidence.id and row.scan3_command_code is not None:
+                return "MOVE_FORWARD"
+            if row.scan3_command_code is not None:
+                command = await self._command_reader.get_by_command_code(db, row.scan3_command_code)
+                if command is not None and command.execution_ref_id == self._command_execution_ref(
+                    evidence.id, "SCAN3"
+                ):
+                    return "MOVE_FORWARD"
+            if row.scan4_evidence_id is not None:
+                return None
+            status = await self._command_status(db, row.scan3_command_code)
+            if status is None or status == CommandStatus.SUCCEEDED:
+                return None
+            if status not in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
+                return _WAIT_FOR_RESULT
+            row.scan3_command_code = await self._move(db, workline_id, bindings, "SCAN3", evidence.id, "MOVE_FORWARD")
+            return "MOVE_FORWARD"
         passage = (
             await self._passages.unique_open_bin_for_update(
                 db, workline_id=workline_id, bin_code=code, after_scan2=None
@@ -576,28 +592,14 @@ class ManualPickingScanFlow:
             if code is not None
             else None
         )
-        if passage is not None and passage.scan3_evidence_id == evidence.id and passage.scan3_command_code is not None:
-            return passage.scan3_route
-        if passage is not None and passage.scan3_evidence_id not in (None, evidence.id):
-            status = await self._command_status(db, passage.scan3_command_code)
-            if status is None or status == CommandStatus.SUCCEEDED:
-                return None
-            if status not in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
-                return _WAIT_FOR_RESULT
         if passage is None and await self._device_has_unclosed(db, workline_id, bindings, "SCAN3"):
             return None
         if passage is not None and passage.disposition == "OPEN" and passage.scan2_evidence_id is not None:
             return _WAIT_FOR_RESULT
         # 直达箱在本点按当前 -B 扫码决定方向，不沿用 SCAN1 的分流结果。
-        normal_authorized = passage is not None and passage.scan2_evidence_id is None
-        if passage is not None and passage.disposition == "NORMAL" and passage.scan2_evidence_id is not None:
-            preceding_code = passage.scan2_command_code
-            command = await self._command_reader.get_by_command_code(db, preceding_code) if preceding_code else None
-            if command is None or command.status in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
-                return None
-            if command.status != CommandStatus.SUCCEEDED:
-                return _WAIT_FOR_RESULT
-            normal_authorized = True
+        normal_authorized = passage is not None and (
+            passage.scan2_evidence_id is None or passage.disposition == "NORMAL"
+        )
         decision = self._scan3.decide(
             ScanFact(
                 "SCAN3",
@@ -616,85 +618,84 @@ class ManualPickingScanFlow:
         command_code = await self._move(db, workline_id, bindings, "SCAN3", evidence.id, decision.route)
         if passage is not None:
             passage.scan3_evidence_id = evidence.id
-            passage.scan3_command_code = command_code
-            passage.scan3_route = decision.route
-            if decision.route == "MOVE_LEFT":
-                passage.disposition = "NG"
-            elif passage.scan2_evidence_id is None:
-                passage.disposition = "NORMAL"
+            passage.disposition = "CLOSED"
+            if decision.route == "MOVE_FORWARD":
+                await self._returns.add(
+                    db,
+                    BinLineReturn(
+                        workline_id=workline_id,
+                        bin_code=code,
+                        scan3_evidence_id=evidence.id,
+                        scan3_command_code=command_code,
+                    ),
+                )
         return decision.route
 
     async def _apply_scan4(
-        self, db: Any, evidence: Any, workline_id: int, bindings: dict[str, str], raw_code: str | None
+        self,
+        db: Any,
+        evidence: Any,
+        workline_id: int,
+        bindings: dict[str, str],
+        raw_code: str | None,
+        event_time: int,
     ) -> str | None:
         code = normal_bin_code(raw_code, "-B")
-        passage = (
-            await self._passages.unique_open_bin_for_update(
-                db, workline_id=workline_id, bin_code=code, after_scan2=True
-            )
-            if code is not None
-            else None
-        )
-        is_retry = passage is not None and passage.scan4_evidence_id not in (None, evidence.id)
+        row = await self._returns.current_bin_for_update(db, workline_id, code) if code is not None else None
+        is_retry = row is not None and row.scan4_evidence_id not in (None, evidence.id)
         if is_retry:
-            if passage.scan4_command_code is not None:
-                command = await self._command_reader.get_by_command_code(db, passage.scan4_command_code)
+            if row.scan4_command_code is not None:
+                command = await self._command_reader.get_by_command_code(db, row.scan4_command_code)
                 if command is not None and command.execution_ref_id == self._command_execution_ref(
                     evidence.id, "SCAN4"
                 ):
                     return "MOVE_FORWARD"
-            # scan4_evidence_id/scan4_received_at 是 return_batch FIFO 排序锚点（SRS §0）
-            # 重试只替换 scan4_command_code，不改写这两个首次到位事实字段。
-            status = await self._command_status(db, passage.scan4_command_code)
+            status = await self._command_status(db, row.scan4_command_code)
             if status is None or status == CommandStatus.SUCCEEDED:
                 return None
             if status not in (CommandStatus.FAILED, CommandStatus.TIMED_OUT):
                 return _WAIT_FOR_RESULT
-        elif passage is not None and passage.scan4_command_code is not None:
+        elif row is not None and row.scan4_command_code is not None:
             return "SCAN4_COMMAND_ALREADY_CREATED"
-        scan3_forward = False
         preceding_command = None
-        if passage is not None and passage.scan3_route == "MOVE_FORWARD":
-            preceding_code = passage.scan3_command_code
+        scan3_forward = False
+        if row is not None:
+            if row.scan4_evidence_id is None:
+                row.scan4_evidence_id = evidence.id
+                row.scan4_event_time = event_time
+                row.return_state = "MOVE_PENDING"
+            preceding_code = row.scan3_command_code
             preceding_command = (
                 await self._command_reader.get_by_command_code(db, preceding_code) if preceding_code else None
             )
             scan3_forward = preceding_command is not None and preceding_command.status == CommandStatus.SUCCEEDED
-            if passage.disposition == "NORMAL" and passage.scan4_evidence_id is None:
-                passage.scan4_evidence_id = evidence.id
-                passage.scan4_received_at = evidence.received_at
-                passage.return_state = "MOVE_PENDING"
         decision = self._scan4.decide(
             ScanFact(
                 "SCAN4",
                 evidence.id,
                 raw_code,
                 PassageSnapshot(
-                    bin_code=passage.bin_code,
-                    ng=passage.disposition == "NG",
-                    normal_authorized=passage.disposition == "NORMAL",
+                    bin_code=row.bin_code,
+                    ng=False,
+                    normal_authorized=True,
                     scan3_forward=scan3_forward,
                 )
-                if passage
+                if row
                 else None,
-                passage.task_id if passage else None,
+                None,
             )
         )
-        if decision.route == "HOLD" or passage is None:
+        if decision.route == "HOLD" or row is None:
             if (
-                passage is not None
-                and (passage.scan4_evidence_id == evidence.id or is_retry)
+                row is not None
+                and (row.scan4_evidence_id == evidence.id or is_retry)
                 and preceding_command is not None
                 and preceding_command.status
                 not in (CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT)
             ):
                 return _WAIT_FOR_RESULT
-            return None
-        if passage.scan4_evidence_id is None:
-            passage.scan4_evidence_id = evidence.id
-            passage.scan4_received_at = evidence.received_at
-            passage.return_state = "MOVE_PENDING"
-        passage.scan4_command_code = await self._move(db, workline_id, bindings, "SCAN4", evidence.id, decision.route)
+            return _WAIT_FOR_RESULT if row is not None and preceding_command is None else None
+        row.scan4_command_code = await self._move(db, workline_id, bindings, "SCAN4", evidence.id, decision.route)
         return decision.route
 
     async def _apply_device_result(  # noqa: PLR0911
@@ -706,11 +707,25 @@ class ManualPickingScanFlow:
         passage = await self._passages.by_command_code_for_update(db, command_code)
         if passage is not None and passage.workline_id != workline_id:
             return None
+        row = await self._returns.by_command_code_for_update(db, command_code)
+        if row is not None and row.workline_id != workline_id:
+            return None
         command = await self._command_reader.get_by_command_code(db, command_code)
         if command is None:
             return None
-        if passage is None:
+        if passage is None and row is None:
             identity = command.execution_ref_id.split(":")
+            if (
+                command.workline_id == workline_id
+                and command.device_code == evidence.device_code == bindings["SCAN2"]
+                and command.execution_ref_type == WORKLINE_BUSINESS_REF_TYPE
+                and len(identity) == 3
+                and identity[0] == "manual-picking"
+                and identity[1].isdigit()
+                and identity[2] == "SCAN2"
+                and command.status in (CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.TIMED_OUT)
+            ):
+                return "COMMAND_RESULT_RECORDED"
             if (
                 command.workline_id == workline_id
                 and command.device_code == evidence.device_code == bindings["SCAN3"]
@@ -724,10 +739,18 @@ class ManualPickingScanFlow:
             ):
                 return "UNKNOWN_BIN_NG_EXIT_CLOSED"
             return None
-        if passage.scan4_command_code == command_code:
-            if passage.return_state != "MOVE_PENDING" or command.status != CommandStatus.SUCCEEDED:
+        if row is not None and row.scan4_command_code == command_code:
+            if (
+                row.return_state != "MOVE_PENDING"
+                or command.status != CommandStatus.SUCCEEDED
+                or command.workline_id != workline_id
+                or command.device_code != evidence.device_code
+                or command.device_code != bindings["SCAN4"]
+                or command.task_type != "MOVE_FORWARD"
+                or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            ):
                 return None
-            projection = await self._positions.get(db, "BIN", passage.bin_code)
+            projection = await self._positions.get(db, "BIN", row.bin_code)
             if projection is None or projection.workline_id != workline_id:
                 return None
             try:
@@ -735,19 +758,16 @@ class ManualPickingScanFlow:
                     db,
                     workline_id=workline_id,
                     object_type="BIN",
-                    object_id=passage.bin_code,
+                    object_id=row.bin_code,
                     position={"kind": "HANDOFF_POSITION", "location_code": outlet_location},
                     updated_at=timezone.now_for_db(),
                 )
             except PositionProjectionInvariantViolation:
                 return None
-            passage.return_state = "READY"
+            row.return_state = "READY"
             return "RETURN_BUFFER_READY"
-        if passage.scan3_command_code == command_code and passage.scan3_route == "MOVE_LEFT":
-            if command.status != CommandStatus.SUCCEEDED:
-                return None
-            passage.disposition = "CLOSED"
-            return "NG_EXIT_CLOSED"
+        if row is not None and row.scan3_command_code == command_code:
+            return "COMMAND_RESULT_RECORDED"
         return "COMMAND_RESULT_RECORDED"
 
     async def _device_has_unclosed(self, db: Any, workline_id: int, bindings: dict[str, str], role: str) -> bool:
@@ -784,7 +804,7 @@ class ManualPickingScanFlow:
         )
         return completed.result
 
-    async def _apply_scan1(
+    async def _apply_scan1(  # noqa: PLR0911
         self,
         db: Any,
         evidence: Any,
@@ -799,6 +819,8 @@ class ManualPickingScanFlow:
         identity = scanned_bin_identity(raw_code)
         prior_passages = await self._passages.scan1_unclosed_for_update(db, workline_id)
         if identity is not None and any(prior.bin_code == identity for prior in prior_passages):
+            return None
+        if identity is not None and await self._returns.current_bin_for_update(db, workline_id, identity) is not None:
             return None
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN1"):
             return _WAIT_FOR_RESULT
@@ -819,6 +841,21 @@ class ManualPickingScanFlow:
             )
             if readiness != "READY":
                 return readiness
+        if decision.normal_bin_code is not None:
+            projection = await self._positions.get(db, "BIN", decision.normal_bin_code)
+            source_transport_id = getattr(projection, "source_transport_task_id", None)
+            recorded = bool(
+                source_transport_id
+                and await self._batch_progress.record_scan1(
+                    db,
+                    workline_id=workline_id,
+                    picking_task_id=task.id,
+                    transport_task_id=source_transport_id,
+                    bin_code=decision.normal_bin_code,
+                )
+            )
+            if decision.route == "MOVE_FORWARD" and not recorded:
+                return None
         passage = await self._passages.add(
             db,
             ManualPickingPassage(

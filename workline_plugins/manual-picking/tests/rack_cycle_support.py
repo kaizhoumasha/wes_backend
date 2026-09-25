@@ -3,11 +3,10 @@
 import json
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from http.server import BaseHTTPRequestHandler
 
 import pytest_asyncio
-from manual_picking.application.passage_model import ManualPickingPassage
+from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.definition import DEFINITION
 from sqlalchemy import select
 
@@ -113,16 +112,30 @@ async def seed_line(db, *, bins=1, capacity=1):
         )
         db.add(evidence)
         await db.flush()
+        scan3 = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"scan3:{identity}",
+            device_code=f"SCAN3-{suffix}",
+            contract_key="test.scan",
+            contract_version="1.0",
+            payload_digest="b" * 64,
+            normalized_payload={},
+            received_at=now,
+            processed_at=now,
+            published_at=now,
+            decision_digest="c" * 64,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+            workline_id=line.id,
+        )
+        db.add(scan3)
+        await db.flush()
         db.add(
-            ManualPickingPassage(
+            BinLineReturn(
                 workline_id=line.id,
-                task_id=task.task_id,
                 bin_code=f"BIN-{suffix}-{index}",
-                scan1_evidence_id=evidence.id,
-                scan1_received_at=now,
+                scan3_evidence_id=scan3.id,
                 scan4_evidence_id=evidence.id,
-                scan4_received_at=now + timedelta(microseconds=index),
-                disposition="NORMAL",
+                scan4_event_time=int(timezone.now_utc().timestamp() * 1000) + index,
                 return_state="READY",
             )
         )

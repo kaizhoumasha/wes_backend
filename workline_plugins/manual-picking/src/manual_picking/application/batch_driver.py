@@ -21,8 +21,11 @@ from wes_plugin_sdk import (
 )
 
 from manual_picking.definition import FIVE_RACK, INLET, OUTLET, RETURN_RACK, TRANSFER_RACK
+from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
+from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
+from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -71,9 +74,11 @@ class ManualPickingBatchDriver:
         tasks: Any = None,
         bindings: Any = None,
         drain: Any = None,
+        evidences: Any = None,
         uuid_factory: Any = new_uuid7,
     ) -> None:
         self._drain = drain
+        self._evidences = evidences or inbound_evidence_repository
         self._bindings = bindings or transport_decision_binding_repository
         self._flow = flow
         self._plans = plans
@@ -87,6 +92,59 @@ class ManualPickingBatchDriver:
         self._passages = passages or PassageRepository()
         self._tasks = tasks or picking_task_repository
         self._uuid_factory = uuid_factory
+
+    async def project_exits_in_session(self, db: Any, line: Any) -> int:
+        """仅从当前 Return 的冻结批次身份投影已应用逐箱取走事实。"""
+        count = 0
+        outlet = line.position_bindings[OUTLET.slot_key]["location_id"]
+        for row in await self._passages.requested_for_update(db, line.id):
+            if row.return_batch_evidence_id is None:
+                continue
+            evidence = await self._evidences.get_by_id(db, row.return_batch_evidence_id)
+            if (
+                evidence is None
+                or evidence.kind != InboundEvidenceKind.WMS_RESULT
+                or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+                or evidence.operation != BIN_RETURN_BATCH_OPERATION
+            ):
+                continue
+            binding = await self._bindings.get_by_decision_identity_for_update(
+                db,
+                workline_id=line.id,
+                correlation_id=evidence.operation_id,
+                step="MANUAL_PICKING_RETURN_BATCH",
+            )
+            if (
+                binding is None
+                or binding.source_evidence_id != evidence.id
+                or binding.resource_fence_id != evidence.operation_id
+            ):
+                continue
+            task = await self._transports.get_task_by_client_request(db, binding.client_request_id)
+            if (
+                task is None
+                or task.kind != "BIN_MOVE"
+                or task.authority_workline_id != line.id
+                or task.client_request_id != binding.client_request_id
+            ):
+                continue
+            members = await self._transports.list_members(db, task.transport_task_id)
+            member = next((member for member in members if member.object_id == row.bin_code), None)
+            if (
+                member is None
+                or member.object_type != "BIN"
+                or member.source_json != {"kind": "HANDOFF_POSITION", "location_code": outlet}
+            ):
+                continue
+            facts = await self._transports.list_applied_position_evidence(db, task.transport_task_id)
+            if any(
+                fact.payload_json.get("container_id") == row.bin_code
+                and fact.payload_json.get("milestone") == "SOURCE_PICKED"
+                for fact in facts
+            ):
+                row.return_state = "EXITED"
+                count += 1
+        return count
 
     async def advance_completed_in_session(self, db: Any, line: Any) -> int:
         owner = await self._plans.first_completed_source_owner_at_position(
@@ -262,7 +320,7 @@ class ManualPickingBatchDriver:
                 return count + 1
             if not exhausted and any(
                 row.return_state in {"READY", "RETURN_REQUESTED"}
-                for row in await self._passages.unfinished_return_prefix_for_update(db, line.id)
+                for row in await self._passages.unfinished_prefix_for_update(db, line.id)
             ):
                 return count
             return count + await self._advance_workline_departure(
@@ -677,7 +735,7 @@ class ManualPickingBatchDriver:
         inlet_location: str,
         now: Any,
     ) -> bool:
-        if not await self._passages.ready_return_prefix_for_update(db, line.id):
+        if not await self._passages.ready_prefix_for_update(db, line.id):
             return False
         if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, plan_revision, rack_id, rack_face):
             return False

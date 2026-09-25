@@ -1,4 +1,4 @@
-"""本次料箱经过与两段 FIFO 的最小持久查询。"""
+"""SCAN1 到 SCAN3 的 Passage 持久查询。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import func, or_
 from sqlmodel import select
 
+from .bin_line.return_repository import ReturnRepository
 from .passage_model import ManualPickingPassage
 
 _COLUMNS = cast("Any", ManualPickingPassage).__table__.c
@@ -18,20 +19,6 @@ if TYPE_CHECKING:
 
 
 class PassageRepository:
-    async def has_bin_before_return_buffer(self, db: AsyncSession, workline_id: int) -> bool:
-        return (
-            await db.scalar(
-                select(_COLUMNS.id)
-                .where(
-                    _COLUMNS.workline_id == workline_id,
-                    _COLUMNS.disposition != "CLOSED",
-                    or_(_COLUMNS.scan4_evidence_id.is_(None), _COLUMNS.return_state == "MOVE_PENDING"),
-                )
-                .limit(1)
-            )
-            is not None
-        )
-
     async def add(self, db: AsyncSession, passage: ManualPickingPassage) -> ManualPickingPassage:
         db.add(passage)
         await db.flush()
@@ -75,13 +62,12 @@ class PassageRepository:
 
     async def by_command_code_for_update(self, db: AsyncSession, command_code: str) -> ManualPickingPassage | None:
         statement = select(ManualPickingPassage).where(
+            _COLUMNS.disposition != "CLOSED",
             or_(
                 _COLUMNS.scan1_command_code == command_code,
                 _COLUMNS.scan2_command_code == command_code,
                 _COLUMNS.scan2_fault_command_code == command_code,
-                _COLUMNS.scan3_command_code == command_code,
-                _COLUMNS.scan4_command_code == command_code,
-            )
+            ),
         )
         return (await db.execute(statement.with_for_update())).scalar_one_or_none()
 
@@ -100,42 +86,17 @@ class PassageRepository:
         rows = list((await db.execute(statement.with_for_update())).scalars().all())
         return rows[0] if len(rows) == 1 else None
 
-    async def ready_return_prefix_for_update(
-        self, db: AsyncSession, workline_id: int, *, limit: int = 4
-    ) -> tuple[ManualPickingPassage, ...]:
-        rows = await self.unfinished_return_prefix_for_update(db, workline_id, limit=limit)
-        ready: list[ManualPickingPassage] = []
-        for row in rows:
-            if row.return_state != "READY":
-                break
-            ready.append(row)
-        return tuple(ready)
-
-    async def unfinished_return_prefix_for_update(
-        self, db: AsyncSession, workline_id: int, *, limit: int = 4
-    ) -> tuple[ManualPickingPassage, ...]:
-        statement = (
-            select(ManualPickingPassage)
-            .where(
-                _COLUMNS.workline_id == workline_id,
-                _COLUMNS.scan4_evidence_id.is_not(None),
-                _COLUMNS.return_state != "RETURNED",
-            )
-            .order_by(_COLUMNS.scan4_received_at, _COLUMNS.scan4_evidence_id)
-            .limit(limit)
-            .with_for_update()
-        )
-        return tuple((await db.execute(statement)).scalars().all())
-
     async def get_unfinished_workload_summary(self, db: AsyncSession, workline_id: int) -> dict[str, object]:
         statement = select(func.count(_COLUMNS.id)).where(
             _COLUMNS.workline_id == workline_id,
             _COLUMNS.disposition != "CLOSED",
         )
-        count = cast("int", (await db.execute(statement)).scalar_one())
+        passage_count = cast("int", (await db.execute(statement)).scalar_one())
+        return_count = await ReturnRepository().count_current(db, workline_id)
+        count = passage_count + return_count
         return {
             "count": count,
-            "sample": "manual-picking passage" if count else None,
+            "sample": "manual-picking passage" if passage_count else "bin-line return" if return_count else None,
         }
 
     async def archive_open_work(self, db: AsyncSession, *, workline_id: int, archived_at: datetime) -> int:
