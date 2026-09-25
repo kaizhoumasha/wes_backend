@@ -1,5 +1,7 @@
 """WorkLine Repository 层"""
 
+import logging
+from collections.abc import Iterable, Mapping
 from typing import Any, cast
 
 from sqlalchemy import String, and_, case, func, literal, or_, select, union_all
@@ -19,8 +21,29 @@ from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.workline import WorkLine
+from src.app.workline.domain.ecs_test import parse_ecs_test_rules
+from src.app.workline.models.workline import WorkLine, WorkLineRunMode
 from src.database.base_repository import BaseRepository
+
+logger = logging.getLogger(__name__)
+
+
+def _ecs_test_source_devices(configs: Iterable[Mapping[str, object]]) -> frozenset[str]:
+    """跳过无法解析的 runtime_config_json，不让单条线的坏配置打断整个互斥检查查询。
+
+    活动 ECS_TEST 线的配置在 START 时已校验并冻结，理论上不会出现这里；出现即记录异常留痕，
+    按"没有声明来源设备"处理，而不是让调用方（如 Transport debug-run 创建）收到 500。
+    """
+
+    devices: set[str] = set()
+    for config in configs:
+        try:
+            rules = parse_ecs_test_rules(config)
+        except ValueError:
+            logger.exception("workline.ecs_test_rules.unparseable_active_config")
+            continue
+        devices.update(rule.source_device_code for rule in rules)
+    return frozenset(devices)
 
 
 class WorkLineRepository(BaseRepository[WorkLine]):
@@ -133,13 +156,31 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         return workline
 
     async def list_active_plugin_identities(self, db: AsyncSession) -> list[tuple[str, str]]:
+        # ECS_TEST 活动线不激活插件，plugin_version 被置空；worker 启动只校验业务线冻结的插件身份。
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(columns.plugin_key, columns.plugin_version)
-            .where(columns.is_active.is_(True), columns.is_deleted.is_(False))
+            .where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                columns.run_mode != WorkLineRunMode.ECS_TEST,
+            )
             .distinct()
         )
         return list(result.tuples())
+
+    async def list_active_ecs_test_source_devices(self, db: AsyncSession) -> frozenset[str]:
+        """活动 `ECS_TEST` 线冻结规则声明的全部来源设备码，供 Transport debug-run 互斥检查。"""
+
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(columns.runtime_config_json).where(
+                columns.is_active.is_(True),
+                columns.is_deleted.is_(False),
+                columns.run_mode == WorkLineRunMode.ECS_TEST,
+            )
+        )
+        return _ecs_test_source_devices(runtime_config_json for (runtime_config_json,) in result.tuples())
 
     async def list_active_for_plugin_identities(
         self,
@@ -185,6 +226,12 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         if line is None:
             return []
         contracts = line.device_contracts
+        if line.run_mode == WorkLineRunMode.ECS_TEST:
+            # 测试线没有插件角色映射；device_contracts 的 key 直接是冻结的设备码。
+            return [
+                WorkLineDeviceBinding(workline_id=workline_id, device_role=code, device_code=code, **contract)
+                for code, contract in sorted(contracts.items())
+            ]
         return [
             WorkLineDeviceBinding(workline_id=workline_id, device_role=role, device_code=code, **contracts[code])
             for role, code in sorted(line.config.get("device_bindings", {}).items())

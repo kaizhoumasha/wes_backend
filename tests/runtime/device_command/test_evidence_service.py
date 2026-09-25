@@ -15,9 +15,11 @@ from src.app.device.contracts import (
     EcsDeviceEvent,
     EcsDeviceEventReport,
 )
+from src.app.device.ecs_test_contracts import EcsTestCommandReady
 from src.app.device.event_debug_contracts import EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_evidence_service import (
+    DeviceEventEcsTestDebugConflictError,
     DeviceEventNotAdmittedError,
     DeviceEvidenceService,
     DeviceResultConflictError,
@@ -30,6 +32,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
+from src.app.workline.models.workline import WorkLineRunMode
 from src.utils.timezone import timezone
 
 
@@ -144,9 +147,18 @@ class FakeCommandRepository:
 
 
 class FakeWorkLineRepository:
-    def __init__(self, event_workline_id: int | None = None, *, workline_id: int = 7) -> None:
+    def __init__(
+        self,
+        event_workline_id: int | None = None,
+        *,
+        workline_id: int = 7,
+        run_mode: str = WorkLineRunMode.AUTO,
+        runtime_config_json: dict[str, object] | None = None,
+    ) -> None:
         self.event_workline_id = event_workline_id
         self.workline_id = workline_id
+        self.run_mode = run_mode
+        self.runtime_config_json = runtime_config_json or {}
 
     async def get_active_binding_for_device(self, _db: object, device_code: str):
         if self.event_workline_id is None:
@@ -166,6 +178,15 @@ class FakeWorkLineRepository:
         if self.event_workline_id != id:
             return None
         return type("WorkLine", (), {"id": id, "workline_id": self.workline_id})()
+
+    async def get_for_update(self, _db: object, workline_id: int):
+        if workline_id != self.event_workline_id:
+            return None
+        return type(
+            "WorkLine",
+            (),
+            {"run_mode": self.run_mode, "runtime_config_json": self.runtime_config_json},
+        )()
 
 
 class FakeTaskQueue:
@@ -221,6 +242,31 @@ class FakeEventDebugCommandService:
             command_code="EVENT-DEBUG-CMD-001",
             status=CommandStatus.PENDING,
             created=len(self.evidences) == 1,
+        )
+
+
+class FakeEcsTestCommandService:
+    def __init__(self, *, outcome: EcsTestCommandReady | None = None, error: Exception | None = None) -> None:
+        self.calls: list[tuple[InboundEvidence, object]] = []
+        self.outcome = outcome
+        self.error = error
+
+    async def create_ecs_test_command_in_session(
+        self,
+        _db: object,
+        *,
+        evidence: InboundEvidence,
+        rule: object,
+    ) -> EcsTestCommandReady:
+        self.calls.append((evidence, rule))
+        if self.error is not None:
+            raise self.error
+        if self.outcome is not None:
+            return self.outcome
+        return EcsTestCommandReady(
+            command_code="ECS-TEST-CMD-001",
+            status=CommandStatus.PENDING,
+            created=len(self.calls) == 1,
         )
 
 
@@ -380,6 +426,8 @@ def _service(
     command_repository: FakeCommandRepository | None = None,
     session_factory: FakeSessionFactory | None = None,
     event_debug_mode_policy: FakeEventDebugModePolicy | None = None,
+    ecs_test_commands: FakeEcsTestCommandService | None = None,
+    workline_repository: FakeWorkLineRepository | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -388,11 +436,12 @@ def _service(
             inbound_evidence_service=InboundEvidenceService(repository=evidences),
             processing_repository=evidences,  # type: ignore[arg-type]
             command_repository=command_repository or FakeCommandRepository(command),  # type: ignore[arg-type]
-            workline_repository=FakeWorkLineRepository(event_workline_id),  # type: ignore[arg-type]
+            workline_repository=workline_repository or FakeWorkLineRepository(event_workline_id),  # type: ignore[arg-type]
             task_queue_gateway=task_queue,  # type: ignore[arg-type]
             event_publisher=publisher,  # type: ignore[arg-type]
             event_debug_command_service=event_debug_commands,  # type: ignore[arg-type]
             event_debug_mode_policy=event_debug_mode_policy,  # type: ignore[arg-type]
+            ecs_test_command_service=ecs_test_commands,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -738,6 +787,194 @@ async def test_normal_event_still_wakes_business_processing() -> None:
     assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
     assert debug_commands.evidences == []
     assert queue.execution_wakes == 1
+
+
+def _ecs_test_workline_repository(
+    *, workline_id: int = 11, rule_source: str = "ARM-01", rule_target: str = "TARGET-1"
+) -> FakeWorkLineRepository:
+    return FakeWorkLineRepository(
+        workline_id,
+        run_mode=WorkLineRunMode.ECS_TEST,
+        runtime_config_json={
+            "ecs_test_rules": [
+                {
+                    "source_device_code": rule_source,
+                    "target_device_code": rule_target,
+                    "task_type": "MOVE_FORWARD",
+                    "params": {"source": {"location_id": rule_source}},
+                }
+            ]
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_scan_completed_creates_command_without_entering_fact_processor() -> None:
+    queue = FakeTaskQueue()
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "IGNORED"  # 不进入 FactProcessor
+    assert len(ecs_test_commands.calls) == 1
+    called_evidence, called_rule = ecs_test_commands.calls[0]
+    assert called_evidence is evidence
+    assert called_rule.target_device_code == "TARGET-1"
+    assert queue.device_command_wakes == 1
+    assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_scan_completed_without_command_service_is_reconciling_not_silently_ignored() -> None:
+    """没接线 ecs_test_command_service 时，事件必须留证阻塞 STOP，不能悄悄标 IGNORED 后消失。"""
+
+    queue = FakeTaskQueue()
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=None,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "RECONCILING"
+    assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_command_rejection_is_reconciling_not_a_crashed_transaction() -> None:
+    """create_ecs_test_command_in_session 抛错时必须留证并回退到 RECONCILING，
+    不能让异常逃出事务、把 evidence 卡在 PENDING 造成 worker 死循环重入。"""
+
+    queue = FakeTaskQueue()
+    ecs_test_commands = FakeEcsTestCommandService(error=ValueError("no frozen binding"))
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "RECONCILING"
+    assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_non_scan_completed_event_is_ignored_without_command() -> None:
+    queue = FakeTaskQueue()
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    receipt = await service.accept_event(_event(event_type="OTHER_EVENT"))
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "IGNORED"
+    assert ecs_test_commands.calls == []
+    assert queue.device_command_wakes == 0
+    assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_event_without_matching_rule_is_ignored_without_command() -> None:
+    queue = FakeTaskQueue()
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(rule_source="OTHER-SOURCE"),
+    )
+    receipt = await service.accept_event(_event())  # device_code="ARM-01"，规则来源是 OTHER-SOURCE
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "IGNORED"
+    assert ecs_test_commands.calls == []
+    assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        EcsTestCommandReady(command_code="ECS-TEST-CMD-001", status=CommandStatus.PENDING, created=False),
+        EcsTestCommandReady(command_code="ECS-TEST-CMD-001", status=CommandStatus.ACKNOWLEDGED, created=True),
+    ],
+)
+async def test_ecs_test_reused_or_non_pending_command_does_not_wake_dispatch(outcome: EcsTestCommandReady) -> None:
+    queue = FakeTaskQueue()
+    service, _repository = _service(
+        None,
+        task_queue=queue,
+        ecs_test_commands=FakeEcsTestCommandService(outcome=outcome),
+        workline_repository=_ecs_test_workline_repository(),
+    )
+    await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    assert queue.device_command_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_active_source_explicit_debug_flag_is_rejected_with_zero_commands() -> None:
+    ecs_test_commands = FakeEcsTestCommandService()
+    service, repository = _service(
+        None,
+        ecs_test_commands=ecs_test_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+
+    with pytest.raises(DeviceEventEcsTestDebugConflictError):
+        await service.accept_event(_event(is_debug=True))
+
+    evidence = next(iter(repository.evidences.values()))
+    assert evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
+    assert ecs_test_commands.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ecs_test_target_only_device_explicit_debug_is_not_rejected_by_source_rule() -> None:
+    """TARGET-1 不是任何规则的 source_device_code；来源限定的拒绝规则不应误伤目标设备。"""
+
+    ecs_test_commands = FakeEcsTestCommandService()
+    debug_commands = FakeEventDebugCommandService()
+    service, repository = _service(
+        None,
+        ecs_test_commands=ecs_test_commands,
+        event_debug_commands=debug_commands,
+        workline_repository=_ecs_test_workline_repository(),
+    )
+
+    receipt = await service.accept_event(_event(device_code="TARGET-1", is_debug=True))
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.normalized_payload["is_debug"] is True
+    assert await service.process_one() is True
+    assert debug_commands.evidences == [evidence]
+    assert ecs_test_commands.calls == []
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,8 @@ from src.app.workline.activation import (
     WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_start_service import (
     WorkLineStartService,
     WorkLineStartVersionConflictError,
@@ -272,3 +273,106 @@ async def test_declaration_only_start_persists_basic_contracts(integration_sessi
             await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
             await db.execute(delete(Device).where(Device.id == device_id))
             await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+def test_ecs_test_start_freezes_cross_device_binding() -> None:
+    """ECS_TEST 冻结的来源/目标 binding 必须能通过 list_bindings 与
+    get_binding_for_command_creation 真正查到——这两个方法是 Event 准入和命令创建的唯一入口。"""
+
+    async def scenario() -> None:
+        from unittest.mock import AsyncMock
+
+        from src.app.device.contracts import EcsDeviceStatus
+        from src.utils.timezone import timezone
+
+        async with temporary_database() as (_database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            engine = create_async_engine(database_url, pool_pre_ping=True)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            try:
+                async with sessions.begin() as db:
+                    line = WorkLine(
+                        line_code="ECS-TEST-PG",
+                        line_name="ECS_TEST PostgreSQL",
+                        line_type=LineType.AUTO,
+                        run_mode=WorkLineRunMode.ECS_TEST,
+                        plugin_key="postgresql_test",  # 停用前遗留的业务插件草稿
+                        plugin_version="1.0",
+                        runtime_config_json={
+                            "ecs_test_rules": [
+                                {
+                                    "source_device_code": "ECS-PG-SOURCE",
+                                    "target_device_code": "ECS-PG-TARGET",
+                                    "task_type": "MOVE_FORWARD",
+                                    "params": {"source": {"location_id": "ECS-PG-SOURCE"}},
+                                }
+                            ]
+                        },
+                    )
+                    db.add(line)
+                    await db.flush()
+                    line_id = line.id
+                    assert line_id is not None
+                    for code in ("ECS-PG-SOURCE", "ECS-PG-TARGET"):
+                        db.add(
+                            Device(
+                                device_code=code,
+                                device_name=code,
+                                work_line_id=line_id,
+                                is_active=True,
+                                endpoint_base_url="http://ecs-pg-test:8080",
+                            )
+                        )
+                    await db.flush()
+
+                def _status(device_code: str) -> EcsDeviceStatus:
+                    return EcsDeviceStatus.model_validate(
+                        {
+                            "device": {
+                                "device_code": device_code,
+                                "device_name": None,
+                                "device_type": None,
+                                "role": None,
+                                "supported_commands": None,
+                                "supported_events": None,
+                            },
+                            "state": {
+                                "device_code": device_code,
+                                "is_online": True,
+                                "mode": "AUTO",
+                                "status": "IDLE",
+                                "current_command_code": None,
+                                "scenario": None,
+                                "updated_at": int(timezone.now_utc().timestamp() * 1000),
+                            },
+                        }
+                    )
+
+                provider = AsyncMock()
+                provider.get_adapter.return_value.fetch_statuses.return_value = (
+                    _status("ECS-PG-SOURCE"),
+                    _status("ECS-PG-TARGET"),
+                )
+                service = WorkLineStartService(plugins=(), device_adapter_provider=provider)
+                async with sessions.begin() as db:
+                    started = await service.start(db, workline_id=line_id, version=0)
+                    assert started.plugin_version is None
+                    assert started.flow_mode is None
+                    assert started.plugin_key == "postgresql_test"
+                    assert set(started.device_contracts) == {"ECS-PG-SOURCE", "ECS-PG-TARGET"}
+
+                repository = WorkLineRepository()
+                async with sessions() as db:
+                    bindings = await repository.list_bindings(db, line_id)
+                    assert {item.device_code for item in bindings} == {"ECS-PG-SOURCE", "ECS-PG-TARGET"}
+                    target_binding = await repository.get_binding_for_command_creation(
+                        db, workline_id=line_id, device_code="ECS-PG-TARGET"
+                    )
+                    assert target_binding is not None
+                    assert target_binding.device_role == "ECS-PG-TARGET"
+                    identities = await repository.list_active_plugin_identities(db)
+                    assert ("postgresql_test", "1.0") not in identities
+            finally:
+                await engine.dispose()
+
+    asyncio.run(scenario())

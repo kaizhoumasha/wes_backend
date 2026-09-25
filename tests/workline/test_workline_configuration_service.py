@@ -14,6 +14,7 @@ from src.app.workline.models.workline import (
     WorkLineConfigurationUpdate,
     WorkLineCreate,
     WorkLinePositionInput,
+    WorkLineRunMode,
     WorkLineUpdate,
 )
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
@@ -202,6 +203,7 @@ def _workline(**changes: object) -> object:
         "plugin_key": None,
         "plugin_version": None,
         "config": {},
+        "run_mode": WorkLineRunMode.AUTO,
     }
     values.update(changes)
     return SimpleNamespace(**values)
@@ -702,6 +704,35 @@ async def test_deactivate_skips_drain_trigger_when_plugin_version_is_stale() -> 
     with pytest.raises(BusinessException):
         await service.deactivate(db, workline_id=7, version=3)
 
+    drain_trigger.trigger_full_drain_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_ecs_test_line_skips_plugin_drain_and_workload_check() -> None:
+    """ECS_TEST 启动清空了 plugin_version 但保留 plugin_key 草稿；STOP 不应把这当成插件不匹配。"""
+
+    db = _Db()
+    drain_trigger = _DrainTrigger()
+    worklines = _WorkLines(
+        _workline(
+            is_active=True,
+            plugin_key="example_plugin",
+            plugin_version=None,
+            run_mode=WorkLineRunMode.ECS_TEST,
+        )
+    )
+    service = WorkLineConfigurationService(
+        position_repository=_RackPositions(),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
+        drain_triggers={"example_plugin": drain_trigger},
+        workline_repository=worklines,
+        device_repository=_Devices([]),
+    )
+
+    result = await service.deactivate(db, workline_id=7, version=3)
+
+    assert result.is_active is False
     drain_trigger.trigger_full_drain_in_session.assert_not_awaited()
 
 

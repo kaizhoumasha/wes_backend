@@ -24,6 +24,7 @@ from src.app.device.contracts import (
     EcsDeviceEventReport,
 )
 from src.app.device.services.device_evidence_service import (
+    DeviceEventEcsTestDebugConflictError,
     DeviceEventNotAdmittedError,
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
@@ -243,6 +244,8 @@ def _as_ingress_rejection(error: Exception) -> EcsCallbackRejection | None:
         return error
     if isinstance(error, DeviceEventNotAdmittedError):
         return EcsCallbackRejection(409, "WORKLINE_NOT_ACTIVE")
+    if isinstance(error, DeviceEventEcsTestDebugConflictError):
+        return EcsCallbackRejection(409, "ECS_TEST_SOURCE_EXPLICIT_DEBUG")
     if isinstance(error, DeviceResultOutOfOrderError):
         return EcsCallbackRejection(409, "RESULT_BEFORE_DISPATCH")
     if isinstance(error, (DeviceEvidenceConflictError, DeviceResultConflictError)):

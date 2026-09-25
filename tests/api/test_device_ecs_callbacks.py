@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from src.app.device.contracts import DeviceEvidenceReceipt
 from src.app.device.services.device_evidence_service import (
+    DeviceEventEcsTestDebugConflictError,
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
     DeviceResultOutOfOrderError,
@@ -234,6 +235,21 @@ def test_persisted_result_rejection_keeps_evidence_identity_in_attempt(error_typ
         "RESULT:CMD-001",
         "IGNORED",
     )
+
+
+def test_ecs_test_active_source_explicit_debug_returns_specific_conflict() -> None:
+    """活动 ECS_TEST 来源显式 is_debug=true：拒绝并零命令，不与其它设备的 EVENT_DEBUG 合同混淆。"""
+
+    error = DeviceEventEcsTestDebugConflictError("ECS_TEST_SOURCE_EXPLICIT_DEBUG")
+    error.receipt = DeviceEvidenceReceipt(9, "EVENT:ecs-test-source", False, None, "IGNORED")
+    publisher = FakePublisher()
+
+    with _client(FakeEvidenceService(error), publisher=publisher) as client:
+        response = client.post("/api/v1/callback/event", json=_event_payload() | {"is_debug": True})
+
+    assert response.status_code == 409
+    assert response.json() == {"code": 409, "message": "ECS_TEST_SOURCE_EXPLICIT_DEBUG"}
+    assert publisher.events[0][2]["evidence_id"] == 9
 
 
 def test_result_before_dispatch_returns_specific_conflict_and_keeps_attempt_identity() -> None:

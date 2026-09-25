@@ -18,6 +18,8 @@
 
 统一 Event wire 没有独立事件 ID，目前以规范化报文（包括毫秒 `timestamp` 和 `data`）识别重报。要满足“每个新的真实事件独立触发”，ECS 的设备附录须确认：同一来源的两个真实扫码即使数据相同，也产生不同的规范化事件身份；同一事件重报保持完全相同的身份字段。若供应商不能保证，需先评审新增事件身份的统一 wire 变更，不能把内容相同的两个真实事件误当作一次测试成功。
 
+这一前提应在真实 ECS 启动测试线前核实：取得设备附录的身份保证，并用同一设备背靠背上报相同扫码内容、原事件重报的报文样本分别验证“不同真实事件可区分、同一事件身份稳定”。未取得证据时，软件实现可以验证本地幂等链路，但不能宣称真实 ECS 连续运行验收通过。
+
 流水线可用 `SCAN_COMPLETED` 驱动一条预设 `MOVE_FORWARD`；粗分机可用 `SCAN_COMPLETED` 驱动一条预设 `PICK_AND_PUT` 或设备附录批准的其它动作。粗分机命令的固定 `source`/`target` 均在 `params` 内；该动作不代表 OK/NG 分流。事件缺少六个扫码字段仍可触发测试规则，因为模式不解析业务数据。`ESTOP_PRESSED` 仍由 ECS 自行处理，不成为测试触发事件。
 
 ## 3. 配置与启停
@@ -51,18 +53,18 @@ WORKLINE 可保留停用前的插件草稿，`ECS_TEST` 启动将活动 `plugin_
 
 当前 `WorkLineRepository.list_bindings()` 只枚举插件 `config.device_bindings`，设备 Event 准入和命令创建都依赖它。实施时须让活动 `ECS_TEST` 线按冻结的测试来源/目标设备提供同一内部 binding 查询能力，而不是仅在配置页面保存规则；业务模式仍沿原插件角色绑定。
 
-退出模式时复用 WORKLINE 停用及未闭合义务检查，并对测试命令补充原身份的未知结果检查：尚未处理的事件、待派发/已接纳/`RECONCILING`/`TIMED_OUT` 的测试命令和待应用 Result 阻止切换。现有通用 workload 查询未覆盖 `TIMED_OUT`，因此不能直接把它当作本模式的完整切换门禁。迟到回调始终按原 `command_code` 留存和收敛，不能因模式切换交给业务插件或改用新身份重发。已闭合历史不参与新测试准入。
+退出模式时复用 WORKLINE 停用及未闭合义务检查：尚未处理的事件、待派发/已接纳/`RECONCILING` 的测试命令和待应用 Result 阻止切换。现有 `TIMED_OUT` 仅用于尚未调用 ECS 提交接口时到期的命令，可能已被 worker 领取为 `DISPATCHING`，但属于明确未被 ECS 接纳的本地终态；不得把它与已发送后结果未知的 `RECONCILING` 混同。迟到回调仍按原 `command_code` 留存并按原状态合同处理，不能因模式切换交给业务插件或改用新身份重发。已闭合历史不参与新测试准入。
 
 `WorkLineRunMode` 增加 `ECS_TEST` 需要相应数据库约束迁移；测试规则复用现有运行配置 JSON，不另建配置表。`ECS_TEST` 使用真实 ECS，不沿用仅限开发/测试环境的 `SIMULATION` 语义。
 
 ## 4. 可靠数据流
 
 1. ECS 发出真实 `SCAN_COMPLETED`。公共 Event 入口按统一 wire 校验，使用现有规范化事件身份与 `InboundEvidence` 持久化并在提交后 ACK，首次接收时绑定 WORKLINE。模式与规则在活动期间不可修改，停用又受待处理 Evidence 阻断，因此 worker 处理时的路由不会因配置切换漂移；重复接收沿用原 Evidence 身份。
-2. 现有 DeviceEvidence worker 领取 Event。它在 WORKLINE 行锁内读取不可变测试规则与目标设备的冻结 binding，按 `workline_id + event identity` 建立唯一测试执行关联，并在同一事务创建一条 `DeviceCommand`，随后按现有调试事件惯例将 Event 标记为 `IGNORED`，表示它不进入 FactProcessor；命令关联仍证明该 Event 已被测试链路消费。先有持久 Evidence，后有持久命令，事务提交后唤醒现有命令派发；通知丢失由持久扫描接手。截止时间在首次原子创建命令时按当时的时间预算冻结，不按可能延迟很久的 Event 时间计算；重复处理先读取原命令及冻结截止时间，不生成第二个 `command_code` 或重算原命令载荷。
+2. 现有 DeviceEvidence worker 领取 Event。它按 Evidence 的 `workline_id` 锁定 WORKLINE 并读取不可变测试规则与目标设备的冻结 binding，按 `workline_id + event identity` 建立唯一测试执行关联；`SCAN_COMPLETED` 匹配规则时在同一事务创建一条 `DeviceCommand`。测试线的其它合法 Event 也标记为 `IGNORED`，但不创建命令；所有测试 Event 都不进入 FactProcessor。命令关联仍证明触发事件已被测试链路消费。先有持久 Evidence，后有持久命令，事务提交后唤醒现有命令派发；通知丢失由持久扫描接手。截止时间在首次原子创建命令时按当时的时间预算冻结，不按可能延迟很久的 Event 时间计算；重复处理先读取原命令及冻结截止时间，不生成第二个 `command_code` 或重算原命令载荷。
 3. 命令使用目标设备自己的 `device_code`、Endpoint、合同、`task_type` 与固定 `params`。统一 ECS Adapter 发送一次，冻结载荷和身份不随规则改变。ECS ACK 只表示接纳；超时或结果未知保留原命令及受影响的事件关联，不换身份重发等价动作，也不阻止其它独立事件生成命令。
 4. ECS Result 经公共入口按 `command_code`、目标设备及冻结合同匹配，可靠留存并闭合对应命令。测试 Result 不唤醒插件业务 Decision、WMS 或 Transport，也不借其推断其它命令完成。重复或相冲突的 Result 按现有证据与对账规则处理。
 
-现有 `DeviceEvidenceService` 对状态为 `TIMED_OUT` 的命令会忽略后到 Result，而已批准设备命令合同要求未知结果沿原身份接受迟到回调。实施时须将这条共享结果应用路径收敛到当前合同；不能让测试模式把 `TIMED_OUT` 当作物理失败或新命令许可。
+现有 `DeviceEvidenceService` 对 `TIMED_OUT` 后到 Result 留证但不更新命令；当前派发服务在调用 ECS 提交接口前到期时进入 `TIMED_OUT`，已发送后结果未知的命令进入 `RECONCILING` 并可由匹配 Result 收敛。实施时须验证两条路径及并发派发边界符合设备命令合同；若发现 `TIMED_OUT` 可能代表已发送的命令，先修正状态分类，再决定结果状态迁移，不直接放宽全部 `TIMED_OUT` 的终态规则。
 
 `ECS_TEST` 需有独立于 `WORKLINE_BUSINESS` 和现有 `EVENT_DEBUG` 的内部执行引用类型；其命令归属当前 WORKLINE，以便未闭合义务阻止停用，Result 仍只闭合命令和 Evidence。该类型不进入外部 wire。
 
@@ -72,8 +74,12 @@ WORKLINE 可保留停用前的插件草稿，`ECS_TEST` 启动将活动 `plugin_
 
 现有 Transport 自动联调 `test_mode` 会把 `STATION_SCAN` 加数字的事件提升为 `EVENT_DEBUG`，且可能覆盖正式 WORKLINE 绑定。本模式启动与 Transport debug-run 创建必须检查来源设备交集，拒绝同时接管。活动 `ECS_TEST` 来源不走固定 `MOVE_FORWARD`、全局 Endpoint、Event `data` 转 `params` 的旧 `EVENT_DEBUG` 路径。正常测试事件由 ECS 发送 `is_debug=false` 或省略该字段；活动 `ECS_TEST` 来源显式发送 `is_debug=true` 时，入口拒绝该事件而不创建任何命令。当前白皮书规定显式 debug 事件走 `EVENT_DEBUG`，因此实施前须修订该冲突场景的公共调试合同，不能静默改变其语义。
 
+该拒绝行为属于 ECS 可见的合同变更。白皮书修订时须写清请求示例、拒绝响应及重复请求语义，并作为现场启用前的对接通知内容；其它设备的 `EVENT_DEBUG` 行为不变。
+
 ## 6. 观察与验收
 
 复用现有 Event Evidence、DeviceCommand 和 Result 记录，按 WORKLINE、来源设备、目标设备与观察时间段查询。一次连续运行的技术核对至少包括：新事件数、精确重报数、创建命令数、命令 ACK 数、匹配终态 Result 数、失败/超时/对账数及未闭合原身份清单；逐条可追溯 `Event identity → command_code → Result`。精确重报不得增加命令数；每个新且匹配规则的事件最终恰有一条命令记录。测试模式运行期间新 WMS operation、业务对象及插件 Decision 创建数均为零。
 
 验收时由现场持续提供真实事件，WES 不按固定频率发命令或自动重开物理动作。FAST/集成验证覆盖事件接收与重报、不同来源到同一目标、固定参数不受 Event `data` 影响、worker 崩溃后续处理、命令/结果关联、模式互斥和 WMS 业务隔离。真实 ECS 连续运行需记录观察时段、对端版本、事件与命令样本、Result 终态及现场设备观察；本地 Mock 绿色不能替代 ECS 或物理设备稳定性验收。时长、频率和允许失败阈值由具体现场验收任务给出，本模式不内建主动负载发生器或成功率判定器。
+
+多个来源同时指向一个目标时，WES 仍各创建一条独立命令，由 ECS 裁决接纳与物理互斥。现场验收需记录该目标对并发命令的 ACK、拒绝、排队、超时和 Result；若 ECS 不支持预期并发，应调整测试规则或事件频率，而不是让 WES 根据推测的设备容量隐式丢弃事件。

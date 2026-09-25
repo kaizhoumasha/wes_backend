@@ -30,6 +30,7 @@ class WorkLineRunMode(str, Enum):
     AUTO = "AUTO"  # 自动运行，允许真实设备和外部副作用
     MANUAL = "MANUAL"  # 人工确认/人工介入
     SIMULATION = "SIMULATION"  # 沙箱模拟，派发到沙箱通道
+    ECS_TEST = "ECS_TEST"  # 真实设备集成测试：固定规则驱动单条命令，不接纳 WMS 业务
 
 
 class WorkLineEditableBase(BaseMixin):

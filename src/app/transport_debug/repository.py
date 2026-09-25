@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, InboundEvidenceKind
 from src.app.transport.models import (
@@ -69,6 +69,19 @@ class TransportDebugRunRepository:
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)
+
+    async def lock_ecs_test_mutual_exclusion(self, db: AsyncSession) -> None:
+        """事务范围的 Postgres advisory lock，串行化 ECS_TEST 启动与 debug-run 创建的互斥检查。
+
+        两边各自读取的对象（活动 debug run 行 / 活动 ECS_TEST 来源集合）在检查时可能都还
+        不存在，行级 `FOR UPDATE` 锁不住一个不存在的行；advisory lock 不依赖任何行是否
+        存在，保证第二个事务真正阻塞到第一个提交或回滚为止。锁在事务结束时自动释放。
+        """
+
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": "ecs_test_debug_run_mutex"},
+        )
 
     async def claim_active_runs(
         self,

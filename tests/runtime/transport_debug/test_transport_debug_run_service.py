@@ -74,6 +74,9 @@ class _Repository:
         del db, for_update
         return next((run for run in self.runs.values() if run.active_scope == "GLOBAL"), None)
 
+    async def lock_ecs_test_mutual_exclusion(self, db: object) -> None:
+        del db
+
     async def add_run(self, db: object, run: TransportDebugRun, first_step: TransportDebugRunStep) -> None:
         del db
         self.runs[run.run_id] = run
@@ -190,7 +193,10 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
         clock=lambda: NOW,
         event_publisher=publisher,
     )
-    service._worklines = SimpleNamespace(get_by_line_code=AsyncMock(return_value=SimpleNamespace(id=1, is_active=True)))
+    service._worklines = SimpleNamespace(
+        get_by_line_code=AsyncMock(return_value=SimpleNamespace(id=1, is_active=True)),
+        list_active_ecs_test_source_devices=AsyncMock(return_value=frozenset()),
+    )
     return service, repository, sessions, publisher
 
 
@@ -326,6 +332,25 @@ async def test_create_run_rejects_second_global_active_run() -> None:
 
     with pytest.raises(TransportDebugRunConflict, match="active debug run"):
         await service.create_run(_request(face="270"), actor_id=8)
+
+
+async def test_create_run_rejects_scan_device_overlap_with_active_ecs_test_source() -> None:
+    service, _, _, _ = _service()
+    service._worklines.list_active_ecs_test_source_devices = AsyncMock(
+        return_value=frozenset({"STATION_SCAN9", "OTHER-DEVICE"})
+    )
+
+    with pytest.raises(TransportDebugRunConflict, match="ECS_TEST"):
+        await service.create_run(_request(), actor_id=7)
+
+
+async def test_create_run_allows_scan_devices_disjoint_from_ecs_test_sources() -> None:
+    service, repository, _, _ = _service()
+    service._worklines.list_active_ecs_test_source_devices = AsyncMock(return_value=frozenset({"UNRELATED-DEVICE"}))
+
+    snapshot = await service.create_run(_request(), actor_id=7)
+
+    assert snapshot.run_id in repository.runs
 
 
 @pytest.mark.parametrize("reason", ["foreign key", "not null", "integrity failure"])

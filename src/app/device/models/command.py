@@ -37,6 +37,7 @@ class InvalidCommandTransitionError(ValueError):
 
 MANUAL_DEBUG_REF_TYPE = "MANUAL_DEBUG"
 EVENT_DEBUG_REF_TYPE = "EVENT_DEBUG"
+ECS_TEST_REF_TYPE = "ECS_TEST"
 DIAGNOSTIC_REF_TYPES = frozenset({MANUAL_DEBUG_REF_TYPE, EVENT_DEBUG_REF_TYPE})
 
 
@@ -282,6 +283,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
 
 __all__ = [
     "DIAGNOSTIC_REF_TYPES",
+    "ECS_TEST_REF_TYPE",
     "EVENT_DEBUG_REF_TYPE",
     "MANUAL_DEBUG_REF_TYPE",
     "CommandStatus",
