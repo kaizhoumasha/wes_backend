@@ -8,6 +8,8 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
+| `specs/2026-09-25-workline-debug-instruction-drafts-design.md` | ECS_TEST 来源设备默认值的所有权、API 合同及其与 WorkLine 生效规则的边界 | 后端已实施，待合入 |
+| `plans/2026-09-25-ecs-test-source-device-defaults.md` | ECS_TEST 来源设备默认值的后端实施范围与验收记录 | 后端已实施，待合入 |
 | `specs/2026-09-11-wes-nonblocking-execution-design.md` | ECS/Transport 取消跨任务物理围栏、结果自动归集与 WMS 对账职责的目标设计 | 后端 PR #246/#247 与前端 PR #125 已合并；部署与供应商/现场验收未完成 |
 | `plans/2026-09-11-wes-nonblocking-execution-plan.md` | 合同、ECS、Transport、事实恢复、业务消费者、前端与现场验收切片 | 后端 PR #246/#247 与前端 PR #125 已合并；部署、供应商接入和现场验收未完成 |
 | `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
