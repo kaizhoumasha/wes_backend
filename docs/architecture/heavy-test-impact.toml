@@ -3079,6 +3079,11 @@ heavy_tests = [
 source_glob = "tests/mock/data/kt16_manual_picking_good_case.json"
 heavy_tests = ["tests/mock/test_wms_transport_mock_server.py"]
 
+# 现场验收证据归档，仅供人工查阅；不被 Mock runner 或测试加载。
+[[mapping]]
+source_glob = "tests/mock/good_cases/KT16-A950FC259A78C43DB8D6D82FC110C8B03/{evidence.json,timeline.csv}"
+heavy_tests = []
+
 [[mapping]]
 source_glob = "src/database/base_repository.py"
 heavy_tests = [

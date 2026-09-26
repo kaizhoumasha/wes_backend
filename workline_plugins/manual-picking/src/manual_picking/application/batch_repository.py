@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from wes_plugin_sdk import (
     BinBatchNoBatch,
     BinInboundBatchIntent,
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.transport.contracts import BinMove, RackBinSlot
+
 _BATCH_OPERATIONS = (BIN_INBOUND_BATCH_OPERATION, BIN_RETURN_BATCH_OPERATION)
 
 
@@ -52,6 +55,86 @@ class InboundFaceProgress:
 class BatchRepository:
     def __init__(self, history: BinBatchResultReader | None = None) -> None:
         self._history = history or BinBatchResultReader()
+
+    async def has_active_bin_transport(self, db: AsyncSession, bin_code: str) -> bool:
+        """同箱当前在途搬运不能被 SCAN3 重新投入重复执行；终态历史不参与。"""
+        tasks = cast("Any", TransportTask).__table__.c
+        members = cast("Any", TransportMember).__table__.c
+        return (
+            await db.scalar(
+                select(tasks.id)
+                .join(TransportMember, members.transport_task_id == tasks.transport_task_id)
+                .where(
+                    tasks.kind == "BIN_MOVE",
+                    tasks.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    members.object_type == "BIN",
+                    members.object_id == bin_code,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def has_current_rack_dependency(
+        self, db: AsyncSession, workline_id: int, rack_id: str, arrived_at: datetime
+    ) -> bool:
+        """当前进站轮次的搬箱依赖；确定放置事实或明确终态解除依赖。"""
+        tasks = cast("Any", TransportTask).__table__.c
+        members = cast("Any", TransportMember).__table__.c
+        return (
+            await db.scalar(
+                select(tasks.id)
+                .join(TransportMember, members.transport_task_id == tasks.transport_task_id)
+                .where(
+                    tasks.authority_workline_id == workline_id,
+                    tasks.kind == "BIN_MOVE",
+                    tasks.created_at >= arrived_at,
+                    tasks.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    members.object_type == "BIN",
+                    or_(
+                        members.source_json["rack_id"].as_string() == rack_id,
+                        members.target_json["rack_id"].as_string() == rack_id,
+                    ),
+                    or_(members.position_unknown.is_(True), members.final_position_json["kind"].as_string().is_(None)),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def has_conflicting_return_target(self, db: AsyncSession, moves: tuple[BinMove, ...]) -> bool:
+        """只拒绝活跃搬运的明确目标冲突；不以历史位置维护储位主账。"""
+        targets = sorted(
+            (target.rack_id, target.rack_face, target.slot_id, move.bin_code)
+            for move in moves
+            for target in (cast("RackBinSlot", move.target),)
+        )
+        for rack_id, rack_face, slot_id, _ in targets:
+            # 同一目标的校验与 Transport 创建在一个事务中；锁不跨 HTTP。
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+                {"identity": "return-target:" + json.dumps((rack_id, rack_face, slot_id))},
+            )
+        members = cast("Any", TransportMember).__table__.c
+        tasks = cast("Any", TransportTask).__table__.c
+        for rack_id, rack_face, slot_id, bin_code in targets:
+            conflict = await db.scalar(
+                select(members.id)
+                .join(TransportTask, tasks.transport_task_id == members.transport_task_id)
+                .where(
+                    tasks.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    members.object_type == "BIN",
+                    members.object_id != bin_code,
+                    members.target_json["kind"].as_string() == "RACK_BIN_SLOT",
+                    members.target_json["rack_id"].as_string() == rack_id,
+                    members.target_json["rack_face"].as_string() == rack_face,
+                    members.target_json["slot_id"].as_string() == slot_id,
+                )
+                .limit(1)
+            )
+            if conflict is not None:
+                return True
+        return False
 
     async def record_allocation(
         self,
@@ -196,6 +279,9 @@ class BatchRepository:
                     ),
                 ),
                 evidences.published_at.is_(None),
+                # 异常/忽略的响应只约束原记录，不构成货架面后续执行的围栏。
+                # 正常待处理或已应用待发布的响应仍须完成原批次交接。
+                evidences.apply_status.in_(("PENDING", "APPLIED")),
                 evidences.kind == InboundEvidenceKind.WMS_RESULT,
                 evidences.operation.in_(_BATCH_OPERATIONS),
             )
@@ -215,7 +301,13 @@ class BatchRepository:
                 members.c.target_json["rack_id"].as_string() == rack_id,
                 members.c.target_json["rack_face"].as_string() == rack_face,
                 or_(
-                    transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    and_(
+                        transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                        or_(
+                            members.c.position_unknown.is_(True),
+                            members.c.final_position_json["kind"].as_string().is_(None),
+                        ),
+                    ),
                     transports.outcome_version > transports.published_outcome_version,
                 ),
             )

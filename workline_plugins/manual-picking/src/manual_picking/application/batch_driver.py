@@ -30,6 +30,7 @@ from src.app.wms_integration.outbound_picking.repositories.picking_task_reposito
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
+from .batch_repository import BatchRepository
 from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
@@ -75,9 +76,11 @@ class ManualPickingBatchDriver:
         bindings: Any = None,
         drain: Any = None,
         evidences: Any = None,
+        batches: Any = None,
         uuid_factory: Any = new_uuid7,
     ) -> None:
         self._drain = drain
+        self._batches = batches or BatchRepository()
         self._evidences = evidences or inbound_evidence_repository
         self._bindings = bindings or transport_decision_binding_repository
         self._flow = flow
@@ -94,7 +97,7 @@ class ManualPickingBatchDriver:
         self._uuid_factory = uuid_factory
 
     async def project_exits_in_session(self, db: Any, line: Any) -> int:
-        """仅从当前 Return 的冻结批次身份投影已应用逐箱取走事实。"""
+        """原 Transport 明确接纳即完成 Return 交接，不声明物理取走或到位。"""
         count = 0
         outlet = line.position_bindings[OUTLET.slot_key]["location_id"]
         for row in await self._passages.requested_for_update(db, line.id):
@@ -136,12 +139,11 @@ class ManualPickingBatchDriver:
                 or member.source_json != {"kind": "HANDOFF_POSITION", "location_code": outlet}
             ):
                 continue
-            facts = await self._transports.list_applied_position_evidence(db, task.transport_task_id)
-            if any(
-                fact.payload_json.get("container_id") == row.bin_code
-                and fact.payload_json.get("milestone") == "SOURCE_PICKED"
-                for fact in facts
+            if task.status in {"ACCEPTED", "SUCCEEDED", "FAILED"} or (
+                task.status == "RECONCILING"
+                and (task.result_deadline_at is not None or task.last_applied_wms_outcome_revision > 0)
             ):
+                # deadline 仅在 ACK/权威进度后建立；发送未知本身不能证明已交接。
                 row.return_state = "EXITED"
                 count += 1
         return count
@@ -696,6 +698,10 @@ class ManualPickingBatchDriver:
             await self._departure_scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
             return 1
         if not isinstance(result, RackDepartureReady) or snapshot.evidence_id is None:
+            return 0
+        if step in {SOURCE_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP} and await self._batches.has_current_rack_dependency(
+            db, line.id, rack_id, arrival.created_at
+        ):
             return 0
         departure_identity = f"departure:{snapshot.intent.operation_id}"
         if await self._departure_rejected(db, line.id, departure_identity, step):

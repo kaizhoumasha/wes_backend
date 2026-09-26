@@ -1,4 +1,4 @@
-"""当前 Return 只由本次批次的已应用逐箱取走事实关闭。"""
+"""当前 Return 按原 Transport 的执行权交接闭合，不伪造物理取走。"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,7 +8,20 @@ from manual_picking.application.batch_driver import ManualPickingBatchDriver
 
 
 @pytest.mark.asyncio
-async def test_source_picked_projects_current_return_after_confirmation_cleanup() -> None:
+@pytest.mark.parametrize(
+    ("status", "deadline", "revision", "closed"),
+    [
+        ("PENDING", None, 0, False),
+        ("REJECTED", None, 0, False),
+        ("RECONCILING", None, 0, False),
+        ("ACCEPTED", 1, 0, True),
+        ("RECONCILING", 1, 0, True),
+        ("RECONCILING", None, 1, True),
+        ("SUCCEEDED", None, 1, True),
+        ("FAILED", None, 1, True),
+    ],
+)
+async def test_transport_handoff_closes_only_its_current_return(status, deadline, revision, closed) -> None:
     row = SimpleNamespace(bin_code="BOX-A", return_batch_evidence_id=31, return_state="RETURN_REQUESTED")
     returns = SimpleNamespace(requested_for_update=AsyncMock(return_value=(row,)))
     evidence = SimpleNamespace(
@@ -26,13 +39,17 @@ async def test_source_picked_projects_current_return_after_confirmation_cleanup(
         )
     )
     task = SimpleNamespace(
-        kind="BIN_MOVE", authority_workline_id=7, client_request_id="current-client", transport_task_id="current-task"
+        kind="BIN_MOVE",
+        authority_workline_id=7,
+        client_request_id="current-client",
+        transport_task_id="current-task",
+        status=status,
+        result_deadline_at=deadline,
+        last_applied_wms_outcome_revision=revision,
     )
-    current_fact = SimpleNamespace(payload_json={"container_id": "BOX-A", "milestone": "SOURCE_PICKED"})
-    old_fact = SimpleNamespace(payload_json={"container_id": "BOX-A", "milestone": "SOURCE_PICKED"})
-    facts_by_task = {"old-task": [old_fact], "current-task": []}
     transports = SimpleNamespace(
         get_task_by_client_request=AsyncMock(return_value=task),
+        list_applied_position_evidence=AsyncMock(return_value=()),
         list_members=AsyncMock(
             return_value=[
                 SimpleNamespace(
@@ -42,7 +59,6 @@ async def test_source_picked_projects_current_return_after_confirmation_cleanup(
                 )
             ]
         ),
-        list_applied_position_evidence=AsyncMock(side_effect=lambda _db, task_id: facts_by_task[task_id]),
     )
     driver = ManualPickingBatchDriver(
         object(),
@@ -66,16 +82,15 @@ async def test_source_picked_projects_current_return_after_confirmation_cleanup(
     current_binding.source_evidence_id = 20
     assert await driver.project_exits_in_session(db, line) == 0
     current_binding.source_evidence_id = 31
-    assert await driver.project_exits_in_session(db, line) == 0
-    assert row.return_state == "RETURN_REQUESTED"
-    assert {call.args[1] for call in transports.list_applied_position_evidence.await_args_list} == {"current-task"}
-    facts_by_task["current-task"] = [current_fact]
     member = transports.list_members.return_value[0]
     member.source_json = {"kind": "HANDOFF_POSITION", "location_code": "OTHER"}
     assert await driver.project_exits_in_session(db, line) == 0
     member.source_json = {"kind": "HANDOFF_POSITION", "location_code": "OUT"}
-    assert await driver.project_exits_in_session(db, line) == 1
-    assert row.return_state == "EXITED"
+    assert await driver.project_exits_in_session(db, line) == int(closed)
+    assert row.return_state == ("EXITED" if closed else "RETURN_REQUESTED")
+    assert task.status == status
+    transports.list_applied_position_evidence.assert_not_awaited()
+    assert member.source_json == {"kind": "HANDOFF_POSITION", "location_code": "OUT"}
     bindings.get_by_decision_identity_for_update.assert_awaited_with(
         db,
         workline_id=7,
