@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.4.0] - 2026-09-26
+
+### Fixed
+
+- 同一货架面的下一批回架等待前一条 BIN_MOVE 发布终态并确认最终位置后再分配；WMS Mock 仅按已确认的实体位置计算储位占用。
+
 ## [0.49.3.0] - 2026-09-25
 
 ### Added
