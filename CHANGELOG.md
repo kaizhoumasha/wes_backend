@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.5.0] - 2026-09-26
+
+### Fixed
+
+- 软删除操作人字段扩为 64 位，设备、作业线及系统管理对象可记录当前管理员 ID，避免删除接口返回 500。
+
 ## [0.49.4.0] - 2026-09-26
 
 ### Fixed

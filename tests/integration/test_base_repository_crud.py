@@ -411,11 +411,12 @@ class TestCrudOperations:
         instance = await repo.create(db_session, {"code": "SOFT001", "name": "Soft Item"})
         await db_session.commit()
 
-        deleted = await repo.soft_delete(db_session, instance.id, deleted_by=123)  # type: ignore[arg-type]
+        large_actor_id = 1 << 32
+        deleted = await repo.soft_delete(db_session, instance.id, deleted_by=large_actor_id)  # type: ignore[arg-type]
 
         assert deleted is not None
         assert deleted.is_deleted is True
-        assert deleted.deleted_by == 123
+        assert deleted.deleted_by == large_actor_id
         assert await repo.get_by_id(db_session, instance.id) is None  # type: ignore[arg-type]
         assert await repo.get_by_id(db_session, instance.id, include_deleted=True) is not None  # type: ignore[arg-type]
 

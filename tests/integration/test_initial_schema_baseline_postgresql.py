@@ -191,6 +191,33 @@ async def test_initial_schema_matches_reviewed_final_manifest(
 
 
 @pytest.mark.asyncio()
+async def test_soft_delete_actor_migration_widens_all_tables() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "bdf2d676d0a8", database_url=database_url)
+        run_alembic("upgrade", "e1c64a8b9d20", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            columns = await connection.fetch(
+                """
+                SELECT table_schema, table_name, data_type
+                FROM information_schema.columns
+                WHERE column_name = 'deleted_by'
+                  AND table_schema IN ('wes_biz', 'wes_sys')
+                """
+            )
+            assert {(row["table_schema"], row["table_name"]): row["data_type"] for row in columns} == {
+                ("wes_biz", "devices"): "bigint",
+                ("wes_biz", "work_lines"): "bigint",
+                ("wes_sys", "api_applications"): "bigint",
+                ("wes_sys", "permissions"): "bigint",
+                ("wes_sys", "roles"): "bigint",
+                ("wes_sys", "users"): "bigint",
+            }
+        finally:
+            await connection.close()
+
+
+@pytest.mark.asyncio()
 async def test_rack_window_migration_rejects_unclosed_legacy_ingress() -> None:
     previous_revision = "aa4d58c0be72"
     async with temporary_database() as (_database, database_url):
