@@ -696,6 +696,7 @@ reviewed_content_sha256 = "3541109d4e3d40bb41391979674083c1d60edaf2e3450b4affcba
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
 heavy_tests = [
     "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
+    "tests/integration/device_command/test_ecs_test_default_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
@@ -1395,6 +1396,7 @@ heavy_tests = []
 source_glob = "src/app/device/services/{device_context_service.py,device_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_ecs_test_default_postgresql.py",
 ]
 
 # 旧 station/device lease 旁路删除，由唯一 DeviceCommand lease/dispatch 闭环承接。
@@ -3083,6 +3085,18 @@ heavy_tests = ["tests/mock/test_wms_transport_mock_server.py"]
 [[mapping]]
 source_glob = "tests/mock/good_cases/KT16-A950FC259A78C43DB8D6D82FC110C8B03/{evidence.json,timeline.csv}"
 heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/device/v1/ecs_test_default.py"
+heavy_tests = ["tests/integration/device_command/test_ecs_test_default_postgresql.py"]
+reviewed_content_sha256 = "64d75c22b7b1550223db41f8809efba798f64a8ff7513a66e93d604de58a78c0"
+
+[[mapping]]
+source_glob = "migrations/versions/20260926_0941_bdf2d676d0a8_add_device_ecs_test_default.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/device_command/test_ecs_test_default_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/database/base_repository.py"

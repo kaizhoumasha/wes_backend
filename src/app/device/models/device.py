@@ -49,6 +49,7 @@ class Device(DeviceBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table
             postgresql_where="NOT is_deleted",
         ),
     )
+    ecs_test_default_json: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
     work_line: WorkLine = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
     upstream_device: Device = Relationship(

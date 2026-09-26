@@ -142,6 +142,11 @@ def setup_driver():  # type: ignore[no-untyped-def]
         target_rack_face="A",
     )
     positions, plans, flow, creator = Positions(), Plans(), Flow(), Creator()
+    batches = SimpleNamespace(
+        has_current_rack_dependency=AsyncMock(return_value=False),
+        has_unclosed_action_for_face=AsyncMock(return_value=False),
+        has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
+    )
     departure_reader = SimpleNamespace(
         latest=AsyncMock(return_value=None),
         latest_for_workline=AsyncMock(return_value=None),
@@ -156,7 +161,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     driver = ManualPickingBatchDriver(
         flow,
-        batches=SimpleNamespace(has_current_rack_dependency=AsyncMock(return_value=False)),
+        batches=batches,
         plans=plans,
         positions=positions,
         transports=transports,
@@ -267,6 +272,41 @@ async def test_drain_rack_waits_for_buffered_bin_but_not_upstream_bin(blocking_s
     assert await driver._advance_drain(object(), line) == 1
     driver._passages.has_bin_before_return_buffer.assert_not_awaited()
     departure_scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_drain_rack_waits_for_return_transport_before_allocating_or_departing() -> None:
+    driver, line, _, positions, _, _, _, _, departure_scheduler = setup_driver()
+    row = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)),
+        evidence_id=91,
+    )
+    ingress = SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1")
+    repository = SimpleNamespace(
+        has_unclosed_rack_action=AsyncMock(return_value=False),
+        transport=AsyncMock(return_value=ingress),
+        arrival_matches=AsyncMock(return_value=True),
+    )
+    drain = SimpleNamespace(
+        decide_in_session=AsyncMock(return_value=(0, row)),
+        active_rack_face=AsyncMock(return_value=("R1", "90", False)),
+        return_in_session=AsyncMock(return_value=False),
+        repository=repository,
+    )
+    driver._drain = drain
+    driver._batches.has_unclosed_return_transport_for_face.return_value = True
+    driver._passages.unfinished_prefix_for_update = AsyncMock(return_value=(SimpleNamespace(return_state="READY"),))
+    positions.source.source_transport_task_id = "arrival-1"
+    db = object()
+
+    assert await driver._advance_drain(db, line) == 0
+    driver._batches.has_unclosed_action_for_face.assert_awaited_once_with(db, 7, None, None, "R1", "90")
+    driver._batches.has_unclosed_return_transport_for_face.assert_awaited_once_with(
+        db, workline_id=7, rack_id="R1", rack_face="90"
+    )
+    drain.return_in_session.assert_not_awaited()
+    departure_scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio

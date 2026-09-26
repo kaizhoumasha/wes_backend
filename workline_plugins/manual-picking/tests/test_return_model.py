@@ -130,7 +130,10 @@ async def test_return_batch_rows_share_evidence_and_rollback_together() -> None:
             reader,
             transport,
             ReturnRepository(),
-            SimpleNamespace(has_conflicting_return_target=AsyncMock(return_value=False)),
+            SimpleNamespace(
+                has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
+                has_conflicting_return_target=AsyncMock(return_value=False),
+            ),
         )
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 

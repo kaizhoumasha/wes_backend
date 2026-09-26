@@ -21,6 +21,10 @@ class BatchRepository(Protocol):
         self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool: ...
 
+    async def has_unclosed_return_transport_for_face(
+        self, db: AsyncSession, *, workline_id: int, rack_id: str, rack_face: str
+    ) -> bool: ...
+
     async def return_retry_due(
         self,
         db: AsyncSession,
@@ -143,6 +147,10 @@ class ManualPickingBatchFlow:
         )
         if progress is None:
             if not allow_inbound:
+                if await self._repository.has_unclosed_return_transport_for_face(
+                    db, workline_id=workline_id, rack_id=rack_id, rack_face=rack_face
+                ):
+                    return False
                 rows = await self._passages.ready_prefix_for_update(db, workline_id)
                 return_bins = tuple(row.bin_code for row in rows)
                 if not return_bins or not await self._repository.return_retry_due(
@@ -192,6 +200,9 @@ class ManualPickingBatchFlow:
             and return_bins
             and await self._repository.return_retry_due(
                 db, workline_id, rack_id, rack_face, source_evidence_id, now, after
+            )
+            and not await self._repository.has_unclosed_return_transport_for_face(
+                db, workline_id=workline_id, rack_id=rack_id, rack_face=rack_face
             )
         ):
             intent = choose_next_batch(

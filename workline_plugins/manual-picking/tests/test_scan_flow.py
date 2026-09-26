@@ -494,13 +494,17 @@ async def test_return_batch_result_uses_confirmed_source_and_does_not_pass_when_
     assert applied.disposition is BusinessEvidenceDisposition.APPLIED
     assert result.apply_return_in_session.await_args.kwargs["return_location"] == "OUTLET-POSITION"
 
+    result.apply_return_in_session.return_value = 1000
+    deferred = await flow.apply_in_session(object(), 31, workline_id=7)
+    assert (deferred.disposition, deferred.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+
     blocked, blocked_evidences, _, _, _ = _setup(
         batch_reader=reader, batch_result=result, missing_projection=("RACK", "RACK-1")
     )
     blocked_evidences.rows[31] = evidence
     applied = await blocked.apply_in_session(object(), 31, workline_id=7)
     assert applied.disposition is BusinessEvidenceDisposition.DEFERRED
-    assert result.apply_return_in_session.await_count == 1
+    assert result.apply_return_in_session.await_count == 2
 
 
 @pytest.mark.asyncio

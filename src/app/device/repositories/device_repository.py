@@ -48,6 +48,17 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return result.scalar_one_or_none()
 
+    async def set_ecs_test_default(
+        self,
+        db: AsyncSession,
+        device_code: str,
+        default: dict[str, Any] | None,
+    ) -> Device | None:
+        device = await self.get_by_device_code_for_update(db, device_code)
+        if device is None:
+            return None
+        return await self.update(db, device.id, {"ecs_test_default_json": default, "version": device.version})
+
     async def get_topology_identity(
         self,
         db: AsyncSession,

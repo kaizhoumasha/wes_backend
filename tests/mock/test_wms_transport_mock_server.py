@@ -1538,15 +1538,98 @@ def test_return_batch_does_not_treat_transport_acceptance_as_free_slots():
     assert response.json()["data"]["result"] == "NO_BATCH"
 
 
-def test_return_batch_reservations_prevent_duplicate_allocation_and_reset_clears_state():
+def test_return_batch_can_reassign_in_flight_slot_until_physical_arrival():
     with TestClient(wms_mock_server.app) as client:
         _pick_return_candidates(client)
-        assert client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()["data"]["result"] == "READY"
+        first = client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()
+        assert first["data"]["result"] == "READY"
+
+        return_transport = deepcopy(BIN_MOVE)
+        return_transport["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4513"
+        return_transport["data"]["transport_task_id"] = "transport-return-first"
+        return_transport["data"]["moves"] = [
+            {
+                "container_id": move["bin_code"],
+                "source": {"kind": "HANDOFF_POSITION", "location_code": f"HP{move['bin_code'][-1]}"},
+                "target": {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": move["target"]["rack_id"],
+                    "rack_face": move["target"]["rack_face"],
+                    "slot_id": move["target"]["slot_id"],
+                },
+            }
+            for move in first["data"]["moves"]
+        ]
+        assert client.post("/api/v1/wes/transport-requests", json=return_transport).status_code == 202
+
+        third_pick = deepcopy(BIN_MOVE)
+        third_pick["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4511"
+        third_pick["data"]["transport_task_id"] = "transport-bin-3"
+        third_pick["data"]["moves"] = [
+            {
+                "container_id": "bin-3",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "slot-2"},
+                "target": {"kind": "HANDOFF_POSITION", "location_code": "HP3"},
+            }
+        ]
+        assert client.post("/api/v1/wes/transport-requests", json=third_pick).status_code == 202
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": "transport-bin-3",
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": "bin-3",
+                        "status": "SUCCEEDED",
+                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "HP3"},
+                    }
+                ],
+            }
+        )
+
         another = deepcopy(RETURN_BATCH)
-        another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4511"
-        assert client.post("/api/v1/wes/decisions", json=another).json()["data"]["result"] == "NO_BATCH"
+        another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4512"
+        another["data"]["return_candidates"] = [
+            {
+                "sequence_no": 1,
+                "bin_code": "bin-3",
+                "source": {"type": "HANDOFF_POSITION", "location_code": "HP3"},
+            }
+        ]
+        second = client.post("/api/v1/wes/decisions", json=another).json()
+        assert second["data"]["result"] == "READY"
+        first_targets = {
+            (move["target"]["rack_id"], move["target"]["rack_face"], move["target"]["slot_id"])
+            for move in first["data"]["moves"]
+        }
+        second_targets = {
+            (move["target"]["rack_id"], move["target"]["rack_face"], move["target"]["slot_id"])
+            for move in second["data"]["moves"]
+        }
+        assert first_targets & second_targets == {("rack-1", "90", "slot-2")}
+
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": "transport-return-first",
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": move["container_id"],
+                        "status": "SUCCEEDED",
+                        "final_position": move["target"],
+                    }
+                    for move in return_transport["data"]["moves"]
+                ],
+            }
+        )
+        after_arrival = deepcopy(another)
+        after_arrival["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4514"
+        assert client.post("/api/v1/wes/decisions", json=after_arrival).json()["data"]["result"] == "NO_BATCH"
+
         client.post("/debug/reset")
-        assert client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()["data"]["result"] == "NO_BATCH"
+        assert client.post("/api/v1/wes/decisions", json=another).json()["data"]["result"] == "NO_BATCH"
 
 
 def test_return_batch_rejects_invalid_fifo_with_stable_response():

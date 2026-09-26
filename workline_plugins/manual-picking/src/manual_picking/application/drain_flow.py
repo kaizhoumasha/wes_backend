@@ -92,13 +92,6 @@ class ManualPickingDrainFlow:
         rack_id, face, exhausted = rack_face
         if exhausted:
             return False
-        if await self._history.has_unclosed_return(
-            db,
-            workline_id=line.id,
-            rack_id=rack_id,
-            rack_face=face,
-        ):
-            return False
         latest = await self._latest_return_for_drain(db, line, decision, rack_id, face)
         if latest is not None:
             outcome, _ = latest

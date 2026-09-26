@@ -634,9 +634,16 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
             try:
                 async with sessions.begin() as db:
                     line = WorkLine(line_code="BASE-MIGRATION", line_name="Base migration", line_type=LineType.AUTO)
-                    device = Device(device_code="BASE-MIGRATION-DEVICE", device_name="Base migration device")
-                    db.add_all([line, device])
+                    db.add(line)
                     await db.flush()
+                    device_id = await db.scalar(
+                        text(
+                            """INSERT INTO wes_biz.devices
+                            (created_at, device_code, device_name, is_active, sort_order, diagnostic_profile)
+                            VALUES (now(), 'BASE-MIGRATION-DEVICE', 'Base migration device', true, 0, '{}'::json)
+                            RETURNING id"""
+                        )
+                    )
                     position = WorkLinePosition(
                         workline_id=line.id,
                         workline_code=line.line_code,
@@ -645,7 +652,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                         position_type=position_type,
                         position_role="SMT_RETURN_RACK_POSITION" if position_type == "RACK_POSITION" else None,
                         allowed_rack_kind="RETURN" if position_type == "RACK_POSITION" else None,
-                        device_id=device.id,
+                        device_id=device_id,
                     )
                     db.add(position)
                 async with sessions() as db:
@@ -664,7 +671,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                                 {"id": position.id},
                             )
                         ).one()
-                        assert tuple(legacy) == (position.id, line.id, device.id)
+                        assert tuple(legacy) == (position.id, line.id, device_id)
                         assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_positions')")) is None
                     await engine.dispose()
                     run_alembic("upgrade", "d11f8c6fdb0d", database_url=database_url)
@@ -673,7 +680,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                         assert restored is not None
                         assert (restored.workline_id, restored.device_id, restored.position_code) == (
                             line.id,
-                            device.id,
+                            device_id,
                             "RETURN",
                         )
                 with pytest.raises(subprocess.CalledProcessError) as failure:
@@ -687,7 +694,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                 async with sessions.begin() as db:
                     assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == head_revision
                     row = await db.get(WorkLinePosition, position.id)
-                    assert row is not None and row.device_id == device.id
+                    assert row is not None and row.device_id == device_id
                     row.device_id = None
                 # New position purposes also protect against a lossy downgrade.
                 with pytest.raises(subprocess.CalledProcessError):
@@ -703,7 +710,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                         await db.scalar(text("SELECT to_regclass('wes_biz.ix_wes_biz_workline_positions_device_id')"))
                         is not None
                     )
-                    assert await db.get(Device, device.id) is not None
+                    assert await db.get(Device, device_id) is not None
             finally:
                 await engine.dispose()
 

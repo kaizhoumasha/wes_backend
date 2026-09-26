@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.app.device.models.device import Device
 from src.app.device.repositories.device_repository import DeviceRepository, device_repository
+from src.app.workline.domain.ecs_test import parse_ecs_test_rules
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.exceptions import BusinessException
@@ -38,6 +39,40 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
     async def get_device_by_code(self, db: AsyncSession, device_code: str) -> Device | None:
         return await self.repo.get_by_device_code(db, device_code)
+
+    async def save_ecs_test_default(
+        self,
+        db: AsyncSession,
+        device_code: str,
+        default: dict[str, Any] | None,
+        cache: object | None = None,
+    ) -> Device | None:
+        saved_default = None
+        if default is not None:
+            rule = parse_ecs_test_rules(
+                {
+                    "ecs_test_rules": [
+                        {
+                            "target_device_code": default.get("target_device_code"),
+                            "task_type": default.get("task_type"),
+                            "params": default.get("params"),
+                            "source_device_code": device_code,
+                        }
+                    ]
+                }
+            )[0]
+            saved_default = {
+                "target_device_code": rule.target_device_code,
+                "task_type": rule.task_type,
+                "params": rule.params,
+            }
+
+        device = await self.repo.set_ecs_test_default(db, device_code, saved_default)
+        if device is None:
+            return None
+        await self._commit_mutation(db)
+        await self.invalidate_cache(cache, device.id, invalidate_list=True)
+        return device
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> Device | None:
         self._reject_workline_ownership(data)

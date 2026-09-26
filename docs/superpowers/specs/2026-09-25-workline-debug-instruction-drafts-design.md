@@ -12,6 +12,8 @@
 
 ECS_TEST 的生效合同仍是 `WorkLine.runtime_config_json.ecs_test_rules`。Device 默认值不参与事件处理、START、命令派发或结果闭合；必须由用户通过现有 WorkLine 配置入口应用，并按现有要求停线后 START。本设计不修改 `_process_event()`、`_start_ecs_test()`、`parse_ecs_test_rules()` 和 Transport `create_run()` 的执行语义。
 
+**执行不变量：**运行时、WorkLine START 和 ECS 命令创建都不得读取 `Device.ecs_test_default_json`。只有用户显式应用后形成的 WorkLine `ecs_test_rules` 参与运行；修改或清除设备默认值不会改变已生效的规则和在途命令。
+
 ## 2. 归属与字段必要性
 
 一条 ECS_TEST 规则以 `source_device_code` 匹配真实事件，再向 `target_device_code` 发送固定动作。同一来源在一条 WorkLine 上最多有一条生效规则。用户按来源设备选择常用参数，因此默认值归属于这台来源 Device；目标设备只是默认值的一部分，不是该默认值的所有者。
@@ -22,7 +24,7 @@ ECS_TEST 的生效合同仍是 `WorkLine.runtime_config_json.ecs_test_rules`。D
 
 ## 3. API 与数据合同
 
-以下为本设计拟定的 API 合同；设备专用读写权限沿用 Device 配置读写权限，具体权限字面量在实现时对照现有 BaseAPI/RBAC 定稿。
+以下为本设计拟定的 API 合同；GET 沿用现有 `biz:device:detail` 权限，PUT 沿用 `biz:device:update` 权限。
 
 ```text
 GET /devices/{device_code}/ecs-test-default
@@ -32,6 +34,8 @@ PUT /devices/{device_code}/ecs-test-default
 路径用 `device_code`（联调界面选设备时天然拿到的标识），不用内部数字 `id`，避免前端多一次 id 查找。`device_code` 未命中任何设备时返回 404。
 
 `GET` 在设备存在但未保存默认值时返回 `default: null`；设备不存在时返回 404。`PUT` 的 `default` 为完整对象时替换该设备默认值，为 `null` 时清除。请求不得携带 `source_device_code` 或额外字段。保存时从当前设备生成完整单条规则，交给现有 `parse_ecs_test_rules({"ecs_test_rules": [rule]})` 做结构校验；不在保存阶段检查目标设备当前归属、在线状态或能力，这些仍由应用与 START 检查。外部结构错误返回 4xx，不写入部分对象。
+
+`PUT` 必须显式提供 `default`：`{}` 不能表示清除；非空默认值必须显式提供 `params`，空对象 `{}` 可以是合法参数。缺少这两个必填字段时返回 422，不自动填入 `null` 或空参数。
 
 请求示例（`params` 的具体二级字段是**讨论示例，非设备合同**，须以获批设备附录为准）：
 
@@ -69,6 +73,49 @@ Content-Type: application/json
 ```
 
 未保存时，`GET` 的 `data.default` 固定为 `null`；清除请求为 `{"default": null}`，成功响应也返回 `default: null`。`PUT` 不要求客户端提交 Device `version`：同一设备默认值后保存者覆盖先保存者。服务端仍在设备行锁下写入、推进已有 Device 版本并返回 `device_version`，避免与普通设备更新的版本机制脱节。事务提交后失效该设备的相关缓存。若普通设备配置页面随后提交旧版本，应沿用既有冲突提示并刷新设备数据，不绕过乐观锁。
+
+未保存时的读取示例：
+
+```http
+GET /devices/STATION_SCAN1/ecs-test-default
+```
+
+```json
+{
+  "code": "1000",
+  "message": "操作成功",
+  "data": {
+    "device_id": 7,
+    "device_code": "STATION_SCAN1",
+    "device_version": 18,
+    "default": null
+  },
+  "timestamp": "2026-09-25T14:00:00Z"
+}
+```
+
+显式清除示例：
+
+```http
+PUT /devices/STATION_SCAN1/ecs-test-default
+Content-Type: application/json
+
+{"default": null}
+```
+
+```json
+{
+  "code": "1000",
+  "message": "操作成功",
+  "data": {
+    "device_id": 7,
+    "device_code": "STATION_SCAN1",
+    "device_version": 19,
+    "default": null
+  },
+  "timestamp": "2026-09-25T14:00:00Z"
+}
+```
 
 ## 4. 预填与应用
 
