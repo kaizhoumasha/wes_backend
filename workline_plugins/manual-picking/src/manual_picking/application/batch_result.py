@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from wes_plugin_sdk import (
@@ -16,6 +17,7 @@ from .batch_transport import inbound_moves, return_moves
 
 INBOUND_STEP = "MANUAL_PICKING_INBOUND_BATCH"
 RETURN_STEP = "MANUAL_PICKING_RETURN_BATCH"
+logger = logging.getLogger(__name__)
 
 
 class ManualPickingBatchResultFlow:
@@ -121,6 +123,9 @@ class ManualPickingBatchResultFlow:
         result = outcome.result
         if isinstance(result, BinReturnBatchReady):
             moves = return_moves(intent, result)
+            if await self._batches.has_conflicting_return_target(db, moves):
+                logger.error("manual_picking.return_target_conflict operation_id=%s", intent.operation_id)
+                return None
             await self._transport.create(
                 db,
                 workline_id=workline_id,

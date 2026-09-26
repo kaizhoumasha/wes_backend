@@ -7,6 +7,7 @@ import pytest
 from manual_picking.application.batch_result import ManualPickingBatchResultFlow
 from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.application.bin_line.return_repository import ReturnRepository
+from manual_picking.application.scan_flow import ManualPickingScanFlow
 from sqlalchemy import delete, event, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -24,7 +25,7 @@ from src.app.workline.models import WorkLine
 
 
 @pytest.mark.asyncio
-async def test_return_fifo_keeps_unready_head_and_rejects_second_open_bin() -> None:
+async def test_return_fifo_isolates_unready_bin_and_rejects_second_open_bin() -> None:
     _ = (InboundEvidence, WorkLine)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
@@ -53,11 +54,20 @@ async def test_return_fifo_keeps_unready_head_and_rejects_second_open_bin() -> N
             await db.execute(insert(table).values(workline_id=7, bin_code="BOX-C", scan3_evidence_id=4))
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions.begin() as db:
-            assert await ReturnRepository().ready_prefix_for_update(db, 7) == ()
+            rows = await ReturnRepository().ready_prefix_for_update(db, 7, limit=1)
+            assert [row.bin_code for row in rows] == ["BOX-B"]
+            pending = await ReturnRepository().current_bin_for_update(db, 7, "BOX-A")
+            assert pending is not None and pending.return_state == "MOVE_PENDING"
             assert await ReturnRepository().count_current(db, 7) == 3
             await db.execute(update(table).where(table.c.bin_code == "BOX-A").values(return_state="READY"))
             rows = await ReturnRepository().ready_prefix_for_update(db, 7)
             assert [row.bin_code for row in rows] == ["BOX-A", "BOX-B"]
+            await db.execute(update(table).where(table.c.bin_code == "BOX-A").values(return_state="RETURN_REQUESTED"))
+            db.expire_all()
+            rows = await ReturnRepository().ready_prefix_for_update(db, 7, limit=1)
+            assert [row.bin_code for row in rows] == ["BOX-B"]
+            assert [row.bin_code for row in await ReturnRepository().requested_for_update(db, 7)] == ["BOX-A"]
+            assert await ReturnRepository().count_current(db, 7) == 3
         with pytest.raises(IntegrityError):
             async with sessions.begin() as db:
                 await db.execute(insert(table).values(workline_id=7, bin_code="BOX-A", scan3_evidence_id=3))
@@ -116,7 +126,12 @@ async def test_return_batch_rows_share_evidence_and_rollback_together() -> None:
         )
         reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, outcome)))
         transport = SimpleNamespace(create=AsyncMock())
-        flow = ManualPickingBatchResultFlow(reader, transport, ReturnRepository())
+        flow = ManualPickingBatchResultFlow(
+            reader,
+            transport,
+            ReturnRepository(),
+            SimpleNamespace(has_conflicting_return_target=AsyncMock(return_value=False)),
+        )
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         with pytest.raises(RuntimeError, match="abort"):
@@ -146,5 +161,65 @@ async def test_return_batch_rows_share_evidence_and_rollback_together() -> None:
                 ("READY", None),
                 ("READY", None),
             ]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan3_recovery_replaces_current_return_atomically() -> None:
+    _ = (InboundEvidence, WorkLine)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):  # type: ignore[no-untyped-def]
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+
+    table = BinLineReturn.__table__
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(table.create)
+            await db.execute(
+                insert(table).values(
+                    workline_id=7,
+                    bin_code="A000002456",
+                    scan3_evidence_id=1,
+                    scan4_evidence_id=2,
+                    scan4_event_time=2000,
+                    scan3_command_code="OLD-S3",
+                    scan4_command_code="OLD-S4",
+                    return_state="MOVE_PENDING",
+                )
+            )
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        flow = ManualPickingScanFlow(
+            commands=object(),
+            admissions=object(),
+            returns=ReturnRepository(),
+            evidences=SimpleNamespace(
+                get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(normalized_payload={"timestamp": 1000}))
+            ),
+            command_reader=SimpleNamespace(
+                get_by_command_code=AsyncMock(
+                    return_value=SimpleNamespace(status="RECONCILING", execution_ref_id="old")
+                )
+            ),
+        )
+        flow._move = AsyncMock(return_value="NEW-S3")
+        evidence = SimpleNamespace(id=3, normalized_payload={"timestamp": 3000})
+        # 事务失败不能留下 VOIDED 旧轮次或孤立的新轮次。
+        with pytest.raises(RuntimeError, match="rollback"):
+            async with sessions.begin() as db:
+                assert await flow._apply_scan3(db, evidence, 7, {}, "A000002456-B") == "MOVE_FORWARD"
+                raise RuntimeError("rollback")
+        async with sessions.begin() as db:
+            current = await ReturnRepository().current_bin_for_update(db, 7, "A000002456")
+            assert current.return_state == "MOVE_PENDING"
+            assert await flow._apply_scan3(db, evidence, 7, {}, "A000002456-B") == "MOVE_FORWARD"
+        async with sessions.begin() as db:
+            rows = (await db.scalars(select(BinLineReturn).order_by(table.c.scan3_evidence_id))).all()
+            assert [(r.scan3_evidence_id, r.return_state) for r in rows] == [(1, "VOIDED"), (3, "NONE")]
+            assert rows[0].scan4_evidence_id == 2 and rows[0].scan4_command_code == "OLD-S4"
+            assert rows[1].scan3_command_code == "NEW-S3" and rows[1].scan4_evidence_id is None
+            assert await ReturnRepository().by_command_code_for_update(db, "OLD-S4") is None
     finally:
         await engine.dispose()

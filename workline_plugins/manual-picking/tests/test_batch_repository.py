@@ -30,6 +30,8 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
 
     @event.listens_for(engine.sync_engine, "connect")
     def attach_schemas(connection, _record):  # type: ignore[no-untyped-def]
+        connection.create_function("hashtextextended", 2, lambda identity, seed: 1)
+        connection.create_function("pg_advisory_xact_lock", 1, lambda identity: None)
         connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
 
     async with engine.begin() as connection:
@@ -1044,5 +1046,166 @@ async def test_late_transport_publication_does_not_reopen_no_batch() -> None:
             )
             repo = module.BatchRepository(history)
             assert not await repo.return_retry_due(db, 7, "R1", "90", 51, completed, arrived)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED", "FAILED", "REJECTED"])
+async def test_return_target_conflict_uses_only_active_frozen_targets(status: str) -> None:
+    from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
+
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    engine, sessions = await _new_sessions()
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                TransportTask(
+                    transport_task_id="other-return",
+                    client_request_id="other-client",
+                    request_digest="a" * 64,
+                    kind="BIN_MOVE",
+                    caller_json={"workline_id": "99"},
+                    request_json={},
+                    submit_operation_id="other-submit",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status=status,
+                    created_at=datetime(2026, 9, 25),
+                    updated_at=datetime(2026, 9, 25),
+                )
+            )
+            await db.flush()
+            db.add(
+                TransportMember(
+                    transport_task_id="other-return",
+                    ordinal=1,
+                    object_type="BIN",
+                    object_id="BOX-A",
+                    source_json={"kind": "HANDOFF_POSITION", "location_code": "OTHER-OUT"},
+                    target_json={"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "S1"},
+                    updated_at=datetime(2026, 9, 25),
+                )
+            )
+            await db.flush()
+            move = BinMove("BOX-B", HandoffPosition("OUT"), RackBinSlot("R1", "90", "S1"))
+            assert await repo.has_conflicting_return_target(db, (move,)) == (
+                status in {"PENDING", "ACCEPTED", "RECONCILING"}
+            )
+            for target in (
+                RackBinSlot("R2", "90", "S1"),
+                RackBinSlot("R1", "270", "S1"),
+                RackBinSlot("R1", "90", "S2"),
+            ):
+                assert not await repo.has_conflicting_return_target(
+                    db, (BinMove("BOX-B", HandoffPosition("OUT"), target),)
+                )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence_state,blocked", [("RECONCILING", False), ("IGNORED", False), ("PENDING", True), ("APPLIED", True)]
+)
+async def test_mock_bad_case_kt16_old_return_response_does_not_block_next_round(evidence_state, blocked):  # type: ignore[no-untyped-def]
+    """KT16-20260925：上一轮异常回架响应不能冻结再次到位的 510002/270。"""
+    engine, sessions = await _new_sessions()
+    try:
+        async with sessions.begin() as db:
+            for operation_id in (
+                "01a0d943-de51-71b8-ac6f-5a445a01db6e",
+                "01a0d944-2cb6-73c3-b05c-1733c2f32bb0",
+            ):
+                evidence = InboundEvidence(
+                    kind="WMS_RESULT",
+                    source_identity=f"wms:{operation_id}",
+                    payload_digest="b" * 64,
+                    normalized_payload={"code": "DECIDED", "data": {"result": "READY"}},
+                    received_at=datetime(2026, 9, 25, 15, 52),
+                    workline_id=7,
+                    operation="outbound.bin.return_batch@v1",
+                    operation_id=operation_id,
+                    apply_status=evidence_state,
+                )
+                db.add(evidence)
+                await db.flush()
+                db.add(
+                    WmsConfirmation(
+                        operation=evidence.operation,
+                        operation_id=operation_id,
+                        workline_id=7,
+                        request_digest="a" * 64,
+                        request_payload={"data": {"rack_id": "510002", "rack_face": "270"}},
+                        deadline_at=datetime(2026, 9, 25, 15, 52),
+                        status="COMPLETED",
+                        response_evidence_id=evidence.id,
+                    )
+                )
+            await db.flush()
+            repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 8, "510002", "270") is blocked
+            # 判定不能改写或发布异常证据，也不能伪造执行成功。
+            assert evidence.apply_status == evidence_state
+            assert evidence.published_at is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED", "FAILED", "REJECTED"])
+@pytest.mark.parametrize("side", ["source", "target"])
+async def test_mock_bad_case_ctu03_waits_only_for_current_rack_moves(status, side):  # type: ignore[no-untyped-def]
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 25, 19, 31)
+    rack = {"kind": "RACK_BIN_SLOT", "rack_id": "510027", "rack_face": "90", "slot_id": "S1"}
+    handoff = {"kind": "HANDOFF_POSITION", "location_code": "OUT"}
+    try:
+        async with sessions.begin() as db:
+            task = TransportTask(
+                transport_task_id="current-bin",
+                client_request_id="current-client",
+                request_digest="a" * 64,
+                kind="BIN_MOVE",
+                caller_json={"workline_id": "7"},
+                authority_workline_id=7,
+                request_json={},
+                submit_operation_id="submit",
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(task)
+            await db.flush()
+            member = TransportMember(
+                transport_task_id=task.transport_task_id,
+                ordinal=1,
+                object_type="BIN",
+                object_id="A000000341",
+                source_json=rack if side == "source" else handoff,
+                target_json=rack if side == "target" else handoff,
+                updated_at=now,
+            )
+            db.add(member)
+            await db.flush()
+            assert await repo.has_current_rack_dependency(db, 7, "510027", now) is (
+                status in {"PENDING", "ACCEPTED", "RECONCILING"}
+            )
+            assert await repo.has_active_bin_transport(db, "A000000341") is (
+                status in {"PENDING", "ACCEPTED", "RECONCILING"}
+            )
+            assert not await repo.has_active_bin_transport(db, "OTHER-BIN")
+            assert not await repo.has_current_rack_dependency(db, 8, "510027", now)
+            assert not await repo.has_current_rack_dependency(db, 7, "OTHER", now)
+            assert not await repo.has_current_rack_dependency(db, 7, "510027", now + timedelta(seconds=1))
+            member.final_position_json = member.target_json
+            member.position_unknown = False
+            await db.flush()
+            assert not await repo.has_current_rack_dependency(db, 7, "510027", now)
     finally:
         await engine.dispose()

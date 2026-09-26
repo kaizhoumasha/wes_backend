@@ -691,6 +691,10 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     )
                     if isinstance(completed, WmsConfirmationResponseConflictResult):
                         return
+                    if self._task_queue is not None and (
+                        confirmation.picking_task_id is not None or confirmation.workline_id is not None
+                    ):
+                        defer_wakeup(db, self._task_queue.enqueue_picking_task_plans)
                     if result.retry_after_ms is not None and material_execution_id is not None:
                         await self._create_follow_up(
                             db,

@@ -92,11 +92,22 @@ flowchart TD
 | 10A | 设备 → WES | 点3 SCAN | `A000000001-B`，本次正常授权 | Passage `CLOSED`、Return `NONE` 同事务交接；后续 `MOVE_FORWARD` 由 Return 负责 |
 | 11A | 设备 → WES | 点4 SCAN | `A000000001-B`，前序正常放行 | 首次到位进入物理 FIFO 并冻结顺序；`MOVE_FORWARD` 匹配 ECS `SUCCESS` 后具备批次资格 |
 | 12A | WES → WMS | `outbound.bin.return_batch@v1` | 工作线 `RETURN_BUFFER` FIFO 队首 `A000000001`；目标为请求时权威当前 rack/face，可不同于原 `RACK-5F-001/90` | `READY` 冻结目标；候选可来自不同 PickingTask |
-| 12A-1 | RCS/ECS → WES | 退箱 `BIN_MOVE` | 按原 `return_batch` 的目标储位 | 冻结 OUTLET 来源的逐箱 `SOURCE_PICKED` 已应用后，该 Return 退出 FIFO；`TARGET_PLACED`/`SUCCEEDED` 只结束 Transport。逐箱必报按限定合同做现场验收 |
+| 12A-1 | RCS/ECS → WES | 退箱 `BIN_MOVE` | 按原 `return_batch` 的目标储位 | 核对原 Transport 和冻结 OUTLET 来源后，明确 `ACCEPTED` 即闭合 Return；不等待可选 `SOURCE_PICKED`，不伪造物理取走。后续 Transport 独立履约 |
 
 上述表格按业务节点编号，不表示回架后才可换面。`feed_complete` 只要求冻结面全部 inbound 分段及成员权威成功、结果发布、
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
 `workline_positions.capacity` 是基础层按目标点维护的滚动 CTU01 下发窗口，按物理货架的进场生命周期计数。货架到位后仍占窗；业务完成且对应 CTU03 获得 `ACCEPTED` 后释放名额，并从 pending 补发下一架。RCS 负责物理排队、自主进位和工作位互斥；真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认，不按提交先后推断。
+
+CTU03 的执行准入独立于 Return 派发队列：本轮 `departure_decide=READY` 只表示取得业务离场决定。
+离场请求持久化提交后立即唤醒 WMS confirmation 派发；确定响应提交后立即唤醒现有 PickingTask/Plan driver。
+driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建 CTU03，Transport 提交后由现有唤醒立即派发。
+唤醒不携带业务快照，可重复或丢失；同一确认身份、原离场决定关联及 Transport 幂等防止重复请求和动作。
+现有 10 秒扫描保持不变，只作为漏通知、worker 异常或重启后的恢复兜底，事务回滚不得发送唤醒。
+来源货架与 drain 货架在创建 CTU03 前，均检查当前进站 Transport 创建以来、本 WorkLine 中以该 rack 为来源或目标的 `BIN_MOVE` 成员。
+仍为 `PENDING`、`ACCEPTED`、`RECONCILING` 且没有确定放置事实的成员暂缓离场；不能把 Return 在 `ACCEPTED` 后退出队列当成放箱完成。
+成员确定 `TARGET_PLACED` 或 Transport 明确终态解除该执行依赖；旧进站轮次记录、其他货架和其他工作线不参与本次检查。
+暂缓不丢弃本轮 `READY + destination`，后续位置事实通过 Transport 事务提交后的唤醒、最终结果通过插件结果发布唤醒重新评估，
+并由现有每 10 秒的 plan driver 周期复查兜底。仍有效的 `READY` 直接复用，不因等待依赖重复请求 WMS，不新增货架忙闲状态。
 明确未接纳或终位在目标点外的失败进场任务释放名额；终位仍在目标点的重试沿用原名额。离场明确未接纳后重新请求 WMS 离场决定；已接纳离场失败且留在目标点、当前面向缺失时的恢复要求仍待确认，见 [Transport 履约合同 §5.3](transport-fulfillment-contract.md#53-搬运最终结果)。
 同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员与 `inbound_batch` 义务处理；请求必须携带该成员的 `plan_revision`，不能以旧成员的动作或结果为新成员结案。若该架的原进场生命周期仍占窗，新成员关联原 CTU01，不重复下发或占窗。
 
@@ -174,7 +185,7 @@ flowchart TD
 点2旁的 PDA 拣料属于 WMS 内部流程，WES 只负责到位报告、最终决定和可靠放行。
 每条 WorkLine 各有一条独立回程通道，WorkLine 之间不共用；点3后紧接点4（SCAN4），点4后约有三个各容纳一个料箱的滚筒位，再到唯一出料口。正常运行时，点3→点4→出料口无旁路，料箱不会超车。因此本线的回程 FIFO 作用域是该 WorkLine 的独立回程通道，SCAN4 实际触发顺序是该通道的物理准入顺序。人工移箱等干预属于异常物理事实，不能仅凭软件状态重排或释放队首；仍须取得权威退出事实。
 
-`ManualPickingPassage` 只负责 INLET/SCAN1→SCAN3，首次 SCAN3 到位时 `CLOSED`；已识别正常箱同事务创建 `BinLineReturn` 接管 SCAN3→OUTLET，点3 `MOVE_FORWARD` 属于 Return Action。NG 箱不创建 Return，其方向 Command 独立跟踪结果。Return 在首次有效 SCAN4 到位时进入物理 FIFO；仅本线冻结 OUTLET 来源的逐箱物理取走事实使它退出该回程段。OUTLET→Rack Slot 的 Transport 在 `TARGET_PLACED`/最终成功后独立完成。Passage `CLOSED` 不代表该 bin 全程完成，已闭合 Passage/Return 历史不参与当前运行。
+`ManualPickingPassage` 只负责 INLET/SCAN1→SCAN3，首次 SCAN3 到位时 `CLOSED`；已识别正常箱同事务创建 `BinLineReturn` 接管 SCAN3→OUTLET，点3 `MOVE_FORWARD` 属于 Return Action。NG 箱不创建 Return，其方向 Command 独立跟踪结果。Return 在首次有效 SCAN4 到位时进入物理 FIFO；原 Transport 明确接纳后完成本线冻结 OUTLET 来源的执行权交接并关闭 Return，不宣称物理取走。OUTLET→Rack Slot 的 Transport 在 `TARGET_PLACED`/最终成功后独立完成。Passage `CLOSED` 不代表该 bin 全程完成，已闭合 Passage/Return 历史不参与当前运行。
 
 ```mermaid
 flowchart LR
@@ -196,6 +207,8 @@ flowchart LR
 
 点1读取 ECS `SCAN_COMPLETED.data.bin_code`，实际值带方向后缀。仅形如 `A00000xxxx-B` 的本点有效箱码创建 `MOVE_FORWARD`；
 不可读、箱码格式错误或后缀不为 `-B` 时记录本次 NG 并创建 `MOVE_RIGHT`，由点1直达点3，不向 WMS 发送猜测的箱码。
+SCAN1 放行不依赖目标货架到位，只校验本箱的任务、当前轮次、计划来源和入站位置/Transport 等必要依据。
+目标货架与料箱同时就绪由实际人工拣料的 WMS/PDA 作业准入负责，不提前串联到 SCAN1 或点2到位上报。
 `MOVE_FORWARD` 的匹配物理结果闭合后，按实际可靠到达顺序冻结点1→点2 FIFO 身份；不能把命令创建或 ACK 当作到达。
 本线前一个点1方向命令未取得权威成功结果时，不为后一个扫码下发方向命令；同一未闭合料箱重扫也不建立第二次经过。
 本条按点1设备的未闭合命令判断，不因其料箱已在下游标记 `CLOSED` 就越过原命令。
@@ -227,8 +240,8 @@ WES 在点2的唯一职责是：
 ### 3\.3 点3：NG 判定 {#33-3ng}
 
 点3独立校验实际扫码的 `-B` 后缀，并用正常箱码唯一关联本线尚未闭合的本次经过；不按点1→点2 FIFO 队首猜测身份。未经过点2且能唯一关联的直达箱，以点3当前有效 `-B` 决定正常向前；点1的非 `-B` 分流决定不能永久标记该箱为 NG。经过点2的箱仍须按其 WMS 确定结果决定方向。
-不可读、后缀错误、身份不唯一或经过点2但缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
-若无法关联任何经过且本点已有未闭合方向命令，新扫码先留证对账，不另下发第二条物理命令；“不停箱”不允许越过结果未知的原命令。
+不可读、后缀错误、身份不唯一或当前经过点2但缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
+若无法识别有效正常箱码、无法关联任何经过且本点已有未闭合方向命令，新扫码先留证对账，不另下发第二条物理命令；“不停箱”不允许越过结果未知的原命令。
 已关联当前经过的料箱只等待自身因果前置；另一料箱在同设备的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
 已取得 WMS 确定正常授权的料箱到达点3，点2方向命令即使未取得确定结果，点3到位 Evidence 仍使 Passage 结束，并同事务创建 Return 与点3正常方向 Command；点2 Command 迟到终态只保留原命令审计，不再驱动回程状态机。WMS 业务决定未决是另一种情况：原点3 Evidence 等待该决定，不能据此猜 NG、创建正常 Return 或下发方向 Command。
 
@@ -238,19 +251,24 @@ WES 在点2的唯一职责是：
 | point2 `NO_WORK` 正常直通 | 当前任务准入决定 | `MOVE_FORWARD` |
 | 未经过 point2 的已识别直达箱，point3 当前扫码有效 `-B` | point3 本次实际扫码及唯一料箱身份 | `MOVE_FORWARD`；不沿用 point1 的历史 NG 判断 |
 | point2 条码不可读且未进入人工业务 | 本次不可读码证据及已保存 NG 决定；实际 bin\_code 可空 | `MOVE_LEFT` |
-| 当前到位无法唯一关联已有正常处置 | 原始扫码和关联检查结果 | `MOVE_LEFT`；保留异常证据供对账 |
+| 当前无 Passage/Return，独立从 SCAN3 重新投入且 `-B` 有效 | 当前真实扫码；同箱没有活跃 BIN_MOVE | `MOVE_FORWARD`，创建新 Return；不依赖已闭合历史 |
+| 当前条码无效或已有处置不允许正常放行 | 原始扫码和当前处置 | `MOVE_LEFT`；保留异常证据 |
 
 料箱 NG 作为独立分支保存实际原因、实际扫码、原决定与命令关联，不填充预期条码冒充实际码。
 插件通过 DeviceCommand 完成必要分流，不发送 NG 出口报告，不等待 WMS 人工处理完成。正常业务结束不删除有效位置或解除未决物理动作。
 匹配的权威离位/释放事实解除当前工位等待，同箱后续合法到位才建立新的处理关联。
-点3首次有效到位是 Passage 的闭合点；正常箱在同一事务创建 Return，NG 箱只由原 DeviceCommand 跟踪分流结果，NGZone 后续人工处理不属于本插件。重复投递同一 Evidence 不创建新命令；原命令未到终态时等待其结果，明确 `FAILED`/`TIMED_OUT` 且目标事实尚未满足时，真实重扫为同一 Requirement 创建新 Command，不能覆写首次到位事实。
+点3首次有效到位是 Passage 的闭合点；正常箱在同一事务创建 Return，NG 箱只由原 DeviceCommand 跟踪分流结果，NGZone 后续人工处理不属于本插件。重复投递同一 Evidence 不创建新命令。
+
+SCAN3 也是独立回程准入点：有效 `-B` 扫码且没有当前 Passage/Return 时，直接创建新的 Return 和 `MOVE_FORWARD`，不读取旧 `EXITED`/`VOIDED` Return 或 CLOSED Passage 作为准入依据。当前同箱 `BIN_MOVE` 仍为 `PENDING`、`ACCEPTED`、`RECONCILING` 时保留直接执行依赖并延迟；明确终态的历史任务不阻塞。已有 Passage 的 WMS 人工作业/NG 处置继续按原规则执行，不因重扫绕过。该准入只允许进入回程通道，最终储位分配仍由 WMS 决定。已经执行过 `MOVE_LEFT` 的旧扫码不重放为相反方向，须以新的现场扫码建立新动作。
+
+SCAN3 同时是 SCAN3/SCAN4 异常回程的重新投入点：同箱当前 Return 尚未派发回架 Transport，且其当前方向命令为 `FAILED`、`TIMED_OUT` 或 `RECONCILING` 时，新的有效 `-B` 扫码可开启新轮次。扫码发生时间须晚于旧轮次 SCAN3 及已有 SCAN4 到位时间；同事务将旧 Return 标记为 `VOIDED`，保留原事件、命令和异常，创建以新 SCAN3 Evidence 为身份的 Return 与 `MOVE_FORWARD`。这项明确的重新投入事实结束旧轮次对当前回程的约束，不伪造旧命令成功；已派发的回架搬运仍按原 Transport 身份执行。新轮次等待自己的 SCAN4 到位与放行结果形成批次资格，重新冻结 FIFO 顺序，不继承旧 SCAN4 顺序、命令或批次。旧扫码重放与旧命令迟到结果不得修改新轮次；正常在途的重复扫码继续等待当前命令，不重复下发。
 
 ### 3\.4 点4：实际到位后进入物理 FIFO {#34-4}
 
-点4独立校验实际扫码的 `-B` 后缀，并唯一关联当前未退出的 Return。不可读、后缀错误或身份不确定时保持点位占用，不创建 `MOVE_FORWARD`，也不伪造 FIFO admission。已识别正常箱首次有效 SCAN4 到位即冻结 Evidence 和设备扫码发生时间并进入本线物理 FIFO；若前序 SCAN3 放行尚未确定，只延迟后续 Action。匹配 SCAN4 `MOVE_FORWARD` 的 ECS `SUCCESS` 使当前 Return 具备批次资格；ACK 和本地命令创建均不能代替到位或放行事实。队首未取得物理退出事实时不得跳过，后续候选不能越序进入
-`outbound.bin.return_batch@v1`；目标货架分配及搬回货架仍按出库合同 §9.2.2 执行。
+点4独立校验实际扫码的 `-B` 后缀，并唯一关联当前未退出的 Return。不可读、后缀错误或身份不确定时保持点位占用，不创建 `MOVE_FORWARD`，也不伪造 FIFO admission。已识别正常箱首次有效 SCAN4 到位即冻结 Evidence 和设备扫码发生时间并进入本线物理 FIFO；若前序 SCAN3 放行尚未确定，只延迟后续 Action。匹配 SCAN4 `MOVE_FORWARD` 的 ECS `SUCCESS` 使当前 Return 具备批次资格；ACK 和本地命令创建均不能代替到位或放行事实。尚未派发的候选按首次到位顺序进入
+`outbound.bin.return_batch@v1`；已派发箱缺少取走回调不阻塞后续独立候选；目标货架分配及搬回货架仍按出库合同 §9.2.2 执行。
 点4首次扫码冻结 FIFO admission/order，重复投递同一 Evidence 不重复建命令；当前命令未到终态时等待其结果，明确 `FAILED`/`TIMED_OUT` 且目标事实尚未满足时，真实重扫可为同一 Requirement 创建新 Command 并更新 Command pointer，但不得改变首次 SCAN4 Evidence 和顺序时间。
-**SCAN4 首次实际到位决定物理 FIFO 顺序；匹配的 `MOVE_FORWARD` ECS `SUCCESS` 决定批次资格。** `return_batch` 先按首次到位顺序排列全部未退出的 Return，再从队首取连续已具备资格的前缀；不得先筛 `READY` 再排序，也不得按命令完成顺序重排。`MOVE_PENDING` 或 `RETURN_REQUESTED` 队首在实际退出 OUTLET 前仍阻塞后项；只有冻结来源为本线 OUTLET 的权威逐箱 `SOURCE_PICKED` 已应用，或有明确异常物理退出 Evidence，才可关闭 Return 并释放 FIFO。`TARGET_PLACED`/Transport `SUCCEEDED` 只关闭后续 Transport，不作为 Return 正常关闭条件。
+**SCAN4 首次实际到位决定物理 FIFO 顺序；匹配的 `MOVE_FORWARD` ECS `SUCCESS` 决定批次资格。** `return_batch` 只选已具备资格的 `READY` Return，按首次 SCAN4 到位顺序组成候选列表，WMS 对该列表返回连续前缀；不得按命令完成顺序重排。`MOVE_PENDING` 仍等待本箱放行结果，不参与本次候选，也不阻塞其他已具备资格的箱；`RETURN_REQUESTED` 已有冻结批次与搬运身份，不再占据待派发队列，不重复分配，也不因缺少回调阻塞后续独立批次。原 Transport 明确 `ACCEPTED` 即闭合对应 Return；扫描晚于接纳时，原 Transport 的明确终态、已有 ACK 后的对账或已应用权威结果仍可证明交接。发送未知、拒绝不能证明交接。`SOURCE_PICKED` 是可选物理证据；Return 闭合不改写物理位置，不删除 Transport，后续失败与位置未知继续按原 Transport 对账。
 
 ### 3\.5 退料货架直接取料 {#35-direct-pick}
 
@@ -634,7 +652,7 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 | --- | --- |
 | `workline_plugins/manual-picking/tests/test_scan_handlers.py` | 四点 `-B/-C/-B/-B` 校验；point3 未知左行、point4 未知保持占用。 |
 | `workline_plugins/manual-picking/tests/test_scan_flow.py` | point1→point2 FIFO、point3 双来源/NG 与 Passage→Return 交接、point4 首次到位冻结 FIFO 顺序及匹配 ECS `SUCCESS` 后的批次资格；drain ingress 校验。 |
-| `workline_plugins/manual-picking/tests/test_passage_model.py` | passage 唯一身份、未闭合计数与退箱队首连续 READY 前缀。 |
+| `workline_plugins/manual-picking/tests/test_passage_model.py` | passage 唯一身份、未闭合计数与退箱 READY 候选顺序与未就绪箱隔离。 |
 | `workline_plugins/manual-picking/tests/test_batch_flow.py`、`test_batch_repository.py`、`test_batch_transport.py` | Bin inbound/return batch 的 FIFO、冻结 rack face、WMS 结果应用和 transport 绑定。 |
 | `workline_plugins/manual-picking/tests/test_drain_flow.py`、`test_drain_repository.py`、`test_transport_outcome.py` | drain 决定、READY 保留、逐面推进和权威 transport outcome。 |
 
@@ -700,11 +718,11 @@ evidence 的业务应用事务只允许数据库操作：
 不为插件增加宿主命令引用类型。
 
 插件在当前 execution 中关联原 DeviceCommand：SCAN1/SCAN2 使用未闭合 Passage，SCAN3/SCAN4 的回程动作使用未退出 Return；CLOSED Passage 不再承担回程运行判断。相同身份与相同载荷只取得原命令，载荷漂移是冲突；命令可能已送达或结果未知时保留
-原身份等待权威终态。只有匹配的物理离位/释放事实才结束本次动作，不新增全程料箱生命周期。
+原身份等待权威终态；上述 SCAN3 异常重新投入按新扫码建立新 Return，原命令保留在旧轮次，不再作为新轮次依赖。不得把重新投入伪装为原命令物理成功，不新增全程料箱生命周期。
 
 未关联任何当前未闭合 Passage/Return 或 DeviceCommand 的历史扫码 Evidence 仅供诊断。无论其 `published_at` 是否为空，都不构成
 `SCAN1`～`SCAN4`、批次推进或任务完成门禁；当前未闭合 execution、明确 FIFO 队首和已冻结未闭合命令仍按原顺序规则处理。
-SCAN3 已识别料箱的后继动作只等待该料箱自身的因果前置；同设备其他料箱的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
+SCAN3 已识别料箱（含无 Passage 的独立重新投入）的后继动作只等待该料箱自身的因果前置；同设备其他料箱的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
 SCAN4 已识别料箱的首次到位 Evidence 同样不等待其他料箱的设备命令；首次到位时间和 Evidence 身份按实际 SCAN4 事实冻结。
 若本料箱点3方向命令仍未确定，首次 SCAN4 到位时间仍须先冻结；仅后继方向 Action 等待原 Evidence 重领后的重新判断。同一 Evidence 重领不得改写首次时间或重复建命令；明确失败后的真实重扫按原重试准入创建新 Evidence/Command，仍不改写首次到位时间。
 同样，未被当前 `WmsConfirmation.response_evidence_id` 精确引用的历史 WMS batch Evidence 不构成批次门禁；匹配当前确认的

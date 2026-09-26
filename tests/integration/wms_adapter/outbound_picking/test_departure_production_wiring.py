@@ -1,6 +1,6 @@
 """任务业务完成后，离场决定仍由零插件宿主可靠派发。"""
 
-from datetime import timedelta
+import asyncio
 
 import pytest
 from sqlalchemy import func, select
@@ -11,7 +11,12 @@ from src.app.execution.services import WmsConfirmationService
 from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.departure_typed import encode_request
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
-from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
+from src.app.wms_integration.outbound_picking.services.rack_departure import (
+    RackDepartureResultReader,
+    RackDepartureScheduler,
+)
+from src.core.task_queue_gateway import DISPATCH_WMS_CONFIRMATIONS_TASK, task_queue_gateway
+from src.core.transaction_wakeup import _pending
 from src.utils.timezone import timezone
 from tests.integration.wms_adapter.outbound_picking.confirmation_support import (
     ConfirmationServer,
@@ -50,29 +55,33 @@ async def test_departure_persists_decision_without_reopening_task_or_starting_tr
         operation_id,
         now,
     ):
+        intent = wms_operations.outbound_rack_departure_decide(
+            operation_id=operation_id,
+            task_id=task.task_id,
+            rack_id="RACK-1",
+            current_location=TransportRackPosition("WORK-1"),
+            current_face="面 A",
+        )
         request = encode_request(
-            wms_operations.outbound_rack_departure_decide(
-                operation_id=operation_id,
-                task_id=task.task_id,
-                rack_id="RACK-1",
-                current_location=TransportRackPosition("WORK-1"),
-                current_face="面 A",
-            ),
+            intent,
             timestamp=int(timezone.to_utc(now).timestamp() * 1000),
         )
-        async with sessions.begin() as db:
-            await WmsConfirmationService().create_or_get(
-                db,
-                operation="outbound.rack.departure_decide@v1",
-                operation_id=operation_id,
-                picking_task_id=task.id,
-                request_payload=request,
-                deadline_at=now + timedelta(minutes=5),
-                created_at=now,
-            )
         worker.start()
-        dispatch = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
-        assert worker.result(worker.send(dispatch)) == 1
+        dispatched = []
+        monkeypatch.setattr(
+            task_queue_gateway,
+            "enqueue_wms_confirmations",
+            lambda: dispatched.append(worker.send(DISPATCH_WMS_CONFIRMATIONS_TASK)),
+        )
+        async with sessions.begin() as db:
+            scheduler = RackDepartureScheduler(WmsConfirmationService())
+            for _ in range(2):
+                await scheduler.create_in_session(db, intent, picking_task_id=task.id, created_at=now)
+            assert dispatched == []
+        if _pending:
+            await asyncio.gather(*tuple(_pending))
+        assert len(dispatched) == 1
+        assert worker.result(dispatched[0]) == 1
         async with sessions() as db:
             confirmation = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == operation_id))
             assert confirmation.status == WmsConfirmationStatus.COMPLETED
@@ -91,5 +100,6 @@ async def test_departure_persists_decision_without_reopening_task_or_starting_tr
             assert (await db.get(PickingTask, task.id)).status == state
             assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 1
             assert await db.scalar(select(func.count()).select_from(TransportTask)) == 0
-        assert worker.result(worker.send(dispatch)) == 0
+        assert worker.result(worker.send(DISPATCH_WMS_CONFIRMATIONS_TASK)) == 0
+        assert "activate_picking_task_plans_batch" in worker.confirmation_log_path.read_text()
         assert server.requests == [{"path": "/api/v1/wes/decisions", "envelope": request}]

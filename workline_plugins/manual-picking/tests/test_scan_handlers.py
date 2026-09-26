@@ -28,12 +28,12 @@ def test_scan2_only_accepts_c_and_same_passage_before_wms() -> None:
         assert handler.decide(_fact("SCAN2", raw, passage)).route == "MOVE_FORWARD"
 
 
-def test_scan3_does_not_infer_normal_authorization_from_fifo_or_bin_code_alone() -> None:
+def test_scan3_accepts_reentry_without_history_but_preserves_current_disposition() -> None:
     handler = Scan3Handler()
     normal = PassageSnapshot(bin_code="A000001234", normal_authorized=True)
     assert handler.decide(_fact("SCAN3", "A000001234-B", normal)).route == "MOVE_FORWARD"
+    assert handler.decide(_fact("SCAN3", "A000001234-B", None)).route == "MOVE_FORWARD"
     for raw, passage in (
-        ("A000001234-B", None),
         ("A000001234-B", PassageSnapshot(bin_code="A000001234")),
         ("A000001234-B", PassageSnapshot(bin_code="A000001234", ng=True, normal_authorized=True)),
         ("A000009999-B", normal),
@@ -51,7 +51,6 @@ def test_scan4_holds_without_unique_prior_normal_scan3_authorization() -> None:
         (None, normal),
         ("A000001234-C", normal),
         ("A000009999-B", normal),
-        ("A000001234-B", None),
         ("A000001234-B", PassageSnapshot(bin_code="A000001234", normal_authorized=True)),
     ):
         assert handler.decide(_fact("SCAN4", raw, passage)).route == "HOLD"

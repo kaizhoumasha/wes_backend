@@ -45,12 +45,13 @@ class ReturnRepository:
     async def unfinished_prefix_for_update(
         self, db: AsyncSession, workline_id: int, *, limit: int = 4
     ) -> tuple[BinLineReturn, ...]:
+        """待派发 FIFO；已派发箱的补证义务不阻塞后续独立批次。"""
         result = await db.scalars(
             select(BinLineReturn)
             .where(
                 _COLUMNS.workline_id == workline_id,
                 _COLUMNS.scan4_evidence_id.is_not(None),
-                _COLUMNS.return_state.not_in(("EXITED", "VOIDED")),
+                _COLUMNS.return_state.not_in(("RETURN_REQUESTED", "EXITED", "VOIDED")),
             )
             .order_by(_COLUMNS.scan4_event_time, _COLUMNS.scan4_evidence_id)
             .limit(limit)
@@ -61,13 +62,19 @@ class ReturnRepository:
     async def ready_prefix_for_update(
         self, db: AsyncSession, workline_id: int, *, limit: int = 4
     ) -> tuple[BinLineReturn, ...]:
-        rows = await self.unfinished_prefix_for_update(db, workline_id, limit=limit)
-        ready = []
-        for row in rows:
-            if row.return_state != "READY":
-                break
-            ready.append(row)
-        return tuple(ready)
+        # 本箱放行未闭合只影响本箱；候选内部仍按首次 SCAN4 到位顺序派发。
+        result = await db.scalars(
+            select(BinLineReturn)
+            .where(
+                _COLUMNS.workline_id == workline_id,
+                _COLUMNS.scan4_evidence_id.is_not(None),
+                _COLUMNS.return_state == "READY",
+            )
+            .order_by(_COLUMNS.scan4_event_time, _COLUMNS.scan4_evidence_id)
+            .limit(limit)
+            .with_for_update()
+        )
+        return tuple(result.all())
 
     async def requested_for_update(self, db: AsyncSession, workline_id: int) -> tuple[BinLineReturn, ...]:
         result = await db.scalars(
