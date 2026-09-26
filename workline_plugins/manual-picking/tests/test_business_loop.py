@@ -454,7 +454,7 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
             )
             assert removed.rowcount == 1
         run(worker, SUBMIT)
-        assert run(worker, ACTIVATE) == 0
+        assert run(worker, ACTIVATE) >= len(returned.request_json["moves"])
         result = {
             "kind": "BIN_MOVE",
             "outcome_revision": 1,
@@ -463,21 +463,13 @@ async def test_completed_task_drains_fifo_through_real_worker(rack_database, tra
                 for move in returned.request_json["moves"]
             ],
         }
-        for move in returned.request_json["moves"]:
-            picked = await record_valid_callback(
-                transport.service,
-                operation_id=new_uuid7(),
-                transport_task_id=returned.transport_task_id,
-                operation=POSITION_OPERATION,
-                timestamp=1,
-                payload={"container_id": move["bin_code"], "milestone": "SOURCE_PICKED"},
-            )
-            assert picked["http_status"] == 202
-        run(worker, APPLY)
-        run(worker, ACTIVATE)
         async with sessions() as db:
             returns = (await db.scalars(select(BinLineReturn).where(BinLineReturn.workline_id == line.id))).all()
             assert {row.return_state for row in returns} == {"EXITED"}
+            current_transport = await db.scalar(
+                select(TransportTask).where(TransportTask.transport_task_id == returned.transport_task_id)
+            )
+            assert current_transport.status == "ACCEPTED"
         for move in returned.request_json["moves"]:
             ack = await record_valid_callback(
                 transport.service,

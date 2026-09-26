@@ -1,0 +1,304 @@
+时间_UTC,交互方向,事件,身份,对象,证据集合
+2026-09-25T21:16:47.757472,WMS → WES,outbound.picking_task.issued@v1 / APPLIED,01a0da6d-8cb3-71bd-9966-f810ca25a76c,任务,evidences
+2026-09-25T21:16:47.808529,WES 内部,outbound.picking_task.prepare@v1 持久化,01a0da6d-8d50-7744-85a2-dfe1b75b13e9,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:16:47.855597,WES → WMS,outbound.picking_task.prepare@v1 最后派发开始,01a0da6d-8d50-7744-85a2-dfe1b75b13e9,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:16:48.966883,WMS → WES,PREPARE_ACCEPTED 持久化,01a0da6d-8d50-7744-85a2-dfe1b75b13e9,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:17:24.707345,WMS → WES,outbound.picking_task.plan_delta@v1 / APPLIED,01a0da6e-1d0f-7761-98ea-681663532ddc,任务,evidences
+2026-09-25T21:17:24.814751,WES 内部,F01 创建,transport-a0c37b6e-87ef-4246-812e-c3b0d420da3f,610017,transports
+2026-09-25T21:17:24.844102,WES 内部,CTU01 创建,transport-4151c1b4-3fdf-441e-862f-e83079a1d53e,510001,transports
+2026-09-25T21:17:24.857817,WES 内部,CTU01 创建,transport-b13f7d14-f2ca-418d-9d67-01050ed60163,510002,transports
+2026-09-25T21:17:24.869165,WES 内部,CTU01 创建,transport-9268bf86-4ef5-4aae-9628-be532cb6f2d0,510017,transports
+2026-09-25T21:17:24.933622,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-a0c37b6e-87ef-4246-812e-c3b0d420da3f,610017,transports
+2026-09-25T21:17:26.496148,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-4151c1b4-3fdf-441e-862f-e83079a1d53e,510001,transports
+2026-09-25T21:17:28.147218,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-b13f7d14-f2ca-418d-9d67-01050ed60163,510002,transports
+2026-09-25T21:17:29.544129,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-9268bf86-4ef5-4aae-9628-be532cb6f2d0,510017,transports
+2026-09-25T21:21:02.415059,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da71-6fbf-7fb4-ae0f-f6019339494b,transport-a0c37b6e-87ef-4246-812e-c3b0d420da3f,transport_evidences
+2026-09-25T21:21:37.794093,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da71-f9f8-79a1-b761-943bf4b59d33,transport-9268bf86-4ef5-4aae-9628-be532cb6f2d0,transport_evidences
+2026-09-25T21:21:38.032917,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da71-faf8-7d63-bac1-9cd45de1318c,510017,confirmations
+2026-09-25T21:21:41.362627,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da71-faf8-7d63-bac1-9cd45de1318c,510017,confirmations
+2026-09-25T21:21:42.246814,WMS → WES,READY 持久化,01a0da71-faf8-7d63-bac1-9cd45de1318c,510017,confirmations
+2026-09-25T21:21:42.353783,WES 内部,BIN_MOVE 创建,transport-0bd3a5cb-9516-49e1-9bed-32203e2464e9,A000002231,transports
+2026-09-25T21:21:42.478487,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-0bd3a5cb-9516-49e1-9bed-32203e2464e9,A000002231,transports
+2026-09-25T21:22:14.689676,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da72-8a16-7bdb-a906-7121edee3ee3,transport-0bd3a5cb-9516-49e1-9bed-32203e2464e9,transport_evidences
+2026-09-25T21:22:15.027768,WMS → WES,transport.task.resulted@v1 None,01a0da72-8b6b-763c-ba97-5f4c76e22601,transport-0bd3a5cb-9516-49e1-9bed-32203e2464e9,transport_evidences
+2026-09-25T21:22:15.242298,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da72-8c50-7664-85e0-5b47c2416903,510017,confirmations
+2026-09-25T21:22:15.280371,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da72-8c50-7664-85e0-5b47c2416903,510017,confirmations
+2026-09-25T21:22:16.154911,WMS → WES,READY 持久化,01a0da72-8c50-7664-85e0-5b47c2416903,510017,confirmations
+2026-09-25T21:22:16.324742,WES 内部,CTU03 创建,transport-ec1d41a2-1003-4c77-a622-74720dea648c,510017,transports
+2026-09-25T21:22:16.370716,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-ec1d41a2-1003-4c77-a622-74720dea648c,510017,transports
+2026-09-25T21:22:17.823087,WES 内部,CTU01 创建,transport-b4d51f41-3a49-41d3-aaad-c7e1945d5abd,510024,transports
+2026-09-25T21:22:17.87022,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-b4d51f41-3a49-41d3-aaad-c7e1945d5abd,510024,transports
+2026-09-25T21:22:24.781993,ECS → WES,SCAN_COMPLETED,353501777031744,A000002231-B,evidences
+2026-09-25T21:22:24.899918,WES 内部,MOVE_FORWARD 命令持久化,01a0da72-b203-7baa-896b-73f477989f8a,STATION_SCAN9,commands
+2026-09-25T21:22:25.032673,ECS → WES,ACK 收到,01a0da72-b203-7baa-896b-73f477989f8a,STATION_SCAN9,commands
+2026-09-25T21:22:27.658376,ECS → WES,SUCCESS 处理完成,01a0da72-b203-7baa-896b-73f477989f8a,STATION_SCAN9,commands
+2026-09-25T21:22:38.793429,ECS → WES,SCAN_COMPLETED,353501834424896,A000002231-C,evidences
+2026-09-25T21:22:41.355698,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da72-f24b-7122-99aa-d719d7a3a93b,A000002231,confirmations
+2026-09-25T21:22:41.403625,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da72-f24b-7122-99aa-d719d7a3a93b,A000002231,confirmations
+2026-09-25T21:22:42.381885,WMS → WES,WORK_REQUIRED 持久化,01a0da72-f24b-7122-99aa-d719d7a3a93b,A000002231,confirmations
+2026-09-25T21:22:59.942711,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da73-3a8f-7232-b157-e8774d99a2b4,A000002231,evidences
+2026-09-25T21:23:00.011381,WES 内部,MOVE_FORWARD 命令持久化,01a0da73-3b2b-7de9-b7be-85d841e59835,STATION_SCAN10,commands
+2026-09-25T21:23:00.12869,ECS → WES,ACK 收到,01a0da73-3b2b-7de9-b7be-85d841e59835,STATION_SCAN10,commands
+2026-09-25T21:23:04.054475,ECS → WES,SUCCESS 处理完成,01a0da73-3b2b-7de9-b7be-85d841e59835,STATION_SCAN10,commands
+2026-09-25T21:23:10.940522,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da73-65d1-7a68-a03b-461b36a211d0,transport-4151c1b4-3fdf-441e-862f-e83079a1d53e,transport_evidences
+2026-09-25T21:23:11.165009,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da73-66cc-73bf-bba1-394a9e48d63a,510001,confirmations
+2026-09-25T21:23:11.356994,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da73-66cc-73bf-bba1-394a9e48d63a,510001,confirmations
+2026-09-25T21:23:12.178078,WMS → WES,READY 持久化,01a0da73-66cc-73bf-bba1-394a9e48d63a,510001,confirmations
+2026-09-25T21:23:12.253764,WES 内部,BIN_MOVE 创建,transport-46aa7a40-25c1-4711-b6ab-184ff1b73516,A000002165,transports
+2026-09-25T21:23:12.353406,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-46aa7a40-25c1-4711-b6ab-184ff1b73516,A000002165,transports
+2026-09-25T21:23:13.605841,ECS → WES,SCAN_COMPLETED,353501977014848,A000002231-B,evidences
+2026-09-25T21:23:13.693173,WES 内部,MOVE_FORWARD 命令持久化,01a0da73-709d-79a1-bbfe-09e248883227,STATION_SCAN11,commands
+2026-09-25T21:23:13.802384,ECS → WES,ACK 收到,01a0da73-709d-79a1-bbfe-09e248883227,STATION_SCAN11,commands
+2026-09-25T21:23:17.267158,ECS → WES,SUCCESS 处理完成,01a0da73-709d-79a1-bbfe-09e248883227,STATION_SCAN11,commands
+2026-09-25T21:23:19.19851,ECS → WES,SCAN_COMPLETED,353501999923776,A000002231-B,evidences
+2026-09-25T21:23:19.28078,WES 内部,MOVE_FORWARD 命令持久化,01a0da73-8670-79b6-85b0-4cf7a688f0c7,STATION_SCAN12,commands
+2026-09-25T21:23:19.516134,ECS → WES,ACK 收到,01a0da73-8670-79b6-85b0-4cf7a688f0c7,STATION_SCAN12,commands
+2026-09-25T21:23:22.77649,ECS → WES,SUCCESS 处理完成,01a0da73-8670-79b6-85b0-4cf7a688f0c7,STATION_SCAN12,commands
+2026-09-25T21:23:44.802765,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da73-ea18-797a-b037-71f895e6e3ba,transport-46aa7a40-25c1-4711-b6ab-184ff1b73516,transport_evidences
+2026-09-25T21:23:45.086621,WMS → WES,transport.task.resulted@v1 None,01a0da73-eb35-70c9-98ec-50c1cf75dd52,transport-46aa7a40-25c1-4711-b6ab-184ff1b73516,transport_evidences
+2026-09-25T21:23:45.288617,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da73-ec2a-798c-b948-ca2dfdfff33d,510001,confirmations
+2026-09-25T21:23:51.363417,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da73-ec2a-798c-b948-ca2dfdfff33d,510001,confirmations
+2026-09-25T21:23:52.177064,WMS → WES,READY 持久化,01a0da73-ec2a-798c-b948-ca2dfdfff33d,510001,confirmations
+2026-09-25T21:23:52.251668,WES 内部,BIN_MOVE 创建,transport-72162d28-07c9-4c7c-ab86-51eab311607b,A000002231,transports
+2026-09-25T21:23:52.342629,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-72162d28-07c9-4c7c-ab86-51eab311607b,A000002231,transports
+2026-09-25T21:23:55.177536,ECS → WES,SCAN_COMPLETED,353502147293760,A000002165-B,evidences
+2026-09-25T21:23:55.280764,WES 内部,MOVE_FORWARD 命令持久化,01a0da74-1310-78c1-9935-9b4c863e519f,STATION_SCAN9,commands
+2026-09-25T21:23:55.383778,ECS → WES,ACK 收到,01a0da74-1310-78c1-9935-9b4c863e519f,STATION_SCAN9,commands
+2026-09-25T21:23:57.887453,ECS → WES,SUCCESS 处理完成,01a0da74-1310-78c1-9935-9b4c863e519f,STATION_SCAN9,commands
+2026-09-25T21:24:09.196217,ECS → WES,SCAN_COMPLETED,353502204715584,A000002165-C,evidences
+2026-09-25T21:24:11.353124,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da74-51d9-735a-8155-de76503d1358,A000002165,confirmations
+2026-09-25T21:24:11.401021,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da74-51d9-735a-8155-de76503d1358,A000002165,confirmations
+2026-09-25T21:24:12.316755,WMS → WES,WORK_REQUIRED 持久化,01a0da74-51d9-735a-8155-de76503d1358,A000002165,confirmations
+2026-09-25T21:24:30.918177,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da74-9df0-75d0-8391-c3b07ca07c64,A000002165,evidences
+2026-09-25T21:24:30.974768,WES 内部,MOVE_FORWARD 命令持久化,01a0da74-9e7e-79c2-865b-c5add9b1b81d,STATION_SCAN10,commands
+2026-09-25T21:24:31.096056,ECS → WES,ACK 收到,01a0da74-9e7e-79c2-865b-c5add9b1b81d,STATION_SCAN10,commands
+2026-09-25T21:24:35.175606,ECS → WES,SUCCESS 处理完成,01a0da74-9e7e-79c2-865b-c5add9b1b81d,STATION_SCAN10,commands
+2026-09-25T21:24:44.502543,ECS → WES,SCAN_COMPLETED,353502349328960,A000002165-B,evidences
+2026-09-25T21:24:44.591659,WES 内部,MOVE_FORWARD 命令持久化,01a0da74-d3af-7f39-bd76-83260c4229d9,STATION_SCAN11,commands
+2026-09-25T21:24:44.698055,ECS → WES,ACK 收到,01a0da74-d3af-7f39-bd76-83260c4229d9,STATION_SCAN11,commands
+2026-09-25T21:24:44.892391,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da74-d4d3-7837-8153-caa69e1bc1f4,transport-72162d28-07c9-4c7c-ab86-51eab311607b,transport_evidences
+2026-09-25T21:24:45.011067,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da74-d556-73dc-bd5c-8724e214792c,510001,confirmations
+2026-09-25T21:24:45.048498,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da74-d556-73dc-bd5c-8724e214792c,510001,confirmations
+2026-09-25T21:24:45.18262,WMS → WES,transport.task.resulted@v1 None,01a0da74-d5f5-7504-8e85-731ec68d314a,transport-72162d28-07c9-4c7c-ab86-51eab311607b,transport_evidences
+2026-09-25T21:24:45.925365,WMS → WES,READY 持久化,01a0da74-d556-73dc-bd5c-8724e214792c,510001,confirmations
+2026-09-25T21:24:46.085971,WES 内部,CTU03 创建,transport-1838ce1c-6c40-44fc-940d-d45886eee220,510001,transports
+2026-09-25T21:24:46.133788,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-1838ce1c-6c40-44fc-940d-d45886eee220,510001,transports
+2026-09-25T21:24:47.599596,WES 内部,CTU01 创建,transport-16b99869-3e98-43f3-85fb-812cc47e0293,510027,transports
+2026-09-25T21:24:47.650225,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-16b99869-3e98-43f3-85fb-812cc47e0293,510027,transports
+2026-09-25T21:24:48.151817,ECS → WES,SUCCESS 处理完成,01a0da74-d3af-7f39-bd76-83260c4229d9,STATION_SCAN11,commands
+2026-09-25T21:24:49.84836,ECS → WES,SCAN_COMPLETED,353502371222080,A000002165-B,evidences
+2026-09-25T21:24:49.935382,WES 内部,MOVE_FORWARD 命令持久化,01a0da74-e88f-79af-ac7c-bb27baec1505,STATION_SCAN12,commands
+2026-09-25T21:24:50.021695,ECS → WES,ACK 收到,01a0da74-e88f-79af-ac7c-bb27baec1505,STATION_SCAN12,commands
+2026-09-25T21:24:53.598011,ECS → WES,SUCCESS 处理完成,01a0da74-e88f-79af-ac7c-bb27baec1505,STATION_SCAN12,commands
+2026-09-25T21:24:56.463921,WES 内部,workline.return_buffer.drain_rack_decide@v1 持久化,01a0da75-021a-7152-8aaa-4bbed3f60eac,KT16,confirmations
+2026-09-25T21:25:01.355669,WES → WMS,workline.return_buffer.drain_rack_decide@v1 最后派发开始,01a0da75-021a-7152-8aaa-4bbed3f60eac,KT16,confirmations
+2026-09-25T21:25:02.282978,WMS → WES,READY 持久化,01a0da75-021a-7152-8aaa-4bbed3f60eac,KT16,confirmations
+2026-09-25T21:25:41.242117,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da75-b0ee-7cc7-b703-a070d1d14ce1,transport-b13f7d14-f2ca-418d-9d67-01050ed60163,transport_evidences
+2026-09-25T21:25:41.478556,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da75-b1ed-73c7-b373-da907afc7c9d,510002,confirmations
+2026-09-25T21:25:51.359892,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da75-b1ed-73c7-b373-da907afc7c9d,510002,confirmations
+2026-09-25T21:25:52.354857,WMS → WES,READY 持久化,01a0da75-b1ed-73c7-b373-da907afc7c9d,510002,confirmations
+2026-09-25T21:25:52.438728,WES 内部,BIN_MOVE 创建,transport-dd4e7adc-8fee-4941-aa5a-95c8797184c1,A000000628,transports
+2026-09-25T21:25:52.556246,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-dd4e7adc-8fee-4941-aa5a-95c8797184c1,A000000628,transports
+2026-09-25T21:25:59.831931,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da75-f98d-7e44-98cb-a799a9e39417,transport-ec1d41a2-1003-4c77-a622-74720dea648c,transport_evidences
+2026-09-25T21:26:24.559918,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da76-5a24-7962-aa7d-b0ede7e19c8a,transport-dd4e7adc-8fee-4941-aa5a-95c8797184c1,transport_evidences
+2026-09-25T21:26:24.873092,WMS → WES,transport.task.resulted@v1 None,01a0da76-5b60-7b23-accd-8219c5408918,transport-dd4e7adc-8fee-4941-aa5a-95c8797184c1,transport_evidences
+2026-09-25T21:26:25.092529,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da76-5c64-76ab-ba10-75e0a714df4f,510002,confirmations
+2026-09-25T21:26:31.360354,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da76-5c64-76ab-ba10-75e0a714df4f,510002,confirmations
+2026-09-25T21:26:32.304338,WMS → WES,READY 持久化,01a0da76-5c64-76ab-ba10-75e0a714df4f,510002,confirmations
+2026-09-25T21:26:32.387575,WES 内部,BIN_MOVE 创建,transport-32059d22-f5dc-436f-8a45-15eb6f313f5d,A000002165,transports
+2026-09-25T21:26:32.509526,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-32059d22-f5dc-436f-8a45-15eb6f313f5d,A000002165,transports
+2026-09-25T21:26:34.86144,ECS → WES,SCAN_COMPLETED,353502801355328,A000000628-B,evidences
+2026-09-25T21:26:34.970046,WES 内部,MOVE_FORWARD 命令持久化,01a0da76-82da-79e4-ba1e-4ecc9674fc7e,STATION_SCAN9,commands
+2026-09-25T21:26:35.074142,ECS → WES,ACK 收到,01a0da76-82da-79e4-ba1e-4ecc9674fc7e,STATION_SCAN9,commands
+2026-09-25T21:26:37.705214,ECS → WES,SUCCESS 处理完成,01a0da76-82da-79e4-ba1e-4ecc9674fc7e,STATION_SCAN9,commands
+2026-09-25T21:26:49.359214,ECS → WES,SCAN_COMPLETED,353502860739136,A000000628-C,evidences
+2026-09-25T21:26:51.352842,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da76-c2d8-777f-a7ad-0763e787ef41,A000000628,confirmations
+2026-09-25T21:26:51.399868,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da76-c2d8-777f-a7ad-0763e787ef41,A000000628,confirmations
+2026-09-25T21:26:52.333755,WMS → WES,WORK_REQUIRED 持久化,01a0da76-c2d8-777f-a7ad-0763e787ef41,A000000628,confirmations
+2026-09-25T21:27:02.323394,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da76-ed5d-7370-8297-e8e242e6eb0c,A000000628,evidences
+2026-09-25T21:27:02.379811,WES 内部,MOVE_FORWARD 命令持久化,01a0da76-edeb-776f-9ae8-b321b46ba7ca,STATION_SCAN10,commands
+2026-09-25T21:27:02.474932,ECS → WES,ACK 收到,01a0da76-edeb-776f-9ae8-b321b46ba7ca,STATION_SCAN10,commands
+2026-09-25T21:27:06.30989,ECS → WES,SUCCESS 处理完成,01a0da76-edeb-776f-9ae8-b321b46ba7ca,STATION_SCAN10,commands
+2026-09-25T21:27:15.779992,ECS → WES,SCAN_COMPLETED,353502968959552,A000000628-B,evidences
+2026-09-25T21:27:15.858654,WES 内部,MOVE_FORWARD 命令持久化,01a0da77-2292-7bf8-8211-1dfd21cc76be,STATION_SCAN11,commands
+2026-09-25T21:27:15.967523,ECS → WES,ACK 收到,01a0da77-2292-7bf8-8211-1dfd21cc76be,STATION_SCAN11,commands
+2026-09-25T21:27:19.650726,ECS → WES,SUCCESS 处理完成,01a0da77-2292-7bf8-8211-1dfd21cc76be,STATION_SCAN11,commands
+2026-09-25T21:27:21.30481,ECS → WES,SCAN_COMPLETED,353502991589952,A000000628-B,evidences
+2026-09-25T21:27:21.435834,WES 内部,MOVE_FORWARD 命令持久化,01a0da77-385b-7fef-a8aa-b2865050685b,STATION_SCAN12,commands
+2026-09-25T21:27:21.529099,ECS → WES,ACK 收到,01a0da77-385b-7fef-a8aa-b2865050685b,STATION_SCAN12,commands
+2026-09-25T21:27:22.956127,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da77-3e42-739f-acf2-38b127916d16,transport-32059d22-f5dc-436f-8a45-15eb6f313f5d,transport_evidences
+2026-09-25T21:27:23.07905,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da77-3ec9-7c71-b4bc-5c34563ba0a1,510002,confirmations
+2026-09-25T21:27:23.123199,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da77-3ec9-7c71-b4bc-5c34563ba0a1,510002,confirmations
+2026-09-25T21:27:23.246721,WMS → WES,transport.task.resulted@v1 None,01a0da77-3f67-78f7-a40e-af4954b8040c,transport-32059d22-f5dc-436f-8a45-15eb6f313f5d,transport_evidences
+2026-09-25T21:27:23.921608,WMS → WES,READY 持久化,01a0da77-3ec9-7c71-b4bc-5c34563ba0a1,510002,confirmations
+2026-09-25T21:27:24.087813,WES 内部,CTU03 创建,transport-e7f7fba3-57e9-478f-993d-4f92d70ce203,510002,transports
+2026-09-25T21:27:24.142371,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-e7f7fba3-57e9-478f-993d-4f92d70ce203,510002,transports
+2026-09-25T21:27:24.886881,ECS → WES,SUCCESS 处理完成,01a0da77-385b-7fef-a8aa-b2865050685b,STATION_SCAN12,commands
+2026-09-25T21:27:25.634686,WES 内部,CTU01 创建,transport-e327bb4b-e1bc-4022-aabb-61eb1c622d6a,510035,transports
+2026-09-25T21:27:25.708595,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-e327bb4b-e1bc-4022-aabb-61eb1c622d6a,510035,transports
+2026-09-25T21:28:18.232915,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da78-162f-7f3d-8e0b-1d2c92fd719f,transport-b4d51f41-3a49-41d3-aaad-c7e1945d5abd,transport_evidences
+2026-09-25T21:28:18.441506,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da78-1710-7885-87b3-776c34191388,510024,confirmations
+2026-09-25T21:28:21.359886,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da78-1710-7885-87b3-776c34191388,510024,confirmations
+2026-09-25T21:28:22.24535,WMS → WES,READY 持久化,01a0da78-1710-7885-87b3-776c34191388,510024,confirmations
+2026-09-25T21:28:22.301644,WES 内部,BIN_MOVE 创建,transport-a4a57e5f-2459-41a1-a909-fa947fbba131,A000002456,transports
+2026-09-25T21:28:22.406644,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-a4a57e5f-2459-41a1-a909-fa947fbba131,A000002456,transports
+2026-09-25T21:28:25.906244,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da78-3427-7e81-9094-d573d649ecc4,transport-1838ce1c-6c40-44fc-940d-d45886eee220,transport_evidences
+2026-09-25T21:28:51.06468,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da78-966e-70b1-b413-9bbf0f321c12,transport-a4a57e5f-2459-41a1-a909-fa947fbba131,transport_evidences
+2026-09-25T21:28:51.388071,WMS → WES,transport.task.resulted@v1 None,01a0da78-97b4-76b5-82cd-500f78717de3,transport-a4a57e5f-2459-41a1-a909-fa947fbba131,transport_evidences
+2026-09-25T21:28:51.588904,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da78-989f-714e-b282-2ebb34bc6bca,510024,confirmations
+2026-09-25T21:29:01.250376,ECS → WES,SCAN_COMPLETED,353503400964672,A000002456-B,evidences
+2026-09-25T21:29:01.354405,WES 内部,MOVE_FORWARD 命令持久化,01a0da78-beaa-79de-bbe2-fef77d09923f,STATION_SCAN9,commands
+2026-09-25T21:29:01.419162,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da78-989f-714e-b282-2ebb34bc6bca,510024,confirmations
+2026-09-25T21:29:02.240898,WMS → WES,READY 持久化,01a0da78-989f-714e-b282-2ebb34bc6bca,510024,confirmations
+2026-09-25T21:29:02.361452,ECS → WES,ACK 收到,01a0da78-beaa-79de-bbe2-fef77d09923f,STATION_SCAN9,commands
+2026-09-25T21:29:02.491769,WES 内部,BIN_MOVE 创建,transport-137568f6-eba6-4aae-b47b-c375ed1eef44,A000000628,transports
+2026-09-25T21:29:02.525696,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-137568f6-eba6-4aae-b47b-c375ed1eef44,A000000628,transports
+2026-09-25T21:29:04.726929,ECS → WES,SUCCESS 处理完成,01a0da78-beaa-79de-bbe2-fef77d09923f,STATION_SCAN9,commands
+2026-09-25T21:29:16.373935,ECS → WES,SCAN_COMPLETED,353503462912576,A000002456-C,evidences
+2026-09-25T21:29:17.856991,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da78-ff18-74c3-9f85-e03dce3f577b,transport-e7f7fba3-57e9-478f-993d-4f92d70ce203,transport_evidences
+2026-09-25T21:29:18.02282,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da78-ffc6-78c2-8c84-0444708892db,A000002456,confirmations
+2026-09-25T21:29:21.359873,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da78-ffc6-78c2-8c84-0444708892db,A000002456,confirmations
+2026-09-25T21:29:22.210485,WMS → WES,WORK_REQUIRED 持久化,01a0da78-ffc6-78c2-8c84-0444708892db,A000002456,confirmations
+2026-09-25T21:29:55.271351,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da79-9140-7706-81d4-f8ffc48e225e,transport-137568f6-eba6-4aae-b47b-c375ed1eef44,transport_evidences
+2026-09-25T21:29:55.347217,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da79-9195-716b-b775-544eddaa389f,510024,confirmations
+2026-09-25T21:29:55.365697,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da79-9195-716b-b775-544eddaa389f,510024,confirmations
+2026-09-25T21:29:55.538909,WMS → WES,transport.task.resulted@v1 None,01a0da79-924f-7aef-97b8-f27b9c59dfdd,transport-137568f6-eba6-4aae-b47b-c375ed1eef44,transport_evidences
+2026-09-25T21:29:56.175387,WMS → WES,READY 持久化,01a0da79-9195-716b-b775-544eddaa389f,510024,confirmations
+2026-09-25T21:29:56.333949,WES 内部,CTU03 创建,transport-9167379d-f507-476d-b0fb-56680419b01a,510024,transports
+2026-09-25T21:29:56.371109,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-9167379d-f507-476d-b0fb-56680419b01a,510024,transports
+2026-09-25T21:29:57.801169,WES 内部,CTU01 创建,transport-f53e31b3-f930-411b-91cf-53b147d6088c,510034,transports
+2026-09-25T21:29:57.840487,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-f53e31b3-f930-411b-91cf-53b147d6088c,510034,transports
+2026-09-25T21:30:49.409377,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7a-64b7-715b-b569-f91df77d54e3,transport-16b99869-3e98-43f3-85fb-812cc47e0293,transport_evidences
+2026-09-25T21:30:49.610367,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da7a-6591-7842-b591-b49c81944c25,510027,confirmations
+2026-09-25T21:30:51.35866,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da7a-6591-7842-b591-b49c81944c25,510027,confirmations
+2026-09-25T21:30:52.210125,WMS → WES,READY 持久化,01a0da7a-6591-7842-b591-b49c81944c25,510027,confirmations
+2026-09-25T21:30:52.288364,WES 内部,BIN_MOVE 创建,transport-f2bcef20-989b-49e1-af47-48ca8f231be0,A000002701,transports
+2026-09-25T21:30:52.389369,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-f2bcef20-989b-49e1-af47-48ca8f231be0,A000002701,transports
+2026-09-25T21:31:33.893054,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da7b-127b-79d7-a18b-7e532134a0c4,transport-f2bcef20-989b-49e1-af47-48ca8f231be0,transport_evidences
+2026-09-25T21:31:34.195824,WMS → WES,transport.task.resulted@v1 None,01a0da7b-13ae-77e4-b759-8544555a393f,transport-f2bcef20-989b-49e1-af47-48ca8f231be0,transport_evidences
+2026-09-25T21:31:34.396759,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da7b-147f-7184-871d-64aab501b919,510027,confirmations
+2026-09-25T21:31:34.423526,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da7b-147f-7184-871d-64aab501b919,510027,confirmations
+2026-09-25T21:31:35.241032,WMS → WES,READY 持久化,01a0da7b-147f-7184-871d-64aab501b919,510027,confirmations
+2026-09-25T21:31:35.376458,WES 内部,CTU03 创建,transport-bad8d733-d70c-4af8-95bf-af8a38e43a91,510027,transports
+2026-09-25T21:31:35.422137,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-bad8d733-d70c-4af8-95bf-af8a38e43a91,510027,transports
+2026-09-25T21:31:44.251673,ECS → WES,SCAN_COMPLETED,353504068620864,A000002701-B,evidences
+2026-09-25T21:31:44.351945,WES 内部,MOVE_FORWARD 命令持久化,01a0da7b-3b60-79b3-83c4-1630ba041f6f,STATION_SCAN9,commands
+2026-09-25T21:31:44.439917,ECS → WES,ACK 收到,01a0da7b-3b60-79b3-83c4-1630ba041f6f,STATION_SCAN9,commands
+2026-09-25T21:31:47.12673,ECS → WES,SUCCESS 处理完成,01a0da7b-3b60-79b3-83c4-1630ba041f6f,STATION_SCAN9,commands
+2026-09-25T21:32:04.32413,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da7b-890d-7e84-84df-f25362e22ffa,A000002456,evidences
+2026-09-25T21:32:04.383706,WES 内部,MOVE_FORWARD 命令持久化,01a0da7b-899f-74b1-8625-e4ac5104852d,STATION_SCAN10,commands
+2026-09-25T21:32:04.512274,ECS → WES,ACK 收到,01a0da7b-899f-74b1-8625-e4ac5104852d,STATION_SCAN10,commands
+2026-09-25T21:32:08.427865,ECS → WES,SUCCESS 处理完成,01a0da7b-899f-74b1-8625-e4ac5104852d,STATION_SCAN10,commands
+2026-09-25T21:32:17.89837,ECS → WES,SCAN_COMPLETED,353504206438976,A000002456-B,evidences
+2026-09-25T21:32:17.980916,WES 内部,MOVE_FORWARD 命令持久化,01a0da7b-bebc-78c8-9f9f-d222341bb76c,STATION_SCAN11,commands
+2026-09-25T21:32:18.272255,ECS → WES,ACK 收到,01a0da7b-bebc-78c8-9f9f-d222341bb76c,STATION_SCAN11,commands
+2026-09-25T21:32:20.063376,ECS → WES,SCAN_COMPLETED,353504215302720,A000002701-C,evidences
+2026-09-25T21:32:21.351109,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da7b-cbe7-7689-a50f-a7873987f821,A000002701,confirmations
+2026-09-25T21:32:21.391477,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da7b-cbe7-7689-a50f-a7873987f821,A000002701,confirmations
+2026-09-25T21:32:22.282218,WMS → WES,WORK_REQUIRED 持久化,01a0da7b-cbe7-7689-a50f-a7873987f821,A000002701,confirmations
+2026-09-25T21:32:22.316742,ECS → WES,SUCCESS 处理完成,01a0da7b-bebc-78c8-9f9f-d222341bb76c,STATION_SCAN11,commands
+2026-09-25T21:32:23.407534,ECS → WES,SCAN_COMPLETED,353504229003840,A000002456-B,evidences
+2026-09-25T21:32:23.486606,WES 内部,MOVE_FORWARD 命令持久化,01a0da7b-d43e-7aa6-94ab-399969c87a5f,STATION_SCAN12,commands
+2026-09-25T21:32:23.582805,ECS → WES,ACK 收到,01a0da7b-d43e-7aa6-94ab-399969c87a5f,STATION_SCAN12,commands
+2026-09-25T21:32:26.980515,ECS → WES,SUCCESS 处理完成,01a0da7b-d43e-7aa6-94ab-399969c87a5f,STATION_SCAN12,commands
+2026-09-25T21:32:27.715878,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7b-e4ba-781e-83d8-0f476eddaf42,transport-e327bb4b-e1bc-4022-aabb-61eb1c622d6a,transport_evidences
+2026-09-25T21:32:27.912828,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da7b-e592-72b9-8799-486c647f2fb7,510035,confirmations
+2026-09-25T21:32:31.355873,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da7b-e592-72b9-8799-486c647f2fb7,510035,confirmations
+2026-09-25T21:32:32.242241,WMS → WES,READY 持久化,01a0da7b-e592-72b9-8799-486c647f2fb7,510035,confirmations
+2026-09-25T21:32:32.318209,WES 内部,BIN_MOVE 创建,transport-c3699422-b39a-4c91-9b15-a67fe09b8dba,A000002456,transports
+2026-09-25T21:32:32.394733,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da7b-f70d-7d55-9ac0-3fb9a9a62634,510035,confirmations
+2026-09-25T21:32:32.425128,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-c3699422-b39a-4c91-9b15-a67fe09b8dba,A000002456,transports
+2026-09-25T21:32:32.43017,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da7b-f70d-7d55-9ac0-3fb9a9a62634,510035,confirmations
+2026-09-25T21:32:33.310841,WMS → WES,READY 持久化,01a0da7b-f70d-7d55-9ac0-3fb9a9a62634,510035,confirmations
+2026-09-25T21:32:34.9594,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da7c-00b9-73e3-9492-200d48a086ae,A000002701,evidences
+2026-09-25T21:32:35.0201,WES 内部,MOVE_FORWARD 命令持久化,01a0da7c-014c-71fd-8981-be30a6a7d9f1,STATION_SCAN10,commands
+2026-09-25T21:32:35.140047,ECS → WES,ACK 收到,01a0da7c-014c-71fd-8981-be30a6a7d9f1,STATION_SCAN10,commands
+2026-09-25T21:32:39.10136,ECS → WES,SUCCESS 处理完成,01a0da7c-014c-71fd-8981-be30a6a7d9f1,STATION_SCAN10,commands
+2026-09-25T21:32:48.628988,ECS → WES,SCAN_COMPLETED,353504332313152,A000002701-B,evidences
+2026-09-25T21:32:48.700219,WES 内部,MOVE_FORWARD 命令持久化,01a0da7c-36bc-738b-b7e5-5369a0de1f97,STATION_SCAN11,commands
+2026-09-25T21:32:48.778498,ECS → WES,ACK 收到,01a0da7c-36bc-738b-b7e5-5369a0de1f97,STATION_SCAN11,commands
+2026-09-25T21:32:52.286152,ECS → WES,SUCCESS 处理完成,01a0da7c-36bc-738b-b7e5-5369a0de1f97,STATION_SCAN11,commands
+2026-09-25T21:32:54.152483,ECS → WES,SCAN_COMPLETED,353504354935360,A000002701-B,evidences
+2026-09-25T21:32:54.229235,WES 内部,MOVE_FORWARD 命令持久化,01a0da7c-4c55-734e-8130-94e8e51ff227,STATION_SCAN12,commands
+2026-09-25T21:32:54.335212,ECS → WES,ACK 收到,01a0da7c-4c55-734e-8130-94e8e51ff227,STATION_SCAN12,commands
+2026-09-25T21:32:57.718767,ECS → WES,SUCCESS 处理完成,01a0da7c-4c55-734e-8130-94e8e51ff227,STATION_SCAN12,commands
+2026-09-25T21:33:06.478797,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da7c-7c38-76c6-9cb9-e1998aa7c90e,510035,confirmations
+2026-09-25T21:33:11.356397,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da7c-7c38-76c6-9cb9-e1998aa7c90e,510035,confirmations
+2026-09-25T21:33:12.196197,WMS → WES,READY 持久化,01a0da7c-7c38-76c6-9cb9-e1998aa7c90e,510035,confirmations
+2026-09-25T21:33:12.312391,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da7c-9303-7fde-b2a9-d6fafcb1d5a0,510035,confirmations
+2026-09-25T21:33:21.349813,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da7c-b63e-7348-b81a-a2be57cc9266,transport-c3699422-b39a-4c91-9b15-a67fe09b8dba,transport_evidences
+2026-09-25T21:33:21.360632,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da7c-9303-7fde-b2a9-d6fafcb1d5a0,510035,confirmations
+2026-09-25T21:33:21.667674,WMS → WES,transport.task.resulted@v1 None,01a0da7c-b77b-7980-903c-4eb4873b462e,transport-c3699422-b39a-4c91-9b15-a67fe09b8dba,transport_evidences
+2026-09-25T21:33:22.250795,WMS → WES,READY 持久化,01a0da7c-9303-7fde-b2a9-d6fafcb1d5a0,510035,confirmations
+2026-09-25T21:33:22.343437,WES 内部,BIN_MOVE 创建,transport-7b714b34-7930-4785-b616-4825f73eb5d9,A000002701,transports
+2026-09-25T21:33:22.46259,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-7b714b34-7930-4785-b616-4825f73eb5d9,A000002701,transports
+2026-09-25T21:33:44.560604,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7d-10e7-72aa-8718-4fa005bc411f,transport-9167379d-f507-476d-b0fb-56680419b01a,transport_evidences
+2026-09-25T21:33:47.248574,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7d-1b68-7528-bd80-b30c3428c9fb,transport-bad8d733-d70c-4af8-95bf-af8a38e43a91,transport_evidences
+2026-09-25T21:34:12.282791,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da7d-7d30-7b15-a4aa-8b7d7856d88d,transport-7b714b34-7930-4785-b616-4825f73eb5d9,transport_evidences
+2026-09-25T21:34:12.416111,WES 内部,CTU03 创建,transport-59abc0ec-cb83-4a8b-b357-d14d75fcb0c6,510035,transports
+2026-09-25T21:34:12.516388,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-59abc0ec-cb83-4a8b-b357-d14d75fcb0c6,510035,transports
+2026-09-25T21:34:12.577456,WMS → WES,transport.task.resulted@v1 None,01a0da7d-7e58-7970-beb4-3501efacfcca,transport-7b714b34-7930-4785-b616-4825f73eb5d9,transport_evidences
+2026-09-25T21:35:05.884274,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7e-4e92-700b-81a9-d33ebe431b1a,transport-f53e31b3-f930-411b-91cf-53b147d6088c,transport_evidences
+2026-09-25T21:35:06.07715,WES 内部,outbound.bin.inbound_batch@v1 持久化,01a0da7e-4f63-7cdc-b33a-7ee4791e20c5,510034,confirmations
+2026-09-25T21:35:11.352455,WES → WMS,outbound.bin.inbound_batch@v1 最后派发开始,01a0da7e-4f63-7cdc-b33a-7ee4791e20c5,510034,confirmations
+2026-09-25T21:35:12.25704,WMS → WES,READY 持久化,01a0da7e-4f63-7cdc-b33a-7ee4791e20c5,510034,confirmations
+2026-09-25T21:35:12.302608,WES 内部,BIN_MOVE 创建,transport-5e3c50b6-b14c-4749-8e32-5427781718ee,A000000341,transports
+2026-09-25T21:35:12.41528,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-5e3c50b6-b14c-4749-8e32-5427781718ee,A000000341,transports
+2026-09-25T21:35:43.481773,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da7e-e16f-76d1-8cd4-69da7b6f627b,transport-5e3c50b6-b14c-4749-8e32-5427781718ee,transport_evidences
+2026-09-25T21:35:43.803724,WMS → WES,transport.task.resulted@v1 None,01a0da7e-e29d-789e-a693-de481519dea6,transport-5e3c50b6-b14c-4749-8e32-5427781718ee,transport_evidences
+2026-09-25T21:35:43.981449,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da7e-e36f-7939-9408-7b7a038bebb0,510034,confirmations
+2026-09-25T21:35:44.032249,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da7e-e36f-7939-9408-7b7a038bebb0,510034,confirmations
+2026-09-25T21:35:44.853064,WMS → WES,READY 持久化,01a0da7e-e36f-7939-9408-7b7a038bebb0,510034,confirmations
+2026-09-25T21:35:44.970498,WES 内部,CTU03 创建,transport-2d011e5b-8d27-49ad-b391-4f82131780e5,510034,transports
+2026-09-25T21:35:45.032659,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-2d011e5b-8d27-49ad-b391-4f82131780e5,510034,transports
+2026-09-25T21:35:53.864053,ECS → WES,SCAN_COMPLETED,353505091031616,A000000341-B,evidences
+2026-09-25T21:35:53.955538,WES 内部,MOVE_FORWARD 命令持久化,01a0da7f-0a63-74e8-9874-c0540fbffbd6,STATION_SCAN9,commands
+2026-09-25T21:35:54.053116,ECS → WES,ACK 收到,01a0da7f-0a63-74e8-9874-c0540fbffbd6,STATION_SCAN9,commands
+2026-09-25T21:35:56.563475,ECS → WES,SUCCESS 处理完成,01a0da7f-0a63-74e8-9874-c0540fbffbd6,STATION_SCAN9,commands
+2026-09-25T21:36:04.991178,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da7f-3575-70a2-b609-09b16353b842,transport-59abc0ec-cb83-4a8b-b357-d14d75fcb0c6,transport_evidences
+2026-09-25T21:36:08.216883,ECS → WES,SCAN_COMPLETED,353505149825600,A000000341-C,evidences
+2026-09-25T21:36:11.347511,WES 内部,outbound.manual_bin.work_admission_decide@v1 持久化,01a0da7f-4e53-78a2-abf1-fd78c492533f,A000000341,confirmations
+2026-09-25T21:36:13.257727,WES → WMS,outbound.manual_bin.work_admission_decide@v1 最后派发开始,01a0da7f-4e53-78a2-abf1-fd78c492533f,A000000341,confirmations
+2026-09-25T21:36:14.28837,WMS → WES,WORK_REQUIRED 持久化,01a0da7f-4e53-78a2-abf1-fd78c492533f,A000000341,confirmations
+2026-09-25T21:36:46.642839,WMS → WES,outbound.manual_bin.work_completed@v1 / APPLIED,01a0da7f-d7db-77b9-9574-b600b0567d0b,A000000341,evidences
+2026-09-25T21:36:46.711949,WES 内部,MOVE_FORWARD 命令持久化,01a0da7f-d877-76c7-a8d1-1724c3714629,STATION_SCAN10,commands
+2026-09-25T21:36:46.840133,ECS → WES,ACK 收到,01a0da7f-d877-76c7-a8d1-1724c3714629,STATION_SCAN10,commands
+2026-09-25T21:36:50.634765,ECS → WES,SUCCESS 处理完成,01a0da7f-d877-76c7-a8d1-1724c3714629,STATION_SCAN10,commands
+2026-09-25T21:36:56.497924,WES 内部,outbound.picking_task.completion_confirm@v1 持久化,01a0da7f-fef5-7587-8b33-8a767c27625d,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:37:00.207872,ECS → WES,SCAN_COMPLETED,353505362776640,A000000341-B,evidences
+2026-09-25T21:37:00.295618,WES 内部,MOVE_FORWARD 命令持久化,01a0da80-0d87-78b8-8eee-73985bdc95ec,STATION_SCAN11,commands
+2026-09-25T21:37:00.802023,ECS → WES,ACK 收到,01a0da80-0d87-78b8-8eee-73985bdc95ec,STATION_SCAN11,commands
+2026-09-25T21:37:01.360994,WES → WMS,outbound.picking_task.completion_confirm@v1 最后派发开始,01a0da7f-fef5-7587-8b33-8a767c27625d,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:37:02.393704,WMS → WES,COMPLETED 持久化,01a0da7f-fef5-7587-8b33-8a767c27625d,A950FC259A78C43DB8D6D82FC110C8B03,confirmations
+2026-09-25T21:37:04.282762,ECS → WES,SUCCESS 处理完成,01a0da80-0d87-78b8-8eee-73985bdc95ec,STATION_SCAN11,commands
+2026-09-25T21:37:06.171803,ECS → WES,SCAN_COMPLETED,353505387205184,A000000341-B,evidences
+2026-09-25T21:37:06.257751,WES 内部,MOVE_FORWARD 命令持久化,01a0da80-24d1-7391-9bee-afd27eb35114,STATION_SCAN12,commands
+2026-09-25T21:37:06.37054,ECS → WES,ACK 收到,01a0da80-24d1-7391-9bee-afd27eb35114,STATION_SCAN12,commands
+2026-09-25T21:37:06.473568,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da80-25b5-7cc6-aa20-cc4a7cbb1279,610017,confirmations
+2026-09-25T21:37:06.518643,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da80-25b5-7cc6-aa20-cc4a7cbb1279,610017,confirmations
+2026-09-25T21:37:07.370456,WMS → WES,READY 持久化,01a0da80-25b5-7cc6-aa20-cc4a7cbb1279,610017,confirmations
+2026-09-25T21:37:07.446278,WES 内部,F01 创建,transport-628b85d9-bce8-4eb9-8a25-0a4ddbd6942f,610017,transports
+2026-09-25T21:37:07.494443,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-628b85d9-bce8-4eb9-8a25-0a4ddbd6942f,610017,transports
+2026-09-25T21:37:09.734006,ECS → WES,SUCCESS 处理完成,01a0da80-24d1-7391-9bee-afd27eb35114,STATION_SCAN12,commands
+2026-09-25T21:37:16.459928,WES 内部,workline.return_buffer.drain_rack_decide@v1 持久化,01a0da80-4cb5-78c4-a671-1b3e6af10d0d,KT16,confirmations
+2026-09-25T21:37:17.376899,WMS → WES,outbound.picking_task.cancel@v1 / RECONCILING,01a0da80-4fed-70a1-8abc-5b7e8449cf38,任务,evidences
+2026-09-25T21:37:21.355125,WES → WMS,workline.return_buffer.drain_rack_decide@v1 最后派发开始,01a0da80-4cb5-78c4-a671-1b3e6af10d0d,KT16,confirmations
+2026-09-25T21:37:22.282612,WMS → WES,READY 持久化,01a0da80-4cb5-78c4-a671-1b3e6af10d0d,KT16,confirmations
+2026-09-25T21:37:22.384477,WES 内部,CTU01 创建,transport-112d47c1-8300-429f-ad97-81a02e775d2b,510001,transports
+2026-09-25T21:37:22.424209,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-112d47c1-8300-429f-ad97-81a02e775d2b,510001,transports
+2026-09-25T21:38:28.144011,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da81-64a5-77d6-8762-6a68a61c272d,transport-2d011e5b-8d27-49ad-b391-4f82131780e5,transport_evidences
+2026-09-25T21:41:18.964646,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da83-ffe7-7fbd-bd4c-9479ab87ce7a,transport-628b85d9-bce8-4eb9-8a25-0a4ddbd6942f,transport_evidences
+2026-09-25T21:41:42.222187,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da84-5ac0-7e16-97d3-f41d4d151d5c,transport-112d47c1-8300-429f-ad97-81a02e775d2b,transport_evidences
+2026-09-25T21:41:42.471948,WES 内部,outbound.bin.return_batch@v1 持久化,01a0da84-5bd3-71b9-8d6c-28d4be3a9c55,510001,confirmations
+2026-09-25T21:41:51.376528,WES → WMS,outbound.bin.return_batch@v1 最后派发开始,01a0da84-5bd3-71b9-8d6c-28d4be3a9c55,510001,confirmations
+2026-09-25T21:41:52.271821,WMS → WES,READY 持久化,01a0da84-5bd3-71b9-8d6c-28d4be3a9c55,510001,confirmations
+2026-09-25T21:41:52.361435,WES 内部,BIN_MOVE 创建,transport-adfb818c-da96-471e-8fb8-ecbed2389e5d,A000000341,transports
+2026-09-25T21:41:52.443153,WES 内部,outbound.rack.departure_decide@v1 持久化,01a0da84-82c0-7473-872b-227f4108d2a4,510001,confirmations
+2026-09-25T21:41:52.463673,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-adfb818c-da96-471e-8fb8-ecbed2389e5d,A000000341,transports
+2026-09-25T21:41:52.473524,WES → WMS,outbound.rack.departure_decide@v1 最后派发开始,01a0da84-82c0-7473-872b-227f4108d2a4,510001,confirmations
+2026-09-25T21:41:53.368188,WMS → WES,READY 持久化,01a0da84-82c0-7473-872b-227f4108d2a4,510001,confirmations
+2026-09-25T21:42:49.756772,WMS → WES,transport.task.member_position_changed@v1 TARGET_PLACED,01a0da85-6291-7dda-8280-8415a87ba9c6,transport-adfb818c-da96-471e-8fb8-ecbed2389e5d,transport_evidences
+2026-09-25T21:42:49.870298,WES 内部,CTU03 创建,transport-e2f1e84c-0c66-43ea-8e46-e254d8de32f8,510001,transports
+2026-09-25T21:42:49.908473,WES → WMS → RCS（后段不可见）,Transport 提交开始,transport-e2f1e84c-0c66-43ea-8e46-e254d8de32f8,510001,transports
+2026-09-25T21:42:50.154752,WMS → WES,transport.task.resulted@v1 None,01a0da85-6422-721a-85cc-ec58abb668b6,transport-adfb818c-da96-471e-8fb8-ecbed2389e5d,transport_evidences
+2026-09-25T21:46:22.099844,WMS → WES,transport.task.resulted@v1 SUCCEEDED,01a0da88-a006-723a-af52-a0e0908a4cb0,transport-e2f1e84c-0c66-43ea-8e46-e254d8de32f8,transport_evidences

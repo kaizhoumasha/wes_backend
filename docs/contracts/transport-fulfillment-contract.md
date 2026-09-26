@@ -511,7 +511,7 @@ final_position?   # TARGET_PLACED 时必填，且必须等于冻结目标；只�
 重复事实幂等；倒序事实不得让位置回退。导航、升降、到达区域和机械状态等 CTU 内部阶段不进入 WES Transport 合同。
 
 `transport.task.member_position_changed@v1` 一般仍是有权威中间事实时才发送的条件证据，不把它扩展为所有 TransportTask 的必经步骤。
-来源冻结为本 WorkLine `OUTLET` 的回程 `BIN_MOVE` 是限定例外：WMS/RCS 对每个实际从 OUTLET 取走的 BIN 成员，必须依据该成员的权威物理取走事实形成并可靠转发一条 `SOURCE_PICKED`。该回调携带原 `transport_task_id + container_id`，技术重试保持同一 `operation_id` 和完整消息；不得以接单、聚合最终结果或目标到位代替，也不得在尚未取走或取走事实不确定时伪造。WES 在该逐箱 Evidence 已 `APPLIED` 且核对冻结 OUTLET 来源后，才结束对应回程 execution；后续 Transport 完成仍按原最终结果规则处理。本例外不要求所有其它 TransportTask 上报 `SOURCE_PICKED`，也不要求不同成员的回调串行等待 WES ACK。
+Transport 明确 `ACCEPTED` 表示 WES 已把该对象的执行责任交给 WMS/RCS；发送未知、HTTP 成功但未通过合同校验、本地请求创建均不代表接纳。来源冻结为本 WorkLine `OUTLET` 的回程 `BIN_MOVE` 在核对原批次、成员和冻结来源后，按明确接纳闭合 Return；原 Transport 继续负责最终结果和异常对账。`SOURCE_PICKED` 为可选的实际取走证据，不是 Return 闭合或后续独立任务准入条件；缺少该事件不再要求补报，也不得用 ACK 伪造物理事件、物理位置或目标到位。实际收到该回调时仍按原 `transport_task_id + container_id` 保存；技术重试保持同一 `operation_id` 和完整消息。
 但每个成功结果且冻结目标为 `RACK_BIN_SLOT` 的 BIN 成员是明确例外：在该成员的 `transport.task.resulted@v1` 被接纳前，必须已有
 已 `APPLIED`、`milestone=TARGET_PLACED` 且 `final_position` 与冻结目标完全相等的逐箱事件。当前现场 CTU/RCS 会为每个完成的料箱回架
 产生一条该到位事实；WMS 必须原样转发，不能只发送聚合结果、伪造事件或把 ACK 当作已应用。其它没有该回架前置条件的场景仍只在存在

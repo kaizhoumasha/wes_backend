@@ -175,6 +175,9 @@ class _TaskQueue:
     def enqueue_wms_confirmations(self) -> None:
         self.wms_wakes += 1
 
+    def enqueue_picking_task_plans(self) -> None:
+        pass
+
 
 class _Adapter:
     def __init__(self, result) -> None:  # type: ignore[no-untyped-def]
@@ -1086,3 +1089,71 @@ async def test_wms_writeback_wakes_transport_debug_only_after_commit(rollback):
     if _pending:
         await asyncio.gather(*tuple(_pending))
     assert gateway.enqueue_transport_debug.call_count == (0 if rollback else 1)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.parametrize("owner_kind", ["picking", "workline"])
+async def test_ready_result_wakes_plans_after_commit_without_redispatch(monkeypatch, rollback, owner_kind):
+    import asyncio
+    from unittest.mock import Mock
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.core.transaction_wakeup import _pending
+
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    confirmation.operation = "outbound.rack.departure_decide@v1"
+    if owner_kind == "workline":
+        confirmation.picking_task_id = None
+        confirmation.workline_id = 11
+    repository = _ConfirmationRepository([confirmation])
+    gateway = Mock()
+    adapter = _Adapter(
+        SimpleNamespace(
+            code=WmsDispatchCode.DETERMINATE,
+            normalized_response={"code": "DECIDED", "data": {"result": "READY"}},
+            response_result="READY",
+            retry_after_ms=None,
+        )
+    )
+    service = WmsConfirmationService(
+        repository=repository,
+        session_factory=async_sessionmaker(),
+        adapter=adapter,
+        evidence_service=_EvidenceService(),
+        picking_task_owner=_PickingTaskOwner(),
+        workline_owner=SimpleNamespace(validate_owner=AsyncMock(return_value=True)),
+        task_queue_gateway=gateway,
+    )
+    monkeypatch.setattr(service, "_lock_workline_confirmation_root", AsyncMock(return_value=True))
+    complete = service.complete
+
+    async def finish(*args, **kwargs):
+        result = await complete(*args, **kwargs)
+        gateway.enqueue_picking_task_plans.assert_not_called()
+        return result
+
+    monkeypatch.setattr(service, "complete", finish)
+    if rollback:
+        from contextlib import asynccontextmanager
+
+        transaction = service._execution_wake_transaction
+
+        @asynccontextmanager
+        async def rolling_back(sessions):
+            async with transaction(sessions) as context:
+                yield context
+                raise ValueError("rollback")
+
+        monkeypatch.setattr(service, "_execution_wake_transaction", rolling_back)
+    try:
+        await service.dispatch_batch(now=now)
+    except ValueError:
+        assert rollback
+    if _pending:
+        await asyncio.gather(*tuple(_pending))
+    assert gateway.enqueue_picking_task_plans.call_count == (0 if rollback else 1)
+    if not rollback:
+        assert await service.dispatch_batch(now=now) == 0
+        assert len(adapter.calls) == 1

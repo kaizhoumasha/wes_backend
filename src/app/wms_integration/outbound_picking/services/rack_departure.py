@@ -19,6 +19,8 @@ from src.app.wms_adapter.outbound_picking.departure_wire import (
     parse_rack_departure_response,
 )
 from src.app.wms_integration.outbound_picking.repositories.rack_departure_repository import RackDepartureRepository
+from src.core.task_queue_gateway import task_queue_gateway
+from src.core.transaction_wakeup import defer_wakeup
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -65,6 +67,7 @@ class RackDepartureScheduler:
         )
         if isinstance(result, WmsConfirmationIdentityConflictResult):
             raise result.to_exception()
+        defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
 
 
 class RackDepartureResultReader:

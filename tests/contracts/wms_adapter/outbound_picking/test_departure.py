@@ -186,6 +186,44 @@ async def test_departure_scheduler_freezes_original_picking_task_identity() -> N
     assert kwargs["request_payload"]["data"] == request()["data"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_departure_creation_wakes_dispatch_after_commit_and_coalesces_duplicates(monkeypatch, rollback):
+    import asyncio
+    from unittest.mock import Mock
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.app.wms_integration.outbound_picking.services import rack_departure
+    from src.core import task_queue_gateway as queue_module
+    from src.core.transaction_wakeup import _pending
+
+    wake = Mock()
+    monkeypatch.setattr(queue_module.task_queue_gateway, "enqueue_wms_confirmations", wake)
+    intent = wms_operations.outbound_rack_departure_decide(
+        operation_id=OPERATION_ID,
+        task_id="TASK-1",
+        rack_id="RACK-1",
+        current_location=sdk.TransportRackPosition("WORK-1"),
+        current_face="面 A",
+    )
+    scheduler = rack_departure.RackDepartureScheduler(
+        SimpleNamespace(create_or_get=AsyncMock(return_value=SimpleNamespace(duplicate=False)))
+    )
+    try:
+        async with async_sessionmaker().begin() as db:
+            for _ in range(2):
+                await scheduler.create_in_session(db, intent, picking_task_id=11, created_at=datetime(2026, 9, 14, 12))
+            wake.assert_not_called()
+            if rollback:
+                raise ValueError("rollback")
+    except ValueError:
+        assert rollback
+    if _pending:
+        await asyncio.gather(*tuple(_pending))
+    assert wake.call_count == (0 if rollback else 1)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

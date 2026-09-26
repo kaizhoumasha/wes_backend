@@ -156,6 +156,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     driver = ManualPickingBatchDriver(
         flow,
+        batches=SimpleNamespace(has_current_rack_dependency=AsyncMock(return_value=False)),
         plans=plans,
         positions=positions,
         transports=transports,
@@ -851,3 +852,37 @@ async def test_multiple_source_faces_check_known_cardinality_once_per_wake(curre
     assert await driver.advance_in_session(object(), line, task) == int(current_count == 1)
     positions.count.assert_awaited_once()
     assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT"])
+async def test_mock_bad_case_ctu03_reuses_ready_when_current_bin_finishes(step):  # type: ignore[no-untyped-def]
+    driver, line, _, _, _, _, creator, reader, scheduler = setup_driver()
+    reader.latest_for_workline.return_value = SimpleNamespace(
+        intent=sdk.RackDepartureIntent(
+            operation_id="019f3405-2200-7b01-8b01-000000000001",
+            task_id=None,
+            rack_id="R1",
+            current_location=sdk.TransportRackPosition("FIVE-POS"),
+            current_face="90",
+        ),
+        status=WmsConfirmationStatus.COMPLETED,
+        outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH01"))),
+        evidence_id=88,
+    )
+    driver._batches.has_current_rack_dependency.return_value = True
+    kwargs = {
+        "rack_id": "R1",
+        "current_face": "90",
+        "step": step,
+        "picking_task_id": None,
+        "arrival_transport_task_id": "arrival",
+        "now": timezone.now_for_db(),
+    }
+    assert await driver._advance_workline_departure(object(), line, **kwargs) == 0
+    assert not creator.depart
+    driver._batches.has_current_rack_dependency.return_value = False
+    assert await driver._advance_workline_departure(object(), line, **kwargs) == 1
+    assert len(creator.depart) == 1
+    assert creator.depart[0]["correlation_id"] == "departure:019f3405-2200-7b01-8b01-000000000001"
+    scheduler.create_in_session.assert_not_awaited()

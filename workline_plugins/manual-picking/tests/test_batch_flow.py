@@ -455,8 +455,25 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
     reader = Reader()
     transport = Transport()
     passages = _Passages(("A000000001", "A000000002", "A000000003"))
-    flow = module.ManualPickingBatchResultFlow(reader, transport, passages)
+    batches = SimpleNamespace(has_conflicting_return_target=AsyncMock(return_value=True))
+    flow = module.ManualPickingBatchResultFlow(reader, transport, passages, batches)
     evidence = SimpleNamespace(id=32, operation_id="batch-2")
+    assert (
+        await flow.apply_return_in_session(
+            object(),
+            evidence,
+            workline_id=7,
+            workline_code="LINE-1",
+            confirmed_rack_id="R1",
+            confirmed_face="90",
+            return_location="CNV0302",
+        )
+        is None
+    )
+    assert transport.calls == []
+    assert [row.return_state for row in passages.rows] == ["READY", "READY", "READY"]
+    assert all(getattr(row, "return_batch_evidence_id", None) is None for row in passages.rows)
+    batches.has_conflicting_return_target.return_value = False
 
     assert (
         await flow.apply_return_in_session(
