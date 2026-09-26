@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from importlib import import_module
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
@@ -13,15 +13,25 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 
 class _Repository:
     def __init__(
-        self, *, busy: bool = False, return_due: bool = True, face_done: bool = False, between_chunks: bool = False
+        self,
+        *,
+        busy: bool = False,
+        return_busy: bool = False,
+        return_due: bool = True,
+        face_done: bool = False,
+        between_chunks: bool = False,
     ):
         self.busy = busy
+        self.return_busy = return_busy
         self.return_due = return_due
         self.face_done = face_done
         self.between_chunks = between_chunks
 
     async def has_unclosed_action_for_face(self, _db, _workline_id, _task_id, _plan_revision, _rack_id, _rack_face):  # type: ignore[no-untyped-def]
         return self.busy
+
+    async def has_unclosed_return_transport_for_face(self, _db, **_kwargs):  # type: ignore[no-untyped-def]
+        return self.return_busy
 
     async def return_retry_due(self, _db, _workline_id, _rack_id, _rack_face, _source_evidence_id, _now, _after):  # type: ignore[no-untyped-def]
         return self.return_due
@@ -455,7 +465,10 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
     reader = Reader()
     transport = Transport()
     passages = _Passages(("A000000001", "A000000002", "A000000003"))
-    batches = SimpleNamespace(has_conflicting_return_target=AsyncMock(return_value=True))
+    batches = SimpleNamespace(
+        has_unclosed_return_transport_for_face=AsyncMock(return_value=True),
+        has_conflicting_return_target=AsyncMock(return_value=True),
+    )
     flow = module.ManualPickingBatchResultFlow(reader, transport, passages, batches)
     evidence = SimpleNamespace(id=32, operation_id="batch-2")
     assert (
@@ -468,11 +481,16 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
             confirmed_face="90",
             return_location="CNV0302",
         )
-        is None
+        == 1000
     )
     assert transport.calls == []
+    batches.has_unclosed_return_transport_for_face.assert_awaited_once_with(
+        ANY, workline_id=7, rack_id="R1", rack_face="90"
+    )
+    batches.has_conflicting_return_target.assert_not_awaited()
     assert [row.return_state for row in passages.rows] == ["READY", "READY", "READY"]
     assert all(getattr(row, "return_batch_evidence_id", None) is None for row in passages.rows)
+    batches.has_unclosed_return_transport_for_face.return_value = False
     batches.has_conflicting_return_target.return_value = False
 
     assert (
@@ -820,6 +838,7 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
     now = created_at + timedelta(seconds=10)
     history = SimpleNamespace(latest_return=AsyncMock(return_value=None))
     repo = repository_module.BatchRepository(history)
+    repo.has_unclosed_return_transport_for_face = AsyncMock(return_value=False)
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="feed-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
     )
@@ -869,3 +888,46 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
     assert await flow.advance_in_session(SimpleNamespace(scalar=AsyncMock(return_value=created_at)), **kwargs)
     assert len(scheduler.intents) == 1
     assert len(inbound.calls) == 1 and inbound.calls[0]["offset"] == 4
+
+
+@pytest.mark.asyncio
+async def test_unclosed_return_transport_does_not_block_next_inbound_chunk() -> None:
+    module = import_module("manual_picking.application.batch_flow")
+    repo = _Repository(between_chunks=True, return_busy=True)
+    repo.inbound_progress = AsyncMock(
+        return_value=SimpleNamespace(
+            intent=sdk.wms_operations.outbound_bin_inbound_batch(
+                operation_id="feed-1", task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+            ),
+            result=sdk.BinInboundBatchReady(
+                (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
+            ),
+            evidence_id=51,
+            next_offset=4,
+            feed_complete=False,
+            last_chunk_created_at=datetime(2026, 9, 15, 11),
+        )
+    )
+    scheduler, inbound = _Scheduler(), _Inbound()
+    flow = module.ManualPickingBatchFlow(
+        repo, _Passages(("RETURN-1",)), scheduler, inbound, uuid_factory=lambda: "return-1"
+    )
+
+    advanced = await flow.advance_in_session(
+        object(),
+        workline_id=7,
+        workline_code="LINE-1",
+        picking_task_id=31,
+        task_id="PICK-1",
+        plan_revision=1,
+        source_evidence_id=51,
+        rack_id="R1",
+        rack_face="90",
+        return_location="CNV0302",
+        inlet_location="CNV0301",
+        now=datetime(2026, 9, 15, 12),
+    )
+
+    assert advanced
+    assert scheduler.intents == []
+    assert [call["offset"] for call in inbound.calls] == [4]

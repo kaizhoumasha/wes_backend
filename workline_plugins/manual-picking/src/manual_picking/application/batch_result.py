@@ -105,7 +105,7 @@ class ManualPickingBatchResultFlow:
         confirmed_rack_id: str,
         confirmed_face: str,
         return_location: str,
-    ) -> str | None:
+    ) -> str | int | None:
         intent, outcome = await self._reader.read_return(db, evidence, workline_id=workline_id)
         if (
             intent.operation_id != evidence.operation_id
@@ -122,6 +122,13 @@ class ManualPickingBatchResultFlow:
             return None
         result = outcome.result
         if isinstance(result, BinReturnBatchReady):
+            if await self._batches.has_unclosed_return_transport_for_face(
+                db,
+                workline_id=workline_id,
+                rack_id=confirmed_rack_id,
+                rack_face=confirmed_face,
+            ):
+                return 1000
             moves = return_moves(intent, result)
             if await self._batches.has_conflicting_return_target(db, moves):
                 logger.error("manual_picking.return_target_conflict operation_id=%s", intent.operation_id)

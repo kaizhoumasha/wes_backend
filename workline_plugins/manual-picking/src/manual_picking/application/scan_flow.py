@@ -190,7 +190,7 @@ class ManualPickingScanFlow:
             canonical_json_digest({"evidence_id": evidence_id, "role": role, "result": result}),
         )
 
-    async def _apply_batch_result(self, db: Any, evidence: Any, workline: Any) -> str | None:  # noqa: PLR0911
+    async def _apply_batch_result(self, db: Any, evidence: Any, workline: Any) -> str | int | None:  # noqa: PLR0911
         if self._batch_reader is None or self._batch_result is None:
             return None
         positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}

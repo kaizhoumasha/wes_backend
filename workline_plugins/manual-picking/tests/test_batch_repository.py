@@ -10,6 +10,7 @@ import wes_plugin_sdk as sdk
 from manual_picking.application.batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
 from manual_picking.application.passage_model import ManualPickingPassage
 from sqlalchemy import event
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.app.execution.models import (
@@ -386,7 +387,9 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
                 )
             )
             await db.flush()
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, None, None, "R2", "270")
     finally:
         await engine.dispose()
 
@@ -478,7 +481,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
 
 
 @pytest.mark.asyncio
-async def test_face_gate_transport_state_transitions_release_only_after_publication() -> None:
+async def test_face_gate_waits_for_published_terminal_position() -> None:
     module = import_module("manual_picking.application.batch_repository")
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 13, 12)
@@ -502,28 +505,153 @@ async def test_face_gate_transport_state_transitions_release_only_after_publicat
                 updated_at=now,
             )
             db.add(task)
+            member = TransportMember(
+                transport_task_id="transport-1",
+                ordinal=1,
+                object_type="BIN",
+                object_id="BIN-1",
+                source_json={"kind": "HANDOFF_POSITION", "location_code": "RETURN"},
+                target_json={"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "1"},
+                updated_at=now,
+            )
+            db.add(member)
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            task.status = "ACCEPTED"
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            task.status = "SUCCEEDED"
+            member.status = "SUCCEEDED"
+            member.final_position_json = {"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "2"}
+            task.outcome_version = 1
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            task.published_outcome_version = 1
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            member.final_position_json = member.target_json
+            task.outcome_version = 2
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            task.published_outcome_version = 2
+            await db.flush()
+            assert not await repo.has_unclosed_return_transport_for_face(
+                db, workline_id=7, rack_id="R1", rack_face="90"
+            )
+            task.status = "FAILED"
+            member.status = "FAILED"
+            task.outcome_version = 3
+            task.published_outcome_version = 3
+            member.final_position_json = None
+            member.position_unknown = False
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+            member.final_position_json = member.target_json
+            await db.flush()
+            assert not await repo.has_unclosed_return_transport_for_face(
+                db, workline_id=7, rack_id="R1", rack_face="90"
+            )
+            member.final_position_json = {"kind": "HANDOFF_POSITION", "location_code": "RETURN"}
+            await db.flush()
+            assert not await repo.has_unclosed_return_transport_for_face(
+                db, workline_id=7, rack_id="R1", rack_face="90"
+            )
+            task.status = "REJECTED"
+            member.status = "REJECTED"
+            member.final_position_json = None
+            await db.flush()
+            assert not await repo.has_unclosed_return_transport_for_face(
+                db, workline_id=7, rack_id="R1", rack_face="90"
+            )
+            task.status = "RECONCILING"
+            member.status = "FAILED"
+            member.position_unknown = True
+            await db.flush()
+            assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_return_transport_face_gate_compiles_json_position_comparison_for_postgres() -> None:
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    db = SimpleNamespace(scalar=AsyncMock(return_value=None))
+
+    await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
+
+    sql = str(db.scalar.await_args.args[0].compile(dialect=postgresql.dialect()))
+    assert "IS NOT DISTINCT FROM" in sql
+    assert "final_position_json !=" not in sql
+    assert "final_position_json =" not in sql
+
+
+@pytest.mark.asyncio
+async def test_face_gate_without_task_scope_tracks_return_confirmation_and_evidence() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 9, 13, 12)
+    try:
+        async with sessions.begin() as db:
+            repo = module.BatchRepository()
+            confirmation = WmsConfirmation(
+                operation="outbound.bin.return_batch@v1",
+                operation_id="019f0000-0000-7000-8000-000000000401",
+                workline_id=7,
+                request_digest="a" * 64,
+                request_payload={
+                    "operation": "outbound.bin.return_batch@v1",
+                    "data": {"rack_id": "R1", "rack_face": "90"},
+                },
+                deadline_at=now,
+                status="PENDING",
+            )
+            db.add(confirmation)
+            await db.flush()
+            assert await repo.has_unclosed_action_for_face(db, 7, None, None, "R1", "90")
+
+            confirmation.status = "COMPLETED"
+            evidence = InboundEvidence(
+                kind="WMS_RESULT",
+                source_identity="wms:return:401",
+                payload_digest="b" * 64,
+                normalized_payload={"code": "DECIDED", "data": {"result": "READY"}},
+                received_at=now,
+                workline_id=7,
+                operation="outbound.bin.return_batch@v1",
+                operation_id=confirmation.operation_id,
+                apply_status="APPLIED",
+            )
+            db.add(evidence)
+            await db.flush()
+            confirmation.response_evidence_id = evidence.id
+            await db.flush()
+            assert await repo.has_unclosed_action_for_face(db, 7, None, None, "R1", "90")
+
+            evidence.published_at = now
+            evidence.decision_digest = "c" * 64
+            await db.flush()
+            assert not await repo.has_unclosed_action_for_face(db, 7, None, None, "R1", "90")
+
             db.add(
-                TransportMember(
-                    transport_task_id="transport-1",
-                    ordinal=1,
-                    object_type="BIN",
-                    object_id="BIN-1",
-                    source_json={"kind": "HANDOFF_POSITION", "location_code": "RETURN"},
-                    target_json={"kind": "RACK_BIN_SLOT", "rack_id": "R1", "rack_face": "90", "slot_id": "1"},
-                    updated_at=now,
+                WmsConfirmation(
+                    operation="outbound.bin.inbound_batch@v1",
+                    operation_id="019f0000-0000-7000-8000-000000000402",
+                    workline_id=7,
+                    request_digest="d" * 64,
+                    request_payload={
+                        "operation": "outbound.bin.inbound_batch@v1",
+                        "data": {
+                            "task_id": "PICK-2",
+                            "plan_revision": 1,
+                            "rack_id": "R1",
+                            "rack_face": "90",
+                        },
+                    },
+                    deadline_at=now,
+                    status="PENDING",
                 )
             )
             await db.flush()
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
-            task.status = "SUCCEEDED"
-            task.outcome_version = 1
-            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
-            task.published_outcome_version = 1
-            await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
-            task.status = "FAILED"
-            await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert not await repo.has_unclosed_action_for_face(db, 7, None, None, "R1", "90")
     finally:
         await engine.dispose()
 
