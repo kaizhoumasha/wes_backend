@@ -3099,6 +3099,14 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "src/core/mixins/soft_delete.py"
+heavy_tests = ["tests/integration/test_base_repository_crud.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260926_2030_e1c64a8b9d20_widen_soft_delete_actor_id.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
 source_glob = "src/database/base_repository.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",

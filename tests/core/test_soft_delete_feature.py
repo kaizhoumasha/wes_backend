@@ -12,6 +12,8 @@
 from datetime import datetime
 
 import pytest
+from sqlalchemy import BigInteger
+from sqlmodel import Field, SQLModel
 
 from src.core.mixins import SoftDeleteMixin
 
@@ -20,6 +22,14 @@ from src.core.mixins import SoftDeleteMixin
 
 class TestSoftDeleteMixin:
     """测试 SoftDeleteMixin 的功能"""
+
+    def test_deleted_by_uses_bigint_for_snowflake_user_id(self):
+        class SoftDeletedRecord(SoftDeleteMixin, SQLModel, table=True):
+            __tablename__ = "soft_deleted_record_bigint_test"
+
+            id: int | None = Field(default=None, primary_key=True)
+
+        assert isinstance(SoftDeletedRecord.__table__.c.deleted_by.type, BigInteger)
 
     def test_soft_delete_mixin_attributes(self):
         """测试 SoftDeleteMixin 的属性"""
