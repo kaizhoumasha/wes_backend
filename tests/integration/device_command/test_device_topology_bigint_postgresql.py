@@ -7,7 +7,7 @@ from datetime import datetime
 
 import asyncpg
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -68,11 +68,14 @@ async def test_migration_preserves_topology_and_rejects_lossy_downgrade() -> Non
             async with async_sessionmaker(engine)() as db:
                 db.add(WorkLine(id=1, line_code="EXISTING", line_name="已有工作线", line_type=LineType.AUTO))
                 await db.flush()
-                db.add(Device(id=2, device_code="EXISTING-UP", device_name="已有上游", work_line_id=1))
-                await db.flush()
-                db.add(
-                    Device(
-                        id=3, device_code="EXISTING-DOWN", device_name="已有下游", work_line_id=1, upstream_device_id=2
+                await db.execute(
+                    text(
+                        """INSERT INTO wes_biz.devices
+                        (id, created_at, device_code, device_name, work_line_id, is_active, sort_order,
+                         upstream_device_id, diagnostic_profile)
+                        VALUES
+                        (2, now(), 'EXISTING-UP', '已有上游', 1, true, 0, NULL, '{}'::json),
+                        (3, now(), 'EXISTING-DOWN', '已有下游', 1, true, 0, 2, '{}'::json)"""
                     )
                 )
                 await db.commit()

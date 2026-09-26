@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.3.0] - 2026-09-25
+
+### Added
+
+- 可保存设备级 ECS_TEST 默认值供联调界面预填；执行仍只认显式应用到 WorkLine 的规则。
+
 ## [0.49.2.0] - 2026-09-25
 
 ### Fixed
