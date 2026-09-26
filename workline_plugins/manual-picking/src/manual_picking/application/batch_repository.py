@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, not_, or_, select, text
 from wes_plugin_sdk import (
     BinBatchNoBatch,
     BinInboundBatchIntent,
@@ -232,52 +232,65 @@ class BatchRepository:
         return True
 
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str | None,
+        plan_revision: int | None,
+        rack_id: str,
+        rack_face: str,
     ) -> bool:
         """只阻塞当前批次/货架面，避免无关异常冻结整条工作线。"""
-        confirmations = cast("Any", WmsConfirmation).__table__.c
-        pending = await db.scalar(
-            select(confirmations.id)
-            .where(
-                confirmations.workline_id == workline_id,
-                confirmations.operation.in_(_BATCH_OPERATIONS),
-                confirmations.status.in_(
-                    (
-                        WmsConfirmationStatus.PENDING,
-                        WmsConfirmationStatus.DISPATCHING,
-                        WmsConfirmationStatus.RECONCILING,
-                    )
-                ),
-                confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
-                confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
-                or_(
-                    confirmations.operation == BIN_RETURN_BATCH_OPERATION,
-                    and_(
-                        confirmations.request_payload["data"]["task_id"].as_string() == task_id,
-                        confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
-                    ),
-                ),
-            )
-            .limit(1)
-        )
-        if pending is not None:
+        if (task_id is None) != (plan_revision is None):
+            raise ValueError("task_id and plan_revision must be provided together")
+        if await self._history.has_unclosed_return(
+            db,
+            workline_id=workline_id,
+            rack_id=rack_id,
+            rack_face=rack_face,
+        ):
             return True
+
+        confirmations = cast("Any", WmsConfirmation).__table__.c
+        inbound_scope = None
+        if task_id is not None and plan_revision is not None:
+            inbound_scope = and_(
+                confirmations.operation == BIN_INBOUND_BATCH_OPERATION,
+                confirmations.request_payload["data"]["task_id"].as_string() == task_id,
+                confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
+            )
+            pending = await db.scalar(
+                select(confirmations.id)
+                .where(
+                    confirmations.workline_id == workline_id,
+                    inbound_scope,
+                    confirmations.status.in_(
+                        (
+                            WmsConfirmationStatus.PENDING,
+                            WmsConfirmationStatus.DISPATCHING,
+                            WmsConfirmationStatus.RECONCILING,
+                        )
+                    ),
+                    confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                    confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                return True
+
         evidences = cast("Any", InboundEvidence).__table__.c
+        operation_scope = confirmations.operation == BIN_RETURN_BATCH_OPERATION
+        if inbound_scope is not None:
+            operation_scope = or_(operation_scope, inbound_scope)
         unpublished = await db.scalar(
             select(evidences.id)
             .join(WmsConfirmation, confirmations.response_evidence_id == evidences.id)
             .where(
                 confirmations.workline_id == workline_id,
-                confirmations.operation.in_(_BATCH_OPERATIONS),
+                operation_scope,
                 confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
                 confirmations.request_payload["data"]["rack_face"].as_string() == rack_face,
-                or_(
-                    confirmations.operation == BIN_RETURN_BATCH_OPERATION,
-                    and_(
-                        confirmations.request_payload["data"]["task_id"].as_string() == task_id,
-                        confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
-                    ),
-                ),
                 evidences.published_at.is_(None),
                 # 异常/忽略的响应只约束原记录，不构成货架面后续执行的围栏。
                 # 正常待处理或已应用待发布的响应仍须完成原批次交接。
@@ -287,10 +300,33 @@ class BatchRepository:
             )
             .limit(1)
         )
-        if unpublished is not None:
-            return True
+        return unpublished is not None
+
+    async def has_unclosed_return_transport_for_face(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+    ) -> bool:
+        """本面回架 BIN_MOVE 的终态、最终位置和结果未闭合时，禁止下一轮分配。"""
         transports = cast("Any", TransportTask).__table__.c
         members = cast("Any", TransportMember).__table__
+        final_matches_target = and_(
+            members.c.final_position_json["kind"]
+            .as_string()
+            .is_not_distinct_from(members.c.target_json["kind"].as_string()),
+            members.c.final_position_json["rack_id"]
+            .as_string()
+            .is_not_distinct_from(members.c.target_json["rack_id"].as_string()),
+            members.c.final_position_json["rack_face"]
+            .as_string()
+            .is_not_distinct_from(members.c.target_json["rack_face"].as_string()),
+            members.c.final_position_json["slot_id"]
+            .as_string()
+            .is_not_distinct_from(members.c.target_json["slot_id"].as_string()),
+        )
         active = await db.scalar(
             select(transports.id)
             .join(members, members.c.transport_task_id == transports.transport_task_id)
@@ -301,12 +337,17 @@ class BatchRepository:
                 members.c.target_json["rack_id"].as_string() == rack_id,
                 members.c.target_json["rack_face"].as_string() == rack_face,
                 or_(
+                    transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
                     and_(
-                        transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                        transports.status == "SUCCEEDED",
                         or_(
-                            members.c.position_unknown.is_(True),
-                            members.c.final_position_json["kind"].as_string().is_(None),
+                            members.c.status != "SUCCEEDED",
+                            not_(final_matches_target),
                         ),
+                    ),
+                    and_(
+                        transports.status == "FAILED",
+                        members.c.final_position_json["kind"].as_string().is_(None),
                     ),
                     transports.outcome_version > transports.published_outcome_version,
                 ),

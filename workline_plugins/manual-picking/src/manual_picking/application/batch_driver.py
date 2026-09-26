@@ -311,13 +311,21 @@ class ManualPickingBatchDriver:
                     continue
             elif not await repository.arrival_matches(db, ingress, projection, rack_id, rack_face):
                 continue
-            if not exhausted and await self._drain.return_in_session(
-                db,
-                line,
-                decision,
-                rack_id,
-                line.position_bindings[OUTLET.slot_key]["location_id"],
-                timezone.now_for_db(),
+            if await self._batches.has_unclosed_action_for_face(db, line.id, None, None, rack_id, rack_face):
+                continue
+            if (
+                not exhausted
+                and not await self._batches.has_unclosed_return_transport_for_face(
+                    db, workline_id=line.id, rack_id=rack_id, rack_face=rack_face
+                )
+                and await self._drain.return_in_session(
+                    db,
+                    line,
+                    decision,
+                    rack_id,
+                    line.position_bindings[OUTLET.slot_key]["location_id"],
+                    timezone.now_for_db(),
+                )
             ):
                 return count + 1
             if not exhausted and any(

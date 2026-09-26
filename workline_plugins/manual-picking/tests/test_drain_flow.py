@@ -38,7 +38,6 @@ def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
     scheduler = SimpleNamespace(create_in_session=AsyncMock())
     batch_scheduler = SimpleNamespace(create_in_session=AsyncMock())
     history = SimpleNamespace(
-        has_unclosed_return=AsyncMock(return_value=False),
         latest_return=AsyncMock(return_value=None),
     )
     tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=active_task))
@@ -171,24 +170,6 @@ async def test_no_batch_is_terminal_and_never_retries_return_batch() -> None:
 
     assert not await flow.return_in_session(object(), _line(), current, "R1", "OUTLET", NOW)
     history.latest_return.assert_not_awaited()
-    scheduler.create_in_session.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_unclosed_return_obligation_keeps_original_identity() -> None:
-    ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
-    current = decision(ready)
-    flow, _, scheduler, history = _flow(current=current, rows=(SimpleNamespace(bin_code="B1"),))
-    history.has_unclosed_return.return_value = True
-    db = object()
-
-    assert not await flow.return_in_session(db, _line(), current, "R1", "OUTLET", NOW)
-    history.has_unclosed_return.assert_awaited_once_with(
-        db,
-        workline_id=7,
-        rack_id="R1",
-        rack_face="90",
-    )
     scheduler.create_in_session.assert_not_awaited()
 
 

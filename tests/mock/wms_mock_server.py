@@ -146,7 +146,6 @@ class TransportSubmissionStore:
         self._bin_positions: dict[str, dict[str, Any]] = {}
         self._bin_origin_slots: dict[str, str] = {}
         self._known_slots: set[tuple[str, str, str]] = set()
-        self._return_reservations: dict[str, dict[str, Any]] = {}
         self._served_inbound_faces: set[tuple[str, int, str, str]] = set()
         self._prepared_manual_task_id: str | None = None
         self._good_case_remaining: list[dict[str, Any]] | None = None
@@ -165,7 +164,6 @@ class TransportSubmissionStore:
             self._bin_positions.clear()
             self._bin_origin_slots.clear()
             self._known_slots.clear()
-            self._return_reservations.clear()
             self._served_inbound_faces.clear()
             self._prepared_manual_task_id = None
             self._good_case_remaining = None
@@ -300,11 +298,7 @@ class TransportSubmissionStore:
                     self._resource_tasks[resource] = transport_task_id
 
     def _record_bin_position(self, bin_code: str, position: dict[str, Any]) -> None:
-        previous = self._bin_positions.get(bin_code)
         self._bin_positions[bin_code] = deepcopy(position)
-        reserved = self._return_reservations.get(bin_code)
-        if reserved is not None and previous == reserved and reserved != position:
-            self._return_reservations.pop(bin_code)
 
     def apply_handoff_arrival(self, arrival: BinHandoffArrival) -> bool:
         with self._lock:
@@ -351,11 +345,11 @@ class TransportSubmissionStore:
             return status, response
 
     def _allocate_return_slots(self, request: BinReturnBatchRequest) -> dict[str, Any]:
-        # 只分配从已接受搬运 source 学到、且模拟回调已证明空出的槽位。
+        # 仅实际位置事实占用储位；已分配但尚未到位的目标不会跨请求预留。
         data = request.data
         occupied = {
             (p["rack_id"], p["rack_face"], p["slot_id"])
-            for p in [*self._bin_positions.values(), *self._return_reservations.values()]
+            for p in self._bin_positions.values()
             if p["kind"] == "RACK_BIN_SLOT"
         }
         slots = sorted(
@@ -364,11 +358,7 @@ class TransportSubmissionStore:
         moves = []
         for candidate in data.return_candidates:
             source = {"kind": "HANDOFF_POSITION", "location_code": candidate.source.location_code}
-            if (
-                not slots
-                or candidate.bin_code in self._return_reservations
-                or self._bin_positions.get(candidate.bin_code) != source
-            ):
+            if not slots or self._bin_positions.get(candidate.bin_code) != source:
                 break
             origin = self._bin_origin_slots.get(candidate.bin_code)
             next_candidate = data.return_candidates[candidate.sequence_no % len(data.return_candidates)]
@@ -377,10 +367,6 @@ class TransportSubmissionStore:
             slots.remove(slot)
             target = {"type": "RACK_BIN_SLOT", "rack_id": data.rack_id, "rack_face": data.rack_face, "slot_id": slot}
             moves.append({"sequence_no": candidate.sequence_no, "bin_code": candidate.bin_code, "target": target})
-            self._return_reservations[candidate.bin_code] = {
-                "kind": "RACK_BIN_SLOT",
-                **{k: v for k, v in target.items() if k != "type"},
-            }
         return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def inbound_batch_result(self, data: BinInboundBatchData) -> dict[str, Any]:
