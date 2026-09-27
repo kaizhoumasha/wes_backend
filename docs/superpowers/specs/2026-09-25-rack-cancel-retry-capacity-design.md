@@ -131,7 +131,9 @@ PickingTask 完成、原进场成员取消或 current drain 切换，均不能�
 
 结果终态与名额释放同事务提交，提交后唤醒补位；释放和后续申请不是一个大事务。准入读到未提交释放最多暂缓，不能超额。真实 PostgreSQL 并发测试仍须证明上述边界，Mock 通过不能替代。
 
-重试下一 owner 为原冻结插件上下文对应的持久 Evidence 决策处理；退避时间复用 `decision_next_attempt_at`，不新增定时器表。首次补位与重试补位均复用现有业务推进——即由 ECS scan/callback 等事件触发重新评估，仓库当前没有独立的后台定时扫描器（已核实 `fact_processor.py`、`scan_flow.py` 均为事件触发路径）。因此退避到期不保证实时补位：若该 WorkLine 在退避到期后暂无新事件到达，候选会一直等到下一个事件偶然触发才被重新评估，需配合上文 R3 的等待时长可观测性发现此类延迟（评审结论，2026-09-26）。进程崩溃、通知丢失、重复 Evidence 后仍须能重新发现候选且至多创建一个后继。
+重试下一 owner 为原冻结插件上下文对应的持久 Evidence 决策处理；退避时间复用 `decision_next_attempt_at`，不新增定时器表。首次补位与重试补位均复用现有业务推进：`decision_next_attempt_at` 到期由既有 Celery beat 任务 `process-execution-facts-batch`（每 10 秒，见 `src/celery_app/config.py`）驱动 `FactProcessor.process_batch → InboundEvidenceRepository.claim_decision_batch` 重新捞取并调用 `ManualPickingScanFlow._retry_terminal_rack`，不依赖新的外部事件；ECS scan/callback 事件到达时也会走同一决策路径提前触发。
+
+评审纠正（2026-09-27）：本文此前（2026-09-26 评审）曾错误声称"仓库当前没有独立的后台定时扫描器,仅事件驱动",并据此在上文 R3 增加了等待时长可观测性要求。经复核确认该判断有误：`process-execution-facts-batch` 是真实存在的 10 秒周期 Celery beat 任务,`claim_decision_batch` 的查询条件明确包含 `decision_next_attempt_at <= now`,退避到期后最多 10 秒内会被重新评估,不需要等待偶然事件。R3 的等待时长可观测性要求本身仍保留（持续追加新首次候选场景下,10 秒轮询间隔不改变"无有界公平保证"的取舍,仍值得监控),但不再以"无周期扫描"为理由。进程崩溃、通知丢失、重复 Evidence 后仍须能重新发现候选且至多创建一个后继。
 
 未完成义务依赖的原 Evidence/Binding/Transport 必须保留到义务闭合；闭合后不得以这些历史记录作为未来新业务的前提。
 
@@ -238,10 +240,10 @@ uv run pytest tests/runtime/execution/test_rack_inbound_window.py workline_plugi
 
 1. R3 首次优先取舍：接受，补充重试候选等待时长可观测性（见 R3 末段）。
 2. 与 `wms-outbound-picking-task-integration-requirements.md` §14.1/§14.2 的合同冲突：本轮已同步修订该合同，按货架进场/退场/BIN 分别限定语义（详见该文件 §14.1 表后说明与 §14.2 对应条目）。
-3. "周期扫描"表述与代码不符：已修正为仅事件驱动，并记录无事件时的延迟风险（见 R6）。
+3. ~~"周期扫描"表述与代码不符~~：**2026-09-27 纠正**——原判断有误，`process-execution-facts-batch` 是真实存在的 10 秒周期 Celery beat 任务（见 R6），退避到期最多 10 秒内会被重新评估，不依赖外部事件。R3 的可观测性要求保留，但不再以"无周期扫描"为理由。
 4. 工作区未声明的代码/文档改动：已在第 7 节说明范围与来源。
 5. 退料架（drain）与来源架共享目标点容量窗口但未参与首次优先仲裁（Codex 发现，已核实）：维持现状，已在 R3 明确边界避免与"独立执行"字面表述冲突。
 6. ZONE 退场目标"权威成功事实"缺乏具体判定规则（Codex 发现，已核实）：要求实施前先定义判定规则，再落地第 6 节对应验证行（见 R5 末段）。
 7. 验证矩阵补充"两个重试候选并发竞争同一名额"一行（见第 6 节）。
 
-评审状态：DONE，无遗留未答复决策。下一步进入第 5 节最小实现方案时，需先完成第 6 项（ZONE 判定规则）再编写对应测试断言。
+评审状态：DONE，2026-09-27 追加一条纠正（第 3 项）。下一步进入第 5 节最小实现方案时，需先完成第 6 项（ZONE 判定规则）再编写对应测试断言。
