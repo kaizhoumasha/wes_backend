@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import Mock
 
 import pytest
 from manual_picking.application.drain_repository import DrainRepository
@@ -322,6 +323,122 @@ async def test_ctu01_serialized_submission_respects_capacity(rack_database):
                         )
                         assert await window.release_on_departure_accepted(db, client_request_id=departure_id)
             assert await serialized_pair(sessions, line.id, action) == (0, 0)
+    finally:
+        server.close()
+
+
+async def test_source_rack_priority_matches_spec_a_through_e_scenario(rack_database):
+    """R3 端到端：capacity=3 时 A~E 场景走真实容量窗口，D/E 首次候选始终优先于 B 的重试候选。
+
+    对照 docs/superpowers/specs/2026-09-25-rack-cancel-retry-capacity-design.md 第 3 节场景基准。
+    """
+    from manual_picking.application.batch_driver import pending_first_source_candidates
+
+    from src.app.execution.models import TransportDecisionBinding
+    from src.app.execution.services.rack_inbound_window import RackInboundWindowService
+    from src.app.transport.contracts import TransportHandle
+    from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
+
+    _, sessions = rack_database
+    server = BusinessServer()
+    server.start()
+
+    def rack(name):
+        return f"{name}-{line.id}"
+
+    try:
+        async with sessions.begin() as db:
+            line, picking = await seed_line(db, bins=0, capacity=3)
+            picking.status = "EXECUTING"
+            picking.last_applied_plan_revision = 1
+            picking.target_rack_id = f"TARGET-{line.id}"
+            picking.target_rack_face = "90"
+            picking.initial_plan_evidence_id = picking.issued_evidence_id
+            picking.last_plan_evidence_id = picking.issued_evidence_id
+            for name in ("A", "B", "C", "D", "E"):
+                db.add(
+                    PickingTaskBinSourceRack(
+                        picking_task_id=picking.id,
+                        rack_id=rack(name),
+                        rack_face="90",
+                        plan_revision=1,
+                        source_evidence_id=picking.issued_evidence_id,
+                    )
+                )
+        async with runtime_for(sessions, server.url) as (runtime, _transport):
+            driver = runtime.plugins[0].picking_task_batch_driver
+            window = RackInboundWindowService()
+
+            async def pending_names(db):
+                rows = await pending_first_source_candidates(
+                    db, driver._plans, driver._bindings, workline_id=line.id, task=picking
+                )
+                return sorted(row.rack_id for row in rows)
+
+            async def release(db, name):
+                binding = await db.scalar(
+                    select(TransportDecisionBinding).where(
+                        TransportDecisionBinding.workline_id == line.id,
+                        TransportDecisionBinding.resource_fence_id == rack(name),
+                    )
+                )
+                assert await window.release_unarrived_terminal(
+                    db, Mock(client_request_id=binding.client_request_id, status="REJECTED")
+                )
+
+            # 初始 | A/B/C 首次候选进场，D/E 因容量已满暂缓。
+            async with sessions.begin() as db:
+                assert await driver._submit_source_racks(db, line, picking) == 3
+
+            # B 取消并释放：终位不在目标点。B 已有绑定，不再是首次候选，变成重试候选。
+            async with sessions.begin() as db:
+                await release(db, "B")
+                assert await pending_names(db) == [rack("D"), rack("E")]  # 重试候选 B 不在其中
+                assert await driver._submit_source_racks(db, line, picking) == 1  # 名额先给未决首次候选 D
+
+            # B 的重试此时必须让路：还有未决首次候选 E。
+            async with sessions.begin() as db:
+                assert await pending_names(db) == [rack("E")]
+
+            # C 释放名额：轮到 E 补位；此后已无未决首次候选，B 的重试才轮得到。
+            async with sessions.begin() as db:
+                await release(db, "C")
+                assert await driver._submit_source_racks(db, line, picking) == 1
+            async with sessions.begin() as db:
+                assert await pending_names(db) == []  # 首次候选耗尽，B 的重试不再被挡
+
+            # A 释放，B（重试候选）终于可以补位——镜像 _retry_terminal_rack 的窗口准入调用。
+            async with sessions.begin() as db:
+                await release(db, "A")
+
+                async def create():
+                    request_id = f"retry-{rack('B')}"
+                    db.add(
+                        TransportDecisionBinding(
+                            workline_id=line.id,
+                            picking_task_id=picking.id,
+                            source_evidence_id=picking.issued_evidence_id,
+                            correlation_id=f"retry:1:{rack('B')}",
+                            step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                            resource_fence_id=rack("B"),
+                            client_request_id=request_id,
+                        )
+                    )
+                    await db.flush()
+                    return TransportHandle(f"transport:{request_id}", request_id)
+
+                assert (
+                    await window.admit(
+                        db,
+                        workline_id=line.id,
+                        workline_code=line.line_code,
+                        target_location_code=line.position_bindings["FIVE_RACK"]["location_id"],
+                        rack_id=rack("B"),
+                        picking_task_id=picking.id,
+                        create=create,
+                    )
+                    == "CREATED"
+                )
     finally:
         server.close()
 
