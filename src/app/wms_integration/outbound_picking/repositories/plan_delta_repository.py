@@ -30,6 +30,23 @@ from src.app.workline.models import WorkLine
 MEMBER_BATCH_SIZE = 250
 
 
+def filter_undecided_candidates(
+    rows: Any, decided: set[tuple[int, str]], *, last_applied_plan_revision: int
+) -> list[Any]:
+    """筛出尚未形成首次绑定的候选行，供插件与核心计划激活共用（R3）。
+
+    候选定义：已应用计划范围内、且 (source_evidence_id, rack_id) 尚未在 decided 中形成首次
+    绑定的成员行。已有占窗同架复用不算新的物理候选——decided 里已存在的键即被过滤掉，不管
+    该绑定是否仍持有窗口。只做筛选，不做去重/聚合：同一 (evidence, rack) 可能有多条不同
+    face 的行，是否合并、如何合并由各自调用方决定（核心侧要聚合多面，插件侧只取一行）。
+    """
+    return [
+        row
+        for row in rows
+        if row.plan_revision <= last_applied_plan_revision and (row.source_evidence_id, row.rack_id) not in decided
+    ]
+
+
 def _active_rack_window(bindings: Any, workline_id: int, picking_task_id: int, rack_id: str) -> Any:
     window = TransportDecisionBinding.__table__.alias("active_rack_window").c
     return (

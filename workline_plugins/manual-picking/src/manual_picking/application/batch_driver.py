@@ -27,6 +27,7 @@ from src.app.execution.repositories.inbound_evidence_repository import inbound_e
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
+from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import filter_undecided_candidates
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -61,13 +62,10 @@ async def pending_first_source_candidates(
         db, workline_id=workline_id, picking_task_id=task.id, steps=(SOURCE_RACK_IN_STEP,)
     )
     sources = await plans.list_active_bin_source_racks(db, task.id)
+    filtered = filter_undecided_candidates(sources, decided, last_applied_plan_revision=task.last_applied_plan_revision)
     pending: dict[tuple[int, str], Any] = {}
-    for row in sources:
-        if (
-            row.plan_revision <= task.last_applied_plan_revision
-            and (row.source_evidence_id, row.rack_id) not in decided
-        ):
-            pending.setdefault((row.source_evidence_id, row.rack_id), row)
+    for row in filtered:
+        pending.setdefault((row.source_evidence_id, row.rack_id), row)
     return list(pending.values())
 
 

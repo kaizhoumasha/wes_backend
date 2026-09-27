@@ -620,7 +620,13 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         },
     )
     task = SimpleNamespace(
-        id=31, task_id="PICK-1", plan_revision=1, status="EXECUTING", target_rack_id="TARGET-1", target_rack_face="270"
+        id=31,
+        task_id="PICK-1",
+        plan_revision=1,
+        last_applied_plan_revision=1,
+        status="EXECUTING",
+        target_rack_id="TARGET-1",
+        target_rack_face="270",
     )
 
     assert await driver.advance_in_session(object(), line, task) == 1
