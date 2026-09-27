@@ -53,6 +53,8 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
   `status=CANCELLED` 报告，并携带权威 `RACK_POSITION final_position`。WES 将该 wire 分支归一化为内部
   `FAILED + failure_code=RCS_TASK_CANCELLED`，不新增内部 Transport 状态。manual-picking 对仍有原业务依据的货架动作统一按指数退避重试所有明确 `CANCELLED`；明确未接纳或有权威终位的失败进场 Transport 同样按当前成员依据重试；原 plan_delta 成员被取消时停止，不因 PickingTask 进入 `EXECUTION_COMPLETED` 而停止。已有成功 Transport 的权威到位事实满足动作目标时不再重复动作。每次业务重试使用新请求身份，原因细分待联调数据形成后再定。
 
+`CANCELLED` 只终止当前 Transport 执行实例，不取消原业务需求。容量按尚未依合同释放名额的货架进场生命周期计数，不按物理区域或 RCS queue slot 计数。原名额因权威终位在目标点外而释放后，仍有业务需求的货架以新 Transport 重新竞争 capacity；终位仍在目标点则复用原名额。不恢复原 RCS queue slot，也不因取消自动获得优先权。补位与业务重试共用同一原子容量准入入口；终态结果和名额释放同事务提交，提交后唤醒补位。
+
 两条路径都不改变 §4.1.1、§4.3 已批准的设计：`REJECTED`/`FAILED` 均为不可变终态，Transport 核心不实现指数退避，
 不在原 `transport_task_id`/`operation_id` 上重提。业务如需针对同一目标继续搬运，必须由调用方（工作线插件/业务
 owner）在自身重试循环中以指数退避方式发起重试：退避上限约 60 秒，重试次数无上限（直到目标可用或业务主动放弃），

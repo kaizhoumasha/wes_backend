@@ -1987,6 +1987,12 @@ Transport Handler 不负责识别货架业务类型；成功结果被 WES 出库
 | `REJECTED \| FAILED` | 根据每个货架或 Bin 的结果，结束确定失败的任务明细；已经成功和不受影响的明细继续执行 | 根据相同的搬运结果统计没有满足的需求，创建新的 PickingTask；不修改当前任务，也不通过当前任务的 `plan_delta` 补单 |
 | `UNKNOWN/RECONCILING` | 暂停受影响的任务明细和后续依赖动作，保留原任务身份、成员与证据 | 等待 RCS 后续权威恢复或对账事实，再为同一 `transport_task_id` 发送更高版本的结果 |
 
+上表 `REJECTED | FAILED` 行按货架进场、货架退场、BIN 分别限定语义，不适用无条件总括句：
+
+- 货架进场：`CANCELLED`／权威终位仍在目标点的 `REJECTED | FAILED`，只终止当前 Transport 执行实例，不当然终止业务需求。原成员未被取消、业务依据仍有效、权威目标事实未满足时，WES 在同一 PickingTask 与既有 `plan_delta` 范围内以新的 Transport 请求身份重试该成员，不等待 WMS 创建新 PickingTask，也不通过该重试推进或跳过计划增量。只有原成员本身被取消或需求不再有效时，才回到本表默认规则——结束确定失败的任务明细，由 WMS 创建新 PickingTask。重试的排序、容量与退避规则见《货架取消重试与进场容量调度优化 SPEC》（`docs/superpowers/specs/2026-09-25-rack-cancel-retry-capacity-design.md`）。
+- 货架退场：按未完成离场义务独立判断与重试，不占用进场 capacity，不因原进场成员取消或 PickingTask 完成而单独失效；具体规则同见上述 SPEC 第 R5 条。
+- BIN：维持本表原有规定，本次不扩大授权。
+
 `UNKNOWN/RECONCILING` 不是成功，也不是失败。WES 不能结束任务明细、覆盖原事实或创建替代 TransportTask；这不阻止独立任务提交。
 
 WMS 必须保证同一个正在搬运的货架或 Bin 不会同时分配给两个未结束的 PickingTask 或批次。否则，WMS 无法只根据现有任务数据和
@@ -2007,9 +2013,10 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
   并以 `previous_operation_id` 指向直接前驱，见 §9.2.3。
 - Transport `UNKNOWN`：位置和后续步骤继续等待。按照 Transport 合同，等待同一 `transport_task_id` 后续更高版本的确定结果，不创建替代
   TransportTask。
-- Transport `REJECTED | FAILED`：只结束本地对应的业务任务明细。入线搬运未成功时不得推进该成员的线内业务；
-  退回搬运失败时保留原成员与位置证据，等待 WMS/RCS 的后续权威业务或物理决定。WMS 根据自己形成并发送的 Transport 结果创建后续
-  PickingTask，不增加失败上报或恢复接口。
+- Transport `REJECTED | FAILED`：按货架进场、货架退场、BIN 分别限定语义（见 §14.1 表后说明）。货架进场在原成员未取消、
+  业务依据仍有效且权威终位仍在目标点或未接纳时，按既有身份重试，不等待 WMS 创建新 PickingTask；其余情况只结束本地对应的业务
+  任务明细——入线搬运未成功时不得推进该成员的线内业务，退回搬运失败时保留原成员与位置证据，等待 WMS/RCS 的后续权威业务或
+  物理决定，WMS 根据自己形成并发送的 Transport 结果创建后续 PickingTask，不增加失败上报或恢复接口。
 - DeviceCommand 结果未知：保留当前待完成的物理工作，不把未知解释为失败、NG 或完成。
 
 `WmsClient` 每次只执行一次 HTTP/JSON 访问。Outbox、自动重试、计划顺序和状态推进由对应业务模块负责；WES 不提供人工 plan apply 旁路。
