@@ -556,7 +556,10 @@ async def test_real_worker_prepares_next_task_without_drain(rack_database):
 
 
 @pytest.mark.parametrize("transport_code", ["RECEIVED", "DUPLICATE"])
-async def test_source_departure_acceptance_refills_one_slot_through_real_worker(rack_database, transport_code):
+@pytest.mark.parametrize("deliver_departure_result", [True, False])
+async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
+    rack_database, transport_code, deliver_departure_result
+):
     _, sessions = rack_database
     async with sessions.begin() as db:
         line, picking = await seed_line(db, bins=0, capacity=2)
@@ -668,6 +671,47 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         }
         assert refilled[rack_ids[2]].status == "ACCEPTED"
         assert refilled[rack_ids[2]].request_json["rcs_template_id"] == "CTU01"
+        if not deliver_departure_result:
+            await callback(
+                transport.service,
+                refilled[rack_ids[2]],
+                {
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": rack_ids[2],
+                    "status": "SUCCEEDED",
+                    "final_position": {
+                        "kind": "RACK_POSITION",
+                        "location_code": line.position_bindings["FIVE_RACK"]["location_id"],
+                    },
+                    "arrival_face": "90",
+                },
+            )
+            run(worker, APPLY)
+            run(worker, PUBLISH)
+            async with sessions() as db:
+                old_departure = await db.get(TransportTask, departure.id)
+                old_members = (
+                    await db.scalars(
+                        select(TransportMember).where(TransportMember.transport_task_id == departure.transport_task_id)
+                    )
+                ).all()
+                old_position = await db.scalar(
+                    select(PositionProjection).where(
+                        PositionProjection.object_type == "RACK", PositionProjection.object_id == rack_ids[0]
+                    )
+                )
+                next_position = await db.scalar(
+                    select(PositionProjection).where(
+                        PositionProjection.object_type == "RACK", PositionProjection.object_id == rack_ids[2]
+                    )
+                )
+                assert old_departure.status == "ACCEPTED" and old_members
+                assert all(member.status == "PENDING" for member in old_members)
+                assert old_position.position_unknown is True
+                assert next_position.position_unknown is False
+                assert next_position.source_transport_task_id == refilled[rack_ids[2]].transport_task_id
+            return
         await callback(
             transport.service,
             departure,

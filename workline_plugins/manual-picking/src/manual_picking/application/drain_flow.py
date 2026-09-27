@@ -50,7 +50,6 @@ class ManualPickingDrainFlow:
         now: Any,
         *,
         limit: int = 4,
-        allow_active_task: bool = False,
     ) -> tuple[int, Any]:
         current = await self.repository.current(db, line.id)
         if current is not None:
@@ -62,13 +61,11 @@ class ManualPickingDrainFlow:
                 return 0, None
             if now < current.completed_at + timedelta(milliseconds=current.result.retry_after_ms):
                 return 0, None
-        elif not allow_active_task and not await self.repository.has_completed_task(db, line.id):
-            return 0, None
         rows = await self._passages.ready_prefix_for_update(db, line.id, limit=limit)
         if not rows:
             return 0, None
         if current is None:
-            if not allow_active_task and await self._tasks.has_active_for_workline(db, line.id):
+            if await self._tasks.has_active_for_workline(db, line.id):
                 return 0, None
             prepared = await self._prepare.prepare_next_in_session(db, line, now=now)
             if prepared.prepared:

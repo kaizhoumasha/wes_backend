@@ -68,23 +68,31 @@ async def test_decide_freezes_only_workline_and_required_slot_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_decide_allows_ready_bins_to_drain_during_active_task_when_workstation_is_empty() -> None:
+async def test_decide_does_not_drain_during_active_task_when_position_is_unknown() -> None:
     flow, scheduler, _, _ = _flow(
         rows=(SimpleNamespace(bin_code="B1"),),
         active_task=True,
         completed_task=False,
     )
 
-    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=True) == (1, None)
-    scheduler.create_in_session.assert_awaited_once()
+    assert await flow.decide_in_session(object(), _line(), NOW) == (0, None)
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_decide_keeps_active_task_gate_when_workstation_has_rack() -> None:
+async def test_decide_keeps_active_task_gate() -> None:
     flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
 
-    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=False) == (0, None)
+    assert await flow.decide_in_session(object(), _line(), NOW) == (0, None)
     scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ready_fifo_without_active_task_does_not_depend_on_historical_completed_task() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), completed_task=False)
+
+    assert await flow.decide_in_session(object(), _line(), NOW) == (1, None)
+    scheduler.create_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ class Plans:
             SimpleNamespace(id=13, rack_id="R2", rack_face="90", source_evidence_id=52, plan_revision=1),
         ]
         self.matches = True
+        self.released_racks: set[str] = set()
         self.owner = None
         self.transfer_owner = None
 
@@ -55,8 +56,8 @@ class Plans:
     async def list_active_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.rows
 
-    async def source_transport_matches(self, _db, *_args):  # type: ignore[no-untyped-def]
-        return self.matches
+    async def source_transport_matches(self, _db, _line_id, rack_id, _task_id, _transport_id):  # type: ignore[no-untyped-def]
+        return self.matches and rack_id not in self.released_racks
 
     async def first_completed_source_owner_at_position(self, _db, *_args):  # type: ignore[no-untyped-def]
         return self.owner
@@ -183,22 +184,15 @@ def setup_driver():  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("rack_count", "allow_active_task"),
-    [
-        (0, True),
-        (1, False),
-        (2, False),
-    ],
-)
-async def test_drain_active_task_gate_uses_observed_workstation_fact(rack_count: int, allow_active_task: bool) -> None:
+@pytest.mark.parametrize("rack_count", [0, 1, 2])
+async def test_drain_active_task_gate_does_not_use_workstation_projection_count(rack_count: int) -> None:
     driver, line, _, positions, _, _, _, _, _ = setup_driver()
     positions.count_value = rack_count
     drain = SimpleNamespace(decide_in_session=AsyncMock(return_value=(0, None)))
     driver._drain = drain
 
     assert await driver._advance_drain(object(), line) == 0
-    assert drain.decide_in_session.await_args.kwargs["allow_active_task"] is allow_active_task
+    assert drain.decide_in_session.await_args.kwargs.get("allow_active_task", False) is False
 
 
 @pytest.mark.asyncio
@@ -536,6 +530,30 @@ async def test_later_rack_starts_when_its_own_ingress_succeeded_even_if_prior_so
 
 
 @pytest.mark.asyncio
+async def test_old_known_rack_projection_does_not_block_current_business_rack() -> None:
+    driver, line, task, positions, plans, flow, _, _, _ = setup_driver()
+    old = positions.source
+    old.updated_at = timezone.now_for_db() - timedelta(seconds=1)
+    current = SimpleNamespace(
+        object_id="R2",
+        workline_id=7,
+        position_unknown=False,
+        position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
+        arrival_face="90",
+        source_transport_task_id="arrival-2",
+        updated_at=timezone.now_for_db(),
+    )
+    positions.get = AsyncMock(side_effect=lambda _db, _kind, rack_id: {"R1": old, "R2": current}.get(rack_id))
+    positions.count_value = 2
+    plans.released_racks.add("R1")
+    flow.complete.clear()
+    flow.created = True
+
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls[0]["rack_id"] == "R2"
+
+
+@pytest.mark.asyncio
 async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> None:
     driver, line, task, positions, _, flow, creator, _, scheduler = setup_driver()
     positions.target = None
@@ -634,6 +652,28 @@ async def test_two_current_source_racks_block_progress_even_when_one_projection_
 
 
 @pytest.mark.asyncio
+async def test_two_current_business_racks_block_without_global_projection_count() -> None:
+    driver, line, task, positions, _, flow, creator, _, _ = setup_driver()
+    prior = positions.source
+    prior.updated_at = timezone.now_for_db() - timedelta(seconds=1)
+    current = SimpleNamespace(
+        object_id="R2",
+        workline_id=7,
+        position_unknown=False,
+        position_json={"kind": "RACK_POSITION", "location_code": "FIVE-POS"},
+        arrival_face="90",
+        source_transport_task_id="arrival-2",
+        updated_at=timezone.now_for_db(),
+    )
+    positions.get = AsyncMock(side_effect=lambda _db, _kind, rack_id: {"R1": prior, "R2": current}.get(rack_id))
+    positions.count = AsyncMock(side_effect=AssertionError("global position count is not a business gate"))
+    flow.created = True
+
+    assert await driver.advance_in_session(object(), line, task) == 0
+    assert flow.calls == [] and creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
 async def test_later_revision_face_on_current_rack_precedes_other_rack() -> None:
     driver, line, task, positions, plans, flow, creator, _, _ = setup_driver()
     plans.rows = [plans.rows[0], plans.rows[2], plans.rows[1]]
@@ -663,9 +703,9 @@ async def test_source_submits_stable_plan_order_once_without_target_readiness():
         decided.add((kwargs["source_evidence_id"], kwargs["resource_fence_id"]))
 
     creator.create = create
-    assert await driver.advance_in_session(object(), line, task) == 3
+    assert await driver.advance_in_session(object(), line, task) == 4
     assert [call["intent"].rack_id for call in calls] == ["R1", "R2", "R3"]
-    assert await driver.advance_in_session(object(), line, task) == 0
+    assert await driver.advance_in_session(object(), line, task) == 1
     assert len(calls) == 3
     for call in calls:
         assert call["intent"].target_face == "90"
@@ -862,13 +902,13 @@ async def test_historical_rack_fence_does_not_block_independent_ctu01_submission
     positions.count = AsyncMock(return_value=0)
     driver._bindings = SimpleNamespace(list_task_member_bindings=AsyncMock(return_value=set()))
     creator.create = AsyncMock()
-    assert await driver.advance_in_session(object(), line, task) == 2
+    assert await driver.advance_in_session(object(), line, task) == 3
     assert [call.kwargs["resource_fence_id"] for call in creator.create.await_args_list] == ["R1", "R2"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("current_count", [0, 1, 2])
-async def test_multiple_source_faces_check_known_cardinality_once_per_wake(current_count):
+async def test_multiple_source_faces_select_only_unique_business_rack(current_count):
     driver, line, task, positions, plans, flow, creator, *_ = setup_driver()
     positions.count = AsyncMock(return_value=current_count)
     projections = {
@@ -890,7 +930,7 @@ async def test_multiple_source_faces_check_known_cardinality_once_per_wake(curre
     flow.created = True
     assert len(plans.rows) == 3  # R1 two faces and R2 one face share the same physical source position.
     assert await driver.advance_in_session(object(), line, task) == int(current_count == 1)
-    positions.count.assert_awaited_once()
+    positions.count.assert_not_awaited()
     assert creator.rotate == [] and creator.depart == []
 
 

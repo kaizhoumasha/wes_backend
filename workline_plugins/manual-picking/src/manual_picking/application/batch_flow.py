@@ -18,7 +18,13 @@ if TYPE_CHECKING:
 
 class BatchRepository(Protocol):
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str | None,
+        plan_revision: int | None,
+        rack_id: str,
+        rack_face: str,
     ) -> bool: ...
 
     async def has_unclosed_return_transport_for_face(
@@ -115,7 +121,13 @@ class ManualPickingBatchFlow:
         )
 
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str | None,
+        plan_revision: int | None,
+        rack_id: str,
+        rack_face: str,
     ) -> bool:
         return await self._repository.has_unclosed_action_for_face(
             db, workline_id, task_id, plan_revision, rack_id, rack_face

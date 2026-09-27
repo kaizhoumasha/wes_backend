@@ -9,7 +9,6 @@ from wes_plugin_sdk import ReturnBufferDrainReady
 
 from src.app.execution.models import TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
-from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord, ReturnBufferDrainResultReader
 
 DRAIN_RACK_IN_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
@@ -41,16 +40,6 @@ class DrainRepository:
 
     async def is_reserved(self, db: Any, workline_id: int) -> bool:
         return await self.current(db, workline_id) is not None
-
-    async def has_completed_task(self, db: Any, workline_id: int) -> bool:
-        return (
-            await db.scalar(
-                select(PickingTask.id)
-                .where(PickingTask.workline_id == workline_id, PickingTask.status == "EXECUTION_COMPLETED")
-                .limit(1)
-            )
-            is not None
-        )
 
     async def transport(
         self,

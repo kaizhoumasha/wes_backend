@@ -30,6 +30,22 @@ from src.app.workline.models import WorkLine
 MEMBER_BATCH_SIZE = 250
 
 
+def _active_rack_window(bindings: Any, workline_id: int, picking_task_id: int, rack_id: str) -> Any:
+    window = TransportDecisionBinding.__table__.alias("active_rack_window").c
+    return (
+        select(window.id)
+        .where(
+            window.workline_id == workline_id,
+            window.picking_task_id == picking_task_id,
+            window.resource_fence_id == rack_id,
+            window.window_target_location_code.is_not(None),
+            window.window_released_at.is_(None),
+            window.causal_token <= bindings.causal_token,
+        )
+        .exists()
+    )
+
+
 class PickingTaskPlanDeltaRepository:
     async def source_transport_matches(
         self, db: AsyncSession, workline_id: int, rack_id: str, picking_task_id: int, transport_task_id: str
@@ -47,6 +63,7 @@ class PickingTaskPlanDeltaRepository:
                     bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
                     transports.transport_task_id == transport_task_id,
                     transports.status == "SUCCEEDED",
+                    _active_rack_window(bindings, workline_id, picking_task_id, rack_id),
                 )
                 .limit(1)
             )
@@ -68,6 +85,7 @@ class PickingTaskPlanDeltaRepository:
                 bindings.step.in_(("PICKING_TASK_RETURN_RACK_IN", "MANUAL_PICKING_RETURN_RACK_ROTATE")),
                 transports.transport_task_id == transport_task_id,
                 transports.status == "SUCCEEDED",
+                _active_rack_window(bindings, workline_id, picking_task_id, rack_id),
             )
             .limit(1)
         )

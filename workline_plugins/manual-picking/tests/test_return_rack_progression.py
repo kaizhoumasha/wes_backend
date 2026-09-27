@@ -43,6 +43,7 @@ class Plans:
             ),
         ]
         self.completed: set[tuple[str, str]] = set()
+        self.released_racks: set[str] = set()
 
     async def list_active_direct_picks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.picks
@@ -61,8 +62,8 @@ class Plans:
     async def source_transport_matches(self, _db, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return True
 
-    async def return_rack_transport_source(self, _db, *_args):  # type: ignore[no-untyped-def]
-        return 61
+    async def return_rack_transport_source(self, _db, _line_id, _task_id, rack_id, _transport_id):  # type: ignore[no-untyped-def]
+        return None if rack_id in self.released_racks else 61
 
 
 class Creator:
@@ -185,6 +186,62 @@ async def test_present_return_rack_reports_arrival_once_before_any_departure() -
     assert scheduler.create_in_session.await_args.kwargs["picking_task_id"] == 31
     assert creator.rotate == [] and creator.depart == []
     departure.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_return_rack_position_does_not_block_current_business_rack() -> None:
+    driver, line, task, positions, plans, _, _, scheduler, _ = setup_driver()
+    plans.picks.append(
+        SimpleNamespace(
+            id=23, plan_revision=1, rack_id="RETURN-RACK-02", rack_face="A", slot_id="A-05", source_evidence_id=62
+        )
+    )
+    plans.released_racks.add("RETURN-RACK-01")
+    current = SimpleNamespace(
+        object_id="RETURN-RACK-02",
+        workline_id=7,
+        position_unknown=False,
+        position_json={"kind": "RACK_POSITION", "location_code": "RETURN-POS"},
+        arrival_face="A",
+        source_transport_task_id="return-arrival-2",
+    )
+    positions.get = AsyncMock(
+        side_effect=lambda _db, _kind, rack_id: {"RETURN-RACK-01": positions.current, "RETURN-RACK-02": current}.get(
+            rack_id
+        )
+    )
+    positions.count = AsyncMock(side_effect=AssertionError("global position count is not a business gate"))
+
+    assert await driver._advance_return_rack(object(), line, task) == 1
+    scheduler.create_in_session.assert_awaited_once()
+    assert scheduler.create_in_session.await_args.args[1].rack_id == "RETURN-RACK-02"
+
+
+@pytest.mark.asyncio
+async def test_two_confirmed_return_racks_in_same_task_block_as_ambiguous() -> None:
+    driver, line, task, positions, plans, creator, _, scheduler, _ = setup_driver()
+    plans.picks.append(
+        SimpleNamespace(
+            id=23, plan_revision=1, rack_id="RETURN-RACK-02", rack_face="A", slot_id="A-05", source_evidence_id=62
+        )
+    )
+    second = SimpleNamespace(
+        object_id="RETURN-RACK-02",
+        workline_id=7,
+        position_unknown=False,
+        position_json={"kind": "RACK_POSITION", "location_code": "RETURN-POS"},
+        arrival_face="A",
+        source_transport_task_id="return-arrival-2",
+    )
+    positions.get = AsyncMock(
+        side_effect=lambda _db, _kind, rack_id: {"RETURN-RACK-01": positions.current, "RETURN-RACK-02": second}.get(
+            rack_id
+        )
+    )
+
+    assert await driver._advance_return_rack(object(), line, task) == 0
+    scheduler.create_in_session.assert_not_awaited()
+    assert creator.rotate == [] and creator.depart == []
 
 
 @pytest.mark.asyncio

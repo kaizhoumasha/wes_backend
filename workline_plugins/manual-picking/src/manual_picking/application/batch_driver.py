@@ -42,7 +42,7 @@ from .drain_repository import (
     SOURCE_RACK_ROTATE_STEP,
 )
 from .passage_repository import PassageRepository
-from .rack_readiness import current_rack_count, has_single_current_rack, ready_rack_projection
+from .rack_readiness import ready_rack_projection
 
 TRANSFER_RACK_OUT_STEP = "MANUAL_PICKING_TRANSFER_RACK_OUT"
 
@@ -243,19 +243,7 @@ class ManualPickingBatchDriver:
 
     async def _advance_drain(self, db: Any, line: Any) -> int:
         # Drain rack 是无序 reservation；按各自权威到位事实独立推进。
-        workstation = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
-        active_task = await self._tasks.get_active_for_workline(db, line.id)
-        allow_active_task = (
-            active_task is not None
-            and active_task.status == "EXECUTING"
-            and await current_rack_count(db, line.id, workstation, positions=self._positions) == 0
-        )
-        count, decision = await self._drain.decide_in_session(
-            db,
-            line,
-            timezone.now_for_db(),
-            allow_active_task=allow_active_task,
-        )
+        count, decision = await self._drain.decide_in_session(db, line, timezone.now_for_db())
         if decision is None:
             return count
         repository = self._drain.repository
@@ -387,12 +375,11 @@ class ManualPickingBatchDriver:
             faces_by_rack.setdefault(row.rack_id, []).append(row)
         ordered_sources = [row for faces in faces_by_rack.values() for row in faces]
         source_location = bindings[FIVE_RACK.slot_key]["location_id"]
-        if not ordered_sources or not await has_single_current_rack(
-            db, line.id, source_location, positions=self._positions
-        ):
+        if not ordered_sources:
             return 0
         current = None
         projection = None
+        current_rack_ids: set[str] = set()
         for row in ordered_sources:
             candidate = await ready_rack_projection(
                 db,
@@ -402,18 +389,24 @@ class ManualPickingBatchDriver:
                 source_location,
                 positions=self._positions,
                 transports=self._transports,
-                source_cardinality_checked=True,
             )
             if candidate is None or not await self._plans.source_transport_matches(
                 db, line.id, row.rack_id, task.id, candidate.source_transport_task_id
             ):
                 continue
+            current_rack_ids.add(row.rack_id)
             if projection is None or (
                 candidate.updated_at is not None
                 and (projection.updated_at is None or candidate.updated_at > projection.updated_at)
             ):
                 current = row
                 projection = candidate
+        if len(current_rack_ids) > 1:
+            logger.warning(
+                "manual_picking.current_source_rack_ambiguous",
+                extra={"picking_task_id": task.id, "rack_ids": sorted(current_rack_ids)},
+            )
+            return 0
         if current is None or projection is None:
             return 0
         if await self._flow.has_unclosed_action_for_face(
@@ -525,21 +518,32 @@ class ManualPickingBatchDriver:
             if all((face.plan_revision, face.rack_face) != (row.plan_revision, row.rack_face) for face in faces):
                 faces.append(row)
         ordered = [row for faces in faces_by_rack.values() for row in faces]
-        if not ordered or not await has_single_current_rack(db, line.id, location, positions=self._positions):
+        if not ordered:
             return 0
         current = projection = None
+        current_rack_id = None
         for row in ordered:
-            projection = await ready_rack_projection(
+            candidate = await ready_rack_projection(
                 db, line, row.rack_id, row.rack_face, location, positions=self._positions, transports=self._transports
             )
-            if projection is None:
+            if candidate is None:
                 continue
             arrival_source_id = await self._plans.return_rack_transport_source(
-                db, line.id, task.id, row.rack_id, projection.source_transport_task_id
+                db, line.id, task.id, row.rack_id, candidate.source_transport_task_id
             )
             if arrival_source_id is not None:
+                if current_rack_id is not None and current_rack_id != row.rack_id:
+                    logger.warning(
+                        "manual_picking.current_return_rack_ambiguous",
+                        extra={"picking_task_id": task.id, "rack_ids": sorted((current_rack_id, row.rack_id))},
+                    )
+                    return 0
+                if current_rack_id is not None:
+                    continue
+                current_rack_id = row.rack_id
+                projection = candidate
                 matching_faces = [
-                    face for face in faces_by_rack[row.rack_id] if face.rack_face == projection.arrival_face
+                    face for face in faces_by_rack[row.rack_id] if face.rack_face == candidate.arrival_face
                 ]
                 current = matching_faces[0] if matching_faces else None
                 for face in matching_faces:
@@ -552,8 +556,6 @@ class ManualPickingBatchDriver:
                     ):
                         current = face
                         break
-                if current is not None:
-                    break
         if current is None or projection is None:
             return 0
         now = timezone.now_for_db()
