@@ -49,6 +49,28 @@ TRANSFER_RACK_OUT_STEP = "MANUAL_PICKING_TRANSFER_RACK_OUT"
 logger = logging.getLogger(__name__)
 
 
+async def pending_first_source_candidates(
+    db: Any, plans: Any, bindings: Any, *, workline_id: int, task: Any
+) -> list[Any]:
+    """尚未形成首次进场绑定的有效来源候选，按 (source_evidence_id, rack_id) 去重（R3 首次候选）。
+
+    BatchDriver 的正常补位与 ScanFlow 的进场结果重试共用这一入口，保证重试候选不会抢在
+    未决的首次候选前面拿到刚释放的名额。
+    """
+    decided = await bindings.list_task_member_bindings(
+        db, workline_id=workline_id, picking_task_id=task.id, steps=(SOURCE_RACK_IN_STEP,)
+    )
+    sources = await plans.list_active_bin_source_racks(db, task.id)
+    pending: dict[tuple[int, str], Any] = {}
+    for row in sources:
+        if (
+            row.plan_revision <= task.last_applied_plan_revision
+            and (row.source_evidence_id, row.rack_id) not in decided
+        ):
+            pending.setdefault((row.source_evidence_id, row.rack_id), row)
+    return list(pending.values())
+
+
 @dataclass(frozen=True)
 class _DrainRackIntent:
     rack_id: str
@@ -203,19 +225,9 @@ class ManualPickingBatchDriver:
         return filled + advanced + await self._advance_return_rack(db, line, task)
 
     async def _submit_source_racks(self, db: Any, line: Any, task: Any) -> int:
-        decided = await self._bindings.list_task_member_bindings(
-            db, workline_id=line.id, picking_task_id=task.id, steps=(SOURCE_RACK_IN_STEP,)
-        )
-        sources = await self._plans.list_active_bin_source_racks(db, task.id)
-        pending: dict[tuple[int, str], Any] = {}
-        for row in sources:
-            if (
-                row.plan_revision <= task.last_applied_plan_revision
-                and (row.source_evidence_id, row.rack_id) not in decided
-            ):
-                pending.setdefault((row.source_evidence_id, row.rack_id), row)
+        pending = await pending_first_source_candidates(db, self._plans, self._bindings, workline_id=line.id, task=task)
         created = 0
-        for row in pending.values():
+        for row in pending:
             intent = PickingTaskRackTransportIntent(
                 task_id=task.task_id,
                 fact_id=f"picking-task-plan:{task.id}:{task.last_applied_plan_revision}",
@@ -867,4 +879,5 @@ __all__ = [
     "SOURCE_RACK_ROTATE_STEP",
     "TRANSFER_RACK_OUT_STEP",
     "ManualPickingBatchDriver",
+    "pending_first_source_candidates",
 ]

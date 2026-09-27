@@ -783,13 +783,18 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
             )
         )
     flow._rack_creator = creator
-    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(return_value=binding),
+        list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+    )
     flow._tasks = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED"))
+        get_by_id_for_update=AsyncMock(
+            return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED", last_applied_plan_revision=1)
+        )
     )
     flow._source_racks = SimpleNamespace(
         list_active_bin_source_racks=AsyncMock(
-            return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1),)
+            return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),)
             if member_active
             else ()
         ),
@@ -846,6 +851,87 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
     assert creator.create_windowed_inbound.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
     assert creator.create_windowed_inbound.await_args.kwargs["retry_terminal_inbound"] is True
     assert creator.create_windowed_inbound.await_args.kwargs["intent"].rack_id == "RACK-1"
+
+
+@pytest.mark.asyncio
+async def test_source_rack_retry_defers_to_pending_first_candidate_without_advancing_attempt() -> None:
+    """R3：还有未决首次候选时，重试候选让路，不推进尝试编号、不创建 Transport。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"},
+            "target_face": "90",
+            "rcs_template_id": "CTU01",
+        },
+    )
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock(return_value="CREATED"))
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=31,
+        correlation_id="pt:31:e:1:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(return_value=binding),
+        list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+    )
+    flow._tasks = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(
+            return_value=SimpleNamespace(id=31, status="EXECUTING", last_applied_plan_revision=1)
+        )
+    )
+    flow._source_racks = SimpleNamespace(
+        list_active_bin_source_racks=AsyncMock(
+            return_value=(
+                SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),
+                SimpleNamespace(rack_id="RACK-2", rack_face="90", source_evidence_id=2, plan_revision=1),
+            )
+        ),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    first = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_not_awaited()
+
+    evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (second.disposition, second.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_not_awaited()
+    assert binding.correlation_id == "pt:31:e:1:rack:RACK-1"
 
 
 @pytest.mark.asyncio

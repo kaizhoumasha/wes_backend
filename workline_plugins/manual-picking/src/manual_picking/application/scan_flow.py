@@ -46,7 +46,12 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
-from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
+from .batch_driver import (
+    SOURCE_RACK_OUT_STEP,
+    SOURCE_RACK_ROTATE_STEP,
+    TRANSFER_RACK_OUT_STEP,
+    pending_first_source_candidates,
+)
 from .batch_repository import BatchRepository
 from .bin_line.return_model import BinLineReturn
 from .bin_line.return_repository import ReturnRepository
@@ -56,6 +61,7 @@ from .drain_repository import (
     DRAIN_RACK_ROTATE_STEP,
     RETURN_RACK_OUT_STEP,
     RETURN_RACK_ROTATE_STEP,
+    SOURCE_RACK_IN_STEP,
 )
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
@@ -449,6 +455,11 @@ class ManualPickingScanFlow:
                 "PICKING_TASK_RETURN_RACK_IN",
                 DRAIN_RACK_IN_STEP,
             }:
+                if binding.step == SOURCE_RACK_IN_STEP and await pending_first_source_candidates(
+                    db, self._source_racks, self._transport_bindings, workline_id=workline_id, task=current
+                ):
+                    # R3：同一目标点还有未决的首次候选，重试候选让路，不推进尝试编号。
+                    return 1000
                 workline = await self._worklines.get_for_authority_update(db, workline_id)
                 if workline is None:
                     return None
