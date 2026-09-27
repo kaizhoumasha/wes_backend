@@ -359,6 +359,34 @@ class ManualPickingScanFlow:
             return None
         return await self._drains.for_evidence(db, workline_id, binding.source_evidence_id)
 
+    async def _goal_already_satisfied(
+        self, db: Any, workline_id: int, payload: dict[str, Any], target: dict[str, Any], request: dict[str, Any]
+    ) -> bool:
+        """权威目标事实是否已满足：RACK_POSITION 要求精确落点，ZONE 只认最新一次成功搬运的具体落点。
+
+        ZONE 不回溯历史因果链（R5）；RCS 决定 ZONE 内精确落点，与 _apply_transport_result 的
+        SUCCEEDED 匹配口径一致，不要求 location_code 等于目标 ZONE 的描述符。
+        """
+        projection = await self._positions.get(db, "RACK", payload["rack_id"])
+        if projection is None or payload["status"] == "REJECTED" or projection.workline_id != workline_id:
+            return False
+        if projection.position_unknown:
+            return False
+        if target.get("kind") == "RACK_POSITION":
+            position_at_goal = projection.position_json == target
+        else:
+            position_at_goal = projection.position_json.get("kind") == "RACK_POSITION" and bool(
+                projection.position_json.get("location_code")
+            )
+        if not position_at_goal or (
+            request.get("target_face") is not None and projection.arrival_face != request["target_face"]
+        ):
+            return False
+        if not projection.source_transport_task_id:
+            return False
+        source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
+        return source_task is not None and source_task.status == "SUCCEEDED"
+
     async def _retry_terminal_rack(  # noqa: PLR0911
         self, db: Any, evidence: Any, task: Any, workline_id: int
     ) -> str | int | None:
@@ -404,20 +432,12 @@ class ManualPickingScanFlow:
             return "IGNORED"
         request = task.request_json
         target = request.get("position") if task.kind == "RACK_ROTATE" else request.get("target")
-        if isinstance(target, dict) and target.get("kind") == "RACK_POSITION":
-            projection = await self._positions.get(db, "RACK", payload["rack_id"])
-            goal_position_matches = (
-                payload["status"] != "REJECTED"
-                and projection is not None
-                and projection.workline_id == workline_id
-                and not projection.position_unknown
-                and projection.position_json == target
-                and (request.get("target_face") is None or projection.arrival_face == request["target_face"])
-            )
-            if goal_position_matches and projection.source_transport_task_id:
-                source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
-                if source_task is not None and source_task.status == "SUCCEEDED":
-                    return "IGNORED"
+        if (
+            isinstance(target, dict)
+            and target.get("kind") in {"RACK_POSITION", "ZONE"}
+            and (await self._goal_already_satisfied(db, workline_id, payload, target, request))
+        ):
+            return "IGNORED"
         prior_attempt = 0
         if binding.correlation_id.startswith("retry:"):
             prior_attempt = int(binding.correlation_id.split(":", 2)[1])
