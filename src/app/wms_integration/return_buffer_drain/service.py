@@ -64,6 +64,17 @@ class ReturnBufferDrainResultReader:
     def __init__(self, confirmations: WmsConfirmationRepository | None = None) -> None:
         self._confirmations = confirmations or WmsConfirmationRepository()
 
+    async def operation_id_for_evidence(self, db: AsyncSession, *, workline_id: int, evidence_id: int) -> str | None:
+        """按冻结 response_evidence_id 反查 operation_id，供独立于 current() 定位历史决定使用。"""
+        c = WmsConfirmation
+        return await db.scalar(
+            select(c.operation_id).where(
+                c.workline_id == workline_id,
+                c.operation == RETURN_BUFFER_DRAIN_OPERATION,
+                c.response_evidence_id == evidence_id,
+            )
+        )
+
     @staticmethod
     def _request(confirmation, workline_id):
         if (

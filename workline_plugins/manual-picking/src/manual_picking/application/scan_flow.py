@@ -348,6 +348,17 @@ class ManualPickingScanFlow:
             return None
         return status
 
+    async def _resolve_drain_decision(self, db: Any, workline_id: int, step: str, binding: Any) -> Any | None:
+        """定位重试所依据的 drain 决定：进场/旋转要求仍是 current，退场按冻结 evidence 独立找回。"""
+        if self._drains is None:
+            return None
+        current = await self._drains.current(db, workline_id)
+        if current is not None and current.evidence_id == binding.source_evidence_id:
+            return current
+        if step != DRAIN_RACK_OUT_STEP:
+            return None
+        return await self._drains.for_evidence(db, workline_id, binding.source_evidence_id)
+
     async def _retry_terminal_rack(  # noqa: PLR0911
         self, db: Any, evidence: Any, task: Any, workline_id: int
     ) -> str | int | None:
@@ -386,8 +397,8 @@ class ManualPickingScanFlow:
             ):
                 return "IGNORED"
         elif payload["step"] in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
-            current = await self._drains.current(db, workline_id) if self._drains is not None else None
-            if current is None or current.evidence_id != binding.source_evidence_id:
+            current = await self._resolve_drain_decision(db, workline_id, payload["step"], binding)
+            if current is None:
                 return "IGNORED"
         else:
             return "IGNORED"
