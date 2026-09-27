@@ -246,4 +246,20 @@ uv run pytest tests/runtime/execution/test_rack_inbound_window.py workline_plugi
 6. ZONE 退场目标"权威成功事实"缺乏具体判定规则（Codex 发现，已核实）：要求实施前先定义判定规则，再落地第 6 节对应验证行（见 R5 末段）。
 7. 验证矩阵补充"两个重试候选并发竞争同一名额"一行（见第 6 节）。
 
+### 实施结论（2026-09-27）
+
+工程评审之后，本 SPEC 的最小实现方案（第 5 节）已实施并逐项验证，QUALITY/HEAVY 全程绿色：
+
+1. R3 首次候选优先于重试候选：`pending_first_source_candidates` 统一了 BatchDriver 正常补位与 ScanFlow 进场结果重试的判断入口（来源架场景），并进一步下沉到核心 `picking_task_plan_activation.py`（`filter_undecided_candidates`），消除了插件与核心两套并行维护的重复实现。真实 PostgreSQL 端到端场景测试对照第 3 节 A~E 场景基准全流程验证通过。
+2. 按进场/退场/旋转分清资格：drain 退场重试不再依赖 `current()` 的"最新"指针——新增 `ReturnBufferDrainResultReader.operation_id_for_evidence` + `DrainRepository.for_evidence`，按冻结 evidence_id 独立定位历史决定，current drain 切换不再误判 IGNORED。
+3. 义务关联缺失关系：已具体定位并补上（上一条的 operation_id 反查），不是通用框架，只解决了这一次发现的缺口。
+4. 复用持久退避/后台扫描：复核确认现状本来就对（`process-execution-facts-batch` 10 秒 Celery beat），SPEC 此前的"无周期扫描"判断有误，已纠正（见上文第 3 项）。
+5. 合同修订：已完成（见上文第 2 项）。
+6. ZONE 判定规则：已定义并实现——只认最新一次成功搬运的具体落点，不回溯历史因果链，判定口径与 `_apply_transport_result` 的 SUCCEEDED 匹配逻辑一致。
+7. R3 等待时长可观测性（重试候选超阈值告警）：**未实施**，仍是已知缺口，留待后续。
+
+未做且明确不做：`scan_flow.py` 内来源架/退料架/进场/退场四类重试不会合并成一条完全统一的路径——这些是不同的业务语义（退场按未完成离场义务判断，进场按容量竞争判断），R4 本身就要求"按进场、退场、旋转分清资格"，勉强合并只会制造新的耦合，不是本 SPEC 的目标。
+
+调查状态：DONE_WITH_CONCERNS → **实施状态：DONE_WITH_CONCERNS**（核心规则均已落地并测试覆盖；剩余已知缺口仅为 R3 可观测性一项，不阻塞发布）。
+
 评审状态：DONE，2026-09-27 追加一条纠正（第 3 项）。下一步进入第 5 节最小实现方案时，需先完成第 6 项（ZONE 判定规则）再编写对应测试断言。
