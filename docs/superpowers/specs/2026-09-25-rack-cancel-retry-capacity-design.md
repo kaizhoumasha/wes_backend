@@ -1,6 +1,6 @@
 # 货架取消重试与进场容量调度优化 SPEC
 
-状态：ReviewRequired；规则提案与代码调查已完成，生产优化未实施。
+状态：**已实施（2026-09-27）**；规则提案、代码调查与最小实现方案均已落地，见文末"实施结论（2026-09-27）"。
 
 日期：2026-09-25。调查基线：`feature/workline-debug-instruction-drafts` / `1d01a3d9`。
 交付范围：根据本轮讨论形成规则、调查当前实现、定义最小优化范围和验收；不包含代码修改、提交、部署或现场验收。
@@ -255,11 +255,13 @@ uv run pytest tests/runtime/execution/test_rack_inbound_window.py workline_plugi
 3. 义务关联缺失关系：已具体定位并补上（上一条的 operation_id 反查），不是通用框架，只解决了这一次发现的缺口。
 4. 复用持久退避/后台扫描：复核确认现状本来就对（`process-execution-facts-batch` 10 秒 Celery beat），SPEC 此前的"无周期扫描"判断有误，已纠正（见上文第 3 项）。
 5. 合同修订：已完成（见上文第 2 项）。
-6. ZONE 判定规则：已定义并实现——只认最新一次成功搬运的具体落点，不回溯历史因果链，判定口径与 `_apply_transport_result` 的 SUCCEEDED 匹配逻辑一致。
-7. R3 等待时长可观测性（重试候选超阈值告警）：**未实施**，仍是已知缺口，留待后续。
+6. ZONE 判定规则：已定义并实现——只认最新一次成功搬运的具体落点，不回溯历史因果链，判定口径与 `_apply_transport_result` 的 SUCCEEDED 匹配逻辑一致。Pre-Landing Review 红队复核（2026-09-27）进一步发现并修正：判定还须校验该次成功搬运的因果身份（`source_task.request_json.target == 目标 ZONE`），否则货架后续被挪去做其他无关业务时会误判本次退场目标已满足。
+7. R3 等待时长可观测性（重试候选超阈值告警）：**已实施**——重试候选因未决首次候选持续让路超过 60 秒仍未补位时，`_warn_if_first_candidate_wait_exceeds_threshold` 记录一次 `logger.warning`，不改变排序或退避本身。
+8. drain 插缝判定（R6）：Pre-Landing Review 发现按全局位置投影数量门禁插缝会引入吞吐回归——即使 FIVE_RACK 目标点实际空闲，也会因其他位置有货架被拦住。改为直接判定 FIVE_RACK 目标点是否存在未释放的容量窗口（`TransportDecisionBinding.list_active_window_for_target`），最终仍由 `RackInboundWindowService.admit` 的目标点行锁裁决，不引入新竞态。
+9. Pre-Landing Review 红队复核另发现：`DrainRepository.for_evidence` 对 `history()` 抛出的 `ValueError`（fail-closed 完整性信号）此前静默吞掉返回 `None`，与"没有对应决定"的正常情况无法区分，掩盖真实数据异常。现记录 `logger.warning` 后再返回 `None`。
 
 未做且明确不做：`scan_flow.py` 内来源架/退料架/进场/退场四类重试不会合并成一条完全统一的路径——这些是不同的业务语义（退场按未完成离场义务判断，进场按容量竞争判断），R4 本身就要求"按进场、退场、旋转分清资格"，勉强合并只会制造新的耦合，不是本 SPEC 的目标。
 
-调查状态：DONE_WITH_CONCERNS → **实施状态：DONE_WITH_CONCERNS**（核心规则均已落地并测试覆盖；剩余已知缺口仅为 R3 可观测性一项，不阻塞发布）。
+调查状态：DONE_WITH_CONCERNS → **实施状态：DONE**（核心规则、评审阶段承诺项与 Pre-Landing Review 发现的问题均已落地并测试覆盖，QUALITY/HEAVY 全程绿色，无遗留已知缺口）。
 
 评审状态：DONE，2026-09-27 追加一条纠正（第 3 项）。下一步进入第 5 节最小实现方案时，需先完成第 6 项（ZONE 判定规则）再编写对应测试断言。
