@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.6.0] - 2026-09-27
+
+### Fixed
+
+- 货架取消重试与进场容量调度按业务事实判定（SPEC R1~R6）：统一首次候选与重试候选在同一目标点的优先级，退场重试不再依赖“最新一条”排空决定、且 ZONE 目标的成功判定要求最新一次搬运确实去向该 ZONE，drain 插缝改为按 FIVE_RACK 容量窗口的业务事实判定，避免吞吐回归。
+- 红队复核发现并修复两处问题：ZONE 退场重试缺少搬运因果身份校验、drain checkpoint 完整性异常被静默吞掉未记录。
+
+### Added
+
+- 重试候选因未决首次候选持续让路超过 60 秒仍未补位时记录告警日志（R3 可观测性）。
+
 ## [0.49.4.0] - 2026-09-26
 
 ### Fixed
