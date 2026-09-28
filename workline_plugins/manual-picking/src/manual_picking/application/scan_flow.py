@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -67,6 +68,10 @@ from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
 _WAIT_FOR_RESULT = "WAIT_FOR_RESULT"
+# R3：重试候选因未决首次候选持续让路超过此时长仍未补位，记录一次告警（可观测性兜底）。
+_FIRST_CANDIDATE_WAIT_ALERT_THRESHOLD = timedelta(seconds=60)
+
+logger = logging.getLogger(__name__)
 
 
 def _projection_at(projection: Any, workline_id: int, kind: str, location: str, face: str | None = None) -> bool:
@@ -359,13 +364,33 @@ class ManualPickingScanFlow:
             return None
         return await self._drains.for_evidence(db, workline_id, binding.source_evidence_id)
 
+    @staticmethod
+    def _warn_if_first_candidate_wait_exceeds_threshold(evidence: Any, payload: dict[str, Any]) -> None:
+        """R3 可观测性：重试候选因未决首次候选让路超过阈值时告警，不改变排序或退避本身。"""
+        received_at = evidence.received_at
+        if received_at is None:
+            return
+        waited = timezone.now_for_db() - received_at
+        if waited < _FIRST_CANDIDATE_WAIT_ALERT_THRESHOLD:
+            return
+        logger.warning(
+            "manual_picking.retry_candidate_wait_exceeds_threshold",
+            extra={
+                "rack_id": payload.get("rack_id"),
+                "source_evidence_id": payload.get("source_evidence_id"),
+                "waited_seconds": waited.total_seconds(),
+            },
+        )
+
     async def _goal_already_satisfied(
         self, db: Any, workline_id: int, payload: dict[str, Any], target: dict[str, Any], request: dict[str, Any]
     ) -> bool:
         """权威目标事实是否已满足：RACK_POSITION 要求精确落点，ZONE 只认最新一次成功搬运的具体落点。
 
         ZONE 不回溯历史因果链（R5）；RCS 决定 ZONE 内精确落点，与 _apply_transport_result 的
-        SUCCEEDED 匹配口径一致，不要求 location_code 等于目标 ZONE 的描述符。
+        SUCCEEDED 匹配口径一致，不要求 location_code 等于目标 ZONE 的描述符。但最新位置必须来自
+        一次自己也是去这个 ZONE 的成功搬运——货架后续被挪去做其他无关业务（如重新收纳到别处）不能
+        被当作这次退场目标已满足（红队复核发现，2026-09-27）。
         """
         projection = await self._positions.get(db, "RACK", payload["rack_id"])
         if projection is None or payload["status"] == "REJECTED" or projection.workline_id != workline_id:
@@ -385,7 +410,11 @@ class ManualPickingScanFlow:
         if not projection.source_transport_task_id:
             return False
         source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
-        return source_task is not None and source_task.status == "SUCCEEDED"
+        if source_task is None or source_task.status != "SUCCEEDED":
+            return False
+        if target.get("kind") != "ZONE":
+            return True
+        return source_task.request_json.get("target") == target
 
     async def _retry_terminal_rack(  # noqa: PLR0911
         self, db: Any, evidence: Any, task: Any, workline_id: int
@@ -490,6 +519,7 @@ class ManualPickingScanFlow:
                     db, self._source_racks, self._transport_bindings, workline_id=workline_id, task=current
                 ):
                     # R3：同一目标点还有未决的首次候选，重试候选让路，不推进尝试编号。
+                    self._warn_if_first_candidate_wait_exceeds_threshold(evidence, payload)
                     return 1000
                 workline = await self._worklines.get_for_authority_update(db, workline_id)
                 if workline is None:
