@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -11,8 +10,6 @@ from wes_plugin_sdk import ReturnBufferDrainReady
 from src.app.execution.models import TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord, ReturnBufferDrainResultReader
-
-logger = logging.getLogger(__name__)
 
 DRAIN_RACK_IN_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
 DRAIN_RACK_ROTATE_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE"
@@ -55,16 +52,7 @@ class DrainRepository:
         )
         if operation_id is None:
             return None
-        try:
-            records = await self._reader.history(db, workline_id=workline_id, after_operation_id=operation_id)
-        except ValueError:
-            # history() 的 ValueError 是 fail-closed 完整性信号（checkpoint 缺失/未发布等），
-            # 不能被静默当作"这条决定不存在"；必须留下可观测痕迹供排查。
-            logger.warning(
-                "manual_picking.drain_evidence_checkpoint_invalid",
-                extra={"workline_id": workline_id, "evidence_id": evidence_id, "operation_id": operation_id},
-            )
-            return None
+        records = await self._reader.history(db, workline_id=workline_id, after_operation_id=operation_id)
         return records[0] if records else None
 
     async def transport(

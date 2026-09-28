@@ -131,6 +131,8 @@ PickingTask 完成、原进场成员取消或 current drain 切换，均不能�
 
 结果终态与名额释放同事务提交，提交后唤醒补位；释放和后续申请不是一个大事务。准入读到未提交释放最多暂缓，不能超额。真实 PostgreSQL 并发测试仍须证明上述边界，Mock 通过不能替代。
 
+Drain 启动只依赖当前 READY passage 和 FIVE_RACK 窗口；历史上是否存在已完成 PickingTask 不作为准入条件。无活动 PickingTask 时 READY passage 仍可推进；存在活动任务时，仅在 FIVE_RACK 窗口被占用时暂缓。
+
 重试下一 owner 为原冻结插件上下文对应的持久 Evidence 决策处理；退避时间复用 `decision_next_attempt_at`，不新增定时器表。首次补位与重试补位均复用现有业务推进：`decision_next_attempt_at` 到期由既有 Celery beat 任务 `process-execution-facts-batch`（每 10 秒，见 `src/celery_app/config.py`）驱动 `FactProcessor.process_batch → InboundEvidenceRepository.claim_decision_batch` 重新捞取并调用 `ManualPickingScanFlow._retry_terminal_rack`，不依赖新的外部事件；ECS scan/callback 事件到达时也会走同一决策路径提前触发。
 
 评审纠正（2026-09-27）：本文此前（2026-09-26 评审）曾错误声称"仓库当前没有独立的后台定时扫描器,仅事件驱动",并据此在上文 R3 增加了等待时长可观测性要求。经复核确认该判断有误：`process-execution-facts-batch` 是真实存在的 10 秒周期 Celery beat 任务,`claim_decision_batch` 的查询条件明确包含 `decision_next_attempt_at <= now`,退避到期后最多 10 秒内会被重新评估,不需要等待偶然事件。R3 的等待时长可观测性要求本身仍保留（持续追加新首次候选场景下,10 秒轮询间隔不改变"无有界公平保证"的取舍,仍值得监控),但不再以"无周期扫描"为理由。进程崩溃、通知丢失、重复 Evidence 后仍须能重新发现候选且至多创建一个后继。
@@ -196,6 +198,7 @@ PickingTask 完成、原进场成员取消或 current drain 切换，均不能�
 | 退场无 capacity 申请、不恢复已释放名额，不取消已补发 D | 插件断言调用方向 + 基础窗口测试 |
 | REJECTED 重新求值、普通 FAILED 缺少当前面向不猜测 | 插件 departure 场景；保留合同未闭合边界 |
 | 同一取消结果重放、不同消息同事实、崩溃后恢复至多一个后继 | 插件身份测试 + 既有基础幂等/事务 owner |
+| 无活动 PickingTask 和无已完成任务历史时，当前 READY passage 仍能推进 drain；活动任务只在 FIVE_RACK 窗口被占用时暂缓 | 插件 `test_drain_flow.py` |
 | D 补位与 B 重试并发；释放未提交/回滚；创建失败回滚 | 独占 PostgreSQL，两会话验证基础窗口，插件验证优先级 |
 | 两个重试候选同时退避到期、同时竞争同一释放名额；按原成员稳定顺序仅一方创建、另一方仍等待 | 独占 PostgreSQL，两会话验证基础窗口（评审新增，2026-09-26：Mock/推理不能替代真实并发） |
 | 未知结果不换身份、不释放；迟到事实不覆盖较新因果投影 | 复用 Transport 现有 owner，新增断言仅覆盖本次差异 |

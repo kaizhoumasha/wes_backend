@@ -87,15 +87,13 @@ async def test_for_evidence_returns_the_checkpoint_record_when_history_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_for_evidence_logs_and_returns_none_when_history_reports_an_integrity_violation(caplog) -> None:
-    """history() 的 ValueError 是 fail-closed 信号（checkpoint 缺失/未发布等），不能被静默吞掉。"""
+async def test_for_evidence_propagates_history_integrity_violation() -> None:
+    """history() 的 ValueError 必须保留为 evidence 的重试/对账信号。"""
     reader = SimpleNamespace(
         operation_id_for_evidence=AsyncMock(return_value="019f3406-2200-7b03-8b01-000000000003"),
         history=AsyncMock(side_effect=ValueError("drain history checkpoint Evidence missing or unpublished")),
     )
     repository = DrainRepository(reader)
 
-    with caplog.at_level("WARNING"):
-        assert await repository.for_evidence(object(), 7, 9) is None
-
-    assert any("checkpoint" in record.message or "9" in record.message for record in caplog.records)
+    with pytest.raises(ValueError, match="checkpoint Evidence missing or unpublished"):
+        await repository.for_evidence(object(), 7, 9)

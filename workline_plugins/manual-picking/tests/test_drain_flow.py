@@ -82,6 +82,17 @@ async def test_decide_keeps_active_task_gate_when_five_rack_window_is_occupied()
 
 
 @pytest.mark.asyncio
+async def test_decide_fails_closed_when_active_task_has_no_five_rack_target() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
+    line = _line()
+    line.position_bindings.pop("FIVE_RACK")
+
+    assert await flow.decide_in_session(object(), line, NOW) == (0, None)
+    flow._bindings.list_active_window_for_target.assert_not_awaited()
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_decide_allows_ready_bins_to_drain_during_active_task_when_five_rack_window_is_empty() -> None:
     """R6：插缝按 FIVE_RACK 容量窗口是否被占用判断，不用全局位置投影数量（红队复核）。"""
     flow, scheduler, _, _ = _flow(

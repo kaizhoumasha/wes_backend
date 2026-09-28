@@ -1169,8 +1169,46 @@ async def test_drain_departure_retry_ignored_when_evidence_has_no_drain_decision
 
 
 @pytest.mark.asyncio
-async def test_drain_departure_retry_ignored_when_zone_goal_already_satisfied() -> None:
-    """R5：ZONE 目标只认最新一次成功 Transport；货架已到位时不创建新的退场重试。"""
+@pytest.mark.parametrize(
+    ("step", "should_resolve_history"),
+    [
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN", False),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE", False),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", True),
+    ],
+)
+async def test_drain_history_fallback_is_limited_to_departure(step, should_resolve_history) -> None:
+    flow, *_ = _setup()
+    current = SimpleNamespace(evidence_id=2)
+    frozen = SimpleNamespace(evidence_id=1)
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=current),
+        for_evidence=AsyncMock(return_value=frozen),
+    )
+    binding = SimpleNamespace(source_evidence_id=1)
+
+    result = await flow._resolve_drain_decision(object(), 7, step, binding)
+
+    if should_resolve_history:
+        assert result is frozen
+        flow._drains.for_evidence.assert_awaited_once()
+    else:
+        assert result is None
+        flow._drains.for_evidence.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("step", "picking_task_id"),
+    [
+        ("MANUAL_PICKING_SOURCE_RACK_OUT", 31),
+        ("MANUAL_PICKING_RETURN_RACK_OUT", 31),
+        ("MANUAL_PICKING_TRANSFER_RACK_OUT", 31),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", None),
+    ],
+)
+async def test_rack_departure_retry_ignored_when_zone_goal_already_satisfied(step, picking_task_id) -> None:
+    """R5：来源、退料、转运、drain 的 ZONE 目标已满足时均不创建新的退场重试。"""
     transport_task = SimpleNamespace(
         status="FAILED",
         kind="RACK_MOVE",
@@ -1195,16 +1233,19 @@ async def test_drain_departure_retry_ignored_when_zone_goal_already_satisfied() 
     creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
     binding = SimpleNamespace(
         workline_id=7,
-        step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        step=step,
         source_evidence_id=1,
         resource_fence_id="RACK-1",
-        picking_task_id=None,
+        picking_task_id=picking_task_id,
         correlation_id="drain:1:op-old:rack:RACK-1",
     )
     flow, evidences, _, _, _ = _setup(transport_reader=SimpleNamespace(get_task=AsyncMock(side_effect=get_task)))
     flow._rack_creator = creator
     flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
     flow._drains = SimpleNamespace(current=AsyncMock(return_value=SimpleNamespace(evidence_id=1)))
+    flow._tasks.get_by_id_for_update = AsyncMock(
+        return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED", last_applied_plan_revision=1)
+    )
     evidence = InboundEvidence(
         id=10,
         kind=InboundEvidenceKind.TRANSPORT_RESULT,
