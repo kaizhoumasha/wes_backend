@@ -17,6 +17,7 @@ from wes_plugin_sdk import (
 
 from src.app.execution.models import (
     InboundEvidence,
+    InboundEvidenceApplyStatus,
     InboundEvidenceKind,
     TransportDecisionBinding,
     WmsConfirmation,
@@ -26,6 +27,7 @@ from src.app.transport.models import TransportEvidence, TransportMember, Transpo
 from src.app.wms_adapter.outbound_picking.inbound_batch_typed import decode_outcome as decode_inbound
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
 from .batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
@@ -74,6 +76,85 @@ class BatchRepository:
             )
             is not None
         )
+
+    async def has_earlier_due_source_retry(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        picking_task_id: int,
+        source_evidence_id: int,
+        rack_id: str,
+        last_applied_plan_revision: int,
+        now: datetime,
+    ) -> bool:
+        """按有效计划成员顺序处理已到期的来源架重试，不依赖 Evidence 调度顺序。"""
+        members = cast("Any", PickingTaskBinSourceRack).__table__.c
+        current = await db.execute(
+            select(members.plan_revision, members.id)
+            .where(
+                members.picking_task_id == picking_task_id,
+                members.plan_revision <= last_applied_plan_revision,
+                members.cancelled_evidence_id.is_(None),
+                members.source_evidence_id == source_evidence_id,
+                members.rack_id == rack_id,
+            )
+            .order_by(members.plan_revision, members.id)
+            .limit(1)
+        )
+        current_rank = current.one_or_none()
+        if current_rank is None:
+            return False
+
+        active = cast("Any", TransportDecisionBinding).__table__.alias("active_source_retry_window").c
+        active_window = (
+            select(active.id)
+            .where(
+                active.workline_id == workline_id,
+                active.resource_fence_id == members.rack_id,
+                active.window_target_location_code.is_not(None),
+                active.window_released_at.is_(None),
+            )
+            .exists()
+        )
+        earlier_member = or_(
+            members.plan_revision < current_rank.plan_revision,
+            and_(members.plan_revision == current_rank.plan_revision, members.id < current_rank.id),
+        )
+        evidence = cast("Any", InboundEvidence).__table__.c
+        bindings = cast("Any", TransportDecisionBinding).__table__.c
+        transports = cast("Any", TransportTask).__table__.c
+        due_earlier = await db.scalar(
+            select(members.id)
+            .select_from(InboundEvidence)
+            .join(TransportTask, transports.transport_task_id == evidence.transport_task_id)
+            .join(TransportDecisionBinding, bindings.client_request_id == transports.client_request_id)
+            .join(
+                PickingTaskBinSourceRack,
+                and_(
+                    members.picking_task_id == bindings.picking_task_id,
+                    members.source_evidence_id == bindings.source_evidence_id,
+                    members.rack_id == bindings.resource_fence_id,
+                ),
+            )
+            .where(
+                evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT,
+                evidence.workline_id == workline_id,
+                evidence.apply_status == InboundEvidenceApplyStatus.APPLIED,
+                evidence.published_at.is_(None),
+                evidence.decision_next_attempt_at <= now,
+                transports.status.in_(("FAILED", "REJECTED")),
+                bindings.workline_id == workline_id,
+                bindings.picking_task_id == picking_task_id,
+                bindings.step == "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                members.plan_revision <= last_applied_plan_revision,
+                members.cancelled_evidence_id.is_(None),
+                earlier_member,
+                ~active_window,
+            )
+            .limit(1)
+        )
+        return due_earlier is not None
 
     async def has_current_rack_dependency(
         self, db: AsyncSession, workline_id: int, rack_id: str, arrived_at: datetime

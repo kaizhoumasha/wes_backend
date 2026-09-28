@@ -268,6 +268,9 @@ class _BatchProgress:
     async def has_active_bin_transport(self, db, bin_code):  # type: ignore[no-untyped-def]
         return self.active_transport
 
+    async def has_earlier_due_source_retry(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        return False
+
     def __init__(self) -> None:
         self.scanned = set()
 
@@ -787,6 +790,7 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
     flow._transport_bindings = SimpleNamespace(
         get_by_client_request_id=AsyncMock(return_value=binding),
         list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
     )
     flow._tasks = SimpleNamespace(
         get_by_id_for_update=AsyncMock(
@@ -887,6 +891,7 @@ async def test_source_rack_retry_defers_to_pending_first_candidate_without_advan
     flow._transport_bindings = SimpleNamespace(
         get_by_client_request_id=AsyncMock(return_value=binding),
         list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
     )
     flow._tasks = SimpleNamespace(
         get_by_id_for_update=AsyncMock(
@@ -935,6 +940,58 @@ async def test_source_rack_retry_defers_to_pending_first_candidate_without_advan
     assert binding.correlation_id == "pt:31:e:1:rack:RACK-1"
 
 
+@pytest.mark.asyncio
+async def test_source_rack_retry_ignores_same_rack_candidate_with_active_window() -> None:
+    now = timezone.now_for_db()
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=now)
+    flow._tasks.get_by_id_for_update = AsyncMock(
+        return_value=SimpleNamespace(id=31, status="EXECUTING", last_applied_plan_revision=2)
+    )
+    flow._transport_bindings.list_task_member_bindings = AsyncMock(return_value={(1, "RACK-1")})
+    flow._transport_bindings.list_active_window_for_target = AsyncMock(
+        return_value=[SimpleNamespace(resource_fence_id="RACK-1")]
+    )
+    flow._source_racks.list_active_bin_source_racks = AsyncMock(
+        return_value=(
+            SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),
+            SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=2, plan_revision=2),
+        )
+    )
+    flow._batch_progress.has_earlier_due_source_retry = AsyncMock(return_value=False)
+    creator = flow._rack_creator
+    creator.create_windowed_inbound.return_value = "REUSED"
+
+    await flow.apply_in_session(object(), 10, workline_id=7)
+    evidence.decision_next_attempt_at = now
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_awaited_once()
+    assert creator.create_windowed_inbound.await_args.kwargs["retry_terminal_inbound"] is True
+
+
+@pytest.mark.asyncio
+async def test_later_source_rack_retry_yields_to_earlier_due_member() -> None:
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=timezone.now_for_db())
+    binding = flow._transport_bindings.get_by_client_request_id.return_value
+    binding.source_evidence_id = 2
+    binding.resource_fence_id = "RACK-2"
+    flow._transport_reader.get_task.return_value.request_json["rack_id"] = "RACK-2"
+    evidence.normalized_payload["rack_id"] = "RACK-2"
+    evidence.normalized_payload["source_evidence_id"] = 2
+    flow._positions.missing = ("RACK", "RACK-2")
+    flow._transport_bindings.list_task_member_bindings = AsyncMock(return_value={(1, "RACK-1"), (2, "RACK-2")})
+    flow._transport_bindings.list_active_window_for_target = AsyncMock(return_value=[])
+    flow._batch_progress.has_earlier_due_source_retry = AsyncMock(return_value=True)
+    evidence.decision_next_attempt_at = timezone.now_for_db()
+
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    flow._batch_progress.has_earlier_due_source_retry.assert_awaited_once()
+    flow._rack_creator.create_windowed_inbound.assert_not_awaited()
+
+
 def _source_rack_retry_deferred_by_first_candidate(*, received_at):  # type: ignore[no-untyped-def]
     """构造一个因未决首次候选而持续让路的重试候选场景，供等待时长可观测性测试复用。"""
     transport_task = SimpleNamespace(
@@ -966,6 +1023,7 @@ def _source_rack_retry_deferred_by_first_candidate(*, received_at):  # type: ign
     flow._transport_bindings = SimpleNamespace(
         get_by_client_request_id=AsyncMock(return_value=binding),
         list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
     )
     flow._tasks = SimpleNamespace(
         get_by_id_for_update=AsyncMock(

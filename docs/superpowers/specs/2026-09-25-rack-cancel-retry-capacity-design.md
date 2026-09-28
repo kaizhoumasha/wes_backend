@@ -50,8 +50,8 @@ R2–R4 决策流概览（不含退场，退场按 R5 独立判断）：
               是  │                 │ 否
         ┌─────────▼──────┐   ┌──────▼────────────────┐
         │ 首次候选先补位    │   │ 退避到期的重试候选补位   │
-        │(D/E 先于 B)      │   │ 仅事件驱动，无独立定时器 │
-        └─────────────────┘   │ (R6，无事件不保证实时)   │
+        │(D/E 先于 B)      │   │ 10 秒扫描，事件亦可唤醒 │
+        └─────────────────┘   │ (R6)                     │
                                └──────┬─────────────────┘
                                       │
                             ┌─────────▼──────────────┐
@@ -261,7 +261,9 @@ uv run pytest tests/runtime/execution/test_rack_inbound_window.py workline_plugi
 6. ZONE 判定规则：已定义并实现——只认最新一次成功搬运的具体落点，不回溯历史因果链，判定口径与 `_apply_transport_result` 的 SUCCEEDED 匹配逻辑一致。Pre-Landing Review 红队复核（2026-09-27）进一步发现并修正：判定还须校验该次成功搬运的因果身份（`source_task.request_json.target == 目标 ZONE`），否则货架后续被挪去做其他无关业务时会误判本次退场目标已满足。
 7. R3 等待时长可观测性（重试候选超阈值告警）：**已实施**——重试候选因未决首次候选持续让路超过 60 秒仍未补位时，`_warn_if_first_candidate_wait_exceeds_threshold` 记录一次 `logger.warning`，不改变排序或退避本身。
 8. drain 插缝判定（R6）：Pre-Landing Review 发现按全局位置投影数量门禁插缝会引入吞吐回归——即使 FIVE_RACK 目标点实际空闲，也会因其他位置有货架被拦住。改为直接判定 FIVE_RACK 目标点是否存在未释放的容量窗口（`TransportDecisionBinding.list_active_window_for_target`），最终仍由 `RackInboundWindowService.admit` 的目标点行锁裁决，不引入新竞态。
-9. Pre-Landing Review 红队复核另发现：`DrainRepository.for_evidence` 对 `history()` 抛出的 `ValueError`（fail-closed 完整性信号）此前静默吞掉返回 `None`，与"没有对应决定"的正常情况无法区分，掩盖真实数据异常。现记录 `logger.warning` 后再返回 `None`。
+9. Pre-Landing Review 红队复核另发现：`DrainRepository.for_evidence` 对 `history()` 抛出的 `ValueError`（fail-closed 完整性信号）此前静默吞掉返回 `None`，与"没有对应决定"的正常情况无法区分，掩盖真实数据异常。现记录 `logger.warning` 后继续抛出该异常。
+10. 新一轮 R3 Review 发现多个退避到期重试会受锁获取顺序影响。现在首次候选耗尽后，重试候选按有效计划成员的稳定顺序让路，较早成员的到期结果先获得补位机会。
+11. 新一轮 R3 Review 还发现同一货架的新 revision 在已有目标点窗口时会被误算为首次候选，持续挡住独立重试。重试优先级判断现在排除将复用既有窗口的候选；正常 BatchDriver 路径仍保留原窗口复用与成员绑定处理。
 
 未做且明确不做：`scan_flow.py` 内来源架/退料架/进场/退场四类重试不会合并成一条完全统一的路径——这些是不同的业务语义（退场按未完成离场义务判断，进场按容量竞争判断），R4 本身就要求"按进场、退场、旋转分清资格"，勉强合并只会制造新的耦合，不是本 SPEC 的目标。
 

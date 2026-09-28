@@ -515,15 +515,32 @@ class ManualPickingScanFlow:
                 "PICKING_TASK_RETURN_RACK_IN",
                 DRAIN_RACK_IN_STEP,
             }:
-                if binding.step == SOURCE_RACK_IN_STEP and await pending_first_source_candidates(
-                    db, self._source_racks, self._transport_bindings, workline_id=workline_id, task=current
-                ):
-                    # R3：同一目标点还有未决的首次候选，重试候选让路，不推进尝试编号。
-                    self._warn_if_first_candidate_wait_exceeds_threshold(evidence, payload)
-                    return 1000
                 workline = await self._worklines.get_for_authority_update(db, workline_id)
                 if workline is None:
                     return None
+                if binding.step == SOURCE_RACK_IN_STEP:
+                    if await pending_first_source_candidates(
+                        db,
+                        self._source_racks,
+                        self._transport_bindings,
+                        workline_id=workline_id,
+                        task=current,
+                        target_location_code=workline.position_bindings[FIVE_RACK.slot_key]["location_id"],
+                        exclude_reused_window_candidates=True,
+                    ):
+                        # R3：同一目标点还有未决的首次候选，重试候选让路，不推进尝试编号。
+                        self._warn_if_first_candidate_wait_exceeds_threshold(evidence, payload)
+                        return 1000
+                    if await self._batch_progress.has_earlier_due_source_retry(
+                        db,
+                        workline_id=workline_id,
+                        picking_task_id=current.id,
+                        source_evidence_id=binding.source_evidence_id,
+                        rack_id=payload["rack_id"],
+                        last_applied_plan_revision=current.last_applied_plan_revision,
+                        now=timezone.now_for_db(),
+                    ):
+                        return 1000
                 admission = await self._rack_creator.create_windowed_inbound(
                     db, workline_code=workline.line_code, retry_terminal_inbound=True, **create_kwargs
                 )

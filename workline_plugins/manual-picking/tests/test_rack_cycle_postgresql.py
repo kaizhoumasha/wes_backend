@@ -443,6 +443,129 @@ async def test_source_rack_priority_matches_spec_a_through_e_scenario(rack_datab
         server.close()
 
 
+async def test_due_source_retry_order_uses_active_member_order(rack_database):
+    from manual_picking.application.batch_repository import BatchRepository
+
+    from src.app.execution.models import InboundEvidenceApplyStatus, TransportDecisionBinding
+    from src.app.transport.models import TransportTask
+    from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
+
+    _, sessions = rack_database
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        line, picking = await seed_line(db, bins=0, capacity=1)
+        picking.status = "EXECUTING"
+        picking.last_applied_plan_revision = 1
+        source_evidence_id = picking.issued_evidence_id
+        picking.target_rack_id = f"TARGET-{line.id}"
+        picking.target_rack_face = "90"
+        picking.initial_plan_evidence_id = source_evidence_id
+        picking.last_plan_evidence_id = source_evidence_id
+        target = line.position_bindings["FIVE_RACK"]["location_id"]
+        for rank, rack_id in enumerate((f"A-{line.id}", f"B-{line.id}"), start=1):
+            db.add(
+                PickingTaskBinSourceRack(
+                    picking_task_id=picking.id,
+                    rack_id=rack_id,
+                    rack_face="90",
+                    plan_revision=1,
+                    source_evidence_id=source_evidence_id,
+                )
+            )
+            client_request_id = f"retry-order-{rank}-{line.id}"
+            transport_task_id = f"retry-order-task-{rank}-{line.id}"
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=line.id,
+                    picking_task_id=picking.id,
+                    correlation_id=f"pt:{picking.id}:rack:{rack_id}",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    resource_fence_id=rack_id,
+                    source_evidence_id=source_evidence_id,
+                    client_request_id=client_request_id,
+                    window_target_location_code=target,
+                    window_released_at=now,
+                )
+            )
+            db.add(
+                TransportTask(
+                    transport_task_id=transport_task_id,
+                    client_request_id=client_request_id,
+                    request_digest="a" * 64,
+                    kind="RACK_MOVE",
+                    caller_json={"workline_id": str(line.id)},
+                    request_json={"rack_id": rack_id, "target": {"kind": "RACK_POSITION", "location_code": target}},
+                    submit_operation_id=f"submit-{rank}-{line.id}",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="FAILED",
+                    authority_workline_id=line.id,
+                    outcome_version=1,
+                    published_outcome_version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                InboundEvidence(
+                    kind="TRANSPORT_RESULT",
+                    source_identity=f"transport:{transport_task_id}:outcome:1",
+                    payload_digest="c" * 64,
+                    normalized_payload={"status": "FAILED"},
+                    received_at=now,
+                    workline_id=line.id,
+                    transport_task_id=transport_task_id,
+                    apply_status=InboundEvidenceApplyStatus.APPLIED,
+                    decision_next_attempt_at=now - timedelta(seconds=1),
+                )
+            )
+        await db.flush()
+        repository = BatchRepository()
+
+        assert await repository.has_earlier_due_source_retry(
+            db,
+            workline_id=line.id,
+            picking_task_id=picking.id,
+            source_evidence_id=source_evidence_id,
+            rack_id=f"B-{line.id}",
+            last_applied_plan_revision=1,
+            now=now,
+        )
+        assert not await repository.has_earlier_due_source_retry(
+            db,
+            workline_id=line.id,
+            picking_task_id=picking.id,
+            source_evidence_id=source_evidence_id,
+            rack_id=f"A-{line.id}",
+            last_applied_plan_revision=1,
+            now=now,
+        )
+
+        db.add(
+            TransportDecisionBinding(
+                workline_id=line.id,
+                picking_task_id=picking.id,
+                correlation_id=f"active:{line.id}",
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id=f"A-{line.id}",
+                source_evidence_id=source_evidence_id,
+                client_request_id=f"active-window-{line.id}",
+                window_target_location_code=target,
+            )
+        )
+        await db.flush()
+        assert not await repository.has_earlier_due_source_retry(
+            db,
+            workline_id=line.id,
+            picking_task_id=picking.id,
+            source_evidence_id=source_evidence_id,
+            rack_id=f"B-{line.id}",
+            last_applied_plan_revision=1,
+            now=now,
+        )
+
+
 async def test_completed_drain_reader_does_not_lock_confirmation_under_workline(rack_database):
     from src.app.execution.repositories.wms_confirmation_repository import WmsConfirmationRepository
 

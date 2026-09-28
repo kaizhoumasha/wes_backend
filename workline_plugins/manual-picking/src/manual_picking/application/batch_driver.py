@@ -51,7 +51,14 @@ logger = logging.getLogger(__name__)
 
 
 async def pending_first_source_candidates(
-    db: Any, plans: Any, bindings: Any, *, workline_id: int, task: Any
+    db: Any,
+    plans: Any,
+    bindings: Any,
+    *,
+    workline_id: int,
+    task: Any,
+    target_location_code: str | None = None,
+    exclude_reused_window_candidates: bool = False,
 ) -> list[Any]:
     """尚未形成首次进场绑定的有效来源候选，按 (source_evidence_id, rack_id) 去重（R3 首次候选）。
 
@@ -63,8 +70,17 @@ async def pending_first_source_candidates(
     )
     sources = await plans.list_active_bin_source_racks(db, task.id)
     filtered = filter_undecided_candidates(sources, decided, last_applied_plan_revision=task.last_applied_plan_revision)
+    active_racks: set[str] = set()
+    if exclude_reused_window_candidates:
+        assert target_location_code is not None
+        active_windows = await bindings.list_active_window_for_target(
+            db, workline_id=workline_id, target_location_code=target_location_code
+        )
+        active_racks = {row.resource_fence_id for row in active_windows}
     pending: dict[tuple[int, str], Any] = {}
     for row in filtered:
+        if row.rack_id in active_racks:
+            continue
         pending.setdefault((row.source_evidence_id, row.rack_id), row)
     return list(pending.values())
 
@@ -223,7 +239,13 @@ class ManualPickingBatchDriver:
         return filled + advanced + await self._advance_return_rack(db, line, task)
 
     async def _submit_source_racks(self, db: Any, line: Any, task: Any) -> int:
-        pending = await pending_first_source_candidates(db, self._plans, self._bindings, workline_id=line.id, task=task)
+        pending = await pending_first_source_candidates(
+            db,
+            self._plans,
+            self._bindings,
+            workline_id=line.id,
+            task=task,
+        )
         created = 0
         for row in pending:
             intent = PickingTaskRackTransportIntent(
