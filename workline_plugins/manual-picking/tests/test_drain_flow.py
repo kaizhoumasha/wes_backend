@@ -26,13 +26,15 @@ def decision(result):
 
 
 def _line():
-    return SimpleNamespace(id=7, line_code="LINE-1", position_bindings={"OUTLET": {"location_id": "OUTLET"}})
-
-
-def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
-    repository = SimpleNamespace(
-        current=AsyncMock(return_value=current), has_completed_task=AsyncMock(return_value=completed_task)
+    return SimpleNamespace(
+        id=7,
+        line_code="LINE-1",
+        position_bindings={"OUTLET": {"location_id": "OUTLET"}, "FIVE_RACK": {"location_id": "FIVE-POS"}},
     )
+
+
+def _flow(*, current=None, rows=(), active_task=False, five_rack_window_active=True):
+    repository = SimpleNamespace(current=AsyncMock(return_value=current))
     passages = SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=list(rows)))
     prepare = SimpleNamespace(prepare_next_in_session=AsyncMock(return_value=SimpleNamespace(prepared=False)))
     scheduler = SimpleNamespace(create_in_session=AsyncMock())
@@ -41,6 +43,9 @@ def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
         latest_return=AsyncMock(return_value=None),
     )
     tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=active_task))
+    bindings = SimpleNamespace(
+        list_active_window_for_target=AsyncMock(return_value=[SimpleNamespace()] if five_rack_window_active else [])
+    )
     flow = ManualPickingDrainFlow(
         repository,
         passages,
@@ -49,6 +54,7 @@ def _flow(*, current=None, rows=(), active_task=False, completed_task=True):
         batch_scheduler,
         history,
         tasks=tasks,
+        bindings=bindings,
         uuid_factory=lambda: "019f3406-2200-7b03-8b01-000000000003",
     )
     return flow, scheduler, batch_scheduler, history
@@ -68,23 +74,43 @@ async def test_decide_freezes_only_workline_and_required_slot_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_decide_allows_ready_bins_to_drain_during_active_task_when_workstation_is_empty() -> None:
+async def test_decide_keeps_active_task_gate_when_five_rack_window_is_occupied() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
+
+    assert await flow.decide_in_session(object(), _line(), NOW) == (0, None)
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decide_fails_closed_when_active_task_has_no_five_rack_target() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
+    line = _line()
+    line.position_bindings.pop("FIVE_RACK")
+
+    assert await flow.decide_in_session(object(), line, NOW) == (0, None)
+    flow._bindings.list_active_window_for_target.assert_not_awaited()
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decide_allows_ready_bins_to_drain_during_active_task_when_five_rack_window_is_empty() -> None:
+    """R6：插缝按 FIVE_RACK 容量窗口是否被占用判断，不用全局位置投影数量（红队复核）。"""
     flow, scheduler, _, _ = _flow(
         rows=(SimpleNamespace(bin_code="B1"),),
         active_task=True,
-        completed_task=False,
+        five_rack_window_active=False,
     )
 
-    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=True) == (1, None)
+    assert await flow.decide_in_session(object(), _line(), NOW) == (1, None)
     scheduler.create_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_decide_keeps_active_task_gate_when_workstation_has_rack() -> None:
-    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),), active_task=True)
+async def test_ready_fifo_without_active_task_does_not_depend_on_historical_completed_task() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(bin_code="B1"),))
 
-    assert await flow.decide_in_session(object(), _line(), NOW, allow_active_task=False) == (0, None)
-    scheduler.create_in_session.assert_not_awaited()
+    assert await flow.decide_in_session(object(), _line(), NOW) == (1, None)
+    scheduler.create_in_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio

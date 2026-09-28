@@ -15,7 +15,10 @@ from wes_plugin_sdk import (
 from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
-from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+    PickingTaskPlanDeltaRepository,
+    filter_undecided_candidates,
+)
 from src.app.workline.repositories import workline_repository
 
 if TYPE_CHECKING:
@@ -200,30 +203,24 @@ class PickingTaskPlanActivationService:
         self, db: Any, task: Any, decided_members: set[tuple[int, str]]
     ) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_active_bin_source_racks(db, task.id)
-        grouped: dict[tuple[int, str], list[Any]] = {}
-        for row in rows:
-            key = (row.source_evidence_id, row.rack_id)
-            if key not in decided_members:
-                grouped.setdefault(key, []).append(row)
-        return tuple(
-            PickingTaskPlanRack(
-                rack_id=rack_id,
-                rack_faces=tuple(dict.fromkeys(row.rack_face for row in rack_rows)),
-                source_evidence_id=str(rack_rows[0].source_evidence_id),
-                plan_revision=rack_rows[0].plan_revision,
-            )
-            for (_, rack_id), rack_rows in grouped.items()
-        )
+        return self._group_pending_racks(rows, decided_members, task.last_applied_plan_revision)
 
     async def _pending_return_racks(
         self, db: Any, task: Any, decided_members: set[tuple[int, str]]
     ) -> tuple[PickingTaskPlanRack, ...]:
         rows = await self._plans.list_active_direct_picks(db, task.id)
+        return self._group_pending_racks(rows, decided_members, task.last_applied_plan_revision)
+
+    @staticmethod
+    def _group_pending_racks(
+        rows: Any, decided_members: set[tuple[int, str]], last_applied_plan_revision: int
+    ) -> tuple[PickingTaskPlanRack, ...]:
+        pending = filter_undecided_candidates(
+            rows, decided_members, last_applied_plan_revision=last_applied_plan_revision
+        )
         grouped: dict[tuple[int, str], list[Any]] = {}
-        for row in rows:
-            key = (row.source_evidence_id, row.rack_id)
-            if key not in decided_members:
-                grouped.setdefault(key, []).append(row)
+        for row in pending:
+            grouped.setdefault((row.source_evidence_id, row.rack_id), []).append(row)
         return tuple(
             PickingTaskPlanRack(
                 rack_id=rack_id,

@@ -9,7 +9,6 @@ from wes_plugin_sdk import ReturnBufferDrainReady
 
 from src.app.execution.models import TransportDecisionBinding
 from src.app.transport.models import TransportMember, TransportTask
-from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord, ReturnBufferDrainResultReader
 
 DRAIN_RACK_IN_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
@@ -42,15 +41,19 @@ class DrainRepository:
     async def is_reserved(self, db: Any, workline_id: int) -> bool:
         return await self.current(db, workline_id) is not None
 
-    async def has_completed_task(self, db: Any, workline_id: int) -> bool:
-        return (
-            await db.scalar(
-                select(PickingTask.id)
-                .where(PickingTask.workline_id == workline_id, PickingTask.status == "EXECUTION_COMPLETED")
-                .limit(1)
-            )
-            is not None
+    async def for_evidence(self, db: Any, workline_id: int, evidence_id: int) -> ReturnBufferDrainRecord | None:
+        """按冻结 evidence_id 独立定位历史 drain 决定，不依赖 current() 的"最新"指针（R5）。
+
+        current drain 切换到新决定后，仍未完结的原退场重试要能按自己冻结的 evidence_id
+        重新找到当时那条决定，而不是被当作义务已经消失。
+        """
+        operation_id = await self._reader.operation_id_for_evidence(
+            db, workline_id=workline_id, evidence_id=evidence_id
         )
+        if operation_id is None:
+            return None
+        records = await self._reader.history(db, workline_id=workline_id, after_operation_id=operation_id)
+        return records[0] if records else None
 
     async def transport(
         self,

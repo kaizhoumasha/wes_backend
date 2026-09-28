@@ -246,6 +246,90 @@ async def test_rack_inbound_window_persists_capacity_and_cross_revision_reuse(in
             await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
 
 
+@pytest.mark.asyncio
+async def test_rack_inbound_window_admits_only_one_of_two_concurrent_retry_candidates(
+    integration_session_factory, prepared
+):
+    """R6：两个重试候选同时争抢同一释放名额时，真实 PostgreSQL 行锁只放一个进，另一个仍等待。"""
+    task_name, (task_id, line_id, evidence_id, *_rest) = prepared
+    target = f"WINDOW-{new_uuid7()}"
+    window = RackInboundWindowService()
+    async with integration_session_factory.begin() as db:
+        db.add(
+            WorkLinePosition(
+                workline_id=line_id,
+                workline_code=task_name,
+                position_code="WINDOW",
+                position_name="并发窗口测试目标点",
+                position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                allowed_rack_kind="FIVE_LAYER",
+                logic_location_code=target,
+                capacity=1,
+            )
+        )
+
+    async def admit(db, rack_id, revision):
+        async def create():
+            request_id = new_uuid7()
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=line_id,
+                    picking_task_id=task_id,
+                    source_evidence_id=evidence_id,
+                    correlation_id=f"window:{revision}:{rack_id}",
+                    step="TEST_RACK_IN",
+                    resource_fence_id=rack_id,
+                    client_request_id=request_id,
+                )
+            )
+            await db.flush()
+            return TransportHandle(f"transport:{request_id}", request_id)
+
+        return await window.admit(
+            db,
+            workline_id=line_id,
+            workline_code=task_name,
+            target_location_code=target,
+            rack_id=rack_id,
+            picking_task_id=task_id,
+            create=create,
+        )
+
+    async def admit_in_own_session(rack_id, revision):
+        async with integration_session_factory.begin() as session:
+            return await admit(session, rack_id, revision)
+
+    try:
+        async with integration_session_factory.begin() as db:
+            assert await admit(db, "RACK-A", 1) == "CREATED"  # 占满 capacity=1 的唯一名额
+        async with integration_session_factory.begin() as db:
+            failed_inbound = await db.scalar(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.workline_id == line_id,
+                    TransportDecisionBinding.resource_fence_id == "RACK-A",
+                )
+            )
+            assert await window.release_unarrived_terminal(
+                db, Mock(client_request_id=failed_inbound.client_request_id, status="REJECTED")
+            )
+        # RACK-B、RACK-C 是两个同时退避到期的重试候选，并发争抢刚释放的唯一名额。
+        results = await asyncio.gather(admit_in_own_session("RACK-B", 1), admit_in_own_session("RACK-C", 1))
+        assert sorted(results) == ["CREATED", "PENDING"]
+        async with integration_session_factory.begin() as db:
+            active = await db.scalars(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.workline_id == line_id,
+                    TransportDecisionBinding.resource_fence_id.in_(("RACK-B", "RACK-C")),
+                    TransportDecisionBinding.window_released_at.is_(None),
+                )
+            )
+            assert len(active.all()) == 1  # 名额不超发：只有一个候选真正持有窗口
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
+            await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
+
+
 async def test_concurrent_revision_replay_and_business_duplicate(integration_session_factory, prepared):
     task_name, ids = prepared
     service = PickingTaskPlanDeltaService(integration_session_factory)
@@ -919,6 +1003,7 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
     transport_task_id = new_uuid7()
     target_request_id = new_uuid7()
     target_transport_id = new_uuid7()
+    later_request_id = new_uuid7()
     async with integration_session_factory.begin() as db:
         task = await db.get(PickingTask, ids[0])
         task.status = "EXECUTION_COMPLETED"
@@ -967,6 +1052,7 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
                 resource_fence_id="SOURCE",
                 client_request_id=client_request_id,
                 source_evidence_id=task.initial_plan_evidence_id,
+                window_target_location_code="FIVE-POS",
             )
         )
         db.add(
@@ -1012,6 +1098,32 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
             target_owner = await repository.first_completed_transfer_owner_at_position(db, ids[1], "TRANSFER-POS")
             assert target_owner is not None and target_owner.id == ids[0]
             assert await repository.first_completed_transfer_owner_at_position(db, ids[1], "OTHER-POS") is None
+        async with integration_session_factory.begin() as db:
+            binding = await db.scalar(
+                select(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_request_id)
+            )
+            binding.window_released_at = timezone.now_for_db()
+        async with integration_session_factory() as db:
+            assert not await PickingTaskPlanDeltaRepository().source_transport_matches(
+                db, ids[1], "SOURCE", ids[0], transport_task_id
+            )
+        async with integration_session_factory.begin() as db:
+            db.add(
+                TransportDecisionBinding(
+                    correlation_id=f"pt:{ids[0]}:later-rack:SOURCE",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    workline_id=ids[1],
+                    picking_task_id=ids[0],
+                    resource_fence_id="SOURCE",
+                    client_request_id=later_request_id,
+                    source_evidence_id=task.initial_plan_evidence_id,
+                    window_target_location_code="FIVE-POS",
+                )
+            )
+        async with integration_session_factory() as db:
+            assert not await PickingTaskPlanDeltaRepository().source_transport_matches(
+                db, ids[1], "SOURCE", ids[0], transport_task_id
+            )
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(
@@ -1021,7 +1133,9 @@ async def test_completed_rack_owners_use_current_transport_and_plan_identity(int
             )
             await db.execute(
                 delete(TransportDecisionBinding).where(
-                    TransportDecisionBinding.client_request_id.in_((client_request_id, target_request_id))
+                    TransportDecisionBinding.client_request_id.in_(
+                        (client_request_id, target_request_id, later_request_id)
+                    )
                 )
             )
             await db.execute(
@@ -1079,6 +1193,7 @@ async def test_reused_direct_pick_owner_uses_current_arrival_transport(integrati
                 resource_fence_id="RETURN-A",
                 client_request_id=client_request_id,
                 source_evidence_id=picks[0].source_evidence_id,
+                window_target_location_code="RETURN-POS",
             )
         )
         db.add(
@@ -1104,6 +1219,18 @@ async def test_reused_direct_pick_owner_uses_current_arrival_transport(integrati
             ]
             assert (
                 await repository.return_rack_transport_source(db, ids[1], ids[0], "RETURN-A", "other-transport") is None
+            )
+        async with integration_session_factory.begin() as db:
+            binding = await db.scalar(
+                select(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_request_id)
+            )
+            binding.window_released_at = timezone.now_for_db()
+        async with integration_session_factory() as db:
+            assert (
+                await PickingTaskPlanDeltaRepository().return_rack_transport_source(
+                    db, ids[1], ids[0], "RETURN-A", transport_task_id
+                )
+                is None
             )
         async with integration_session_factory.begin() as db:
             await db.execute(

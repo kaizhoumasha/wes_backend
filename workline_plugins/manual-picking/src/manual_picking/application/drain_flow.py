@@ -13,6 +13,8 @@ from wes_plugin_sdk import (
     wms_operations,
 )
 
+from manual_picking.definition import FIVE_RACK
+from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.core.uuid7 import new_uuid7
 
@@ -32,6 +34,7 @@ class ManualPickingDrainFlow:
         history: Any,
         *,
         tasks: Any = None,
+        bindings: Any = None,
         uuid_factory: Any = new_uuid7,
     ) -> None:
         self.repository = repository
@@ -41,6 +44,7 @@ class ManualPickingDrainFlow:
         self._batch_scheduler = batch_scheduler
         self._history = history
         self._tasks = tasks or picking_task_repository
+        self._bindings = bindings or transport_decision_binding_repository
         self._uuid_factory = uuid_factory
 
     async def decide_in_session(
@@ -50,7 +54,6 @@ class ManualPickingDrainFlow:
         now: Any,
         *,
         limit: int = 4,
-        allow_active_task: bool = False,
     ) -> tuple[int, Any]:
         current = await self.repository.current(db, line.id)
         if current is not None:
@@ -62,13 +65,13 @@ class ManualPickingDrainFlow:
                 return 0, None
             if now < current.completed_at + timedelta(milliseconds=current.result.retry_after_ms):
                 return 0, None
-        elif not allow_active_task and not await self.repository.has_completed_task(db, line.id):
-            return 0, None
         rows = await self._passages.ready_prefix_for_update(db, line.id, limit=limit)
         if not rows:
             return 0, None
         if current is None:
-            if not allow_active_task and await self._tasks.has_active_for_workline(db, line.id):
+            if await self._tasks.has_active_for_workline(db, line.id) and await self._five_rack_window_occupied(
+                db, line
+            ):
                 return 0, None
             prepared = await self._prepare.prepare_next_in_session(db, line, now=now)
             if prepared.prepared:
@@ -80,6 +83,20 @@ class ManualPickingDrainFlow:
         )
         await self._scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
         return 1, None
+
+    async def _five_rack_window_occupied(self, db: Any, line: Any) -> bool:
+        """FIVE_RACK 容量窗口当前是否被占用——业务事实（R6），不是全局位置投影数量（红队复核）。
+
+        活动 PickingTask 存在但 FIVE_RACK 目标点当前没有未释放的窗口时，drain 仍可插缝；
+        窗口占用与否最终仍由 RackInboundWindowService.admit 的目标点行锁裁决，不是新的竞态。
+        """
+        location = (line.position_bindings.get(FIVE_RACK.slot_key) or {}).get("location_id")
+        if not location:
+            return True  # 拿不到目标点信息时保守拦截，不静默放行
+        active = await self._bindings.list_active_window_for_target(
+            db, workline_id=line.id, target_location_code=location
+        )
+        return bool(active)
 
     async def trigger_full_drain_in_session(self, db: Any, line: Any, now: Any) -> None:
         """停线前主动排空：不等待下一次 tick，一次性纳入当前全部待回库料箱。"""

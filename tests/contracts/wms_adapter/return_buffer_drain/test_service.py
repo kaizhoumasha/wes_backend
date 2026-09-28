@@ -301,3 +301,33 @@ async def test_history_uses_operation_identity_index_for_tail_and_exact_checkpoi
             await ReturnBufferDrainResultReader().history(Db(), workline_id=7, after_operation_id=OPERATION_ID)
     else:
         assert await ReturnBufferDrainResultReader().history(Db(), workline_id=7) == ()
+
+
+@pytest.mark.asyncio
+async def test_operation_id_for_evidence_filters_by_workline_operation_and_response_evidence():
+    from sqlalchemy.dialects.postgresql import dialect
+
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
+
+    class Db:
+        async def scalar(self, statement):
+            sql = str(statement.compile(dialect=dialect(), compile_kwargs={"literal_binds": True}))
+            assert "wms_confirmations.workline_id = 7" in sql
+            assert "wms_confirmations.operation = 'workline.return_buffer.drain_rack_decide@v1'" in sql
+            assert "wms_confirmations.response_evidence_id = 42" in sql
+            return OPERATION_ID
+
+    result = await ReturnBufferDrainResultReader().operation_id_for_evidence(Db(), workline_id=7, evidence_id=42)
+    assert result == OPERATION_ID
+
+
+@pytest.mark.asyncio
+async def test_operation_id_for_evidence_returns_none_when_no_confirmation_matches():
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
+
+    class Db:
+        async def scalar(self, statement):
+            return None
+
+    result = await ReturnBufferDrainResultReader().operation_id_for_evidence(Db(), workline_id=7, evidence_id=42)
+    assert result is None

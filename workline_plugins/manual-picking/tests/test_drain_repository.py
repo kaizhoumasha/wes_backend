@@ -61,3 +61,39 @@ def test_departure_step_remains_explicit() -> None:
 def test_cancelled_departure_does_not_close_drain_reservation() -> None:
     cancelled = SimpleNamespace(status="FAILED", reason_code="RCS_TASK_CANCELLED", result_deadline_at=None)
     assert DrainRepository._accepted_or_terminal(cancelled) is False
+
+
+@pytest.mark.asyncio
+async def test_for_evidence_returns_none_when_no_operation_id_matches() -> None:
+    reader = SimpleNamespace(operation_id_for_evidence=AsyncMock(return_value=None), history=AsyncMock())
+    repository = DrainRepository(reader)
+
+    assert await repository.for_evidence(object(), 7, 9) is None
+    reader.history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_for_evidence_returns_the_checkpoint_record_when_history_succeeds() -> None:
+    record = _record(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)))
+    reader = SimpleNamespace(
+        operation_id_for_evidence=AsyncMock(return_value=record.intent.operation_id),
+        history=AsyncMock(return_value=(record,)),
+    )
+    repository = DrainRepository(reader)
+    db = object()
+
+    assert await repository.for_evidence(db, 7, 9) is record
+    reader.history.assert_awaited_once_with(db, workline_id=7, after_operation_id=record.intent.operation_id)
+
+
+@pytest.mark.asyncio
+async def test_for_evidence_propagates_history_integrity_violation() -> None:
+    """history() 的 ValueError 必须保留为 evidence 的重试/对账信号。"""
+    reader = SimpleNamespace(
+        operation_id_for_evidence=AsyncMock(return_value="019f3406-2200-7b03-8b01-000000000003"),
+        history=AsyncMock(side_effect=ValueError("drain history checkpoint Evidence missing or unpublished")),
+    )
+    repository = DrainRepository(reader)
+
+    with pytest.raises(ValueError, match="checkpoint Evidence missing or unpublished"):
+        await repository.for_evidence(object(), 7, 9)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -46,7 +47,12 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
-from .batch_driver import SOURCE_RACK_OUT_STEP, SOURCE_RACK_ROTATE_STEP, TRANSFER_RACK_OUT_STEP
+from .batch_driver import (
+    SOURCE_RACK_OUT_STEP,
+    SOURCE_RACK_ROTATE_STEP,
+    TRANSFER_RACK_OUT_STEP,
+    pending_first_source_candidates,
+)
 from .batch_repository import BatchRepository
 from .bin_line.return_model import BinLineReturn
 from .bin_line.return_repository import ReturnRepository
@@ -56,11 +62,16 @@ from .drain_repository import (
     DRAIN_RACK_ROTATE_STEP,
     RETURN_RACK_OUT_STEP,
     RETURN_RACK_ROTATE_STEP,
+    SOURCE_RACK_IN_STEP,
 )
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 
 _WAIT_FOR_RESULT = "WAIT_FOR_RESULT"
+# R3：重试候选因未决首次候选持续让路超过此时长仍未补位，记录一次告警（可观测性兜底）。
+_FIRST_CANDIDATE_WAIT_ALERT_THRESHOLD = timedelta(seconds=60)
+
+logger = logging.getLogger(__name__)
 
 
 def _projection_at(projection: Any, workline_id: int, kind: str, location: str, face: str | None = None) -> bool:
@@ -342,6 +353,69 @@ class ManualPickingScanFlow:
             return None
         return status
 
+    async def _resolve_drain_decision(self, db: Any, workline_id: int, step: str, binding: Any) -> Any | None:
+        """定位重试所依据的 drain 决定：进场/旋转要求仍是 current，退场按冻结 evidence 独立找回。"""
+        if self._drains is None:
+            return None
+        current = await self._drains.current(db, workline_id)
+        if current is not None and current.evidence_id == binding.source_evidence_id:
+            return current
+        if step != DRAIN_RACK_OUT_STEP:
+            return None
+        return await self._drains.for_evidence(db, workline_id, binding.source_evidence_id)
+
+    @staticmethod
+    def _warn_if_first_candidate_wait_exceeds_threshold(evidence: Any, payload: dict[str, Any]) -> None:
+        """R3 可观测性：重试候选因未决首次候选让路超过阈值时告警，不改变排序或退避本身。"""
+        received_at = evidence.received_at
+        if received_at is None:
+            return
+        waited = timezone.now_for_db() - received_at
+        if waited < _FIRST_CANDIDATE_WAIT_ALERT_THRESHOLD:
+            return
+        logger.warning(
+            "manual_picking.retry_candidate_wait_exceeds_threshold",
+            extra={
+                "rack_id": payload.get("rack_id"),
+                "source_evidence_id": payload.get("source_evidence_id"),
+                "waited_seconds": waited.total_seconds(),
+            },
+        )
+
+    async def _goal_already_satisfied(
+        self, db: Any, workline_id: int, payload: dict[str, Any], target: dict[str, Any], request: dict[str, Any]
+    ) -> bool:
+        """权威目标事实是否已满足：RACK_POSITION 要求精确落点，ZONE 只认最新一次成功搬运的具体落点。
+
+        ZONE 不回溯历史因果链（R5）；RCS 决定 ZONE 内精确落点，与 _apply_transport_result 的
+        SUCCEEDED 匹配口径一致，不要求 location_code 等于目标 ZONE 的描述符。但最新位置必须来自
+        一次自己也是去这个 ZONE 的成功搬运——货架后续被挪去做其他无关业务（如重新收纳到别处）不能
+        被当作这次退场目标已满足（红队复核发现，2026-09-27）。
+        """
+        projection = await self._positions.get(db, "RACK", payload["rack_id"])
+        if projection is None or payload["status"] == "REJECTED" or projection.workline_id != workline_id:
+            return False
+        if projection.position_unknown:
+            return False
+        if target.get("kind") == "RACK_POSITION":
+            position_at_goal = projection.position_json == target
+        else:
+            position_at_goal = projection.position_json.get("kind") == "RACK_POSITION" and bool(
+                projection.position_json.get("location_code")
+            )
+        if not position_at_goal or (
+            request.get("target_face") is not None and projection.arrival_face != request["target_face"]
+        ):
+            return False
+        if not projection.source_transport_task_id:
+            return False
+        source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
+        if source_task is None or source_task.status != "SUCCEEDED":
+            return False
+        if target.get("kind") != "ZONE":
+            return True
+        return source_task.request_json.get("target") == target
+
     async def _retry_terminal_rack(  # noqa: PLR0911
         self, db: Any, evidence: Any, task: Any, workline_id: int
     ) -> str | int | None:
@@ -380,27 +454,19 @@ class ManualPickingScanFlow:
             ):
                 return "IGNORED"
         elif payload["step"] in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
-            current = await self._drains.current(db, workline_id) if self._drains is not None else None
-            if current is None or current.evidence_id != binding.source_evidence_id:
+            current = await self._resolve_drain_decision(db, workline_id, payload["step"], binding)
+            if current is None:
                 return "IGNORED"
         else:
             return "IGNORED"
         request = task.request_json
         target = request.get("position") if task.kind == "RACK_ROTATE" else request.get("target")
-        if isinstance(target, dict) and target.get("kind") == "RACK_POSITION":
-            projection = await self._positions.get(db, "RACK", payload["rack_id"])
-            goal_position_matches = (
-                payload["status"] != "REJECTED"
-                and projection is not None
-                and projection.workline_id == workline_id
-                and not projection.position_unknown
-                and projection.position_json == target
-                and (request.get("target_face") is None or projection.arrival_face == request["target_face"])
-            )
-            if goal_position_matches and projection.source_transport_task_id:
-                source_task = await self._transport_reader.get_task(db, projection.source_transport_task_id)
-                if source_task is not None and source_task.status == "SUCCEEDED":
-                    return "IGNORED"
+        if (
+            isinstance(target, dict)
+            and target.get("kind") in {"RACK_POSITION", "ZONE"}
+            and (await self._goal_already_satisfied(db, workline_id, payload, target, request))
+        ):
+            return "IGNORED"
         prior_attempt = 0
         if binding.correlation_id.startswith("retry:"):
             prior_attempt = int(binding.correlation_id.split(":", 2)[1])
@@ -452,6 +518,29 @@ class ManualPickingScanFlow:
                 workline = await self._worklines.get_for_authority_update(db, workline_id)
                 if workline is None:
                     return None
+                if binding.step == SOURCE_RACK_IN_STEP:
+                    if await pending_first_source_candidates(
+                        db,
+                        self._source_racks,
+                        self._transport_bindings,
+                        workline_id=workline_id,
+                        task=current,
+                        target_location_code=workline.position_bindings[FIVE_RACK.slot_key]["location_id"],
+                        exclude_reused_window_candidates=True,
+                    ):
+                        # R3：同一目标点还有未决的首次候选，重试候选让路，不推进尝试编号。
+                        self._warn_if_first_candidate_wait_exceeds_threshold(evidence, payload)
+                        return 1000
+                    if await self._batch_progress.has_earlier_due_source_retry(
+                        db,
+                        workline_id=workline_id,
+                        picking_task_id=current.id,
+                        source_evidence_id=binding.source_evidence_id,
+                        rack_id=payload["rack_id"],
+                        last_applied_plan_revision=current.last_applied_plan_revision,
+                        now=timezone.now_for_db(),
+                    ):
+                        return 1000
                 admission = await self._rack_creator.create_windowed_inbound(
                     db, workline_code=workline.line_code, retry_terminal_inbound=True, **create_kwargs
                 )

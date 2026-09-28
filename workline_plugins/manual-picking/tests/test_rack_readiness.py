@@ -1,4 +1,4 @@
-"""FIVE_RACK 单一 current 约束属于插件，不改变基础位置 capacity。"""
+"""当前货架就绪只由该货架的到位事实确认，不用工作位投影总数推断资源状态。"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,7 +14,7 @@ from src.app.execution.repositories.position_projection_repository import Positi
 @pytest.mark.asyncio
 @pytest.mark.parametrize("current_count", [0, 1, 2])
 @pytest.mark.parametrize("reader", [rack_ready, ready_rack_projection])
-async def test_five_rack_readiness_requires_exactly_one_current_rack(current_count, reader):
+async def test_five_rack_readiness_ignores_other_rack_position_history(current_count, reader):
     engine, sessions = await _new_sessions()
     line = SimpleNamespace(id=7, position_bindings={"FIVE_RACK": {"location_id": "KT16"}})
     positions = PositionProjectionRepository()
@@ -52,7 +52,7 @@ async def test_five_rack_readiness_requires_exactly_one_current_rack(current_cou
                 )
             await db.flush()
             result = await reader(db, line, "R0", "90", "KT16", positions=positions, transports=transports)
-            assert bool(result) is (current_count == 1)
+            assert bool(result) is (current_count >= 1)
     finally:
         await engine.dispose()
 
