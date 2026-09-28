@@ -319,3 +319,15 @@ async def test_operation_id_for_evidence_filters_by_workline_operation_and_respo
 
     result = await ReturnBufferDrainResultReader().operation_id_for_evidence(Db(), workline_id=7, evidence_id=42)
     assert result == OPERATION_ID
+
+
+@pytest.mark.asyncio
+async def test_operation_id_for_evidence_returns_none_when_no_confirmation_matches():
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
+
+    class Db:
+        async def scalar(self, statement):
+            return None
+
+    result = await ReturnBufferDrainResultReader().operation_id_for_evidence(Db(), workline_id=7, evidence_id=42)
+    assert result is None
