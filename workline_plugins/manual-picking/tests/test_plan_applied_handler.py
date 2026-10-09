@@ -48,6 +48,10 @@ def test_plan_handler_only_creates_target_and_defers_sources_to_batch_driver() -
     assert target.target_face == "90"
     assert target.rcs_template_id is TransportRcsTemplateId.F01
     assert PickingTaskPlanAppliedHandler()(replace(FACT, target_rack=None)).transports == ()
+    assert (
+        PickingTaskPlanAppliedHandler()(replace(FACT, target_rack=None, position_bindings=POSITIONS[:2])).transports
+        == ()
+    )
 
 
 def test_plan_handler_requires_target_position() -> None:

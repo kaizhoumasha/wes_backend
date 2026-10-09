@@ -544,6 +544,37 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 
 `target_rack` 表示当前允许接料的转运货架和货架面，不是具体 SLOT。
 
+MANUAL 首批省略 `target_rack` 时，转运货架的呼入、旋转、移出全部由人工在 WMS 操作，WES 不创建这些动作，也不以转运架绑定、到位或离场限制来源推进、SCAN、作业结果接收或任务完成。实际目标储位和物料结果仍由 WMS/PDA 管理；WES 保留来源、料箱和结果可靠交付职责。该任务后续 revision 不得补充目标架，省略选择由首批 Evidence 冻结。工作线 `TRANSFER_RACK` 绑定可选；首批指定目标架时仍须有有效的目标位绑定，并走原有流程。
+
+未指定转运货架的首批请求示例：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+  "operation": "outbound.picking_task.plan_delta@v1",
+  "timestamp": 1786060800000,
+  "data": {
+    "task_id": "PICK-MANUAL-001",
+    "plan_revision": 1,
+    "added_bin_source_racks": [{"rack_id": "RACK-5F-001", "rack_face": ["90", "270"]}]
+  }
+}
+```
+
+匹配已准备 MANUAL 任务时，Evidence 与计划同事务提交后返回 `202`：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+  "code": "RECEIVED",
+  "timestamp": 1786060800123,
+  "data": {}
+}
+```
+
+同身份同内容重放返回 `200 / DUPLICATE`。同身份补入目标架属于内容漂移；新的后续 revision 携带目标架属于无效 DTO。AUTO 首批省略目标架返回 `409 / CONFLICT`，`data={"reason_code":"REFERENCE_CONFLICT"}`，operation_id 原样回传，timestamp 为接收时间。ACK 只证明计划和 Evidence 接收，不证明任何货架到位或拣料完成。
+
+
 上面的 `added_direct_picks` 表示同一个退料货架面有两个需要直接取料的储位。一个数组项只表示一个精确储位，不能把多个 `slot_id`
 合并到一个数组项中。
 
@@ -591,7 +622,7 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 这是 `data` 中与本例有关的字段片段，实际回调仍须携带完整的 `task_id`、`plan_revision` 等字段。同一 `task_id + plan_revision` 下，每个
 `source_locator` 只能新增一次；更高 revision 可以再次安排相同物理来源，形成另一成员。WES 分别建立四条直接取料明细，不按货架合并。
 
-`plan_revision=1` 必须带一个初始 `target_rack`，也可以同时新增来源明细。`plan_revision>=2` 不能再带 `target_rack`。
+`plan_revision=1` 可带一个初始 `target_rack`，也可以同时新增来源明细。MANUAL 任务可省略目标架，但必须新增至少一种来源；AUTO 任务仍必须指定目标架。`plan_revision>=2` 不能再带 `target_rack`。
 执行中需要换面或换架时，由 `outbound.material.decide@v1` 的 `ACCEPT` 直接返回新的精确目标和货架准备方案。后续计划至少要新增一条
 来源明细，不能发送空计划。
 
@@ -623,7 +654,7 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 `plan_revision`，后确定的货架面使用更高版本追加。Bin 在货架到位后由
 `outbound.bin.inbound_batch@v1` 按面一次选择；Cell 仍在 Bin 实际到达 SCAN2 后由 `outbound.bin.work_plan@v1` 返回。
 
-`target_rack` 仅在 `plan_revision=1` 必填。`added_direct_picks` 和 `added_bin_source_racks` 均为条件可选；字段出现时必须包含
+`target_rack` 仅允许在 `plan_revision=1` 出现；MANUAL 可省略，AUTO 必填。`added_direct_picks` 和 `added_bin_source_racks` 均为条件可选；字段出现时必须包含
 `1..N` 项，没有该类变化时省略。首批的接料货架面本身就是有效变化；`plan_revision>=2` 必须至少携带一个非空的来源新增数组。
 
 字段说明：
@@ -632,7 +663,7 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 必须等于准备请求引用的 PickingTask |
 | `data.plan_revision` | 是 | positive integer / WMS | 同一 `task_id` 从 1 连续递增；每批增量唯一 |
-| `data.target_rack` | revision 1 必填 | object / WMS | 当前允许接料的转运货架和货架面；revision 2 及以后禁止出现 |
+| `data.target_rack` | revision 1 条件必填 | object / WMS | MANUAL 可省略，AUTO 必填；指定时由 WES 编排接料架；revision 2 及以后禁止出现，显式 null 拒绝 |
 | `data.target_rack.rack_id` | 条件 | string / WMS | WMS 已建立业务占用的转运货架 |
 | `data.target_rack.rack_face` | 条件 | code / WMS | 当前允许 PUT 的货架面 |
 | `data.added_direct_picks[]` | 条件 | array / WMS | 新增退料货架直接取料明细 |
@@ -642,17 +673,17 @@ WMS 每算出一批可以执行的数据，就发送一个新的计划版本。�
 | `data.added_bin_source_racks[].rack_face` | 条件 | non-empty array of code / WMS | 本次允许取 Bin 的一个或多个货架面；WES 按面展开，同一 `task_id + plan_revision + rack_id + rack_face` 只能新增一次 |
 
 成功接收后返回 `202 / RECEIVED + data={}`；同一 `operation_id` 和相同请求内容再次到达时返回 `200 / DUPLICATE + data={}`。缺少有效
-接料货架面、重复的明细唯一字段组合或改写既有不可变字段时，整个 revision 整批拒绝，不允许部分接收。
+接料货架面（AUTO，或 MANUAL 已指定但字段不完整）、重复的明细唯一字段组合或改写既有不可变字段时，整个 revision 整批拒绝，不允许部分接收。
 
 ### 8.2 发布与接收规则
 
 - WMS 内部可以并行计算，同一 `task_id` 的增量必须按 `plan_revision` 串行发布。
 - `plan_revision` 从 1 开始，每次加一；前一版本未收到明确成功响应前，不得发布后一版本。
-- `plan_revision=1` 必须定义且只定义一个初始接料货架面，可以同时新增来源明细；后续 revision 禁止新增接料货架面。
+- `plan_revision=1` 对 AUTO 必须定义一个初始接料货架面；MANUAL 可省略并新增来源明细。已指定的接料架保持现有流程；后续 revision 禁止新增或修改接料货架面。
 - WMS 是否已经算完整张任务，不需要告诉 WES。WMS 可以继续发布更高版本，直到 WMS 中的任务状态完成。
 - 已接收成员及其已冻结批次不得被后续版本改写；同一来源可在更高 revision 成为新成员，按新成员身份分别建立 Action 和结果，不复用旧成员的完成或取消事实。
-- 缺少有效接料货架面时不得先取盘、后补目标。WMS 收到上一盘的位置结果并返回 `RECORDED | DUPLICATE` 后，
-  新货架面才能供下一盘使用。
+- 指定 `target_rack` 时，缺少有效接料货架面不得先取盘、后补目标。WMS 收到上一盘的位置结果并返回 `RECORDED | DUPLICATE` 后，
+  新货架面才能供下一盘使用。未指定的 MANUAL 任务由 WMS/PDA 管理实际接料作业，WES 不增加转运架准入检查。
 
 WES 收到回调后按以下顺序处理：
 
@@ -2034,7 +2065,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | WMS 发布 PickingTask | 只入队，不锁定 WorkLine、来源、目标或物理动作 |
 | 准备请求已接收 | 快速返回 `PREPARE_ACCEPTED`；没有计划增量前不创建 TransportTask 或 DeviceCommand |
 | 准备响应丢失 | WES 使用原 `operation_id` 和原正文重试；WMS 返回第一次保存的完整 `PREPARE_ACCEPTED` 响应 |
-| 首个计划增量 | `plan_revision=1` 必须且只能定义一个初始 `target_rack`，可以同时新增来源明细；不携带增量类型或 WMS 计算进度字段 |
+| 首个计划增量 | `plan_revision=1`：AUTO 必须指定一个 `target_rack`；MANUAL 可省略并新增来源，转运架由人工在 WMS 管理；不携带增量类型或 WMS 计算进度字段 |
 | WMS 分批计算资源 | 每批 revision 连续；WES 保存成功后再响应，数据完整的首批明细可以立即执行 |
 | 后续计划增量 | `plan_revision>=2`，禁止 `target_rack`；新的精确目标只由逐盘最终 `ACCEPT` 返回 |
 | 首批增量只有初始接料货架面 | 可以提前运输目标架，但不能凭空创建来源取盘动作 |

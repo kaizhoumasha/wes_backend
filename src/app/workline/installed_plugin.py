@@ -115,16 +115,17 @@ def parse_position_bindings(
         raise ValueError("position_bindings 必须是对象")  # noqa: TRY004 - 外部配置校验统一使用 ValueError
     if set(raw) - {slot.slot_key for slot in slots}:
         raise ValueError("未知工作位插槽")
+    required_keys = {slot.slot_key for slot in slots if slot.required}
     bindings: dict[str, str] = {}
     for key, value in raw.items():
-        if value is None and not require_complete:
+        if value is None and (not require_complete or key not in required_keys):
             continue
         if not isinstance(value, str) or not value.strip() or len(value) > 80:
             raise ValueError("工作位绑定必须是有效工作位编码")
         bindings[key] = value
     if len(set(bindings.values())) != len(bindings):
         raise ValueError("工作位绑定不能重复")
-    if require_complete and set(bindings) != {slot.slot_key for slot in slots}:
+    if require_complete and not required_keys.issubset(bindings):
         raise ValueError("工作位插槽尚未全部绑定")
     return bindings
 

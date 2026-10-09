@@ -88,6 +88,7 @@ async def _setup_line_task(
     task_name: str,
     *,
     with_direct_picks: bool,
+    managed_target: bool = True,
 ) -> tuple[int, int, int, int, int]:
     line = WorkLine(
         line_code=task_name,
@@ -105,6 +106,8 @@ async def _setup_line_task(
             "OUTLET": {"location_type": "HANDOFF_POSITION", "location_id": "OUTLET-POS"},
         },
     )
+    if not managed_target:
+        line.position_bindings = {key: value for key, value in line.position_bindings.items() if key != "TRANSFER_RACK"}
     db.add(line)
     await db.flush()
     db.add_all(
@@ -156,6 +159,8 @@ async def _setup_line_task(
                 "source_locator": {"rack_id": "RET-1", "rack_face": "A", "slot_id": "A-03", "type": "RACK_SLOT"},
             }
         ]
+    if not managed_target:
+        del plan_payload["data"]["target_rack"]
     plan_event = PickingTaskPlanDeltaEvent.model_validate(plan_payload)
     plan_evidence = await InboundEvidenceService().accept(
         db,
@@ -187,8 +192,8 @@ async def _setup_line_task(
         issued_at_ms=1,
         issued_evidence_id=issued_evidence.evidence.id,
         workline_id=line.id,
-        target_rack_id="TRANSFER-1",
-        target_rack_face="90",
+        target_rack_id="TRANSFER-1" if managed_target else None,
+        target_rack_face="90" if managed_target else None,
         initial_plan_evidence_id=plan_evidence.evidence.id,
         last_plan_evidence_id=plan_evidence.evidence.id,
         last_applied_plan_revision=1,
@@ -214,7 +219,10 @@ async def _setup_line_task(
     return line.id, task.id, plan_evidence.evidence.id, prepare_evidence.evidence.id, issued_evidence.evidence.id
 
 
-async def test_activation_creates_return_rack_transport_binding_from_direct_picks(integration_session_factory) -> None:
+@pytest.mark.parametrize("managed_target", [True, False])
+async def test_activation_creates_return_rack_transport_binding_from_direct_picks(
+    integration_session_factory, managed_target
+) -> None:
     from manual_picking.handlers import PickingTaskPlanAppliedHandler
 
     handler = PickingTaskPlanAppliedHandler()
@@ -225,7 +233,7 @@ async def test_activation_creates_return_rack_transport_binding_from_direct_pick
     try:
         async with sessions.begin() as db:
             line_id, task_id, plan_evidence_id, prepare_evidence_id, issued_evidence_id = await _setup_line_task(
-                db, task_name, with_direct_picks=True
+                db, task_name, with_direct_picks=True, managed_target=managed_target
             )
         service = PickingTaskPlanActivationService(
             sessions,
@@ -253,14 +261,16 @@ async def test_activation_creates_return_rack_transport_binding_from_direct_pick
         for binding in bindings:
             steps_by_step.setdefault(binding.step, []).append(binding)
         assert RETURN_RACK_IN_STEP in steps_by_step, f"missing {RETURN_RACK_IN_STEP} binding"
-        assert TARGET_RACK_IN_STEP in steps_by_step, "target rack binding should still exist"
+        assert (TARGET_RACK_IN_STEP in steps_by_step) is managed_target
         return_bindings = steps_by_step[RETURN_RACK_IN_STEP]
         assert len(return_bindings) == 1, f"expected exactly 1 RETURN_RACK binding, got {len(return_bindings)}"
         rb = return_bindings[0]
         assert rb.resource_fence_id == "RET-1"
         assert rb.source_evidence_id == plan_evidence_id
         assert rb.workline_id == line_id
-        assert {call["rack_id"] for call in transport.calls} == {"TRANSFER-1", "RET-1"}
+        assert {call["rack_id"] for call in transport.calls} == (
+            {"TRANSFER-1", "RET-1"} if managed_target else {"RET-1"}
+        )
         return_call = next(call for call in transport.calls if call["rack_id"] == "RET-1")
         assert return_call["target_face"] == "A"
     finally:

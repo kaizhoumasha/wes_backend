@@ -569,6 +569,29 @@ async def test_source_rack_starts_inbound_batch_before_target_rack_arrives() -> 
 
 
 @pytest.mark.asyncio
+async def test_source_rack_starts_without_wes_managed_transfer_rack() -> None:
+    driver, line, task, _, _, flow, creator, _, scheduler = setup_driver()
+    task.target_rack_id = task.target_rack_face = None
+    del line.position_bindings["TRANSFER_RACK"]
+    flow.complete.clear()
+    flow.created = True
+    assert await driver.advance_in_session(object(), line, task) == 1
+    assert flow.calls[0]["allow_inbound"] is True
+    assert creator.transfer_depart == []
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_workline_without_transfer_binding_skips_transfer_queries() -> None:
+    driver, line, _, _, plans, _, creator, _, _ = setup_driver()
+    del line.position_bindings["TRANSFER_RACK"]
+    plans.first_completed_transfer_owner_at_position = AsyncMock()
+    assert await driver.advance_completed_in_session(object(), line) == 0
+    plans.first_completed_transfer_owner_at_position.assert_not_awaited()
+    assert creator.transfer_depart == []
+
+
+@pytest.mark.asyncio
 async def test_cancelled_source_rack_without_arrival_does_not_start_inbound_batch() -> None:
     driver, line, task, positions, plans, flow, creator, _, scheduler = setup_driver()
     plans.rows[0].cancelled_evidence_id = 91

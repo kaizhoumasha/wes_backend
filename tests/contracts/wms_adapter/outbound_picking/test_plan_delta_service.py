@@ -148,7 +148,9 @@ def setup_service(
     if workline_repository is None:
         workline_repository = SimpleNamespace(
             get_for_authority_update=AsyncMock(return_value=SimpleNamespace(id=task.workline_id)),
-            get_by_id=AsyncMock(return_value=SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0")),
+            get_by_id=AsyncMock(
+                return_value=SimpleNamespace(plugin_key="sample_plugin", plugin_version="0.1.0", position_bindings={})
+            ),
         )
     return (
         PickingTaskPlanDeltaService(
@@ -179,6 +181,33 @@ async def test_revision_one_commits_plan_and_evidence_together():
     ) == ("EXECUTING", 1, 10, 10)
     assert task.target_rack_face == " A "
     assert evidence.apply_status == Status.APPLIED
+
+
+@pytest.mark.asyncio
+async def test_manual_first_plan_without_target_is_persisted_and_replayed():
+    service, task, evidence, _ = setup_service()
+    payload = event().model_dump(mode="json", exclude_none=True)
+    del payload["data"]["target_rack"]
+    payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_face": ["90"]}]
+    receipt = PickingTaskPlanDeltaEvent.model_validate(payload)
+    assert (await service.record(receipt, received_at=NOW)).code == "RECEIVED"
+    assert task.target_rack_id is None and task.target_rack_face is None
+    assert task.status == "EXECUTING"
+    assert task.initial_plan_evidence_id == evidence.id
+    service._evidence.accept.return_value = InboundEvidenceAcceptance(evidence=evidence, duplicate=True)
+    assert (await service.record(receipt, received_at=NOW)).code == "DUPLICATE"
+
+
+@pytest.mark.asyncio
+async def test_auto_first_plan_without_target_is_rejected():
+    service, task, _, _ = setup_service()
+    task.task_type = "AUTO"
+    payload = event().model_dump(mode="json", exclude_none=True)
+    del payload["data"]["target_rack"]
+    payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_face": ["90"]}]
+    result = await service.record(PickingTaskPlanDeltaEvent.model_validate(payload), received_at=NOW)
+    assert result.code == "CONFLICT" and result.reason_code == "REFERENCE_CONFLICT"
+    service._plans.add_members.assert_not_awaited()
 
 
 async def test_plan_delta_locks_workline_before_picking_task():
@@ -225,6 +254,26 @@ async def test_plan_admission_rejects_direct_picks_before_member_persistence():
     service._plans.add_members.assert_not_awaited()
     policy.assert_called_once()
     assert policy.call_args.args[0].has_direct_picks is True
+
+
+async def test_managed_target_context_reaches_admission_before_plan_is_applied():
+    def policy(fact):
+        assert fact.has_target_rack is True
+        assert fact.position_bindings == ()
+        return PickingTaskPlanAdmissionDecision(
+            kind=PickingTaskPlanAdmissionDecisionKind.REJECT, reason_code="REFERENCE_CONFLICT"
+        )
+
+    service, task, evidence, _ = setup_service(plan_admission_policies={("sample_plugin", "0.1.0"): policy})
+    result = await service.record(event(), received_at=NOW)
+
+    assert result.code == "CONFLICT"
+    assert result.reason_code == "REFERENCE_CONFLICT"
+    assert task.status == "PREPARING"
+    assert task.last_applied_plan_revision == 0
+    assert task.target_rack_id is None
+    assert evidence.apply_status == Status.RECONCILING
+    service._plans.add_members.assert_not_awaited()
 
 
 async def test_plan_admission_rejects_mixed_bin_and_direct_plan_before_member_persistence():

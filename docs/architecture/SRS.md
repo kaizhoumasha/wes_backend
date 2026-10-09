@@ -559,8 +559,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。自动任务发布携带不可变 `task_type=AUTO`、`workline_code`、
    身份和排队信息，不分配来源或目标资源。WES 校验并冻结指定 WorkLine，不读取业务单据，也不生成波次。
 2. 指定 WorkLine 满足启动条件后，WES 请求 WMS 准备。WMS 返回 `PREPARE_ACCEPTED`，再按该 WorkLine 及其 STATION，以连续
-   `plan_revision` 分批发布五层来源货架面、退料货架 SLOT 和初始接料货架。`plan_revision=1` 必须且只能定义一个
-   `target_rack`，可以同时新增来源成员；后续精确目标只由逐盘 `ACCEPT` 返回。
+   `plan_revision` 分批发布五层来源货架面、退料货架 SLOT 和初始接料货架。`plan_revision=1` 对 AUTO 必须定义一个
+   `target_rack`；MANUAL 可省略并新增来源，由人工在 WMS 管理转运架呼入、旋转和移出，WES 不建立相关动作或转运架前置条件。
+   指定目标架时保持现有编排；后续 revision 不得补充或改写目标架。后续精确目标只由逐盘 `ACCEPT` 返回。
    计划增量只能追加来源，不能改写已经接纳的来源或 Bin，也不携带货架动作、离场去向、CTU 批次或 WMS 计算进度。WES
    持久化并 ACK 局部完整的增量后即可冻结 WorkLine 并开始相关搬运。
 3. WMS 提供各 WorkLine 的任务优先序，人工调整通过队列更新完成。每条线只领取 issued 指定给自己的最高优先级任务，其他空闲线不得抢占。

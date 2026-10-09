@@ -155,7 +155,7 @@ class PickingTaskPlanActivationService:
                     source_evidence_id=str(task.initial_plan_evidence_id),
                     plan_revision=1,
                 )
-                if task.target_rack_id not in decided_racks
+                if task.target_rack_id is not None and task.target_rack_id not in decided_racks
                 else None
             )
             fact = PickingTaskPlanAppliedFact(

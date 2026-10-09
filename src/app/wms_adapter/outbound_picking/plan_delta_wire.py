@@ -59,8 +59,8 @@ class PickingTaskPlanDeltaData(StrictWireModel):
     @model_validator(mode="after")
     def validate_revision_shape(self) -> PickingTaskPlanDeltaData:
         if self.plan_revision == 1:
-            if self.target_rack is None:
-                raise ValueError("revision 1 必须包含 target_rack")
+            if not (self.target_rack or self.added_bin_source_racks or self.added_direct_picks):
+                raise ValueError("revision 1 必须包含目标架或来源")
         elif self.target_rack is not None or not (self.added_bin_source_racks or self.added_direct_picks):
             raise ValueError("后续 revision 禁止 target_rack 且必须新增来源")
         return self

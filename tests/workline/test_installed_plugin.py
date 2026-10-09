@@ -1,7 +1,5 @@
 """部署内业务插件对象合同。"""
 
-from dataclasses import asdict
-
 import pytest
 from wes_plugin_sdk import PluginDefinition
 
@@ -124,8 +122,12 @@ def test_position_slots_resolve_each_worklines_resources_without_site_codes_in_p
     from src.app.workline.models.workline import WorkLinePositionInput
 
     slot = WorkLinePositionSlot(slot_key="INPUT", display_name="入口", position_type="STATION", location_type="INLET")
-    with pytest.raises(TypeError):
-        WorkLinePositionSlot(**asdict(slot), required=False)
+    optional = replace(slot, required=False)
+    assert parse_position_bindings({}, (optional,)) == {}
+    assert parse_position_bindings({"position_bindings": {"INPUT": None}}, (optional,)) == {}
+    assert resolve_position_bindings({}, (optional,), ()) == ()
+    with pytest.raises(ValueError):
+        resolve_position_bindings({"position_bindings": {"INPUT": "MISSING"}}, (optional,), ())
     plugin = replace(_plugin(), definition=replace(_plugin().definition, position_slots=(slot,)))
     with pytest.raises(ValueError, match="duplicate position slot"):
         replace(plugin.definition, position_slots=(slot, slot))

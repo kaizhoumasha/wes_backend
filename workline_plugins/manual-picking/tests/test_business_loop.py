@@ -196,7 +196,7 @@ async def test_scan4_first_arrival_survives_deferred_worker_reclaim(rack_databas
                 source_identity=f"{role}:{new_uuid7()}",
                 device_code=line.config["device_bindings"][role],
                 payload_digest="a" * 64,
-                normalized_payload={},
+                normalized_payload={"timestamp": int(timezone.to_utc(now).timestamp() * 1000)},
                 received_at=now,
                 processed_at=now,
                 published_at=now,
@@ -557,8 +557,9 @@ async def test_real_worker_prepares_next_task_without_drain(rack_database):
 
 @pytest.mark.parametrize("transport_code", ["RECEIVED", "DUPLICATE"])
 @pytest.mark.parametrize("deliver_departure_result", [True, False])
+@pytest.mark.parametrize("managed_target", [True, False])
 async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
-    rack_database, transport_code, deliver_departure_result
+    rack_database, transport_code, deliver_departure_result, managed_target
 ):
     _, sessions = rack_database
     async with sessions.begin() as db:
@@ -583,8 +584,12 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         await db.flush()
         picking.status = "EXECUTING"
         picking.last_applied_plan_revision = 1
-        picking.target_rack_id = f"TARGET-{line.id}"
-        picking.target_rack_face = "90"
+        picking.target_rack_id = f"TARGET-{line.id}" if managed_target else None
+        picking.target_rack_face = "90" if managed_target else None
+        if not managed_target:
+            line.position_bindings = {
+                key: value for key, value in line.position_bindings.items() if key != "TRANSFER_RACK"
+            }
         picking.initial_plan_evidence_id = plan.id
         picking.last_plan_evidence_id = plan.id
         rack_ids = [f"SOURCE-{index}-{line.id}" for index in range(3)]
@@ -626,12 +631,23 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
         assert all(task.request_json["rcs_template_id"] == "CTU01" for task in initial.values())
         run(worker, ACTIVATE)
         assert set(await source_ingresses()) == set(rack_ids[:2])
-        target = await bound_transport(sessions, line.id, "PICKING_TASK_TARGET_RACK_IN")
+        arrivals = [(initial[rack_ids[0]], rack_ids[0], "FIVE_RACK")]
+        if managed_target:
+            target = await bound_transport(sessions, line.id, "PICKING_TASK_TARGET_RACK_IN")
+            arrivals.insert(0, (target, picking.target_rack_id, "TRANSFER_RACK"))
+        else:
+            async with sessions() as db:
+                assert (
+                    await db.scalar(
+                        select(TransportDecisionBinding.id).where(
+                            TransportDecisionBinding.workline_id == line.id,
+                            TransportDecisionBinding.step == "PICKING_TASK_TARGET_RACK_IN",
+                        )
+                    )
+                    is None
+                )
         # ACCEPTED 只证明接纳。通过正式 callback/Evidence 路径提供目标架及首个来源架到位事实。
-        for task, rack_id, role in (
-            (target, picking.target_rack_id, "TRANSFER_RACK"),
-            (initial[rack_ids[0]], rack_ids[0], "FIVE_RACK"),
-        ):
+        for task, rack_id, role in arrivals:
             await callback(
                 transport.service,
                 task,
@@ -747,4 +763,6 @@ async def test_source_departure_acceptance_refills_one_slot_through_real_worker(
             assert members and all(member.status == "SUCCEEDED" for member in members)
         requests = [request["envelope"] for request in server.requests]
         assert sum(request["operation"] == "outbound.bin.inbound_batch@v1" for request in requests) == 1
-        assert sum(request["path"].endswith("transport-requests") for request in server.requests) == 5
+        assert sum(request["path"].endswith("transport-requests") for request in server.requests) == (
+            5 if managed_target else 4
+        )
