@@ -23,6 +23,7 @@ from src.core.outbound_http.contracts import (
     OutboundHttpClosedError,
     OutboundHttpDeliveryState,
     OutboundHttpFailureKind,
+    OutboundHttpObserver,
     OutboundHttpRequest,
     OutboundHttpResult,
     _is_valid_response_header,
@@ -74,9 +75,11 @@ class _HttpxOutboundHttpTransport:
         system_id: str,
         timeout_seconds: float,
         max_concurrency: int,
+        completion_observer: OutboundHttpObserver | None = None,
     ) -> None:
         self._client = client
         self._system_id = system_id
+        self._completion_observer = completion_observer
         self._timeout_seconds = timeout_seconds
         self._concurrency_limiter = asyncio.BoundedSemaphore(max_concurrency)
         self._cleanup_timeout_seconds = min(timeout_seconds, 1.0)
@@ -240,6 +243,17 @@ class _HttpxOutboundHttpTransport:
         if result is None:
             raise RuntimeError("outbound HTTP transport returned without a result")
         self._log_result(request=request, result=result, started_at=started_at, cleanup_failed=cleanup_failed)
+        if self._completion_observer is not None:
+            try:
+                self._completion_observer(
+                    system_id=self._system_id,
+                    peer_address=str(self._client.base_url).rstrip("/"),
+                    request=request,
+                    result=result,
+                    duration_ms=int((asyncio.get_running_loop().time() - started_at) * 1000),
+                )
+            except Exception as error:
+                logger.warning("outbound_http_observation_skipped exception_type=%s", type(error).__name__)
         return result
 
     async def aclose(self) -> None:

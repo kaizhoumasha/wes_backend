@@ -128,6 +128,7 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
         ("wes_sys", "api_access_logs"),
     }.issubset(identities)
     assert {
+        ("wes_biz", "callback_logs"),
         ("wes_biz", "line_run_epochs"),
         ("wes_biz", "line_run_epoch_device_bindings"),
         ("wes_biz", "line_run_epoch_position_bindings"),

@@ -26,9 +26,8 @@ from deployment.plugin_models import include_plugin_table, load_plugin_models
 # 这样 Alembic 才能自动生成迁移
 from src.app.admin.models import Permission, Role, User  # noqa: F401
 from src.app.admin.models.relationships import role_permission, user_role  # noqa: F401
-from src.app.api_auth.models import APIAccessLog, APIApplication  # noqa: F401
+from src.app.api_auth.models import APIApplication  # noqa: F401
 from src.app.api_auth.models.relationships import api_app_permissions  # noqa: F401
-from src.app.callback.models.callback_log import CallbackLog  # noqa: F401
 from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
@@ -49,6 +48,7 @@ from src.app.runtime.orchestration.models.workline_position import WorkLinePosit
 from src.app.runtime.orchestration.workline_runtime_status_projection import (  # noqa: F401
     WorklineRuntimeStatusProjection,
 )
+from src.app.sys.models.api_access_log import APIAccessLog  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.transport.models import (  # noqa: F401
     TransportEvidence,

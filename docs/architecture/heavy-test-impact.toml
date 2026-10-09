@@ -425,6 +425,7 @@ heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 [[mapping]]
 source_glob = "src/celery_app/config.py"
 heavy_tests = [
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
     "tests/e2e/test_execution_interruption_recovery.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_transport_fulfillment_queue.py",
@@ -466,11 +467,11 @@ heavy_tests = [
 # Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；其余共享支撑与广泛依赖继续 fail closed。
 
 [[mapping]]
-source_glob = "src/app/callback/v1/{__init__.py,callback.py}"
+source_glob = "src/app/callback/v1/callback.py"
 heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/callback/{__init__.py,contracts/external_callbacks.py,models/__init__.py,models/ingress_response.py,services/callback_orchestration_service.py}"
+source_glob = "src/app/callback/{contracts/external_callbacks.py,models/ingress_response.py,services/callback_orchestration_service.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # 旧 Callback 事件模型删除后，由 Phase 7 ECS callback 生产闭环承接缺席与接线。
@@ -681,7 +682,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/sys/{services/__init__.py,services/event_stream_service.py,v1/events.py}"
+source_glob = "src/app/sys/{services/event_stream_service.py,v1/events.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
@@ -776,7 +777,7 @@ heavy_tests = []
 reviewed_content_sha256 = "b7e49e4b1318deb3b7c9f0b2332eaea0caeafe5755823f7f669b147a0589550e"
 
 [[mapping]]
-source_glob = "src/app/sys/{models/__init__.py,repositories/outbox_repository.py,services/outbox_engine.py}"
+source_glob = "src/app/sys/{repositories/outbox_repository.py,services/outbox_engine.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
@@ -871,8 +872,8 @@ source_glob = "tests/support/wms_integration/__init__.py"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/core/outbound_http/**"
-heavy_tests = []
+source_glob = "src/core/outbound_http/{contracts.py,__init__.py,transport.py,factory.py}"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 # WMS Adapter 公共导出由对应 operation 的 HEAVY owner 承接。
 
@@ -892,7 +893,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/factory.py"
-heavy_tests = []
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 # 入库 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
 
@@ -1187,7 +1188,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "migrations/env.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
+heavy_tests = ["tests/integration/sys/test_api_access_log_postgresql.py", "tests/integration/device_command/test_device_command_constraints.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 source_glob = "src/database/schema_conf.py"
@@ -1674,7 +1675,7 @@ heavy_tests = [
 # SystemOutbox/external transport closure uses exact source members and their durable PostgreSQL/resilience owners.
 
 [[mapping]]
-source_glob = "src/app/sys/{canonical_dispatch.py,external_http_binding.py,external_http_credentials.py,external_http_dispatch_faults.py,external_http_evidence.py,external_http_transport.py,models/operation_completion.py,repositories/__init__.py,services/endpoint_registry.py,services/outbox_delivery.py}"
+source_glob = "src/app/sys/{canonical_dispatch.py,external_http_binding.py,external_http_credentials.py,external_http_dispatch_faults.py,external_http_evidence.py,external_http_transport.py,models/operation_completion.py,services/endpoint_registry.py,services/outbox_delivery.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
@@ -1689,6 +1690,8 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/core/conf.py"
 heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
@@ -1856,15 +1859,6 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/callback/v1/callback_log.py"
-heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
-
-[[mapping]]
-source_glob = "src/app/callback/services/callback_log_service.py"
-heavy_tests = []
-reviewed_content_sha256 = "958fb082a58cbb885c2d312cdea1dc0c212548c2a790b5d8ff406d389de7c4c4"
-
-[[mapping]]
 source_glob = "src/app/workline/outbox_dispatch_support.py"
 heavy_tests = []
 reviewed_content_sha256 = "8f22eda51aff370503b26ae465ec251e2b852fdf24a2a17508a700091dbe8f3a"
@@ -1881,7 +1875,7 @@ heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
 # Phase 6 直接改写原 WMS 履约 revision；最终 rack supply schema 由独立 PostgreSQL owner 验证。
 
 [[mapping]]
-source_glob = "src/app/callback/services/{__init__.py,wms_inbound_auth.py}"
+source_glob = "src/app/callback/services/wms_inbound_auth.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # E09 schema 退出由空库最终 schema 验收；不以 NONE 掩盖模型和约束变更。
@@ -2155,6 +2149,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/register.py"
 heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -2436,7 +2431,7 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/celery_app/tasks/core.py"
-heavy_tests = []
+heavy_tests = ["tests/e2e/api_access_log/test_maintenance_wiring.py"]
 
 # 旧进程内健康缓存已退役；API 实时数据库探测由 register.py 的 HEAVY 映射承接。
 [[mapping]]
@@ -2746,7 +2741,6 @@ heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
 ]
 
-
 [[mapping]]
 source_glob = "migrations/versions/20260909_0319_bebf575cca2b_widen_device_topology_foreign_keys_to_.py"
 heavy_tests = [
@@ -2762,7 +2756,7 @@ heavy_tests = [
     "tests/integration/transport_debug/test_transport_debug_run_real_loop.py",
 ]
 
-# WMS 请求级收据复用 CallbackLog，由真实 HTTP -> PostgreSQL 事务验证承接。
+# WMS 请求级快照统一后台登记，由真实 HTTP/PostgreSQL 与可靠接收事务 owner 承接。
 [[mapping]]
 source_glob = "src/app/wms_adapter/callback_receipt_service.py"
 heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.py"]
@@ -3117,11 +3111,6 @@ heavy_tests = []
 source_glob = "src/app/runtime/orchestration/services/runtime_location_event_service.py"
 heavy_tests = []
 
-# 仅删除未引用的 CallbackLogCreate DTO，不改变持久化或回调入口。
-[[mapping]]
-source_glob = "src/app/callback/models/callback_log.py"
-heavy_tests = []
-
 # 仅删除未引用的 API DTO；对应持久化表结构未变化。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/object_transition_event.py"
@@ -3148,3 +3137,78 @@ heavy_tests = ["tests/integration/wms_adapter/return_buffer_drain/test_productio
 [[mapping]]
 source_glob = "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/sys/{__init__.py,models/api_access_log.py,repositories/api_access_log_repository.py,v1/__init__.py,v1/api_access_log.py}"
+heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/services/api_access_log_service.py"
+heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/api_auth/{__init__.py,models/__init__.py,models/api_access_log.py,repositories/__init__.py,repositories/api_access_log_repository.py,services/__init__.py,services/api_access_log_service.py,v1/api_access_log.py}"
+heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/callback/{__init__.py,models/__init__.py,models/callback_log.py,repositories/__init__.py,repositories/callback_log_repository.py,services/__init__.py,services/callback_log_service.py,v1/__init__.py,v1/callback_log.py}"
+heavy_tests = [
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20261009_0800_a16c9b2e7d04_统一外部系统API访问日志.py"
+heavy_tests = [
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/integration/test_reset_runtime_data_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/models/__init__.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/repositories/__init__.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/services/__init__.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/sys/test_api_access_log_postgresql.py",
+    "tests/e2e/api_access_log/test_maintenance_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/services/api_access_log_observer.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]

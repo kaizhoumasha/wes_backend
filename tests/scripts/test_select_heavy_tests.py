@@ -130,7 +130,6 @@ RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
 )
 TRACE_REVIEWED_NONE_PATHS = (
     "src/app/callback/contracts/__init__.py",
-    "src/app/callback/services/callback_log_service.py",
     "src/app/runtime/orchestration/timeline_generator.py",
     "src/app/runtime/orchestration/trace_context.py",
     "src/app/workline/outbox_dispatch_support.py",
@@ -1418,6 +1417,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260925_0615_62bd827f763b_拆分料箱回程事实表.py",
         "migrations/versions/20260926_0941_bdf2d676d0a8_add_device_ecs_test_default.py",
         "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py",
+        "migrations/versions/20261009_0800_a16c9b2e7d04_统一外部系统API访问日志.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[
@@ -1637,3 +1637,41 @@ def test_movement_report_dependencies_select_production_wiring(changed_path: str
         "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py"
         in select_heavy_tests([changed_path], config)
     )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/sys/models/api_access_log.py",
+        "src/app/sys/repositories/api_access_log_repository.py",
+        "src/app/sys/services/api_access_log_service.py",
+        "src/app/sys/v1/api_access_log.py",
+        "src/app/api_auth/models/api_access_log.py",
+        "src/app/callback/services/callback_log_service.py",
+        "migrations/versions/20261009_0800_a16c9b2e7d04_统一外部系统API访问日志.py",
+    ],
+)
+def test_unified_api_access_log_paths_have_real_postgresql_owner(changed_path):
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    selected = select_heavy_tests([changed_path], config, repo_root=REPO_ROOT)
+    assert "tests/integration/sys/test_api_access_log_postgresql.py" in selected
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/core/outbound_http/contracts.py",
+        "src/core/outbound_http/__init__.py",
+        "src/core/outbound_http/transport.py",
+        "src/core/outbound_http/factory.py",
+        "src/app/wms_adapter/factory.py",
+        "src/app/device/composition.py",
+        "src/app/sys/services/api_access_log_observer.py",
+        "src/app/sys/services/api_access_log_service.py",
+        "src/app/sys/services/__init__.py",
+        "src/celery_app/async_runtime.py",
+    ],
+)
+def test_outbound_api_access_log_and_worker_paths_have_real_prefork_owner(changed_path):
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST in select_heavy_tests([changed_path], config)

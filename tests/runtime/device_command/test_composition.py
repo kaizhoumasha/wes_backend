@@ -9,6 +9,7 @@ from src.app.device.composition import (
     build_device_command_runtime,
     resolve_device_command_runtime_config,
 )
+from src.app.sys.services.api_access_log_observer import observe_outbound_api_access
 from src.app.sys.services.event_stream_service import event_stream_service
 
 
@@ -33,6 +34,28 @@ class FakeTransportFactory:
         transport = FakeTransport(endpoint_base_url)
         self.created.append(transport)
         return transport
+
+
+def test_ecs_default_transport_uses_the_same_completion_observer_as_wms(monkeypatch):
+    from src.app.device import composition
+
+    captured = []
+    transport = FakeTransport("http://ecs-a")
+
+    def build_transport(**kwargs):
+        captured.append(kwargs)
+        return transport
+
+    monkeypatch.setattr(composition, "build_outbound_http_transport", build_transport)
+    assert composition._build_ecs_transport("http://ecs-a", 3.0) is transport
+    assert captured == [
+        {
+            "system_id": "ecs",
+            "base_url": "http://ecs-a",
+            "timeout_seconds": 3.0,
+            "completion_observer": observe_outbound_api_access,
+        }
+    ]
 
 
 @pytest.mark.asyncio

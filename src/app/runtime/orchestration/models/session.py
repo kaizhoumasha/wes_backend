@@ -234,7 +234,7 @@ class WorklineSessionBase(BaseMixin):
     last_request_id: str | None = Field(
         default=None,
         max_length=200,
-        description="最近一次入口请求 ID（对齐 callback_logs.request_id / inbox.source_message_id）",
+        description="最近一次入口请求 ID（对齐 api_access_logs.request_id / inbox.source_message_id）",
     )
 
     last_ingress_at: datetime | None = Field(

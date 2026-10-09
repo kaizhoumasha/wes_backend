@@ -95,7 +95,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "bin_line_returns",
             "manual_picking_inbound_batches",
-            "callback_logs",
             "device_commands",
             "direct_pick_executions",
             "inbound_evidence_conflicts",

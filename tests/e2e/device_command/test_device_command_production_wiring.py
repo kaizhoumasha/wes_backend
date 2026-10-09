@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import timedelta
 from uuid import uuid4
@@ -9,15 +10,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select, text
 
-from src.app.callback.models import CallbackLog
 from src.app.device.composition import DeviceEndpointAdapterProvider
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
+from src.app.sys.models.api_access_log import APIAccessLog
 from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
+from src.core.conf import settings
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.integration.conftest import (
@@ -40,7 +42,9 @@ EVIDENCE_TASK = "src.celery_app.tasks.device_command.process_device_evidence_bat
 
 async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postgresql(
     integration_session_factory,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(settings, "API_ACCESS_LOG_WRITE_TIMEOUT_MS", 1000)
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
     suffix = uuid4().hex[:12]
@@ -56,9 +60,10 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
             return
         async with integration_session_factory.begin() as db:
             await db.execute(
-                delete(CallbackLog).where(
-                    CallbackLog.callback_type == "device_ingress_attempt",
-                    CallbackLog.request_body["command_code"].as_string() == command_code,
+                delete(APIAccessLog).where(
+                    APIAccessLog.system_id == "ecs",
+                    APIAccessLog.direction == "INBOUND",
+                    APIAccessLog.details["command_code"].as_string() == command_code,
                 )
             )
             evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
@@ -120,17 +125,23 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         assert command.material_execution_id is None
         assert evidence is not None and evidence.workline_id is None
         assert evidence.material_execution_id is None
-        async with integration_session_factory() as db:
-            history = await db.scalar(
-                select(CallbackLog).where(
-                    CallbackLog.callback_type == "device_ingress_attempt",
-                    CallbackLog.request_body["command_code"].as_string() == command_code,
+        deadline = asyncio.get_running_loop().time() + 5
+        while True:
+            async with integration_session_factory() as db:
+                history = await db.scalar(
+                    select(APIAccessLog).where(
+                        APIAccessLog.system_id == "ecs",
+                        APIAccessLog.direction == "INBOUND",
+                        APIAccessLog.details["command_code"].as_string() == command_code,
+                    )
                 )
-            )
+            if history is not None or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.02)
         assert history is not None
-        assert history.request_body["evidence_id"] == evidence.id
-        assert history.request_body["disposition"] == "ACCEPTED"
-        assert history.response_status == 200
+        assert history.details["evidence_id"] == evidence.id
+        assert history.details["disposition"] == "ACCEPTED"
+        assert history.status_code == 200
         assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
         assert ecs_server.status_requests == []
         assert len(ecs_server.command_requests) == 1

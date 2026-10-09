@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import Depends, FastAPI
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 
+from src.app.sys.models.api_access_log import APIAccessLog
+from src.app.sys.services.api_access_log_service import APIAccessLogService
 from src.app.transport.models import TransportCallbackReceipt, TransportEvidence
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.app.wms_adapter.callback_receipt_service import WmsCallbackReceiptService
+from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.transport_event_handler import TransportEventHandler
+from src.app.wms_adapter.v1.events import router as events_router
+from src.core.conf import settings
 from src.core.uuid7 import new_uuid7
+from src.utils.background_tasks import inject_background_tasks
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +49,76 @@ class _FailingEvidenceInsertRepository(TransportRepository):
     async def add_evidence(self, db: AsyncSession, evidence: TransportEvidence) -> None:
         await super().add_evidence(db, evidence)
         raise RuntimeError("forced evidence insert failure")
+
+
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+async def test_http_receipt_commit_and_original_rejection_survive_diagnostic_write_failure(
+    integration_session_factory, monkeypatch, diagnostic_fails
+):
+    operation_id = new_uuid7()
+    message = {
+        "operation_id": operation_id,
+        "operation": "transport.task.member_position_changed@v1",
+        "timestamp": 1,
+        "data": {"transport_task_id": "transport-invalid", "container_id": "bin-1", "milestone": "INVALID"},
+    }
+    raw_body = json.dumps(message, separators=(",", ":")).encode()
+    logs = APIAccessLogService(session_context=integration_session_factory)
+    record = logs.record
+    # SQL/事务 owner 使用合法最大预算；严格默认100ms由 FAST timeout owner 验证。
+    monkeypatch.setattr(settings, "API_ACCESS_LOG_WRITE_TIMEOUT_MS", 1000)
+    if diagnostic_fails:
+        logs.record = AsyncMock(side_effect=RuntimeError("forced diagnostic failure"))
+    else:
+        logs.record = AsyncMock(wraps=record)
+    app = FastAPI(dependencies=[Depends(inject_background_tasks)])
+    app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
+    app.state.wms_callback_receipt_service = WmsCallbackReceiptService(log_service=logs)
+    app.state.transport_runtime = SimpleNamespace(
+        handler=TransportEventHandler(
+            TransportService(
+                integration_session_factory,
+                TransportRepository(),
+                _UnusedProvider(),
+                result_timeout=timedelta(seconds=420),
+            )
+        )
+    )
+    app.state.transport_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
+    app.include_router(events_router, prefix="/api/v1/wms")
+    request_id = None
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"}
+            )
+        assert response.status_code == 422
+        assert response.json()["code"] == "REJECTED"
+        assert response.json()["operation_id"] == operation_id
+        assert "retry-after" not in response.headers
+        logs.record.assert_awaited_once()
+        request_id = logs.record.await_args.args[0].request_id
+        async with integration_session_factory() as db:
+            receipt = await db.scalar(
+                select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
+            assert receipt is not None
+            rows = list(await db.scalars(select(APIAccessLog).where(APIAccessLog.request_id == request_id)))
+        if diagnostic_fails:
+            logs.record.assert_awaited_once()
+            assert rows == []
+        else:
+            assert len(rows) == 1
+            assert (rows[0].system_id, rows[0].direction, rows[0].status_code) == ("wms", "INBOUND", 422)
+            assert rows[0].details["raw_body_base64"] == base64.b64encode(raw_body).decode()
+    finally:
+        async with integration_session_factory.begin() as db:
+            if request_id is not None:
+                await db.execute(delete(APIAccessLog).where(APIAccessLog.request_id == request_id))
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
 
 
 async def test_non_utf8_operation_is_rejected_before_postgresql_receipt(
@@ -258,25 +341,20 @@ async def test_callback_receipt_and_evidence_roll_back_in_one_transaction(
 )
 async def test_wms_http_ingress_persists_every_rejected_attempt_to_postgresql(
     integration_session_factory,
+    monkeypatch,
     raw: bytes,
     status: int,
 ) -> None:
-    import base64
-
-    from fastapi import FastAPI
-    from httpx import ASGITransport, AsyncClient
-
-    from src.app.callback.models import CallbackLog
-    from src.app.wms_adapter.callback_receipt_service import WmsCallbackReceiptService
-    from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-    from src.app.wms_adapter.v1.events import router
-
-    app = FastAPI()
+    app = FastAPI(dependencies=[Depends(inject_background_tasks)])
+    logs = APIAccessLogService(session_context=integration_session_factory)
+    logs.record = AsyncMock(wraps=logs.record)
+    monkeypatch.setattr(settings, "API_ACCESS_LOG_WRITE_TIMEOUT_MS", 1000)
     app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
-    app.state.wms_callback_receipt_service = WmsCallbackReceiptService(integration_session_factory)
-    app.include_router(router, prefix="/api/v1/wms")
-    async with integration_session_factory() as db:
-        before = set(await db.scalars(select(CallbackLog.id)))
+    app.state.wms_callback_receipt_service = WmsCallbackReceiptService(log_service=logs)
+    app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
+    app.state.wms_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app.include_router(events_router, prefix="/api/v1/wms")
+    request_ids = []
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             for _ in range(2):
@@ -284,12 +362,13 @@ async def test_wms_http_ingress_persists_every_rejected_attempt_to_postgresql(
                     "/api/v1/wms/events", content=raw, headers={"Content-Type": "application/json"}
                 )
                 assert response.status_code == status
+                request_ids.append(logs.record.await_args.args[0].request_id)
         async with integration_session_factory() as db:
-            logs = list(await db.scalars(select(CallbackLog).where(CallbackLog.id.not_in(before))))
-        assert len(logs) == 2
-        assert len({log.request_id for log in logs}) == 2
-        assert all(log.response_status == status for log in logs)
-        assert all(base64.b64decode(log.request_body["raw_body_base64"]) == raw for log in logs)
+            rows = list(await db.scalars(select(APIAccessLog).where(APIAccessLog.request_id.in_(request_ids))))
+        assert len(rows) == 2
+        assert len({log.request_id for log in rows}) == 2
+        assert all((log.system_id, log.direction, log.status_code) == ("wms", "INBOUND", status) for log in rows)
+        assert all(base64.b64decode(log.details["raw_body_base64"]) == raw for log in rows)
     finally:
         async with integration_session_factory.begin() as db:
-            await db.execute(delete(CallbackLog).where(CallbackLog.id.not_in(before)))
+            await db.execute(delete(APIAccessLog).where(APIAccessLog.request_id.in_(request_ids)))

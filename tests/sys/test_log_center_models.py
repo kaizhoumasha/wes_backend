@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.app.api_auth.models.api_access_log import APIAccessLogResponse
+import pytest
+from pydantic import ValidationError
+
+from src.app.sys.models.api_access_log import (
+    APIAccessLog,
+    APIAccessLogCreate,
+    APIAccessLogResponse,
+    APIAccessLogSummary,
+)
 from src.app.sys.models.audit_log import AuditLogResponse, OperaStatus
 
 
@@ -42,22 +50,41 @@ def test_audit_log_response_exposes_structured_audit_dimensions() -> None:
     assert response.change_summary == "更新字段：username、status"
 
 
-def test_api_access_log_response_exposes_created_at() -> None:
-    response = APIAccessLogResponse.model_validate(
-        {
-            "id": 1,
-            "app_id": "app-1",
-            "app_name": "Test App",
-            "request_id": "req-1",
-            "method": "GET",
-            "path": "/api/v1/workline",
-            "status_code": 200,
-            "response_time_ms": 128,
-            "ip_address": "127.0.0.1",
-            "user_agent": "pytest",
-            "error_message": None,
-            "created_at": datetime(2026, 4, 13, 12, 30, 0),
-        }
-    )
+def test_api_access_log_summary_is_nullable_utc_and_excludes_details() -> None:
+    data = {
+        "id": 1,
+        "system_id": "ecs",
+        "direction": "OUTBOUND",
+        "method": "POST",
+        "path": "/command",
+        "status_code": None,
+        "response_time_ms": None,
+        "created_at": datetime(2026, 4, 13, 12, 30),
+        "details": {"private": "snapshot"},
+    }
+    summary = APIAccessLogSummary.model_validate(data)
+    assert summary.status_code is None
+    assert summary.response_time_ms is None
+    assert summary.created_at.utcoffset().total_seconds() == 0
+    assert "details" not in summary.model_dump()
+    assert APIAccessLogResponse.model_validate(data).details == data["details"]
+    assert APIAccessLogResponse.model_validate({**data, "details": None}).details is None
 
-    assert response.created_at == datetime(2026, 4, 13, 12, 30, 0)
+
+def test_api_access_log_model_has_only_unified_metadata_and_required_indexes() -> None:
+    table = APIAccessLog.__table__
+    assert table.schema == "wes_sys"
+    assert table.name == "api_access_logs"
+    assert set(table.columns.keys()) == set(APIAccessLogSummary.model_fields) | {"details", "updated_at"}
+    assert table.c.status_code.nullable
+    assert table.c.response_time_ms.nullable
+    indexes = {tuple(column.name for column in index.columns) for index in table.indexes}
+    assert {("created_at", "id"), ("system_id", "direction", "created_at"), ("request_id",), ("trace_id",)} <= indexes
+
+
+@pytest.mark.parametrize("override", [{"direction": "BOTH"}, {"response_time_ms": -1}, {"system_id": "x" * 65}])
+def test_api_access_log_create_validates_public_dimensions(override) -> None:
+    with pytest.raises(ValidationError):
+        APIAccessLogCreate.model_validate(
+            {"system_id": "ecs", "direction": "INBOUND", "method": "POST", "path": "/event", **override}
+        )

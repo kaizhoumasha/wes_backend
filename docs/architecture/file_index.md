@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-23
+**最后更新**：2026-10-08
 
 职责边界的权威顺序：SRS 架构原则 → SRS 场景要求与当前外部合同 → 插件业务合同 → 实施笔记/计划 → 项目外历史归档。下表中的 `docs/superpowers/` 只提供实施背景，不能覆盖上层当前合同；职责收敛账本只用于本轮执行，完成后归档。
 
@@ -32,6 +32,7 @@
 
 | 路径 | 职责 |
 | --- | --- |
+| [API 访问日志](api-access-log.md) | sys 基础日志模块统一外部双向交互、后台尽力写入、只读查询与保留清理；当前实现合同 |
 | `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端 PR #246/#247 与前端 PR #125 已合并，部署及供应商/现场验收未完成 |
 | `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；仓库实施已合并，仍承接部署及供应商/现场验收 |
 | `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |

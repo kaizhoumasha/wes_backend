@@ -99,6 +99,7 @@ async def test_wms_client_factory_uses_the_literal_wms_origin_without_profile_di
         "system_id": "wms",
         "base_url": "http://wms.internal:8080",
         "timeout_seconds": 10.0,
+        "completion_observer": wms_factory.observe_outbound_api_access,
     }
     assert result.json_body == {"ready": True}
 
