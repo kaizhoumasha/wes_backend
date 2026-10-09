@@ -15,7 +15,7 @@
 
 **Context:** Deferred from ship，用户同意先交付后端 PR。前端冻结工具要求后端处于干净 `develop`；不绕过分支校验。现有前端业务流程不依赖新增字段。
 
-**Scope:** `/Users/kaizhou/codeDev/wes_frontend` 的 canonical OpenAPI、生成类型和契约元数据；执行 `pnpm contract:freeze` 及契约校验。
+**Scope:** `wes_frontend` 仓库的 canonical OpenAPI、生成类型和契约元数据；执行 `pnpm contract:freeze` 及契约校验。
 
 **Effort:** S
 

@@ -8,7 +8,7 @@
 
 ## 风险、变更面与所有者
 
-分类：LARGE/HIGH-RISK。主 Agent 独占实施与验证；无提交、Push 或部署。
+分类：LARGE/HIGH-RISK。主 Agent 独占实施与验证；后续授权包含 Commit、Push、PR 和集成环境部署，尚未授权 Merge。
 
 - wire/OpenAPI：首批可省略目标架；后续 revision 和 null 约束不变。
 - 宿主计划接收/激活：按 task_type 校验，冻结无目标架选择，避免构造空货架 Fact，可靠接收、摘要、重放及原请求身份不变。
@@ -31,20 +31,22 @@
 
 ## 交付限制
 
-本次实施不部署。约束迁移必须在生产代码激活前应用；正式部署后需重建访问该关系的长期进程。不能通过普通源码热同步发布本变更。
+约束迁移必须在生产代码激活前应用；部署后需重建访问该关系的长期进程。本次已应用迁移并重建进程，再通过源码挂载部署，不能只做普通源码热同步。
 
 ## 实施结果
 
-已完成本地实施与审阅，迁移 head 为 `7a0d19c4e632`，未提交或部署。两条任务路径、AUTO 必填边界、null/后续 revision 限制、无目标架来源推进和完成、指定架原有 handler 校验均有覆盖。
+已完成实施、审阅、提交与 Push，并部署到集成环境，迁移 head 为 `7a0d19c4e632`。两条任务路径、AUTO 必填边界、null/后续 revision 限制、无目标架来源推进和完成、指定架准入校验均有覆盖。指定架缺少有效 `TRANSFER_RACK` 绑定时返回 `REFERENCE_CONFLICT`；已应用 Evidence 重放不重新解释准入。
 
-- 宿主/工作线/SDK 聚焦回归：968 passed。
-- 插件 FAST：364 passed。
-- QUALITY 完整通过；核心 FAST 为 4081 passed、5 skipped，跳过项不作为集成证据。
+- 补充准入修复后的宿主/工作线/SDK 聚焦回归：832 passed。
+- 插件 FAST：365 passed。
+- QUALITY 完整通过；核心 FAST 为 4082 passed、5 skipped，跳过项不作为集成证据。
 - selector 选择 23 个核心 HEAVY 文件：117 passed、0 skipped。
 - 插件 PostgreSQL/真实 worker：首次 25 passed、1 failed；失败为既有 SCAN4 夹具遗漏事件 timestamp。补齐合同数据后同一场景定向复测 1 passed，未修改生产逻辑或放宽断言。
 - 干净临时 PostgreSQL 完成空库到 head、回退至 `bdf2d676d0a8`、再升级；两个专属验证环境均已清理。
 - 新迁移已同步 HEAVY mapping 与固定迁移清单；SRS、通用/人工出库合同、插件 README 和 OpenAPI 已同步。所有原有 dirty 文件的 SHA-256 保持不变。
 
-前端现有绑定编辑支持省略位置，未引入依赖新 required 字段的前端逻辑，因此本次前端源码无需变更。后端 provider 已导出并验证新字段与 schema head；前端 canonical 契约冻结须按现有干净 develop checkout 规则在提交后执行，本次不伪造提交或发布快照。
+前端现有绑定编辑支持省略位置，未引入依赖新 required 字段的前端逻辑，因此本次前端源码无需变更。后端 provider 已导出并验证新字段与 schema head；用户同意将前端 canonical 契约冻结延后至后端 PR 合入干净 `develop` 后执行，后续事项已记录于 `TODOS.md`。
+
+集成环境五个长期进程 healthy，640 个源码文件与当前部署快照的 hash 一致，三种准入探针及 `/health`、`/ready` 均通过。补充修复通过源码挂载生效，镜像本身尚未包含该修复。最终只读 Review 通过；外部 Claude Review 因 `403` 未完成，不计为通过证据。
 
 验证日志、JUnit、manifest 与文件指纹位于 `reports/optional-target-verification/`；provider 产物位于 `reports/optional-target-provider/`。
