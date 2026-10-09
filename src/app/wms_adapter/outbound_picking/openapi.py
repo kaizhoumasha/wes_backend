@@ -166,7 +166,14 @@ _PLAN_DELTA_DATA = _closed(
     },
 )
 _PLAN_DELTA_DATA["oneOf"] = [
-    {"properties": {"plan_revision": {"const": 1}}, "required": ["target_rack"]},
+    {
+        "properties": {"plan_revision": {"const": 1}},
+        "anyOf": [
+            {"required": ["target_rack"]},
+            {"required": ["added_bin_source_racks"]},
+            {"required": ["added_direct_picks"]},
+        ],
+    },
     {
         "properties": {"plan_revision": {"minimum": 2}},
         "not": {"required": ["target_rack"]},
@@ -305,7 +312,7 @@ prepare、inbound_batch、material.decide、completion_confirm 等由 WES 调用
 | 1 | 选择「1. 发布新的 PickingTask」 | 新 `task_id`、`queue_revision=1`；首次 `202 / RECEIVED`，任务进入 QUEUED |
 | 2（可选） | 选择「2. 调整队列」 | 同一任务仍为 QUEUED；使用新 identity 和更高 queue_revision，首次 `202 / RECEIVED` |
 | 3 | 等待 WES 发起 `outbound.picking_task.prepare@v1` | WES 已通过实际业务入口选中任务和 WorkLine；WMS 在 decisions 端点返回 `202 / PREPARE_ACCEPTED`、相同 operation_id 和 `data={}` |
-| 4 | 选择「3. 首批计划」发布 revision 1 | 同一任务已绑定且 WES 保存匹配的 prepare 成功响应；必须带 target_rack，成功 `202 / RECEIVED` |
+| 4 | 选择「3. 首批计划」发布 revision 1 | 同一任务已绑定且 WES 保存匹配的 prepare 成功响应；MANUAL 可省略 target_rack 并新增来源，AUTO 必填；成功 `202 / RECEIVED` |
 | 5 | 选择「4. 追加来源」发布 revision 2 | revision 1 已获成功 ACK；只追加新来源，不再带 target_rack，成功 `202 / RECEIVED` |
 
 **测试边界：** 发布任务不会自动证明工作线已启动。零业务插件环境可以验证 issued/queue_changed，
@@ -323,7 +330,7 @@ prepare、inbound_batch、material.decide、completion_confirm 等由 WES 调用
 | --- | --- | --- |
 | 1. 发布新的 PickingTask | `202 / RECEIVED`，`data={}` | 创建一个 QUEUED 任务，queue_revision=1、dispatch_sequence=10 |
 | 2. 调整队列 | `202 / RECEIVED`，`data={}` | 同一任务仍为 QUEUED，queue_revision=2、dispatch_sequence=20、not_before=0（无延后准入） |
-| 3. 首批计划 | `202 / RECEIVED`，`data={}` | 在 prepare 成功前提下原子保存 revision 1、接料架面和来源，任务进入 EXECUTING |
+| 3. 首批计划 | `202 / RECEIVED`，`data={}` | 在 prepare 成功前提下原子保存 revision 1、可选接料架面和来源，任务进入 EXECUTING |
 | 4. 追加来源 | `202 / RECEIVED`，`data={}` | last_applied_plan_revision=2，新来源只追加一次，原接料架面保持不变 |
 | 上述任一步成功后原样重放 | `200 / DUPLICATE`，`data={}` | 不重复创建、不重复应用，保留首次接收时间 |
 

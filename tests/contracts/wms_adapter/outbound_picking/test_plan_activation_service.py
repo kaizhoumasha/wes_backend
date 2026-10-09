@@ -62,6 +62,8 @@ class _Handler:
     def __call__(self, fact):  # type: ignore[no-untyped-def]
         self.fact = fact
         target = fact.target_rack
+        if target is None:
+            return PickingTaskPlanHandlingResult(transports=())
         return PickingTaskPlanHandlingResult(
             transports=(
                 PickingTaskRackTransportIntent(
@@ -232,7 +234,8 @@ async def test_reserved_workline_projects_applied_exit_before_scheduling_gate() 
 
 
 @pytest.mark.asyncio
-async def test_completed_task_source_obligation_does_not_block_new_executing_task() -> None:
+@pytest.mark.parametrize("managed_target", [True, False])
+async def test_completed_task_source_obligation_does_not_block_new_executing_task(managed_target: bool) -> None:
     driver = _BatchDriver(completed_count=1)
     handler = _Handler()
     creator = _Creator()
@@ -261,6 +264,8 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
         plan_blocked_evidence_id=None,
     )
     task_reader = AsyncMock(return_value=task)
+    if not managed_target:
+        task.target_rack_id = task.target_rack_face = None
     service = _service_type()(
         _Sessions(),
         plugins=(
@@ -284,11 +289,12 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
         ),
     )
 
-    assert await service.activate_batch() == 3
+    assert await service.activate_batch() == (3 if managed_target else 2)
     assert driver.context == ("L-1", "PICK-NEW")
     task_reader.assert_awaited_once()
     assert handler.fact is not None
-    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1"]
+    assert [call["resource_fence_id"] for call in creator.calls] == (["TARGET-1"] if managed_target else [])
+    assert (handler.fact.target_rack is not None) is managed_target
 
 
 @pytest.mark.asyncio

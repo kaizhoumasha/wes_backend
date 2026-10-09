@@ -205,6 +205,8 @@ class ManualPickingBatchDriver:
         # 只含直接取料的任务不会被五层架来源查询找到，退料货架子流程必须独立再试一次。
         source_count += await self._advance_completed_return_rack(db, line, advanced_task_id)
         source_count += await self._advance_drain(db, line) if self._drain is not None else 0
+        if TRANSFER_RACK.slot_key not in line.position_bindings:
+            return source_count
         owner = await self._plans.first_completed_transfer_owner_at_position(
             db,
             line.id,
@@ -398,8 +400,6 @@ class ManualPickingBatchDriver:
         return created
 
     async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
-        if not task.target_rack_id or not task.target_rack_face:
-            return 0
         bindings = line.position_bindings
         sources = await self._plans.list_bin_source_racks(db, task.id)
         faces_by_rack: dict[str, list[Any]] = {}
@@ -806,6 +806,8 @@ class ManualPickingBatchDriver:
         )
 
     async def _advance_transfer_departure(self, db: Any, line: Any, task: Any, now: Any) -> int:
+        if task.target_rack_id is None:
+            return 0
         current_location = line.position_bindings[TRANSFER_RACK.slot_key]["location_id"]
         projection = await ready_rack_projection(
             db,

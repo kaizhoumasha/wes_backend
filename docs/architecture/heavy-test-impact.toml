@@ -3144,3 +3144,7 @@ heavy_tests = ["tests/integration/wms_adapter/return_buffer_drain/test_productio
 [[mapping]]
 source_glob = "tests/integration/wms_adapter/return_buffer_drain/test_production_wiring.py"
 heavy_tests = ["tests/integration/wms_adapter/return_buffer_drain/test_production_wiring.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py"]

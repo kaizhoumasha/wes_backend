@@ -43,6 +43,20 @@ def test_later_revision_accepts_both_source_kinds():
     assert parse_picking_task_plan_delta_event(payload).data.plan_revision == 2
 
 
+@pytest.mark.parametrize("source_field", ["added_bin_source_racks", "added_direct_picks"])
+def test_first_revision_can_omit_target_rack_with_sources(source_field):
+    payload = valid_event()
+    del payload["data"]["target_rack"]
+    payload["data"][source_field] = (
+        [{"rack_id": "SOURCE", "rack_face": ["90"]}]
+        if source_field == "added_bin_source_racks"
+        else [{"source_locator": {"type": "RACK_SLOT", "rack_id": "RETURN", "rack_face": "A", "slot_id": "S1"}}]
+    )
+    parsed = parse_picking_task_plan_delta_event(payload)
+    assert parsed.data.target_rack is None
+    assert parsed.model_dump(mode="json", exclude_none=True) == payload
+
+
 def test_bin_source_rack_accepts_single_face_string() -> None:
     payload = valid_event()
     payload["data"] = {
@@ -146,7 +160,12 @@ def test_openapi_publishes_closed_revision_and_locator_constraints():
     assert data["additionalProperties"] is True
     assert data["properties"]["plan_revision"]["maximum"] == 2**63 - 1
     first, later = data["oneOf"]
-    assert first == {"properties": {"plan_revision": {"const": 1}}, "required": ["target_rack"]}
+    assert first["properties"] == {"plan_revision": {"const": 1}}
+    assert first["anyOf"] == [
+        {"required": ["target_rack"]},
+        {"required": ["added_bin_source_racks"]},
+        {"required": ["added_direct_picks"]},
+    ]
     assert later["not"] == {"required": ["target_rack"]}
     assert later["anyOf"] == [{"required": ["added_bin_source_racks"]}, {"required": ["added_direct_picks"]}]
     for key in ("added_bin_source_racks", "added_direct_picks"):

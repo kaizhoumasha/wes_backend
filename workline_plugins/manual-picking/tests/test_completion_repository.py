@@ -281,7 +281,8 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
 
 
 @pytest.mark.asyncio
-async def test_target_only_plan_waits_for_confirmed_target_transport() -> None:
+@pytest.mark.parametrize("managed_target", [True, False])
+async def test_completion_only_waits_for_wes_managed_target_transport(managed_target: bool) -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -337,9 +338,12 @@ async def test_target_only_plan_waits_for_confirmed_target_transport() -> None:
         target_rack_face="270",
         last_applied_plan_revision=1,
     )
+    if not managed_target:
+        task.target_rack_id = task.target_rack_face = None
+        line.position_bindings.clear()
     try:
         async with sessions.begin() as db:
-            assert not await repository.ready_to_confirm(db, line, task)
+            assert await repository.ready_to_confirm(db, line, task) is (not managed_target)
             positions.projection = SimpleNamespace(
                 workline_id=7,
                 position_unknown=False,

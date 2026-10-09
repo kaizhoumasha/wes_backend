@@ -56,7 +56,9 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         CheckConstraint(
             "(last_applied_plan_revision = 0 AND target_rack_id IS NULL AND target_rack_face IS NULL "
             "AND initial_plan_evidence_id IS NULL AND last_plan_evidence_id IS NULL) OR "
-            "(last_applied_plan_revision > 0 AND target_rack_id IS NOT NULL AND target_rack_face IS NOT NULL "
+            "(last_applied_plan_revision > 0 AND "
+            "((target_rack_id IS NOT NULL AND target_rack_face IS NOT NULL) OR "
+            "(task_type = 'MANUAL' AND target_rack_id IS NULL AND target_rack_face IS NULL)) "
             "AND initial_plan_evidence_id IS NOT NULL AND last_plan_evidence_id IS NOT NULL)",
             name="picking_task_plan_initial_consistent",
         ),

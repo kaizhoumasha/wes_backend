@@ -1417,8 +1417,12 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260925_0611_5bac3de5c2b5_add_ecs_test_run_mode.py",
         "migrations/versions/20260925_0615_62bd827f763b_拆分料箱回程事实表.py",
         "migrations/versions/20260926_0941_bdf2d676d0a8_add_device_ecs_test_default.py",
+        "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
+    assert mappings_by_path[
+        "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py"
+    ].heavy_tests == ("tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",)
     assert mappings_by_path[INITIAL_SCHEMA_REVISION_PATH].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert mappings_by_path[TRANSPORT_FACE_REVISION_PATH].heavy_tests == (
         EXECUTION_CONSTRAINTS_HEAVY_TEST,

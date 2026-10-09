@@ -864,3 +864,10 @@ T2 完成后可并行启动 Lane B 与 Lane C；两者合并并通过聚焦测�
 **VERDICT（历史评审记录）：** ENG + OUTSIDE VOICE CLEARED；C1～C7 INITIAL REVIEW APPROVED。该记录保留原始评审结论，当前可执行状态以 §6 四态矩阵为准；直接取料已获批并完成实施，回归验收见 §6 与 §8。
 
 NO UNRESOLVED DECISIONS
+
+
+## 可选转运货架
+
+首批 `outbound.picking_task.plan_delta@v1` 可省略 `target_rack`，但必须包含 `added_bin_source_racks` 或 `added_direct_picks`。省略时，人工在 WMS 完成转运货架呼入、旋转、移出；WES 不校验转运架到位、储位与指定架关联或离场，也不以转运架限制任务完成。WMS/PDA 继续负责实际放料目标和物料结果，WES 继续执行来源架、料箱、SCAN、退箱及可靠结果交付。
+
+指定 `target_rack` 时仍走现有流程，并要求工作线具有有效 `TRANSFER_RACK` 绑定；缺少绑定时在应用计划前返回 `CONFLICT / REFERENCE_CONFLICT`，任务保持 `PREPARING`。两种路径均拒绝显式 null；后续 revision 禁止补充或更换目标架。工作线可以不绑定转运架位。未指定/指定请求、ACK、幂等和 AUTO 边界以通用出库合同 §8.1 为准；本文原有指定架例仍然有效。

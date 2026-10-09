@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy.exc import IntegrityError
 from wes_plugin_sdk import PickingTaskPlanAdmissionDecision, PickingTaskPlanAdmissionDecisionKind, wms_operations
 
 from src.app.execution.models import (
@@ -163,6 +164,42 @@ async def prepared(integration_session_factory):
         )
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidences)))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_manual_plan_without_target_persists_replays_and_keeps_constraint(integration_session_factory, prepared):
+    task_name, (task_id, *_rest) = prepared
+    payload = _event(task_name).model_dump(mode="json", exclude_none=True)
+    del payload["data"]["target_rack"]
+    payload["data"]["added_bin_source_racks"] = [{"rack_id": "SOURCE", "rack_face": ["90"]}]
+    event = PickingTaskPlanDeltaEvent.model_validate(payload)
+    service = PickingTaskPlanDeltaService(integration_session_factory)
+    assert (await service.record(event, received_at=NOW)).code == "RECEIVED"
+    assert (await service.record(event, received_at=NOW)).code == "DUPLICATE"
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, task_id)
+        assert task.status == "EXECUTING"
+        assert task.target_rack_id is None and task.target_rack_face is None
+        assert task.initial_plan_evidence_id == task.last_plan_evidence_id
+        assert (
+            len(
+                (
+                    await db.scalars(
+                        select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task_id)
+                    )
+                ).all()
+            )
+            == 1
+        )
+        for patch in (
+            {"task_type": "AUTO"},
+            {"target_rack_id": "PARTIAL"},
+            {"target_rack_face": "90"},
+            {"initial_plan_evidence_id": None},
+        ):
+            with pytest.raises(IntegrityError):
+                async with db.begin_nested():
+                    await db.execute(update(PickingTask).where(PickingTask.id == task_id).values(**patch))
 
 
 @pytest.mark.asyncio
