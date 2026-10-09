@@ -7,6 +7,22 @@
 
 ## WorkLine
 
+### 可选转运架变更合并后同步前端契约
+
+**What:** 在后端 PR 合入干净 `develop` 后，冻结 canonical OpenAPI 并重新生成前端契约消费者。
+
+**Why:** 前端生成的 `WorkLinePositionSlot` 尚未包含 `required` 字段，需要与后端位置必填声明一致。
+
+**Context:** Deferred from ship，用户同意先交付后端 PR。前端冻结工具要求后端处于干净 `develop`；不绕过分支校验。现有前端业务流程不依赖新增字段。
+
+**Scope:** `/Users/kaizhou/codeDev/wes_frontend` 的 canonical OpenAPI、生成类型和契约元数据；执行 `pnpm contract:freeze` 及契约校验。
+
+**Effort:** S
+
+**Priority:** P1
+
+**Depends on:** `codex/manual-picking-optional-target-rack` 合入 `develop`。
+
 ### 人工 PickingTask 自动准备生产激活
 
 **What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成
