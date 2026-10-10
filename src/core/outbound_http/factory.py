@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from src.core.outbound_http.contracts import OutboundHttpRequestError, OutboundHttpTransport
+from src.core.outbound_http.contracts import OutboundHttpObserver, OutboundHttpRequestError, OutboundHttpTransport
 from src.core.outbound_http.transport import _ACCEPT_ENCODING_HEADER_VALUE, _HttpxOutboundHttpTransport
 
 _SYSTEM_ID_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
@@ -23,6 +23,7 @@ def build_outbound_http_transport(
     system_id: str,
     base_url: str,
     timeout_seconds: float,
+    completion_observer: OutboundHttpObserver | None = None,
 ) -> OutboundHttpTransport:
     """构造一个供单一外部系统长期持有的 Transport。"""
 
@@ -46,6 +47,7 @@ def build_outbound_http_transport(
         system_id=system_id,
         timeout_seconds=timeout_seconds,
         max_concurrency=_MAX_CONCURRENCY,
+        completion_observer=completion_observer,
     )
 
 

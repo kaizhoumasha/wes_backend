@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 
+from src.app.sys.services.api_access_log_service import _api_access_log_write_budget, api_access_log_background_scope
 from src.core.logger import logger
 from src.database.db import close_db, init_db
 from src.database.redis_client import redis_manager
@@ -29,9 +30,12 @@ def _log_worker_stage(stage: str) -> None:
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from fastapi import BackgroundTasks
+
 INITIALIZATION_TIMEOUT_SECONDS = 3.0
 REDIS_PING_TIMEOUT_SECONDS = 1.0
 SHUTDOWN_STAGE_TIMEOUT_SECONDS = 1.0
+API_ACCESS_LOG_BATCH_TIMEOUT_SECONDS = 1.0
 
 T = TypeVar("T")
 
@@ -448,8 +452,35 @@ class CeleryAsyncRuntime:
                 if self._state is not RuntimeState.READY or self._runner is None:
                     raise RuntimeError(f"CeleryAsyncRuntime is {self._state.value}")
                 runner = self._runner
-            awaitable = factory()
-            return runner.run(awaitable, context=contextvars.Context())
+            return runner.run(self._run_message(factory), context=contextvars.Context())
+
+    @staticmethod
+    async def _run_message(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        with api_access_log_background_scope() as tasks:
+            try:
+                result = await factory()
+            except Exception:
+                await CeleryAsyncRuntime._drain_api_access_logs(tasks)
+                raise
+            await CeleryAsyncRuntime._drain_api_access_logs(tasks)
+            return result
+
+    @staticmethod
+    async def _drain_api_access_logs(tasks: BackgroundTasks) -> None:
+        deadline = asyncio.get_running_loop().time() + API_ACCESS_LOG_BATCH_TIMEOUT_SECONDS
+        with _api_access_log_write_budget(deadline):
+            for index, task in enumerate(tasks.tasks):
+                if asyncio.get_running_loop().time() >= deadline:
+                    logger.warning(
+                        "api_access_log.write_skipped reason=batch_budget count={}", len(tasks.tasks) - index
+                    )
+                    break
+                try:
+                    await task()
+                except Exception as error:
+                    logger.warning(
+                        "api_access_log.write_skipped reason=background_failed exception_type={}", type(error).__name__
+                    )
 
     @staticmethod
     async def _cancel_pending_tasks(timeout: float) -> bool:

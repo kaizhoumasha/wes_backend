@@ -48,9 +48,11 @@ from src.app.wms_adapter.wire_common import (
     is_wire_operation_id,
     parse_wms_event_envelope,
 )
+from src.core.client_ip import UNKNOWN_CLIENT_IP, resolve_client_ip
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
 from src.utils.audit import get_request_id
+from src.utils.background_tasks import get_background_tasks
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -323,11 +325,15 @@ async def receive_wms_event(request: Request) -> Response:
     except Exception:
         logger.exception("WMS callback handler failed: request_id=%s", request_id)
     finally:
-        # handler 的 ACK 事务已结束，避免在单连接池中持有业务事务再开日志事务。
+        # 原 ACK 事务已结束；诊断只登记，不能覆盖既有响应。
         recorder = getattr(request.app.state, "wms_callback_receipt_service", wms_callback_receipt_service)
         try:
-            _ = await recorder.record(
+            peer_address = resolve_client_ip(request)
+            recorder.record(
                 request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                peer_address=None if peer_address == UNKNOWN_CLIENT_IP else peer_address,
                 raw_body=getattr(request.state, "wms_receipt_body", b""),
                 observed_body_bytes=getattr(request.state, "wms_observed_body_bytes", 0),
                 response_status=response.status_code,
@@ -335,10 +341,7 @@ async def receive_wms_event(request: Request) -> Response:
                 response_time_ms=int((monotonic() - started_at) * 1000),
             )
         except Exception:
-            logger.exception("WMS callback receipt persistence failed: request_id=%s", request_id)
-            response = _unavailable_ack(getattr(request.state, "wms_receipt_body", b""))
-            response.status_code = 503
-            response.headers["Retry-After"] = "1"
+            logger.exception("WMS callback diagnostic registration failed: request_id=%s", request_id)
     if diagnostics is not None:
         try:
             from src.app.wms_diagnostics.observation import capture
@@ -540,11 +543,13 @@ async def _receive_wms_event(  # noqa: PLR0911, PLR0912 - 每个固定 operation
         )
         return response
     # 各 operation 已完成其 ACK 事务；Transport 的 Celery 唤醒仅加速应用，失败由 Beat 扫描恢复。
-    background = (
-        BackgroundTask(_enqueue_transport_evidence)
-        if is_transport_event and result.body.get("code") in {"RECEIVED", "DUPLICATE"}
-        else None
-    )
+    background = None
+    if is_transport_event and result.body.get("code") in {"RECEIVED", "DUPLICATE"}:
+        background = get_background_tasks()
+        if background is None:
+            background = BackgroundTask(_enqueue_transport_evidence)
+        else:
+            background.add_task(_enqueue_transport_evidence)
     capture(
         observation,
         status_code=result.http_status,

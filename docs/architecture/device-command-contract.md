@@ -142,10 +142,11 @@ WES 提供超级用户内部诊断接口 `GET /api/v1/device/evidences/history` 
 历史接口支持 `device_code`、`kind`、`command_code`、当前 `apply_status` 过滤及 `limit`（默认 20、范围 1–100）、不透明 `cursor`。
 响应 `data.items` 每行包含 `row_key`、`recorded_at`、`attempt`、`latest_update`，并通过 `data.next_cursor` 翻页。
 `next_cursor=null` 表示没有下一页；格式非法的游标返回 HTTP `400`，超过 1024 字符的游标及非法查询参数由 API 校验拒绝。
-每次到达 callback route 的尝试复用 `CallbackLog`，固定类型 `device_ingress_attempt`、主体 `DEVICE_INGRESS`；
-`request_body` 保存已脱敏的 `DeviceIngressAttempt` 诊断文档，其中 `raw_payload` 才是安全的原请求投影。重复、拒绝、冲突和失败同样记录，
-日志使用独立短会话，提交后再发布实时事件。诊断存储失败会记录异常并继续发布 SSE，不改变既有 callback ACK 或已落盘 Evidence 语义。
-数据库不可用期间的尝试不能宣称已可靠留存；非法 JSON、超限 body 不保存原始字节。设备入口之前被代理或中间件拒绝的流量不属于该 route 的日志。
+每次到达 callback route 的尝试按 [API 访问日志合同](api-access-log.md) 登记统一 `wes_sys.api_access_logs`，固定
+`system_id=ecs`、`direction=INBOUND`；`details` 保存已脱敏的 `DeviceIngressAttempt` 诊断文档，其中 `raw_payload` 才是安全的原请求投影。
+重复、拒绝、冲突和失败同样登记；入口先冻结诊断并登记后台任务，再按原时点发布 SSE，不等待诊断数据库，响应发送后由独立短会话尽力写入。
+诊断失败、超时、容量不足或进程退出允许缺行，不改变既有 callback ACK 或已落盘 Evidence 语义；SSE 不证明诊断落库，立即回读历史可暂时缺行。
+Evidence 仍按原可靠事务提交，提交失败不得返回成功 ACK。非法 JSON、超限 body 不保存原始字节；设备入口之前被代理或中间件拒绝的流量不属于该 route 的日志。
 
 历史回读按记录时间倒序，再按来源类型和稳定主键分页；`attempt` 保留当时接收状态，`latest_update` 关联当前 Evidence 状态。
 无关联 Evidence 时 `latest_update=null`，`apply_status` 过滤使用 attempt 当时状态。没有对应 attempt 的既有

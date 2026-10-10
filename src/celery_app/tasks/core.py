@@ -269,11 +269,20 @@ def cleanup_old_logs(days: int = 7) -> dict[str, str | int]:
         raise
 
 
+@celery_app.task(name="src.celery_app.tasks.core.cleanup_api_access_logs")
+def cleanup_api_access_logs() -> int:
+    """每轮只清理统一诊断表的一批过期记录。"""
+    from src.app.sys.services.api_access_log_service import api_access_log_service
+
+    return run_async(api_access_log_service.cleanup)
+
+
 # ============================================
 # 导出
 # ============================================
 
 __all__ = [
+    "cleanup_api_access_logs",
     "cleanup_old_logs",
     "clear_cache",
     "health_check",

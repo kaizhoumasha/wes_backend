@@ -1,10 +1,9 @@
-"""诊断日志独立提交；历史回读同时展示当前 Evidence 状态。"""
+"""诊断日志响应后尽力写入；历史回读同时展示当前 Evidence 状态。"""
 
 import base64
 import json
 from datetime import datetime
 
-from src.app.callback.services import callback_log_service
 from src.app.device.contracts import (
     DeviceIngressAttempt,
     DeviceIngressHistoryItem,
@@ -12,32 +11,33 @@ from src.app.device.contracts import (
 )
 from src.app.device.evidence_projection import build_device_evidence_update
 from src.app.device.repositories.ingress_history_repository import (
-    DEVICE_INGRESS_CALLBACK_TYPE,
     DeviceIngressHistoryRepository,
 )
+from src.app.sys.models.api_access_log import APIAccessLogCreate
+from src.app.sys.services.api_access_log_service import api_access_log_service
 from src.database.db import get_db_context
 from src.utils.timezone import timezone
 
 
 class DeviceIngressHistoryService:
-    def __init__(self, *, session_context=get_db_context, repository=None, log_service=callback_log_service):
+    def __init__(self, *, session_context=get_db_context, repository=None, log_service=api_access_log_service):
         self._sessions = session_context
         self._repository = repository or DeviceIngressHistoryRepository()
         self._logs = log_service
 
-    async def record_attempt(self, attempt: DeviceIngressAttempt) -> None:
-        # 使用独立会话，CallbackLogService 的 commit 不得影响 Evidence 接收事务。
-        async with self._sessions() as db:
-            _ = await self._logs.log_callback(
-                db,
-                callback_type=DEVICE_INGRESS_CALLBACK_TYPE,
-                subject_code="DEVICE_INGRESS",
+    def record_attempt(self, attempt: DeviceIngressAttempt) -> None:
+        self._logs.defer_record(
+            APIAccessLogCreate(
+                system_id="ecs",
+                direction="INBOUND",
+                method="POST",
+                path=attempt.path,
                 request_id=attempt.request_id,
-                request_body=attempt.model_dump(mode="json"),
-                response_status=attempt.status_code,
-                ingress_outcome=attempt.disposition.value,
-                error_message=attempt.error_code,
+                details=attempt.model_dump(mode="json"),
+                status_code=attempt.status_code,
+                error_code=attempt.error_code,
             )
+        )
 
     async def list_history(
         self, *, limit=20, cursor=None, device_code=None, kind=None, command_code=None, apply_status=None
@@ -57,7 +57,7 @@ class DeviceIngressHistoryService:
             )
             page_keys = keys[:limit]
             logs = await self._repository.load_logs(db, [key["id"] for key in page_keys if key["source_rank"] == 1])
-            attempts = {key: DeviceIngressAttempt.model_validate(log.request_body) for key, log in logs.items()}
+            attempts = {key: DeviceIngressAttempt.model_validate(log.details) for key, log in logs.items()}
             evidence_ids = {key["id"] for key in page_keys if key["source_rank"] == 0}
             evidence_ids.update(attempt.evidence_id for attempt in attempts.values() if attempt.evidence_id is not None)
             evidences = await self._repository.load_evidences(db, evidence_ids)

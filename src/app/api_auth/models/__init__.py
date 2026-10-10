@@ -1,13 +1,6 @@
 from sqlalchemy.orm import relationship
 
 from src.app.admin.models import Permission
-from src.app.api_auth.models.api_access_log import (
-    APIAccessLog,
-    APIAccessLogBase,
-    APIAccessLogCreate,
-    APIAccessLogResponse,
-    APIAccessLogUpdate,
-)
 from src.app.api_auth.models.api_application import (
     APIApplication,
     APIApplicationBase,
@@ -25,11 +18,6 @@ APIApplication.permissions = relationship(
 )
 
 __all__ = [
-    "APIAccessLog",
-    "APIAccessLogBase",
-    "APIAccessLogCreate",
-    "APIAccessLogResponse",
-    "APIAccessLogUpdate",
     "APIApplication",
     "APIApplicationBase",
     "APIApplicationCreate",

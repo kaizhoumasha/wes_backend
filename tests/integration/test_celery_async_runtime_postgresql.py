@@ -7,6 +7,7 @@ run-id 与 Redis global key prefix，并且只连接临时 PostgreSQL 数据库�
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import shutil
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import asyncpg
+import httpx
 import psutil
 import pytest
 from billiard.pool import EX_OK, EX_RECYCLE  # pyright: ignore[reportMissingTypeStubs]
@@ -63,6 +65,7 @@ PROBE_TASK = "tests.integration.celery_prefork.runtime_probe"
 IDEMPOTENT_RETRY_TASK = "tests.integration.celery_prefork.idempotent_retry"
 TRANSACTION_TASK = "tests.integration.celery_prefork.transaction_probe"
 ENDPOINT_PROVIDER_PROBE_TASK = "tests.integration.celery_prefork.endpoint_provider_probe"
+API_ACCESS_LOG_PROBE_TASK = "tests.integration.celery_prefork.api_access_log_probe"
 FAMILY_TASKS = (
     "src.celery_app.tasks.core.health_check",
     "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
@@ -145,7 +148,6 @@ if os.getenv("PREFORK_REDIS_KEY_PREFIX"):
     celery_app.conf.result_backend_transport_options = _transport_options()
 
     from src.app.device import composition as _device_composition
-    from src.core.outbound_http import build_outbound_http_transport as _build_outbound_http_transport
 
     class _RecordingEndpointTransport:
         def __init__(self, delegate: Any, endpoint_base_url: str) -> None:
@@ -186,11 +188,7 @@ if os.getenv("PREFORK_REDIS_KEY_PREFIX"):
 
     def _recording_endpoint_transport_factory(endpoint_base_url: str, timeout_seconds: float) -> Any:
         return _RecordingEndpointTransport(
-            _build_outbound_http_transport(
-                system_id="ecs",
-                base_url=endpoint_base_url,
-                timeout_seconds=timeout_seconds,
-            ),
+            _device_composition._build_ecs_transport(endpoint_base_url, timeout_seconds),
             endpoint_base_url,
         )
 
@@ -331,6 +329,116 @@ def transaction_probe(operation_key: str, hold_seconds: float = 2.0) -> dict[str
         return {"operation_key": operation_key, "completed": True, "pid": os.getpid()}
 
     return run_async(_transaction)
+
+
+@celery_app.task(name=API_ACCESS_LOG_PROBE_TASK)
+def api_access_log_probe(label: str, mode: str = "success", count: int = 2) -> dict[str, object]:
+    """真实 worker/会话的后置观察；HTTP 用原 factory 的单次 MockTransport。"""
+    from src.app.device.composition import _build_ecs_transport
+    from src.app.sys.services.api_access_log_observer import observe_outbound_api_access
+    from src.app.wms_adapter.factory import build_wms_client
+    from src.core.outbound_http import OutboundHttpMethod, OutboundHttpRequest
+    from src.utils.background_tasks import get_background_tasks
+
+    module = importlib.import_module("src.app.sys.services.api_access_log_service")
+    service = module.api_access_log_service
+    original_record = service.record
+    failure = ValueError("original business error")
+    cancellation = asyncio.CancelledError("original business cancellation")
+    message_task = None
+    started = time.monotonic()
+    state: dict[str, Any] = {
+        "label": label,
+        "mode": mode,
+        "pid": os.getpid(),
+        "writes_started": 0,
+        "writes_finished": 0,
+    }
+
+    async def recording(entry: Any) -> Any:
+        state["writes_started"] += 1
+        assert get_background_tasks() is None
+        assert id(asyncio.get_running_loop()) == state["loop_id"]
+        handle = None
+        if mode == "write_cancel":
+            handle = asyncio.get_running_loop().call_later(0.02, message_task.cancel)
+        try:
+            return await original_record(entry)
+        finally:
+            if handle is not None:
+                handle.cancel()
+            state["writes_finished"] += 1
+
+    async def reliable() -> str:
+        nonlocal message_task
+        message_task = asyncio.current_task()
+        state["loop_id"] = id(asyncio.get_running_loop())
+        state["audit_scope_absent"] = get_background_tasks() is None
+        transports = [
+            build_wms_client(base_url="https://api-log.test", timeout_seconds=1)._transport,
+            _build_ecs_transport("https://api-log.test", 1),
+        ]
+        try:
+            for transport in transports:
+                assert transport._completion_observer is observe_outbound_api_access
+                await transport._client.aclose()
+                transport._client = httpx.AsyncClient(
+                    base_url="https://api-log.test",
+                    transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"ok", request=request)),
+                )
+                if mode == "observer_error":
+
+                    def fail_observer(**_metadata: object) -> None:
+                        raise LookupError("ordinary observer error")
+
+                    transport._completion_observer = fail_observer
+            for index in range(count):
+                result = await transports[index % 2].send(
+                    OutboundHttpRequest(method=OutboundHttpMethod.POST, path=f"/api-log/{label}/{index}")
+                )
+                assert result.status_code == 200 and result.decoded_body == b"ok"
+            async with get_db_context() as db:
+                await db.execute(
+                    text("INSERT INTO wes_biz.celery_prefork_acceptance VALUES (:key, 1, TRUE)"),
+                    {"key": label},
+                )
+                await db.commit()
+            state["reliable_finished_at"] = time.monotonic()
+            assert state["writes_started"] == 0
+            if mode == "error":
+                raise failure
+            if mode == "cancel":
+                raise cancellation
+            return "original-result"
+        finally:
+            for transport in transports:
+                await transport.aclose()
+
+    service.record = recording
+    try:
+        try:
+            state["result"] = run_async(reliable)
+        except ValueError as error:
+            state["same_exception"] = error is failure
+        except asyncio.CancelledError as error:
+            state["cancelled"] = True
+            if mode == "cancel":
+                state["same_exception"] = error is cancellation
+    finally:
+        service.record = original_record
+    state["elapsed_seconds"] = time.monotonic() - started
+    state["postlude_seconds"] = time.monotonic() - state["reliable_finished_at"]
+    state["active_writes"] = module._active_writes
+    state["scope_cleared"] = module._log_background_tasks.get() is None and module._log_write_deadline.get() is None
+
+    async def next_message() -> bool:
+        assert get_background_tasks() is None
+        async with get_db_context() as db:
+            return await db.scalar(text("SELECT 1")) == 1
+
+    state["next_message_ok"] = run_async(next_message)
+    _write_probe_marker("api_access_log_probe", **state)
+    return state
 
 
 def _required_integration_urls() -> tuple[str, str]:
@@ -997,6 +1105,85 @@ def test_prefork_endpoint_provider_is_child_local_and_closes_each_transport_once
             worker.log_path.unlink(missing_ok=True)
             if worker.project_log_dir is not None:
                 shutil.rmtree(worker.project_log_dir)
+
+
+def test_prefork_api_access_log_postlude_default_budget_and_next_message_isolation(
+    prefork_services: dict[str, str],
+) -> None:
+    worker = PreforkWorker(prefork_services, concurrency=1).start()
+    runner = asyncio.Runner()
+    url = make_url(prefork_services["database_url"]).set(drivername="postgresql").render_as_string(hide_password=False)
+    connection = runner.run(asyncpg.connect(url))
+    success = False
+
+    async def logs(label: str) -> list[dict[str, object]]:
+        return [
+            {**dict(row), "details": json.loads(row["details"]) if row["details"] is not None else None}
+            for row in await connection.fetch(
+                "SELECT system_id, direction, path, peer_address, status_code, delivery_state, details "
+                "FROM wes_sys.api_access_logs WHERE path LIKE $1 ORDER BY path",
+                f"/api-log/{label}/%",
+            )
+        ]
+
+    def probe(mode: str, count: int = 2) -> dict[str, object]:
+        label = f"{worker.run_id}-{mode}"
+        row = cast("dict[str, object]", worker.result(worker.submit(API_ACCESS_LOG_PROBE_TASK, label, mode, count)))
+        assert row["active_writes"] == 0 and row["scope_cleared"] is True and row["audit_scope_absent"] is True
+        assert row["writes_started"] == row["writes_finished"] and row["next_message_ok"] is True
+        acceptance = _acceptance_row(prefork_services["database_url"], label)
+        assert acceptance is not None and acceptance["completed"] is True
+        print("api_access_log_prefork_measurement " + json.dumps(row, sort_keys=True))
+        return row
+
+    try:
+        first_pid = None
+        for mode in ("success", "error", "observer_error", "cancel"):
+            row = probe(mode)
+            first_pid = row["pid"] if first_pid is None else first_pid
+            assert row["pid"] == first_pid
+            saved = runner.run(logs(str(row["label"])))
+            if mode in {"observer_error", "cancel"}:
+                assert saved == [] and row["writes_started"] == 0
+            else:
+                assert len(saved) == row["writes_started"] == 2
+                assert {item["system_id"] for item in saved} == {"wms", "ecs"}
+                assert all(item["direction"] == "OUTBOUND" and item["details"] is None for item in saved)
+                assert all(item["peer_address"] == "https://api-log.test" for item in saved)
+                assert all(
+                    item["status_code"] == 200 and item["delivery_state"] == "RESPONSE_RECEIVED" for item in saved
+                )
+            if mode in {"error", "cancel"}:
+                assert row["same_exception"] is True
+
+        runner.run(connection.execute("BEGIN"))
+        runner.run(connection.execute("LOCK TABLE wes_sys.api_access_logs IN SHARE MODE"))
+        try:
+            slow = probe("slow", count=15)
+            assert 0.9 <= float(slow["postlude_seconds"]) < 2.0
+            assert 8 <= int(slow["writes_started"]) <= 11
+            assert runner.run(logs(str(slow["label"]))) == []
+            cancelled = probe("write_cancel", count=2)
+            assert cancelled["cancelled"] is True and cancelled["writes_started"] == 1
+            assert runner.run(logs(str(cancelled["label"]))) == []
+        finally:
+            runner.run(connection.execute("ROLLBACK"))
+        recovered = probe("recovered")
+        assert recovered["pid"] == first_pid and recovered["writes_started"] == 2
+        assert len(runner.run(logs(str(recovered["label"])))) == 2
+        assert runner.run(logs(str(slow["label"]))) == runner.run(logs(str(cancelled["label"]))) == []
+        _assert_clean_activity(
+            worker,
+            {
+                str(item["application_name"])
+                for item in _worker_connections(prefork_services["database_url"], worker.run_id)
+            },
+        )
+        success = True
+    finally:
+        runner.run(connection.close())
+        runner.close()
+        worker.stop(success=success)
 
 
 def test_max_tasks_per_child_rebuilds_runtime_engine_and_application_name(prefork_services: dict[str, str]) -> None:

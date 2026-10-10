@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import gzip
 import logging
@@ -15,6 +16,7 @@ from src.core.outbound_http.contracts import (
     OutboundHttpMethod,
     OutboundHttpRequest,
     OutboundHttpResponseLimits,
+    OutboundHttpResult,
 )
 from src.core.outbound_http.transport import _HttpxOutboundHttpTransport
 
@@ -68,6 +70,7 @@ def _transport(
     handler: Callable[[httpx.Request], httpx.Response] | Callable[[httpx.Request], object],
     *,
     timeout_seconds: float = 1.0,
+    completion_observer: Callable[..., None] | None = None,
 ) -> _HttpxOutboundHttpTransport:
     client = httpx.AsyncClient(
         base_url="https://provider.test",
@@ -78,7 +81,98 @@ def _transport(
         system_id="wms",
         timeout_seconds=timeout_seconds,
         max_concurrency=20,
+        completion_observer=completion_observer,
     )
+
+
+@pytest.mark.asyncio
+async def test_completion_observer_runs_once_after_response_close_and_slot_release() -> None:
+    stream = _BlockingStream()
+    stream.release.set()
+    observed: list[dict[str, object]] = []
+    sent = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        sent += 1
+        return httpx.Response(503, stream=stream, request=request)
+
+    def observe(**metadata: object) -> None:
+        assert stream.closed.is_set()
+        assert transport._concurrency_limiter._value == 20
+        observed.append(metadata)
+
+    transport = _transport(handler, completion_observer=observe)
+    request = _request(query=(("private", "value"),), body=b"request")
+    try:
+        result = await transport.send(request)
+    finally:
+        await transport.aclose()
+
+    assert sent == len(observed) == 1
+    assert observed[0]["request"] is request
+    assert observed[0]["result"] is result
+    assert observed[0]["system_id"] == "wms"
+    assert observed[0]["peer_address"] == "https://provider.test"
+    assert isinstance(observed[0]["duration_ms"], int) and observed[0]["duration_ms"] >= 0
+    assert result.decoded_body == b"body" and result.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError("observer failed"), asyncio.CancelledError("cancelled")])
+async def test_completion_observer_isolates_ordinary_errors_and_propagates_cancellation(error: BaseException) -> None:
+    def observe(**_metadata: object) -> None:
+        raise error
+
+    transport = _transport(
+        lambda request: httpx.Response(200, content=b"ok", request=request), completion_observer=observe
+    )
+    try:
+        if isinstance(error, asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await transport.send(_request())
+            assert caught.value is error
+        else:
+            result = await transport.send(_request())
+            assert result.status_code == 200 and result.decoded_body == b"ok"
+        assert transport._concurrency_limiter._value == 20
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_completion_observer_keeps_no_response_and_cleanup_failure_facts() -> None:
+    observed: list[OutboundHttpResult] = []
+
+    def observe(*, result: OutboundHttpResult, **_metadata: object) -> None:
+        observed.append(result)
+
+    def not_connected(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("not connected")
+
+    first = _transport(not_connected, completion_observer=observe)
+
+    async def cleanup_failure(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(204, content=b"", request=request)
+        await response.aread()
+
+        async def fail_close() -> None:
+            raise ValueError("close")
+
+        response.aclose = fail_close  # type: ignore[method-assign]
+        return response
+
+    second = _transport(cleanup_failure, completion_observer=observe)
+    try:
+        first_result = await first.send(_request())
+        second_result = await second.send(_request())
+    finally:
+        await first.aclose()
+        await second.aclose()
+    assert observed == [first_result, second_result]
+    assert first_result.delivery_state is OutboundHttpDeliveryState.NOT_SENT
+    assert first_result.status_code is None
+    assert second_result.failure_kind is OutboundHttpFailureKind.RESPONSE_CLEANUP_FAILED
 
 
 @pytest.mark.asyncio
@@ -182,12 +276,16 @@ async def test_send_maps_invalid_response_header_name_to_metadata_failure(header
 @pytest.mark.asyncio
 async def test_concurrent_sends_reuse_the_transport_owned_client() -> None:
     received_requests: list[httpx.Request] = []
+    completed: list[OutboundHttpResult] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         received_requests.append(request)
         return httpx.Response(204, request=request)
 
-    transport = _transport(handler)
+    def observe(*, result: OutboundHttpResult, **_metadata: object) -> None:
+        completed.append(result)
+
+    transport = _transport(handler, completion_observer=observe)
     try:
         first, second = await asyncio.gather(transport.send(_request()), transport.send(_request()))
     finally:
@@ -196,6 +294,7 @@ async def test_concurrent_sends_reuse_the_transport_owned_client() -> None:
     assert len(received_requests) == 2
     assert first.status_code == 204
     assert second.status_code == 204
+    assert len(completed) == 2 and {id(result) for result in completed} == {id(first), id(second)}
 
 
 @pytest.mark.asyncio
@@ -788,6 +887,14 @@ async def test_send_suppresses_httpcore_exception_details_during_response_read(
 
 
 def test_transport_implementation_does_not_hide_unknown_errors_with_catch_all() -> None:
-    source = Path("src/core/outbound_http/transport.py").read_text(encoding="utf-8")
-
-    assert "except Exception" not in source
+    tree = ast.parse(Path("src/core/outbound_http/transport.py").read_text(encoding="utf-8"))
+    broad = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        and any(isinstance(handler.type, ast.Name) and handler.type.id == "Exception" for handler in node.handlers)
+    ]
+    assert len(broad) == 1
+    call = broad[0].body[0]
+    assert isinstance(call, ast.Expr) and isinstance(call.value, ast.Call)
+    assert isinstance(call.value.func, ast.Attribute) and call.value.func.attr == "_completion_observer"

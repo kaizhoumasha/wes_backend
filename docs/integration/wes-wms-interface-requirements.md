@@ -734,7 +734,7 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
 | 其它 `409 / CONFLICT` | 同一身份对应不同内容，或违反不可变业务约束 | operation 专属冲突信息 | 禁止换 ID 掩盖，进入对账 |
 | `503 / UNAVAILABLE` | 回调接收方无法给出可靠 ACK；协议收据或 Evidence 可能已提交 | operation 专属字段或 `{}` | 使用原身份和完整消息重试，不推断未接纳 |
 
-`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。常规业务 ACK 不使用 HTTP `Retry-After`；WMS 回调请求级收据保存失败时，`503` 响应例外携带 `Retry-After: 1`。
+`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。常规业务 ACK 不使用 HTTP `Retry-After`；请求级诊断快照写入失败不改变原 ACK，也不追加该响应头。消息收据或 Evidence 的可靠持久化失败仍按对应 operation 返回 `503 / UNAVAILABLE`。
 网络超时或无法确认响应内容时，不能假定对方没有收到消息。
 
 #### 2.2.3 接收方幂等处理伪代码
@@ -2210,9 +2210,12 @@ WES 原子保存 callback receipt 和待处理 Evidence，并返回正常的 HTT
 和 `transport_task_id`。后台等待所有精确目标 `TARGET_PLACED` 已应用后继续；等待期间任务和资源锁保持原有约束，
 位置长期缺失时按既有超时机制进入对账。WMS 收到成功 ACK 后结束本次发送义务，无需为内部异步时序重发。
 
-共享入口每次请求（包括异常和重试）都在 `callback_logs` 留请求级收据，保存响应体、状态码、请求 ID 和最多 64 KiB 的原始
-请求字节（Base64，明确标记截断）；非法请求头同样有界保留原始字节。Transport 幂等收据仍保留首份身份和响应。
-数据库收据保存失败时记录错误日志并返回 `503`、`Retry-After: 1`，WMS 保留原冻结消息重试。
+共享入口每次请求（包括异常和重试）都按 [API 访问日志合同](../architecture/api-access-log.md) 冻结请求级诊断快照，
+响应发送后通过现有后台任务尽力写入统一 `wes_sys.api_access_logs`，固定 `system_id=wms`、`direction=INBOUND`。
+快照保存最终响应体、状态码、请求 ID 和最多 64 KiB 的原始请求字节（Base64，明确标记截断）；非法请求头同样有界保留原始字节。
+诊断写入失败、超时、容量不足或进程退出允许缺行，不覆盖原响应，不因诊断失败返回 `503` 或追加 `Retry-After`。
+Transport 消息收据仍保留首份身份和响应，与 Evidence 在原可靠事务内提交，成功 ACK 晚于提交；可靠接收持久化失败仍返回
+`503 / UNAVAILABLE`，WMS 保留原冻结消息重试。诊断快照不承担幂等或恢复职责，清理诊断日志不清理消息收据或 Evidence。
 
 能够通过信封和 DTO 校验、但引用未知任务、错误成员或矛盾既有事实的 evidence，仍可能先取得 `RECEIVED`。ACK 只证明 WES 已可靠保存
 原始 evidence；WES 随后冻结最小影响范围并进入诊断或对账，不以 ACK 证明搬运结果已经应用。
