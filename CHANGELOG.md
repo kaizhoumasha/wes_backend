@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.8.0] - 2026-10-10
+
+### Added
+
+- 统一 WMS、ECS 等外部系统双向 API 访问诊断日志，提供只读查询及详情接口；列表只读取摘要，详情按需读取已保存快照。
+- 外部交互日志异步尽力写入，普通日志写入故障不影响业务处理。
+- 诊断日志默认保留 7 天并自动清理，业务 Evidence 与可靠消息收据继续保留。
+
+### Changed
+
+- 迁移 `a16c9b2e7d04` 将两套旧 API/回调诊断表替换为 `wes_sys.api_access_logs`；开发测试旧诊断数据不迁移，不提供 downgrade。
+- 更新关联诊断合同及原传输层架构测试，明确诊断与可靠接收职责；HTTP 审计日志及通用 CRUD + QUERY 行为保持。
+
 ## [0.49.7.0] - 2026-10-09
 
 ### Added
