@@ -8,6 +8,8 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import delete, event, inspect, select, text
 
 from src.app.sys.models.api_access_log import (
@@ -118,7 +120,9 @@ async def test_current_schema_has_only_unified_log_shape_and_indexes(integration
             ("trace_id",),
         }
         assert await db.scalar(text("SELECT to_regclass('wes_biz.callback_logs')")) is None
-        assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "a16c9b2e7d04"
+        assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
 
 
 async def test_cleanup_preserves_cutoff_and_recent_rows_and_rolls_back_failed_batch(

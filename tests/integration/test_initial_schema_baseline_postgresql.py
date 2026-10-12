@@ -191,6 +191,78 @@ async def test_initial_schema_matches_reviewed_final_manifest(
 
 
 @pytest.mark.asyncio()
+async def test_soft_delete_actor_migration_widens_all_tables() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "9d4e6b7a120c", database_url=database_url)
+        connection_url = database_url.replace("postgresql+asyncpg", "postgresql", 1)
+        connection = await asyncpg.connect(connection_url)
+        try:
+            await connection.execute(
+                "INSERT INTO wes_sys.roles (id, name, created_at, deleted_by, is_deleted) "
+                "VALUES (1, 'soft-delete-migration', CURRENT_TIMESTAMP, 7, TRUE)"
+            )
+        finally:
+            await connection.close()
+        run_alembic("upgrade", "e1c64a8b9d20", database_url=database_url)
+        connection = await asyncpg.connect(connection_url)
+        try:
+            revisions = await connection.fetch("SELECT version_num FROM wes_sys.alembic_version")
+            assert {row["version_num"] for row in revisions} == {"e1c64a8b9d20"}
+            columns = await connection.fetch(
+                """
+                SELECT table_schema, table_name, data_type
+                FROM information_schema.columns
+                WHERE column_name = 'deleted_by'
+                  AND table_schema IN ('wes_biz', 'wes_sys')
+                """
+            )
+            assert {(row["table_schema"], row["table_name"]): row["data_type"] for row in columns} == {
+                ("wes_biz", "devices"): "bigint",
+                ("wes_biz", "work_lines"): "bigint",
+                ("wes_sys", "api_applications"): "bigint",
+                ("wes_sys", "permissions"): "bigint",
+                ("wes_sys", "roles"): "bigint",
+                ("wes_sys", "users"): "bigint",
+            }
+            assert await connection.fetchval("SELECT deleted_by FROM wes_sys.roles WHERE id = 1") == 7
+            large_actor_id = 1 << 32
+            await connection.execute("UPDATE wes_sys.roles SET deleted_by = $1 WHERE id = 1", large_actor_id)
+            assert await connection.fetchval("SELECT deleted_by FROM wes_sys.roles WHERE id = 1") == large_actor_id
+        finally:
+            await connection.close()
+
+        with pytest.raises(subprocess.CalledProcessError) as rejected:
+            run_alembic("downgrade", "9d4e6b7a120c", database_url=database_url)
+        assert "integer out of range" in rejected.value.stderr
+        connection = await asyncpg.connect(connection_url)
+        try:
+            await assert_database_head(connection, "e1c64a8b9d20")
+            assert await connection.fetchval("SELECT deleted_by FROM wes_sys.roles WHERE id = 1") == large_actor_id
+            types = await connection.fetch(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE column_name = 'deleted_by' AND table_schema IN ('wes_biz', 'wes_sys')"
+            )
+            assert len(types) == 6 and {row["data_type"] for row in types} == {"bigint"}
+            await connection.execute("UPDATE wes_sys.roles SET deleted_by = 7 WHERE id = 1")
+        finally:
+            await connection.close()
+
+        run_alembic("downgrade", "9d4e6b7a120c", database_url=database_url)
+        connection = await asyncpg.connect(connection_url)
+        try:
+            await assert_database_head(connection, "9d4e6b7a120c")
+            types = await connection.fetch(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE column_name = 'deleted_by' AND table_schema IN ('wes_biz', 'wes_sys')"
+            )
+            assert len(types) == 6 and {row["data_type"] for row in types} == {"integer"}
+            assert await connection.fetchval("SELECT deleted_by FROM wes_sys.roles WHERE id = 1") == 7
+        finally:
+            await connection.close()
+        run_alembic("upgrade", "e1c64a8b9d20", database_url=database_url)
+
+
+@pytest.mark.asyncio()
 async def test_rack_window_migration_rejects_unclosed_legacy_ingress() -> None:
     previous_revision = "aa4d58c0be72"
     async with temporary_database() as (_database, database_url):

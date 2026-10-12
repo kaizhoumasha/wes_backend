@@ -1,4 +1,4 @@
-"""迁移后所有外键列与引用列使用相同的 PostgreSQL 类型。"""
+"""迁移后外键类型一致，字符外键能完整容纳被引用身份。"""
 
 from __future__ import annotations
 
@@ -55,7 +55,18 @@ async def test_migrated_foreign_key_types_match_referenced_columns() -> None:
             assert [
                 (row["source"], row["source_type"], row["target_type"])
                 for row in rows
-                if (row["source_type"], row["source_typmod"]) != (row["target_type"], row["target_typmod"])
+                if row["source_type"] != row["target_type"]
+                or (
+                    row["source_typmod"] != row["target_typmod"]
+                    # 字符外键可以更宽，但不得截断被引用的完整身份。
+                    and not (
+                        row["source_type"] == "character varying"
+                        and (
+                            row["source_typmod"] == -1
+                            or (row["target_typmod"] != -1 and row["source_typmod"] >= row["target_typmod"])
+                        )
+                    )
+                )
             ] == []
             assert {row["source_type"] for row in rows if row["source"] in _MIGRATED_REFERENCES} == {"bigint"}
         finally:

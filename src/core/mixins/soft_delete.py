@@ -6,6 +6,7 @@
 
 from datetime import datetime
 
+from sqlalchemy import BigInteger
 from sqlmodel import Field
 
 from src.core.mixins.base import BaseMixin
@@ -30,6 +31,7 @@ class SoftDeleteMixin(BaseMixin):
 
     deleted_by: int | None = Field(
         default=None,
+        sa_type=BigInteger,
         sa_column_kwargs={"nullable": True, "comment": "删除人ID"},
     )
     deleted_at: datetime | None = Field(
