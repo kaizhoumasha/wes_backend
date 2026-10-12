@@ -174,6 +174,8 @@ async def test_inbound_face_reader_rejects_multiple_distinct_allocations() -> No
 
 @pytest.mark.asyncio
 async def test_return_result_reader_rejects_non_prefix_and_keeps_original_candidates() -> None:
+    from src.utils.canonical_json import canonical_json_digest
+
     operation_id = "019f0000-0000-7000-8000-000000000002"
     request = {
         "operation": "outbound.bin.return_batch@v1",
@@ -218,6 +220,7 @@ async def test_return_result_reader_rejects_non_prefix_and_keeps_original_candid
         workline_id=7,
         response_evidence_id=32,
         request_payload=request,
+        request_digest=canonical_json_digest(request),
         status="COMPLETED",
     )
     evidence = SimpleNamespace(
@@ -225,6 +228,8 @@ async def test_return_result_reader_rejects_non_prefix_and_keeps_original_candid
         operation=request["operation"],
         operation_id=operation_id,
         normalized_payload=response,
+        workline_id=7,
+        payload_digest=canonical_json_digest(response),
     )
     reader = bin_batch.BinBatchResultReader(_ConfirmationReader(confirmation))
 
@@ -234,6 +239,9 @@ async def test_return_result_reader_rejects_non_prefix_and_keeps_original_candid
     assert [candidate.bin_code for candidate in intent.return_candidates] == ["A000000001", "A000000002"]
     assert type(outcome.result) is sdk.BinReturnBatchReady
     assert [move.bin_code for move in outcome.result.moves] == ["A000000001"]
+    invalid_response = response | {
+        "data": response["data"] | {"moves": [response["data"]["moves"][0] | {"bin_code": "A000000002"}]}
+    }
     with pytest.raises(ValueError, match="FIFO"):
         await reader.read_return(
             object(),
@@ -241,13 +249,53 @@ async def test_return_result_reader_rejects_non_prefix_and_keeps_original_candid
                 **(
                     vars(evidence)
                     | {
-                        "normalized_payload": response
-                        | {
-                            "data": response["data"]
-                            | {"moves": [response["data"]["moves"][0] | {"bin_code": "A000000002"}]}
-                        }
+                        "normalized_payload": invalid_response,
+                        "payload_digest": canonical_json_digest(invalid_response),
                     }
                 )
             ),
             workline_id=7,
         )
+    for drift in ({"workline_id": 8}, {"payload_digest": "0" * 64}):
+        with pytest.raises(ValueError, match="original confirmation owner/digest"):
+            await reader.read_return(object(), SimpleNamespace(**(vars(evidence) | drift)), workline_id=7)
+
+
+@pytest.mark.parametrize("drift", [None, "operation", "operation_id", "owner", "digest", "payload_identity"])
+def test_return_intent_reader_validates_original_confirmation_without_response(drift):
+    from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request
+    from src.utils.canonical_json import canonical_json_digest
+
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="019f0000-0000-7000-8000-000000000002",
+        workline_code="LINE-1",
+        rack_id="R1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUT"),),
+    )
+    payload = encode_request(intent, timestamp=1)
+    confirmation = SimpleNamespace(
+        operation="outbound.bin.return_batch@v1",
+        operation_id=intent.operation_id,
+        workline_id=7,
+        request_payload=payload,
+        request_digest=canonical_json_digest(payload),
+        status="PENDING",
+    )
+    if drift == "operation":
+        confirmation.operation = "outbound.bin.inbound_batch@v1"
+    elif drift == "operation_id":
+        confirmation.operation_id = "019f0000-0000-7000-8000-000000000003"
+    elif drift == "owner":
+        confirmation.workline_id = 8
+    elif drift == "digest":
+        confirmation.request_digest = "0" * 64
+    elif drift == "payload_identity":
+        confirmation.request_payload = payload | {"operation_id": "019f0000-0000-7000-8000-000000000003"}
+        confirmation.request_digest = canonical_json_digest(confirmation.request_payload)
+    reader = bin_batch.BinBatchResultReader()
+    if drift:
+        with pytest.raises(ValueError, match="original confirmation"):
+            reader.read_return_intent(confirmation, workline_id=7, operation_id=intent.operation_id)
+    else:
+        assert reader.read_return_intent(confirmation, workline_id=7, operation_id=intent.operation_id) == intent

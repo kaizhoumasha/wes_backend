@@ -6,14 +6,193 @@ from unittest.mock import AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
+from drain_execution_support import unbound_drain_executions
 from manual_picking.application.passage_model import ManualPickingPassage
 from manual_picking.application.scan_flow import ManualPickingScanFlow
 
 from src.app.device.contracts import EcsDeviceEvent
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.plugin_binding import BusinessEvidenceDisposition
+from src.utils.timezone import timezone
 
 NOW = datetime(2026, 9, 13, 12)
+
+
+def _drain_rack_recovery(status, *, step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", action_status="FAILED"):
+    flow, evidences, *_ = _setup(missing_projection=("RACK", "RACK-1"))
+    execution = SimpleNamespace(status=status, closed_at=NOW)
+    decision = SimpleNamespace(evidence_id=1)
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=decision if status == "ACTIVE" else None),
+        for_evidence=AsyncMock(return_value=decision),
+        executions=SimpleNamespace(for_evidence=AsyncMock(return_value=execution)),
+    )
+    request = {
+        "rack_id": "RACK-1",
+        "source": {"kind": "RACK", "location_code": "RACK-1"},
+        "target": {"kind": "ZONE", "location_code": "WH01"},
+        "position": {"kind": "RACK_POSITION", "location_code": "RETURN-RACK-POSITION"},
+        "target_face": None,
+        "rcs_template_id": "F01",
+    }
+    task = SimpleNamespace(
+        status=action_status,
+        kind="RACK_ROTATE" if step.endswith("ROTATE") else "RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json=request,
+    )
+    flow._transport_reader = SimpleNamespace(get_task=AsyncMock(return_value=task))
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(
+            return_value=SimpleNamespace(
+                workline_id=7,
+                step=step,
+                source_evidence_id=1,
+                resource_fence_id="RACK-1",
+                picking_task_id=None,
+                correlation_id="drain:op-old:rack:RACK-1",
+            )
+        )
+    )
+    flow._rack_creator = SimpleNamespace(
+        create=AsyncMock(return_value=SimpleNamespace(transport_task_id="TRANSPORT-2")),
+        create_rotate=AsyncMock(),
+        create_windowed_inbound=AsyncMock(),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+        decision_next_attempt_at=NOW,
+    )
+    evidences.rows[10] = evidence
+    return flow, execution, task, evidence
+
+
+@pytest.mark.asyncio
+async def test_completed_drain_preserves_original_departure_retry():
+    flow, execution, task, _ = _drain_rack_recovery("COMPLETED")
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    flow._rack_creator.create.assert_awaited_once()
+    assert flow._rack_creator.create.return_value.transport_task_id != task.transport_task_id
+    assert flow._rack_creator.create.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
+    assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step",
+    [
+        "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN",
+        "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE",
+        "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+    ],
+)
+async def test_retired_drain_never_retries_rack_action(step):
+    flow, retired, *_ = _drain_rack_recovery("EXCEPTION_RETIRED", step=step)
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.IGNORED
+    assert retired.status == "EXCEPTION_RETIRED"
+    flow._rack_creator.create.assert_not_awaited()
+    flow._rack_creator.create_rotate.assert_not_awaited()
+    flow._rack_creator.create_windowed_inbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN", "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE"]
+)
+async def test_completed_drain_only_retains_original_departure_recovery(step):
+    flow, execution, *_ = _drain_rack_recovery("COMPLETED", step=step)
+    assert (await flow.apply_in_session(object(), 10, workline_id=7)).disposition is BusinessEvidenceDisposition.IGNORED
+    flow._rack_creator.create_rotate.assert_not_awaited()
+    flow._rack_creator.create_windowed_inbound.assert_not_awaited()
+    assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_completed_departure_with_satisfied_goal_does_not_retry():
+    flow, execution, *_ = _drain_rack_recovery("COMPLETED")
+    flow._positions = _Projections()
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "WH01-RACK-1"},
+            arrival_face=None,
+            source_transport_task_id="NEW-SUCCESS",
+        )
+    )
+    original = flow._transport_reader.get_task.return_value
+    flow._transport_reader.get_task.side_effect = lambda _db, task_id, **_: (
+        SimpleNamespace(status="SUCCEEDED", request_json={"target": original.request_json["target"]})
+        if task_id == "NEW-SUCCESS"
+        else original
+    )
+    assert (await flow.apply_in_session(object(), 10, workline_id=7)).disposition is BusinessEvidenceDisposition.IGNORED
+    flow._rack_creator.create.assert_not_awaited()
+    assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action_status", ["PENDING", "ACCEPTED", "RECONCILING", "SUCCEEDED"])
+async def test_completed_departure_without_terminal_original_action_does_not_retry(action_status):
+    flow, execution, *_ = _drain_rack_recovery("COMPLETED", action_status=action_status)
+    assert (await flow.apply_in_session(object(), 10, workline_id=7)).disposition is BusinessEvidenceDisposition.IGNORED
+    flow._rack_creator.create.assert_not_awaited()
+    assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_completed_departure_without_original_requirement_does_not_retry():
+    flow, execution, *_ = _drain_rack_recovery("COMPLETED")
+    flow._drains.for_evidence.return_value = None
+    assert (await flow.apply_in_session(object(), 10, workline_id=7)).disposition is BusinessEvidenceDisposition.IGNORED
+    flow._rack_creator.create.assert_not_awaited()
+    assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["COMPLETED", "EXCEPTION_RETIRED"])
+@pytest.mark.parametrize("result_status", ["SUCCEEDED", "UNKNOWN"])
+async def test_terminal_drain_replay_does_not_reopen_execution(status, result_status):
+    flow, execution, task, evidence = _drain_rack_recovery(status, action_status=result_status)
+    evidence.normalized_payload.update(
+        status=result_status,
+        members=[
+            {
+                "object_id": "RACK-1",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "WH01-RACK-1"},
+            }
+        ]
+        if result_status == "SUCCEEDED"
+        else [],
+    )
+    for _ in range(2):
+        assert (
+            await flow.apply_in_session(object(), 10, workline_id=7)
+        ).disposition is BusinessEvidenceDisposition.APPLIED
+    assert execution.status == status
+    assert task.transport_task_id == "TRANSPORT-1"
+    flow._rack_creator.create.assert_not_awaited()
+    flow._drains.current.assert_not_awaited()
 
 
 def _scan(evidence_id: int, device_code: str, bin_code: str) -> InboundEvidence:
@@ -267,6 +446,9 @@ class _BatchProgress:
     async def has_active_bin_transport(self, db, bin_code):  # type: ignore[no-untyped-def]
         return self.active_transport
 
+    async def has_earlier_due_source_retry(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        return False
+
     def __init__(self) -> None:
         self.scanned = set()
 
@@ -360,6 +542,7 @@ def _setup(
         position_reader=_Projections(missing_projection),
         batch_reader=batch_reader,
         batch_result=batch_result,
+        drain_executions=unbound_drain_executions(),
     )
     return flow, evidences, passages, commands, admissions
 
@@ -586,7 +769,11 @@ async def test_return_transport_final_result_does_not_close_fifo_without_source_
     )
     transport_reader = SimpleNamespace(get_task=AsyncMock(return_value=task))
     flow = ManualPickingScanFlow(
-        commands=object(), admissions=object(), passages=passages, transport_reader=transport_reader
+        commands=object(),
+        admissions=object(),
+        passages=passages,
+        transport_reader=transport_reader,
+        drain_executions=unbound_drain_executions(),
     )
     payload = {
         "transport_task_id": "move-1",
@@ -783,13 +970,19 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
             )
         )
     flow._rack_creator = creator
-    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(return_value=binding),
+        list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
+    )
     flow._tasks = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED"))
+        get_by_id_for_update=AsyncMock(
+            return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED", last_applied_plan_revision=1)
+        )
     )
     flow._source_racks = SimpleNamespace(
         list_active_bin_source_racks=AsyncMock(
-            return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1),)
+            return_value=(SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),)
             if member_active
             else ()
         ),
@@ -846,6 +1039,638 @@ async def test_cancelled_rack_follows_business_basis_and_goal_fact(
     assert creator.create_windowed_inbound.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
     assert creator.create_windowed_inbound.await_args.kwargs["retry_terminal_inbound"] is True
     assert creator.create_windowed_inbound.await_args.kwargs["intent"].rack_id == "RACK-1"
+
+
+@pytest.mark.asyncio
+async def test_source_rack_retry_defers_to_pending_first_candidate_without_advancing_attempt() -> None:
+    """R3：还有未决首次候选时，重试候选让路，不推进尝试编号、不创建 Transport。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"},
+            "target_face": "90",
+            "rcs_template_id": "CTU01",
+        },
+    )
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock(return_value="CREATED"))
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=31,
+        correlation_id="pt:31:e:1:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(return_value=binding),
+        list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
+    )
+    flow._tasks = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(
+            return_value=SimpleNamespace(id=31, status="EXECUTING", last_applied_plan_revision=1)
+        )
+    )
+    flow._source_racks = SimpleNamespace(
+        list_active_bin_source_racks=AsyncMock(
+            return_value=(
+                SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),
+                SimpleNamespace(rack_id="RACK-2", rack_face="90", source_evidence_id=2, plan_revision=1),
+            )
+        ),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    first = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_not_awaited()
+
+    evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (second.disposition, second.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_not_awaited()
+    assert binding.correlation_id == "pt:31:e:1:rack:RACK-1"
+
+
+@pytest.mark.asyncio
+async def test_source_rack_retry_ignores_same_rack_candidate_with_active_window() -> None:
+    now = timezone.now_for_db()
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=now)
+    flow._tasks.get_by_id_for_update = AsyncMock(
+        return_value=SimpleNamespace(id=31, status="EXECUTING", last_applied_plan_revision=2)
+    )
+    flow._transport_bindings.list_task_member_bindings = AsyncMock(return_value={(1, "RACK-1")})
+    flow._transport_bindings.list_active_window_for_target = AsyncMock(
+        return_value=[SimpleNamespace(resource_fence_id="RACK-1")]
+    )
+    flow._source_racks.list_active_bin_source_racks = AsyncMock(
+        return_value=(
+            SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),
+            SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=2, plan_revision=2),
+        )
+    )
+    flow._batch_progress.has_earlier_due_source_retry = AsyncMock(return_value=False)
+    creator = flow._rack_creator
+    creator.create_windowed_inbound.return_value = "REUSED"
+
+    await flow.apply_in_session(object(), 10, workline_id=7)
+    evidence.decision_next_attempt_at = now
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create_windowed_inbound.assert_awaited_once()
+    assert creator.create_windowed_inbound.await_args.kwargs["retry_terminal_inbound"] is True
+
+
+@pytest.mark.asyncio
+async def test_later_source_rack_retry_yields_to_earlier_due_member() -> None:
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=timezone.now_for_db())
+    binding = flow._transport_bindings.get_by_client_request_id.return_value
+    binding.source_evidence_id = 2
+    binding.resource_fence_id = "RACK-2"
+    flow._transport_reader.get_task.return_value.request_json["rack_id"] = "RACK-2"
+    evidence.normalized_payload["rack_id"] = "RACK-2"
+    evidence.normalized_payload["source_evidence_id"] = 2
+    flow._positions.missing = ("RACK", "RACK-2")
+    flow._transport_bindings.list_task_member_bindings = AsyncMock(return_value={(1, "RACK-1"), (2, "RACK-2")})
+    flow._transport_bindings.list_active_window_for_target = AsyncMock(return_value=[])
+    flow._batch_progress.has_earlier_due_source_retry = AsyncMock(return_value=True)
+    evidence.decision_next_attempt_at = timezone.now_for_db()
+
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    flow._batch_progress.has_earlier_due_source_retry.assert_awaited_once()
+    flow._rack_creator.create_windowed_inbound.assert_not_awaited()
+
+
+def _source_rack_retry_deferred_by_first_candidate(*, received_at):  # type: ignore[no-untyped-def]
+    """构造一个因未决首次候选而持续让路的重试候选场景，供等待时长可观测性测试复用。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"},
+            "target_face": "90",
+            "rcs_template_id": "CTU01",
+        },
+    )
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=31,
+        correlation_id="pt:31:e:1:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
+    flow._transport_bindings = SimpleNamespace(
+        get_by_client_request_id=AsyncMock(return_value=binding),
+        list_task_member_bindings=AsyncMock(return_value={(1, "RACK-1")}),
+        list_active_window_for_target=AsyncMock(return_value=[]),
+    )
+    flow._tasks = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(
+            return_value=SimpleNamespace(id=31, status="EXECUTING", last_applied_plan_revision=1)
+        )
+    )
+    flow._source_racks = SimpleNamespace(
+        list_active_bin_source_racks=AsyncMock(
+            return_value=(
+                SimpleNamespace(rack_id="RACK-1", rack_face="90", source_evidence_id=1, plan_revision=1),
+                SimpleNamespace(rack_id="RACK-2", rack_face="90", source_evidence_id=2, plan_revision=1),
+            )
+        ),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=received_at,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+    return flow, evidence
+
+
+@pytest.mark.asyncio
+async def test_source_rack_retry_warns_when_first_candidate_wait_exceeds_threshold(caplog) -> None:
+    """R3 可观测性：重试候选因未决首次候选让路超过阈值时记录告警（2026-09-27）。"""
+    now = timezone.now_for_db()
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=now - timedelta(minutes=5))
+
+    # 第一次调用只是走退避（decision_next_attempt_at 还是 None）；第二次才真正进入 R3 让路分支。
+    await flow.apply_in_session(object(), 10, workline_id=7)
+    evidence.decision_next_attempt_at = now
+
+    with caplog.at_level("WARNING"):
+        result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    assert any(getattr(record, "rack_id", None) == "RACK-1" for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_source_rack_retry_does_not_warn_when_first_candidate_wait_is_still_fresh(caplog) -> None:
+    """刚开始让路、还没超过阈值时不应该告警（避免每次让路都刷日志）。"""
+    now = timezone.now_for_db()
+    flow, evidence = _source_rack_retry_deferred_by_first_candidate(received_at=now)
+
+    await flow.apply_in_session(object(), 10, workline_id=7)
+    evidence.decision_next_attempt_at = now
+
+    with caplog.at_level("WARNING"):
+        result = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_drain_departure_retry_survives_current_drain_moving_to_a_new_decision() -> None:
+    """R5：current drain 已换成新决定时，退场重试仍按冻结 evidence 独立定位原决定并继续。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": None,
+            "rcs_template_id": "F01",
+        },
+    )
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=None,
+        correlation_id="drain:1:op-old:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._drains = SimpleNamespace(
+        executions=unbound_drain_executions(),
+        current=AsyncMock(return_value=SimpleNamespace(evidence_id=2)),  # current drain 已经切换到新决定
+        for_evidence=AsyncMock(return_value=SimpleNamespace(evidence_id=1)),  # 原决定按冻结 evidence 仍可定位
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    first = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+    creator.create.assert_not_awaited()
+
+    evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+
+    assert second.disposition is BusinessEvidenceDisposition.APPLIED
+    creator.create.assert_awaited_once()
+    flow._drains.for_evidence.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_departure_retry_ignored_when_evidence_has_no_drain_decision_at_all() -> None:
+    """current drain 不匹配、按冻结 evidence 也定位不到任何决定时，仍按原样 IGNORED。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": None,
+            "rcs_template_id": "F01",
+        },
+    )
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=None,
+        correlation_id="drain:1:op-old:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._drains = SimpleNamespace(
+        executions=unbound_drain_executions(),
+        current=AsyncMock(return_value=None),
+        for_evidence=AsyncMock(return_value=None),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.IGNORED
+    creator.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("step", "should_resolve_history"),
+    [
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN", False),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE", False),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", True),
+    ],
+)
+async def test_drain_history_fallback_is_limited_to_departure(step, should_resolve_history) -> None:
+    flow, *_ = _setup()
+    current = SimpleNamespace(evidence_id=2)
+    frozen = SimpleNamespace(evidence_id=1)
+    flow._drains = SimpleNamespace(
+        executions=unbound_drain_executions(),
+        current=AsyncMock(return_value=current),
+        for_evidence=AsyncMock(return_value=frozen),
+    )
+    binding = SimpleNamespace(source_evidence_id=1)
+
+    result = await flow._resolve_drain_decision(object(), 7, step, binding)
+
+    if should_resolve_history:
+        assert result is frozen
+        flow._drains.for_evidence.assert_awaited_once()
+    else:
+        assert result is None
+        flow._drains.for_evidence.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("step", "picking_task_id"),
+    [
+        ("MANUAL_PICKING_SOURCE_RACK_OUT", 31),
+        ("MANUAL_PICKING_RETURN_RACK_OUT", 31),
+        ("MANUAL_PICKING_TRANSFER_RACK_OUT", 31),
+        ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", None),
+    ],
+)
+async def test_rack_departure_retry_ignored_when_zone_goal_already_satisfied(step, picking_task_id) -> None:
+    """R5：来源、退料、转运、drain 的 ZONE 目标已满足时均不创建新的退场重试。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": None,
+            "rcs_template_id": "F01",
+        },
+    )
+
+    async def get_task(_db, transport_task_id, *, for_update=False):
+        if transport_task_id == "MOVE-RACK-1":
+            return SimpleNamespace(
+                status="SUCCEEDED", request_json={"target": {"kind": "ZONE", "location_code": "WH01"}}
+            )
+        return transport_task
+
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
+    binding = SimpleNamespace(
+        workline_id=7,
+        step=step,
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=picking_task_id,
+        correlation_id="drain:1:op-old:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(transport_reader=SimpleNamespace(get_task=AsyncMock(side_effect=get_task)))
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=SimpleNamespace(evidence_id=1)),
+        executions=unbound_drain_executions(),
+    )
+    flow._tasks.get_by_id_for_update = AsyncMock(
+        return_value=SimpleNamespace(id=31, status="EXECUTION_COMPLETED", last_applied_plan_revision=1)
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    result = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.IGNORED
+    creator.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_departure_retry_created_when_zone_goal_not_yet_satisfied() -> None:
+    """R5：ZONE 目标货架仍未知/未到位时，退场重试照常创建。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": None,
+            "rcs_template_id": "F01",
+        },
+    )
+    creator = SimpleNamespace(create=AsyncMock(), create_windowed_inbound=AsyncMock())
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=None,
+        correlation_id="drain:1:op-old:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(
+        transport_reader=SimpleNamespace(get_task=AsyncMock(return_value=transport_task)),
+        missing_projection=("RACK", "RACK-1"),
+    )
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=SimpleNamespace(evidence_id=1)),
+        executions=unbound_drain_executions(),
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    first = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+
+    evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    creator.create.return_value = None
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert second.disposition is BusinessEvidenceDisposition.APPLIED
+    creator.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_drain_departure_retry_ignores_an_unrelated_later_transport_to_a_different_target() -> None:
+    """R5：货架最新一次成功搬运若不是去这个 ZONE，不能当作这次退场目标已满足（红队发现）。"""
+    transport_task = SimpleNamespace(
+        status="FAILED",
+        kind="RACK_MOVE",
+        transport_task_id="TRANSPORT-1",
+        client_request_id="REQUEST-1",
+        request_json={
+            "rack_id": "RACK-1",
+            "source": {"kind": "RACK", "location_code": "RACK-1"},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": None,
+            "rcs_template_id": "F01",
+        },
+    )
+    # 货架后来被重新收纳去了别的目标点（一次跟本次退场无关的成功搬运）。
+    later_transport = SimpleNamespace(
+        status="SUCCEEDED",
+        request_json={"target": {"kind": "RACK_POSITION", "location_code": "OTHER-POS"}},
+    )
+
+    async def get_task(_db, transport_task_id, *, for_update=False):
+        if transport_task_id == "later-unrelated-move":
+            return later_transport
+        return transport_task
+
+    creator = SimpleNamespace(create=AsyncMock(return_value=None), create_windowed_inbound=AsyncMock())
+    binding = SimpleNamespace(
+        workline_id=7,
+        step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        source_evidence_id=1,
+        resource_fence_id="RACK-1",
+        picking_task_id=None,
+        correlation_id="drain:1:op-old:rack:RACK-1",
+    )
+    flow, evidences, _, _, _ = _setup(transport_reader=SimpleNamespace(get_task=AsyncMock(side_effect=get_task)))
+    flow._rack_creator = creator
+    flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(return_value=SimpleNamespace(evidence_id=1)),
+        executions=unbound_drain_executions(),
+    )
+    flow._positions = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                workline_id=7,
+                position_unknown=False,
+                position_json={"kind": "RACK_POSITION", "location_code": "OTHER-POS"},
+                arrival_face=None,
+                source_transport_task_id="later-unrelated-move",
+            )
+        )
+    )
+    evidence = InboundEvidence(
+        id=10,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        payload_digest="d" * 64,
+        normalized_payload={
+            "transport_task_id": "TRANSPORT-1",
+            "client_request_id": "REQUEST-1",
+            "caller": {"workline_id": "7"},
+            "status": "FAILED",
+            "reason_code": "RCS_TASK_CANCELLED",
+            "rack_id": "RACK-1",
+            "step": binding.step,
+            "source_evidence_id": 1,
+        },
+        received_at=NOW,
+        workline_id=7,
+        transport_task_id="TRANSPORT-1",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+    evidences.rows[10] = evidence
+
+    first = await flow.apply_in_session(object(), 10, workline_id=7)
+    # 不该被判定 IGNORED：那次成功搬运去的是 OTHER-POS，跟这次要退场的 WH01 无关。
+    assert (first.disposition, first.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
+
+    evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
+    second = await flow.apply_in_session(object(), 10, workline_id=7)
+    assert second.disposition is BusinessEvidenceDisposition.APPLIED
+    creator.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1921,7 +2746,14 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
         if case != "pending"
         else None
     )
+    drain.intent = SimpleNamespace(operation_id="drain-original")
+    flow._drain_executions.execution_for_return_batch.return_value = (
+        None
+        if case in {"wrong_rack", "pending"}
+        else SimpleNamespace(status="ACTIVE", decision_evidence_id=9, drain_operation_id="drain-original")
+    )
     flow._drains = SimpleNamespace(
+        for_evidence=AsyncMock(return_value=drain),
         current=AsyncMock(return_value=drain),
         transport=AsyncMock(return_value=None if case == "no_ingress" else object()),
         arrival_matches=AsyncMock(return_value=case != "wrong_member"),
@@ -1994,6 +2826,8 @@ async def test_drain_wms_response_is_validated_and_published_for_plan_wake():
             )
         )
     )
+    evidence.created_at = timezone.now_for_db()
+    flow._drains = SimpleNamespace(executions=SimpleNamespace(ensure_ready_in_session=AsyncMock()))
     applied = await flow.apply_in_session(object(), 31, workline_id=7)
     assert applied.disposition is BusinessEvidenceDisposition.APPLIED
     flow._drain_reader.read.assert_awaited_once()
@@ -2118,3 +2952,49 @@ async def test_scan3_independent_reentry_is_not_blocked_by_another_bins_command(
     assert commands.requests[-1].task_type == "MOVE_FORWARD"
     assert commands.statuses["COMMAND-1"] == "ACKNOWLEDGED"
     assert flow._returns.rows[-1].bin_code == "A000000541"
+
+
+async def _assert_retired_drain_batch_consumed(reused):
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="old-return",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, evidences, *_ = _setup(
+        batch_reader=reader, batch_result=result, missing_projection=None if reused else ("RACK", "RACK-1")
+    )
+    flow._drain_executions = SimpleNamespace(
+        execution_for_return_batch=AsyncMock(return_value=SimpleNamespace(id=81, status="EXCEPTION_RETIRED")),
+    )
+    flow._drains = SimpleNamespace(
+        current=AsyncMock(
+            return_value=SimpleNamespace(result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("RACK-1", ("90",)),)))
+        ),
+        transport=AsyncMock(return_value=None),
+        arrival_matches=AsyncMock(return_value=False),
+    )
+    evidence = _wms(31, InboundEvidenceKind.WMS_RESULT, "old-return", {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[31] = evidence
+    flow._positions.get = AsyncMock()
+    for _ in range(2):
+        applied = await flow.apply_in_session(object(), 31, workline_id=7)
+        assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+    assert evidences.rows[31] is evidence
+    result.apply_return_in_session.assert_not_awaited()
+    flow._positions.get.assert_not_awaited()
+    flow._drains.current.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retired_drain_ready_is_consumed_without_bin_move():
+    await _assert_retired_drain_batch_consumed(False)
+
+
+@pytest.mark.asyncio
+async def test_old_batch_owner_survives_reused_rack_face():
+    await _assert_retired_drain_batch_consumed(True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,7 +19,7 @@ def _app(handler: AsyncMock | None) -> FastAPI:
     app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
     app.state.wms_manual_rack_direct_pick_handler = SimpleNamespace(handle=handler) if handler is not None else None
     app.state.wms_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=Mock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.include_router(router, prefix="/api/v1/wms")
     return app

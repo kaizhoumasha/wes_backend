@@ -27,11 +27,13 @@ from src.app.wms_adapter.outbound_picking.return_batch_typed import decode_outco
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request as encode_return
 from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     BIN_RETURN_BATCH_OPERATION,
+    BinReturnBatchRequest,
     parse_bin_return_batch_request,
     parse_bin_return_batch_response,
 )
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import PickingTaskRepository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -146,14 +148,23 @@ class BinBatchResultReader:
         )
         return intent, decode_inbound(payload)
 
-    async def read_return(self, db: AsyncSession, evidence: object, *, workline_id: int):
-        confirmation = await self._matched_confirmation(
-            db, evidence, workline_id=workline_id, operation=BIN_RETURN_BATCH_OPERATION
-        )
+    @staticmethod
+    def _return_request(confirmation: WmsConfirmation, *, workline_id: int, operation_id: str) -> BinReturnBatchRequest:
+        if (
+            confirmation.operation != BIN_RETURN_BATCH_OPERATION
+            or confirmation.operation_id != operation_id
+            or confirmation.workline_id != workline_id
+            or confirmation.request_digest != canonical_json_digest(confirmation.request_payload)
+        ):
+            raise ValueError("return request does not match original confirmation identity/owner/digest")
         request = parse_bin_return_batch_request(confirmation.request_payload)
-        payload = getattr(evidence, "normalized_payload", None)
-        _ = parse_bin_return_batch_response(self._response_status(payload), payload, request=request)
-        intent = wms_operations.outbound_bin_return_batch(
+        if request.operation_id != operation_id:
+            raise ValueError("return request does not match original confirmation identity")
+        return request
+
+    @staticmethod
+    def _return_intent(request: BinReturnBatchRequest) -> BinReturnBatchIntent:
+        return wms_operations.outbound_bin_return_batch(
             operation_id=request.operation_id,
             workline_code=request.data.workline_code,
             rack_id=request.data.rack_id,
@@ -163,7 +174,27 @@ class BinBatchResultReader:
                 for candidate in request.data.return_candidates
             ),
         )
-        return intent, decode_return(payload)
+
+    def read_return_intent(
+        self, confirmation: WmsConfirmation, *, workline_id: int, operation_id: str
+    ) -> BinReturnBatchIntent:
+        """读取原退箱义务；未收到响应时也只暴露经身份、owner、摘要校验的 typed intent。"""
+        return self._return_intent(
+            self._return_request(confirmation, workline_id=workline_id, operation_id=operation_id)
+        )
+
+    async def read_return(self, db: AsyncSession, evidence: object, *, workline_id: int):
+        confirmation = await self._matched_confirmation(
+            db, evidence, workline_id=workline_id, operation=BIN_RETURN_BATCH_OPERATION
+        )
+        request = self._return_request(confirmation, workline_id=workline_id, operation_id=confirmation.operation_id)
+        payload = getattr(evidence, "normalized_payload", None)
+        if getattr(evidence, "workline_id", None) != workline_id or getattr(
+            evidence, "payload_digest", None
+        ) != canonical_json_digest(payload):
+            raise ValueError("return evidence does not match original confirmation owner/digest")
+        _ = parse_bin_return_batch_response(self._response_status(payload), payload, request=request)
+        return self._return_intent(request), decode_return(payload)
 
     async def _latest_for_face(
         self,

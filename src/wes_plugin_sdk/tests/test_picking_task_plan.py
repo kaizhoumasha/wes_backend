@@ -9,7 +9,9 @@ import wes_plugin_sdk as sdk
 
 
 def test_admission_fact_is_immutable_and_accepts_bin_only_plan():
-    fact = sdk.PickingTaskPlanAdmissionFact(task_id="PICK-1", plan_revision=1, has_direct_picks=False)
+    fact = sdk.PickingTaskPlanAdmissionFact(
+        task_id="PICK-1", plan_revision=1, has_direct_picks=False, has_target_rack=False, position_bindings=()
+    )
 
     assert fact.task_id == "PICK-1"  # nosec B101 - pytest assertion
     assert fact.plan_revision == 1  # nosec B101 - pytest assertion
@@ -20,11 +22,17 @@ def test_admission_fact_is_immutable_and_accepts_bin_only_plan():
 
 def test_admission_fact_rejects_invalid_identity_values():
     with pytest.raises(ValueError):
-        sdk.PickingTaskPlanAdmissionFact(task_id=" ", plan_revision=1, has_direct_picks=False)
+        sdk.PickingTaskPlanAdmissionFact(
+            task_id=" ", plan_revision=1, has_direct_picks=False, has_target_rack=False, position_bindings=()
+        )
     with pytest.raises(ValueError):
-        sdk.PickingTaskPlanAdmissionFact(task_id="PICK-1", plan_revision=0, has_direct_picks=False)
+        sdk.PickingTaskPlanAdmissionFact(
+            task_id="PICK-1", plan_revision=0, has_direct_picks=False, has_target_rack=False, position_bindings=()
+        )
     with pytest.raises(TypeError):
-        sdk.PickingTaskPlanAdmissionFact(task_id="PICK-1", plan_revision=1, has_direct_picks=0)
+        sdk.PickingTaskPlanAdmissionFact(
+            task_id="PICK-1", plan_revision=1, has_direct_picks=0, has_target_rack=False, position_bindings=()
+        )
 
 
 def test_direct_pick_rejection_requires_and_preserves_stable_reason_code():

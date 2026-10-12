@@ -38,9 +38,9 @@ async def _seed_master_and_runtime(session: AsyncSession) -> None:
     )
     await session.execute(
         text(
-            "INSERT INTO wes_biz.callback_logs ("
-            "created_at, callback_type, subject_code, request_body, response_status, response_time_ms"
-            ") VALUES (CURRENT_TIMESTAMP, 'event', 'RESET-RUNTIME', '{}'::json, 200, 1)"
+            "INSERT INTO wes_sys.api_access_logs ("
+            "id, created_at, system_id, direction, method, path, details, status_code, response_time_ms"
+            ") VALUES (987654321, CURRENT_TIMESTAMP, 'ecs', 'INBOUND', 'POST', '/event', '{}'::json, 200, 1)"
         )
     )
     await session.commit()
@@ -114,10 +114,10 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         reset_mocks=False,
                     )
                     assert any(
-                        row["table"] == "wes_biz.callback_logs" and row["rows_before"] == 1
+                        row["table"] == "wes_sys.api_access_logs" and row["rows_before"] == 1
                         for row in dry_summary.truncated
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 1
+                    assert await session.scalar(text("SELECT count(*) FROM wes_sys.api_access_logs")) == 1
                     assert (
                         await session.scalar(
                             text("SELECT is_active FROM wes_biz.work_lines WHERE line_code = 'RESET-WORKLINE'")
@@ -131,7 +131,7 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         include_audit_logs=False,
                         reset_mocks=False,
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 0
+                    assert await session.scalar(text("SELECT count(*) FROM wes_sys.api_access_logs")) == 0
                     workline = (
                         await session.execute(
                             text(
@@ -155,7 +155,7 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
 
             connection = await connect(database)
             try:
-                assert await connection.fetchval("SELECT count(*) FROM wes_biz.callback_logs") == 0
+                assert await connection.fetchval("SELECT count(*) FROM wes_sys.api_access_logs") == 0
             finally:
                 await connection.close()
 
@@ -170,9 +170,9 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
             run_alembic("upgrade", "head", database_url=database_url)
             connection = await connect(database)
             try:
-                await connection.execute("ALTER TABLE wes_biz.callback_logs RENAME TO callback_logs_saved")
+                await connection.execute("ALTER TABLE wes_sys.api_access_logs RENAME TO api_access_logs_saved")
                 if failure_mode == "schema-mismatch":
-                    await connection.execute("CREATE TABLE wes_sys.callback_logs (id bigint primary key)")
+                    await connection.execute("CREATE TABLE wes_biz.api_access_logs (id bigint primary key)")
                 await connection.execute(
                     "INSERT INTO wes_biz.devices "
                     "(created_at, updated_at, device_code, device_name, is_active, sort_order, diagnostic_profile, is_deleted) "
@@ -199,7 +199,7 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
                         )
                         == 1
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs_saved")) == 0
+                    assert await session.scalar(text("SELECT count(*) FROM wes_sys.api_access_logs_saved")) == 0
             finally:
                 await engine.dispose()
 

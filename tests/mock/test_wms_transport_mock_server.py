@@ -1355,18 +1355,32 @@ def test_kt16_good_case_replays_recorded_decisions_and_completion_events(monkeyp
 
 
 @pytest.mark.parametrize(
-    ("inbound_template", "target_location", "outbound_template", "outbound_target", "outbound_final"),
+    (
+        "inbound_template",
+        "target_location",
+        "outbound_template",
+        "outbound_target",
+        "outbound_final",
+        "deliver_departure_result",
+    ),
     [
-        ("CTU01", "KT16", "CTU03", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01"),
-        ("F01", "OUT65", "F01", {"kind": "ZONE", "location_code": "SMT_T"}, "SMT_T-01"),
-        ("F01", "OUT65", "F01", {"kind": "RACK_POSITION", "location_code": "STORE-POS"}, "STORE-POS"),
-        ("F01", "RETURN_WORK", "F01", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01"),
+        ("CTU01", "KT16", "CTU03", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01", True),
+        ("CTU01", "KT16", "CTU03", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01", False),
+        ("F01", "OUT65", "F01", {"kind": "ZONE", "location_code": "SMT_T"}, "SMT_T-01", True),
+        ("F01", "OUT65", "F01", {"kind": "RACK_POSITION", "location_code": "STORE-POS"}, "STORE-POS", True),
+        ("F01", "RETURN_WORK", "F01", {"kind": "ZONE", "location_code": "WH01"}, "WH01-01", True),
     ],
 )
 @pytest.mark.parametrize("capacity", [1, 3])
 @pytest.mark.asyncio
 async def test_transport_capacity_reuses_inflight_rack_and_recalls_it_after_return(
-    capacity, inbound_template, target_location, outbound_template, outbound_target, outbound_final
+    capacity,
+    inbound_template,
+    target_location,
+    outbound_template,
+    outbound_target,
+    outbound_final,
+    deliver_departure_result,
 ):
     from src.app.execution.services.rack_inbound_window import RackInboundWindowService
     from src.app.transport.contracts import TransportHandle
@@ -1490,19 +1504,38 @@ async def test_transport_capacity_reuses_inflight_rack_and_recalls_it_after_retu
             assert await admit(capacity + 1) == "PENDING"
             assert client.post("/api/v1/wes/transport-requests", json=departure).status_code == 202
             assert await window.release_on_departure_accepted(db, client_request_id=departure["operation_id"])
-            wms_mock_server.transport_submission_store.apply_result(
-                {
-                    "transport_task_id": departure["data"]["transport_task_id"],
-                    "kind": "RACK_MOVE",
-                    "outcome_revision": 1,
-                    "rack_id": "RACK-1",
-                    "status": "SUCCEEDED",
-                    "arrival_face": "270",
-                    "final_position": {"kind": "RACK_POSITION", "location_code": outbound_final},
-                }
-            )
+            if deliver_departure_result:
+                wms_mock_server.transport_submission_store.apply_result(
+                    {
+                        "transport_task_id": departure["data"]["transport_task_id"],
+                        "kind": "RACK_MOVE",
+                        "outcome_revision": 1,
+                        "rack_id": "RACK-1",
+                        "status": "SUCCEEDED",
+                        "arrival_face": "270",
+                        "final_position": {"kind": "RACK_POSITION", "location_code": outbound_final},
+                    }
+                )
 
         await return_rack(1)
+        if not deliver_departure_result:
+            assert rows[0].window_released_at is not None
+            assert await admit(capacity + 1) == "CREATED"
+            wms_mock_server.transport_submission_store.apply_result(
+                {
+                    "transport_task_id": f"inbound-RACK-{capacity + 1}-1",
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": f"RACK-{capacity + 1}",
+                    "status": "SUCCEEDED",
+                    "arrival_face": "270",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": target_location},
+                }
+            )
+            next_rack = f"RACK-{capacity + 1}"
+            assert wms_mock_server.transport_submission_store.rack_faces({next_rack}) == {next_rack: "270"}
+            assert await admit(capacity + 1) == "REUSED"
+            return
         assert await admit(1, cycle=2) == "CREATED"  # 回库后，新业务依据再次呼叫同架
         active_rack_one = [row for row in rows if row.resource_fence_id == "RACK-1" and row.window_released_at is None]
         assert len(active_rack_one) == 1

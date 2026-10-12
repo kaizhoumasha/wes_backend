@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -57,7 +57,7 @@ async def test_history_keeps_each_attempt_and_projects_current_state_without_fab
                 {"id": 8, "source_rank": 0, "recorded_at": NOW},
             ]
         ),
-        load_logs=AsyncMock(return_value={10: SimpleNamespace(request_body=attempt.model_dump(mode="json"))}),
+        load_logs=AsyncMock(return_value={10: SimpleNamespace(details=attempt.model_dump(mode="json"))}),
         load_evidences=AsyncMock(return_value={7: evidence, 8: old}),
     )
     service = DeviceIngressHistoryService(session_context=_session, repository=repo)
@@ -118,16 +118,19 @@ async def test_history_projects_internal_device_observation_without_fabricating_
     assert repo.page_keys.await_args.kwargs["kind"] == "DEVICE_OBSERVATION"
 
 
-async def test_recording_uses_generic_callback_log_with_diagnostic_type_and_preserves_full_device_code():
-    logs = SimpleNamespace(log_callback=AsyncMock())
+def test_recording_defers_unified_ecs_log_and_preserves_full_device_code():
+    logs = SimpleNamespace(defer_record=Mock())
     service = DeviceIngressHistoryService(session_context=_session, log_service=logs)
     attempt = _attempt()
-    await service.record_attempt(attempt)
-    args = logs.log_callback.call_args.kwargs
-    assert args["callback_type"] == "device_ingress_attempt"
-    assert args["subject_code"] == "DEVICE_INGRESS"
-    assert args["request_id"] == attempt.request_id
-    assert args["request_body"] == attempt.model_dump(mode="json")
+    service.record_attempt(attempt)
+    entry = logs.defer_record.call_args.args[0]
+    assert entry.system_id == "ecs"
+    assert entry.direction == "INBOUND"
+    assert entry.request_id == attempt.request_id
+    assert entry.path == attempt.path
+    assert entry.status_code == attempt.status_code
+    assert entry.response_time_ms is None
+    assert entry.details == attempt.model_dump(mode="json")
 
 
 @pytest.mark.parametrize("cursor", ["bad!", "", "WzEsMixudWxsXQ", "W10"])

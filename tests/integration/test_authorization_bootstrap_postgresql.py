@@ -74,9 +74,9 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     fresh_preview = await service.converge_authorization(app, db, dry_run=True)
                     assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
                     # 设备联调入口仅由超级管理员依赖保护，不进入普通 RBAC 权限目录。
-                    assert fresh_preview.permissions.created == 129
+                    assert fresh_preview.permissions.created == 122
                     assert fresh_preview.role_permissions == {
-                        "added": 318,
+                        "added": 297,
                         "removed": 0,
                         "skipped": 0,
                         "roles_processed": 5,
@@ -117,6 +117,18 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     )
                     expected_permission_names = {payload["name"] for payload in build_permission_catalog(app)}
                     assert {permission.name for permission in permissions} == expected_permission_names
+                    api_access_log_permissions = {
+                        "sys:apiaccesslog:group",
+                        "sys:apiaccesslog:list",
+                        "sys:apiaccesslog:detail",
+                    }
+                    assert {
+                        name for name in expected_permission_names if name.startswith("sys:apiaccesslog:")
+                    } == api_access_log_permissions
+                    assert not any(
+                        name.startswith(("api-auth:apiaccesslog:", "callback:callback_log:"))
+                        for name in expected_permission_names
+                    )
 
                     role_names_by_id = {role.id: role.name for role in roles}
                     permission_names_by_id = {permission.id: permission.name for permission in permissions}
@@ -124,12 +136,16 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     for role_id, permission_id in (await db.execute(select(role_permission))).all():
                         actual_role_permissions[role_names_by_id[role_id]].add(permission_names_by_id[permission_id])
                     assert {role_name: len(names) for role_name, names in actual_role_permissions.items()} == {
-                        "系统管理员": 129,
+                        "系统管理员": 122,
                         "管理员": 34,
-                        "运营人员": 76,
+                        "运营人员": 69,
                         "财务人员": 3,
-                        "普通用户": 76,
+                        "普通用户": 69,
                     }
+                    for role_name in ("系统管理员", "运营人员", "普通用户"):
+                        assert api_access_log_permissions <= actual_role_permissions[role_name]
+                    for role_name in ("管理员", "财务人员"):
+                        assert actual_role_permissions[role_name].isdisjoint(api_access_log_permissions)
                     assert actual_role_permissions["系统管理员"] == expected_permission_names
                     assert actual_role_permissions["财务人员"] == {
                         "sys:auditlog:group",
@@ -180,7 +196,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert new_permission_preview.role_permissions == {
                         "added": 4,
                         "removed": 0,
-                        "skipped": 318,
+                        "skipped": 297,
                         "roles_processed": 5,
                     }
                     assert await _count(db, Permission) == permission_count

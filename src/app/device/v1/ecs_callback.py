@@ -12,8 +12,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
+from starlette._utils import is_async_callable
+from starlette.concurrency import run_in_threadpool
 
 from src.app.device.contracts import (
     DeviceEvidenceReceipt,
@@ -318,7 +320,7 @@ async def _publish_attempt(
     )
     try:
         history = getattr(request.app.state, "device_ingress_history_service", device_ingress_history_service)
-        _ = await history.record_attempt(attempt)
+        history.record_attempt(attempt)
     except Exception:
         logger.exception("device.ingress.attempt_persist_failed")
     try:
@@ -337,7 +339,7 @@ async def _handle_callback(
     model: type[BaseModel],
     kind: DeviceIngressKind,
     accept_method: str,
-) -> EcsCallbackAck | JSONResponse:
+) -> EcsCallbackAck | Response:
     request_id = new_uuid7()
     received_at = timezone.now_utc().isoformat()
     decoded: _DecodedCallback | None = None
@@ -350,6 +352,21 @@ async def _handle_callback(
         rejection = _as_ingress_rejection(error)
         rejection_receipt = getattr(error, "receipt", None)
         if rejection is None:
+            handler = next(
+                (
+                    request.app.exception_handlers[cls]
+                    for cls in type(error).__mro__
+                    if cls in request.app.exception_handlers
+                ),
+                None,
+            )
+            if handler is None:
+                raise
+            response = (
+                await handler(request, error)
+                if is_async_callable(handler)
+                else await run_in_threadpool(handler, request, error)
+            )
             await _publish_attempt(
                 request,
                 request_id=request_id,
@@ -357,12 +374,14 @@ async def _handle_callback(
                 kind=kind,
                 decoded=decoded,
                 receipt=None,
-                disposition=DeviceIngressDisposition.REJECTED,
-                status_code=500,
+                disposition=DeviceIngressDisposition.CONFLICT
+                if response.status_code == 409
+                else DeviceIngressDisposition.REJECTED,
+                status_code=response.status_code,
                 error_code="TEMPORARILY_UNAVAILABLE",
                 observed_body_bytes=decoded.observed_body_bytes if decoded is not None else 0,
             )
-            raise
+            return response
         await _publish_attempt(
             request,
             request_id=request_id,
@@ -397,7 +416,7 @@ async def _handle_callback(
 
 
 @router.post("/result", response_model=EcsCallbackAck, response_model_exclude_none=True)
-async def accept_device_result(request: Request) -> EcsCallbackAck | JSONResponse:
+async def accept_device_result(request: Request) -> EcsCallbackAck | Response:
     return await _handle_callback(
         request,
         model=EcsCommandResultReport,
@@ -407,7 +426,7 @@ async def accept_device_result(request: Request) -> EcsCallbackAck | JSONRespons
 
 
 @router.post("/event", response_model=EcsCallbackAck, response_model_exclude_none=True)
-async def accept_device_event(request: Request) -> EcsCallbackAck | JSONResponse:
+async def accept_device_event(request: Request) -> EcsCallbackAck | Response:
     return await _handle_callback(
         request,
         model=EcsDeviceEventReport,

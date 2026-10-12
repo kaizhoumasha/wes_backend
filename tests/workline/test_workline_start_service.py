@@ -297,6 +297,25 @@ def setup_start():
 
 
 @pytest.mark.asyncio
+async def test_start_allows_optional_position_to_remain_unbound():
+    from wes_plugin_sdk import WorkLinePositionSlot
+
+    service, line, repository, plugin = setup_start()
+    plugin.position_slots += (
+        WorkLinePositionSlot(
+            slot_key="OPTIONAL_TARGET",
+            display_name="可选接料位",
+            position_type="RACK_POSITION",
+            location_type="RACK_POSITION",
+            required=False,
+        ),
+    )
+    await service.start(object(), workline_id=7, version=3)
+    assert line.is_active
+    repository.set_active_for_start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_start_defers_prepare_wakeup_only_for_prepare_capable_plugin(monkeypatch):
     service, _line, _repository, plugin = setup_start()
     queue = SimpleNamespace(enqueue_picking_task_prepare=Mock())

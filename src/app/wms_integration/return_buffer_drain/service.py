@@ -6,9 +6,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import select
+from wes_plugin_sdk import ReturnBufferDrainReady
 
 from src.app.execution import config
-from src.app.execution.models import InboundEvidence, InboundEvidenceKind, WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.models import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+    InboundEvidenceKind,
+    WmsConfirmation,
+    WmsConfirmationStatus,
+)
 from src.app.execution.repositories.wms_confirmation_repository import WmsConfirmationRepository
 from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationIdentityConflictResult,
@@ -23,7 +30,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
-    from wes_plugin_sdk import ReturnBufferDrainIntent, ReturnBufferDrainReady, ReturnBufferDrainWait
+    from wes_plugin_sdk import ReturnBufferDrainIntent, ReturnBufferDrainWait
 
 
 class ReturnBufferDrainScheduler:
@@ -63,6 +70,17 @@ class ReturnBufferDrainRecord:
 class ReturnBufferDrainResultReader:
     def __init__(self, confirmations: WmsConfirmationRepository | None = None) -> None:
         self._confirmations = confirmations or WmsConfirmationRepository()
+
+    async def operation_id_for_evidence(self, db: AsyncSession, *, workline_id: int, evidence_id: int) -> str | None:
+        """按冻结 response_evidence_id 反查 operation_id，供独立于 current() 定位历史决定使用。"""
+        c = WmsConfirmation
+        return await db.scalar(
+            select(c.operation_id).where(
+                c.workline_id == workline_id,
+                c.operation == RETURN_BUFFER_DRAIN_OPERATION,
+                c.response_evidence_id == evidence_id,
+            )
+        )
 
     @staticmethod
     def _request(confirmation, workline_id):
@@ -115,6 +133,54 @@ class ReturnBufferDrainResultReader:
         request = self._request(confirmation, workline_id)
         outcome = self._outcome(confirmation, evidence, request, workline_id)
         return decode_intent(request), outcome
+
+    async def for_operation(
+        self, db: AsyncSession, *, workline_id: int, operation_id: str
+    ) -> ReturnBufferDrainRecord | None:
+        c = WmsConfirmation
+        row = (
+            await db.execute(
+                select(c, InboundEvidence)
+                .outerjoin(InboundEvidence, InboundEvidence.id == c.response_evidence_id)
+                .where(c.operation == RETURN_BUFFER_DRAIN_OPERATION, c.operation_id == operation_id)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        confirmation, evidence = row
+        request = self._request(confirmation, workline_id)
+        result, evidence_id = None, None
+        if confirmation.status == WmsConfirmationStatus.COMPLETED:
+            if confirmation.completed_at is None:
+                raise ValueError("drain completed time missing")
+            outcome = self._outcome(confirmation, evidence, request, workline_id)
+            if evidence.published_at is not None and evidence.apply_status == InboundEvidenceApplyStatus.APPLIED:
+                result, evidence_id = outcome.result, evidence.id
+        return ReturnBufferDrainRecord(
+            workline_id=workline_id,
+            status=WmsConfirmationStatus(confirmation.status),
+            created_at=confirmation.created_at,
+            completed_at=confirmation.completed_at,
+            intent=decode_intent(request),
+            result=result,
+            evidence_id=evidence_id,
+        )
+
+    async def pending_for_workline(self, db: AsyncSession, *, workline_id: int) -> ReturnBufferDrainRecord | None:
+        # 未消费 READY 保留原义务；只检查尾部，不回退已闭合前驱。
+        c = WmsConfirmation
+        row = (
+            await db.execute(
+                select(c.operation_id, c.status, c.response_result)
+                .where(c.workline_id == workline_id, c.operation == RETURN_BUFFER_DRAIN_OPERATION)
+                .order_by(c.operation_id.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        record = await self.for_operation(db, workline_id=workline_id, operation_id=row.operation_id)
+        return None if record is not None and isinstance(record.result, ReturnBufferDrainReady) else record
 
     async def history(
         self, db: AsyncSession, *, workline_id: int, after_operation_id: str | None = None

@@ -163,13 +163,22 @@ class WesCallbackServer:
     """在真实 TCP 端口运行生产 ECS callback handler。"""
 
     def __init__(self, *, session_factory: Any, task_queue_gateway: Any = None) -> None:
-        app = FastAPI()
+        from fastapi import Depends
+
+        from src.app.sys.services.api_access_log_service import APIAccessLogService
+        from src.core.error_handlers import register_exception_handlers
+        from src.utils.background_tasks import inject_background_tasks
+
+        app = FastAPI(dependencies=[Depends(inject_background_tasks)])
+        register_exception_handlers(app)
         app.state.device_evidence_service = DeviceEvidenceService(
             session_factory=session_factory, task_queue_gateway=task_queue_gateway
         )
         from src.app.device.services.device_ingress_history_service import DeviceIngressHistoryService
 
-        app.state.device_ingress_history_service = DeviceIngressHistoryService(session_context=session_factory)
+        app.state.device_ingress_history_service = DeviceIngressHistoryService(
+            session_context=session_factory, log_service=APIAccessLogService(session_context=session_factory)
+        )
         app.include_router(ecs_callback_router, prefix="/api/v1/callback")
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

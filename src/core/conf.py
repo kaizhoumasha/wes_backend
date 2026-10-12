@@ -105,6 +105,10 @@ class Settings(BaseSettings):
 
     # ==================== 日志配置 ====================
 
+    API_ACCESS_LOG_RETENTION_DAYS: int = Field(default=7, ge=1, le=365)
+    API_ACCESS_LOG_WRITE_TIMEOUT_MS: int = Field(default=100, ge=10, le=1000)
+    API_ACCESS_LOG_MAX_CONCURRENT_WRITES: int = Field(default=2, ge=1, le=8)
+
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "logs"
     LOG_ROTATION_SIZE: str = "100 MB"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, cast
 
 from .batch_policy import choose_next_batch
+from .drain_execution_repository import DrainExecutionRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -14,11 +15,18 @@ if TYPE_CHECKING:
     from wes_plugin_sdk import BinInboundBatchIntent, BinInboundBatchReady, BinReturnBatchIntent
 
     from .batch_repository import InboundFaceProgress
+    from .bin_line.return_model import BinLineReturn
 
 
 class BatchRepository(Protocol):
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str | None,
+        plan_revision: int | None,
+        rack_id: str,
+        rack_face: str,
     ) -> bool: ...
 
     async def has_unclosed_return_transport_for_face(
@@ -48,14 +56,10 @@ class BatchRepository(Protocol):
     ) -> InboundFaceProgress | None: ...
 
 
-class PassageRow(Protocol):
-    bin_code: str | None
-
-
 class PassageReader(Protocol):
     async def ready_prefix_for_update(
         self, db: AsyncSession, workline_id: int, *, limit: int = 4
-    ) -> tuple[PassageRow, ...]: ...
+    ) -> tuple[BinLineReturn, ...]: ...
 
 
 class BatchScheduler(Protocol):
@@ -93,7 +97,9 @@ class ManualPickingBatchFlow:
         inbound: InboundCreator,
         *,
         uuid_factory: Callable[[], str],
+        drain_executions: DrainExecutionRepository | None = None,
     ) -> None:
+        self._drain_executions = drain_executions or DrainExecutionRepository()
         self._repository = repository
         self._passages = passages
         self._scheduler = scheduler
@@ -115,7 +121,13 @@ class ManualPickingBatchFlow:
         )
 
     async def has_unclosed_action_for_face(
-        self, db: AsyncSession, workline_id: int, task_id: str, plan_revision: int, rack_id: str, rack_face: str
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        task_id: str | None,
+        plan_revision: int | None,
+        rack_id: str,
+        rack_face: str,
     ) -> bool:
         return await self._repository.has_unclosed_action_for_face(
             db, workline_id, task_id, plan_revision, rack_id, rack_face
@@ -152,6 +164,9 @@ class ManualPickingBatchFlow:
                 ):
                     return False
                 rows = await self._passages.ready_prefix_for_update(db, workline_id)
+                rows = await self._drain_executions.eligible_return_prefix(
+                    db, workline_id=workline_id, rows=tuple(rows)
+                )
                 return_bins = tuple(row.bin_code for row in rows)
                 if not return_bins or not await self._repository.return_retry_due(
                     db, workline_id, rack_id, rack_face, source_evidence_id, now, now
@@ -188,6 +203,7 @@ class ManualPickingBatchFlow:
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
         rows = await self._passages.ready_prefix_for_update(db, workline_id)
+        rows = await self._drain_executions.eligible_return_prefix(db, workline_id=workline_id, rows=tuple(rows))
         return_bins: list[str] = []
         for row in rows:
             if not row.bin_code:

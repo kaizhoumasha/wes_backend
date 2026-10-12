@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-23
+**最后更新**：2026-10-08
 
 职责边界的权威顺序：SRS 架构原则 → SRS 场景要求与当前外部合同 → 插件业务合同 → 实施笔记/计划 → 项目外历史归档。下表中的 `docs/superpowers/` 只提供实施背景，不能覆盖上层当前合同；职责收敛账本只用于本轮执行，完成后归档。
 
@@ -32,6 +32,7 @@
 
 | 路径 | 职责 |
 | --- | --- |
+| [API 访问日志](api-access-log.md) | sys 基础日志模块统一外部双向交互、后台尽力写入、只读查询与保留清理；当前实现合同 |
 | `docs/superpowers/specs/2026-09-11-wes-nonblocking-execution-design.md` | 无阻塞执行目标；后端 PR #246/#247 与前端 PR #125 已合并，部署及供应商/现场验收未完成 |
 | `docs/superpowers/plans/2026-09-11-wes-nonblocking-execution-plan.md` | 无阻塞执行切片计划；仓库实施已合并，仍承接部署及供应商/现场验收 |
 | `docs/superpowers/specs/2026-09-13-manual-picking-scan-flow-design.md` / `docs/superpowers/plans/2026-09-13-manual-picking-scan-flow.md` | 人工拣料四点独立扫码、WMS 准入和完成、点3双来源、点4物理成功后入退箱 FIFO 的当前设计与实施切片 |
@@ -59,8 +60,8 @@
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
-| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 出库交互合同；覆盖人工拣料 CTU01 业务步骤、transport-only feed_complete、跨任务 FIFO 与任务完成 drain 严格 wire；停线/切换触发未实现 |
-| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；覆盖四点扫码、人工任务准入与释放、来源架换面/离场及历史无归属 Evidence 的诊断边界；PDA 归属 WMS |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 出库交互合同；覆盖人工拣料 CTU01 业务步骤、transport-only feed_complete、跨任务 FIFO、任务完成 drain 严格 wire 与 §9.2.3 本地排空生命周期/T1–T4；停线/切换触发未实现 |
+| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；覆盖四点扫码、人工任务准入与释放、来源架换面/离场、引用排空异常退出与原成员身份边界及历史无归属 Evidence 的诊断边界；PDA 归属 WMS |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线/切换排空触发尚未实现，该场景仍为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |

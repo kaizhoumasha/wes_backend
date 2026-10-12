@@ -15,6 +15,10 @@ from src.app.execution.config import WMS_CONFIRMATION_BATCH_LIMIT
 # ============================================
 
 beat_schedule: dict[str, dict[str, Any]] = {
+    "cleanup-api-access-logs": {
+        "task": "src.celery_app.tasks.core.cleanup_api_access_logs",
+        "schedule": 60.0,
+    },
     # 健康检查任务
     "health-check": {
         "task": "src.celery_app.tasks.core.health_check",

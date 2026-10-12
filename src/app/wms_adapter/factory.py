@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.app.sys.services.api_access_log_observer import observe_outbound_api_access
 from src.app.wms_adapter.client import WmsClient
 from src.core.outbound_http import build_outbound_http_transport
 
@@ -14,6 +15,7 @@ def build_wms_client(*, base_url: str, timeout_seconds: float) -> WmsClient:
             system_id="wms",
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            completion_observer=observe_outbound_api_access,
         )
     )
 

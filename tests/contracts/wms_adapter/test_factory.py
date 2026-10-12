@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from src.app.sys.services.api_access_log_observer import observe_outbound_api_access
 from src.app.wms_adapter import WmsClient, build_wms_client
 from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpResult
 
@@ -47,6 +48,7 @@ async def test_builder_owns_the_wms_system_id_and_returns_a_usable_client(monkey
             "system_id": "wms",
             "base_url": "http://wms.test:8080/",
             "timeout_seconds": 3.5,
+            "completion_observer": observe_outbound_api_access,
         }
     ]
     assert result.status_code == 204

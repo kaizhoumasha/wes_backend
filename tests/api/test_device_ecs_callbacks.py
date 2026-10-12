@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -62,7 +62,10 @@ def _client(
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     app = FastAPI()
-    app.state.device_ingress_history_service = type("History", (), {"record_attempt": AsyncMock()})()
+    app.state.device_ingress_history_service = type("History", (), {"record_attempt": Mock()})()
+    from src.core.error_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.state.device_evidence_service = service or FakeEvidenceService()
     app.state.device_event_stream_service = publisher or FakePublisher()
     app.include_router(router, prefix="/api/v1/callback")
@@ -170,7 +173,7 @@ def test_duplicate_callback_is_a_distinct_attempt_for_same_evidence() -> None:
     assert [attempt["disposition"] for attempt in attempts] == ["DUPLICATE", "DUPLICATE"]
     assert {attempt["evidence_id"] for attempt in attempts} == {1}
     assert attempts[0]["request_id"] != attempts[1]["request_id"]
-    stored = client.app.state.device_ingress_history_service.record_attempt.await_args_list
+    stored = client.app.state.device_ingress_history_service.record_attempt.call_args_list
     assert [call.args[0].model_dump(mode="json") for call in stored] == attempts
 
 
@@ -741,7 +744,7 @@ def test_callback_records_redacted_attempt_before_live_publication() -> None:
     client = _client(publisher=publisher)
     recorded = []
 
-    async def record(attempt):
+    def record(attempt):
         assert publisher.events == []
         recorded.append(attempt)
 
@@ -764,4 +767,27 @@ def test_diagnostic_storage_failure_preserves_callback_ack_and_live_event() -> N
     assert response.status_code == 200
     assert response.json() == {"code": 200, "message": "ACK"}
     assert len(publisher.events) == 1
-    client.app.state.device_ingress_history_service.record_attempt.assert_awaited_once()
+    client.app.state.device_ingress_history_service.record_attempt.assert_called_once()
+
+
+@pytest.mark.parametrize("database_failure", [False, True])
+def test_unexpected_callback_failure_uses_registered_response_and_records_actual_status(database_failure):
+    from sqlalchemy.exc import DBAPIError
+    from starlette.requests import Request
+
+    from src.core.error_handlers import general_exception_handler, sqlalchemy_exception_handler
+
+    failure = (
+        DBAPIError("select", {}, RuntimeError("connection lost"), connection_invalidated=True)
+        if database_failure
+        else RuntimeError("handler failed")
+    )
+    client = _client(FakeEvidenceService(failure=failure), raise_server_exceptions=False)
+    response = client.post("/api/v1/callback/event", json=_event_payload())
+    assert response.status_code == (503 if database_failure else 500)
+    assert response.json()["code"] == ("5011" if database_failure else "5000")
+    assert response.headers["content-type"] == "application/json"
+    attempt = client.app.state.device_ingress_history_service.record_attempt.call_args.args[0]
+    assert attempt.status_code == response.status_code
+    assert attempt.disposition.value == "REJECTED"
+    assert len(client.app.state.device_event_stream_service.events) == 1

@@ -248,7 +248,6 @@ def register_routers(app: FastAPI) -> None:
     from src.app.admin import router_v1 as admin_router
     from src.app.api_auth import router_v1 as api_auth_router
     from src.app.auth import router_v1 as auth_router
-    from src.app.callback import router_v1 as callback_router
     from src.app.device import router_v1 as device_router
     from src.app.material import router_v1 as material_router
     from src.app.sys import router_v1 as sys_router
@@ -265,7 +264,6 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(device_router, prefix=settings.API_PATH)
     app.include_router(material_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
-    app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
     app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)

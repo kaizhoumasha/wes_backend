@@ -30,6 +30,7 @@ def test_manual_picking_deployment_assembles_prepare_policy_without_device_handl
         "INLET",
         "OUTLET",
     ]
+    assert {slot["slot_key"] for slot in summary["position_slots"] if not slot["required"]} == {"TRANSFER_RACK"}
     assert runtime.plugins[0].runtime_binding is not None
     assert runtime.plugins[0].runtime_binding.business_evidence_consumer is not None
     assert runtime.execution.fact_processor._plugins.has_business_evidence_consumer(

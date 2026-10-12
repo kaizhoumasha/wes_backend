@@ -246,6 +246,7 @@ def test_outbound_http_public_surface_is_framework_neutral_and_has_no_speculativ
         "OutboundHttpDeliveryState",
         "OutboundHttpFailureKind",
         "OutboundHttpMethod",
+        "OutboundHttpObserver",
         "OutboundHttpRequest",
         "OutboundHttpRequestError",
         "OutboundHttpResponseLimits",
@@ -297,10 +298,17 @@ def test_transport_composition_does_not_rebuild_legacy_endpoint_owners() -> None
     )
 
 
-def test_outbound_http_heavy_mapping_is_explicit_none_until_a_real_consumer_exists() -> None:
+def test_outbound_http_heavy_mapping_has_the_real_runtime_consumer() -> None:
     heavy_mapping = tomllib.loads((REPO_ROOT / "docs/architecture/heavy-test-impact.toml").read_text(encoding="utf-8"))
     mappings = [
-        mapping for mapping in heavy_mapping["mapping"] if mapping["source_glob"] == "src/core/outbound_http/**"
+        mapping
+        for mapping in heavy_mapping["mapping"]
+        if mapping["source_glob"] == "src/core/outbound_http/{contracts.py,__init__.py,transport.py,factory.py}"
     ]
 
-    assert mappings == [{"source_glob": "src/core/outbound_http/**", "heavy_tests": []}]
+    assert mappings == [
+        {
+            "source_glob": "src/core/outbound_http/{contracts.py,__init__.py,transport.py,factory.py}",
+            "heavy_tests": ["tests/integration/test_celery_async_runtime_postgresql.py"],
+        }
+    ]

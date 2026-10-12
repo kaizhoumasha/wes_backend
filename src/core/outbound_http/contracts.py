@@ -286,6 +286,20 @@ class OutboundHttpResult:
             raise ValueError("result does not match the delivery-state contract")
 
 
+class OutboundHttpObserver(Protocol):
+    """只观察已完成的单次交互；同步调用不承担 I/O。"""
+
+    def __call__(
+        self,
+        *,
+        system_id: str,
+        peer_address: str,
+        request: OutboundHttpRequest,
+        result: OutboundHttpResult,
+        duration_ms: int,
+    ) -> None: ...
+
+
 class OutboundHttpTransport(Protocol):
     """后续 Adapter 消费的最小异步传输端口。"""
 

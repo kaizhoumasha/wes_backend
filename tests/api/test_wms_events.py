@@ -48,7 +48,7 @@ def _route_app(
     app.state.transport_runtime = SimpleNamespace(handler=SimpleNamespace(handle=handler))
     app.state.transport_event_stream_service = publisher or SimpleNamespace(publish_to=AsyncMock(return_value=True))
     app.state.wms_event_stream_service = app.state.transport_event_stream_service
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=MagicMock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.state.wms_inbound_auth_policy = policy
     app.include_router(module.router, prefix="/api/v1/wms")
@@ -74,9 +74,9 @@ def test_diagnostics_observes_final_ack_after_existing_receipt_failure() -> None
         response = client.post(
             "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
         )
-    assert response.status_code == 503
+    assert response.status_code == 202
     diagnostics.finish.assert_awaited_once_with(observation)
-    assert observation.status_code == 503
+    assert observation.status_code == 202
     assert observation.response_body == response.content
 
 
@@ -543,7 +543,7 @@ def test_handler_empty_error_body_remains_empty() -> None:
 def test_missing_transport_runtime_returns_unavailable_ack_for_associated_request() -> None:
     module = _events_module()
     app = FastAPI()
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=MagicMock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.state.transport_runtime = None
     app.state.wms_inbound_auth_policy = _none_policy(module)
@@ -572,7 +572,7 @@ def test_missing_transport_runtime_returns_unavailable_ack_for_associated_reques
 def test_missing_transport_runtime_rejects_non_utf8_operation_before_association() -> None:
     module = _events_module()
     app = FastAPI()
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=MagicMock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.state.transport_runtime = None
     app.state.wms_inbound_auth_policy = _none_policy(module)
@@ -592,7 +592,7 @@ def test_missing_transport_runtime_rejects_non_utf8_operation_before_association
 def test_missing_transport_runtime_rejects_nested_duplicate_key_before_association() -> None:
     module = _events_module()
     app = FastAPI()
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=MagicMock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.state.transport_runtime = None
     app.state.wms_inbound_auth_policy = _none_policy(module)
@@ -656,7 +656,7 @@ def test_missing_transport_runtime_cannot_persist_associated_invalid_envelope(
 ) -> None:
     module = _events_module()
     app = FastAPI()
-    app.state.wms_callback_receipt_service = SimpleNamespace(record=AsyncMock())
+    app.state.wms_callback_receipt_service = SimpleNamespace(record=MagicMock())
     app.state.wms_diagnostics_service = SimpleNamespace(start=AsyncMock(return_value=None), finish=AsyncMock())
     app.state.transport_runtime = None
     app.state.wms_inbound_auth_policy = _none_policy(module)
@@ -1029,7 +1029,7 @@ def test_queue_changed_ingress_parses_json_once_with_real_handler(
         (503, {"code": "UNAVAILABLE"}),
     ],
 )
-def test_every_wms_response_is_receipted_before_return(
+def test_every_wms_response_registers_receipt_before_return(
     monkeypatch: pytest.MonkeyPatch, status: int, body: dict[str, Any]
 ) -> None:
     module = _events_module()
@@ -1043,8 +1043,8 @@ def test_every_wms_response_is_receipted_before_return(
         )
     assert response.status_code == status
     recorder = app.state.wms_callback_receipt_service.record
-    recorder.assert_awaited_once()
-    recorded = recorder.await_args.kwargs
+    recorder.assert_called_once()
+    recorded = recorder.call_args.kwargs
     assert recorded["raw_body"] == TRANSPORT_BODY
     assert recorded["response_status"] == status
     assert json.loads(recorded["response_body"]) == body
@@ -1069,10 +1069,10 @@ def test_rejected_ingress_has_receipt_even_without_operation_identity(content, h
         response = client.post("/api/v1/wms/events", content=content, headers=headers)
     assert response.status_code == status
     recorder = app.state.wms_callback_receipt_service.record
-    recorder.assert_awaited_once()
-    assert recorder.await_args.kwargs["response_status"] == status
-    assert recorder.await_args.kwargs["raw_body"] == content[: len(recorder.await_args.kwargs["raw_body"])]
-    assert recorder.await_args.kwargs["raw_body"]
+    recorder.assert_called_once()
+    assert recorder.call_args.kwargs["response_status"] == status
+    assert recorder.call_args.kwargs["raw_body"] == content[: len(recorder.call_args.kwargs["raw_body"])]
+    assert recorder.call_args.kwargs["raw_body"]
 
 
 def test_unexpected_handler_failure_is_receipted() -> None:
@@ -1083,11 +1083,11 @@ def test_unexpected_handler_failure_is_receipted() -> None:
             "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
         )
     assert response.status_code == 500
-    app.state.wms_callback_receipt_service.record.assert_awaited_once()
-    assert app.state.wms_callback_receipt_service.record.await_args.kwargs["response_status"] == 500
+    app.state.wms_callback_receipt_service.record.assert_called_once()
+    assert app.state.wms_callback_receipt_service.record.call_args.kwargs["response_status"] == 500
 
 
-def test_receipt_storage_failure_is_retryable_and_not_silently_acknowledged() -> None:
+def test_diagnostic_registration_failure_preserves_original_response() -> None:
     module = _events_module()
     app = _route_app(
         module, AsyncMock(return_value=TransportEventResponse(202, {"code": "RECEIVED"})), _none_policy(module)
@@ -1097,11 +1097,12 @@ def test_receipt_storage_failure_is_retryable_and_not_silently_acknowledged() ->
         response = client.post(
             "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
         )
-    assert response.status_code == 503
-    assert response.headers["Retry-After"] == "1"
+    assert response.status_code == 202
+    assert "Retry-After" not in response.headers
+    assert response.json() == {"code": "RECEIVED"}
 
 
-def test_handler_and_receipt_failure_returns_retryable_503() -> None:
+def test_handler_and_diagnostic_failure_preserves_original_500() -> None:
     module = _events_module()
     app = _route_app(module, AsyncMock(side_effect=RuntimeError("handler database failed")), _none_policy(module))
     app.state.wms_callback_receipt_service.record.side_effect = RuntimeError("receipt database failed")
@@ -1109,6 +1110,6 @@ def test_handler_and_receipt_failure_returns_retryable_503() -> None:
         response = client.post(
             "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
         )
-    assert response.status_code == 503
-    assert response.headers["Retry-After"] == "1"
-    assert response.json()["code"] == "UNAVAILABLE"
+    assert response.status_code == 500
+    assert "Retry-After" not in response.headers
+    assert response.content == b""

@@ -81,14 +81,18 @@ class ManualPickingCompletionRepository:
         ):
             return False
         sources = await self._plans.list_bin_source_racks(db, task.id)
-        if not sources and not await rack_ready(
-            db,
-            line,
-            task.target_rack_id,
-            task.target_rack_face,
-            line.position_bindings["TRANSFER_RACK"]["location_id"],
-            positions=self._positions,
-            transports=self._transports,
+        if (
+            not sources
+            and task.target_rack_id is not None
+            and not await rack_ready(
+                db,
+                line,
+                task.target_rack_id,
+                task.target_rack_face,
+                line.position_bindings["TRANSFER_RACK"]["location_id"],
+                positions=self._positions,
+                transports=self._transports,
+            )
         ):
             return False
         for source in sources:

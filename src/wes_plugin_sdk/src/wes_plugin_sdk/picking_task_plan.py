@@ -135,6 +135,8 @@ class PickingTaskPlanAdmissionFact:
     task_id: str
     plan_revision: int
     has_direct_picks: bool
+    has_target_rack: bool
+    position_bindings: tuple[PositionBindingSnapshot, ...]
 
     def __post_init__(self) -> None:
         _ = _required(self.task_id, "task_id")
@@ -142,6 +144,12 @@ class PickingTaskPlanAdmissionFact:
             raise ValueError("plan_revision must be a positive integer")
         if type(self.has_direct_picks) is not bool:
             raise TypeError("has_direct_picks must be a bool")
+        if type(self.has_target_rack) is not bool:
+            raise TypeError("has_target_rack must be a bool")
+        if type(self.position_bindings) is not tuple or any(
+            type(binding) is not PositionBindingSnapshot for binding in self.position_bindings
+        ):
+            raise TypeError("position_bindings must contain PositionBindingSnapshot values")
 
 
 class PickingTaskPlanAdmissionDecisionKind(StrEnum):

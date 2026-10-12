@@ -27,8 +27,8 @@
 
 ## 3. 非目标
 
-- 不扩展 `APIAccessLog`。它只适合 HTTP 访问元数据，不持有 callback body、evidence 状态或实时订阅语义。
-- 不把 WES→ECS 的出站 HTTP 日志混进入站表；命令状态通过既有持久化详情接口展示。
+- 日志存储按 [API 访问日志当前合同](../../architecture/api-access-log.md) 收敛：已有 callback 快照归入统一 `APIAccessLog.details`；Evidence 当前状态和实时订阅仍归设备诊断能力，通用日志不承担这些职责。
+- 统一表通过 `system_id=ecs`、`direction=INBOUND` 为本页提供入站记录，WES→ECS 发送记录不会进入本页入站列表；命令状态继续通过既有持久化详情接口展示。
 - 不保存请求头、Authorization、Cookie、token 或字节级原始 body。
 - 不改变业务 DeviceCommand 的静态 binding/contract 和可靠派发规则；不把状态新鲜度作为发送授权。
 - 不以本地 Mock、SSE 可见或 HTTP `202` 证明 ECS 接纳、物理完成、供应商验收或生产业务验收。
@@ -91,6 +91,7 @@ DeviceEvidenceService.process_one
 
 - ACCEPTED / DUPLICATE：`DeviceEvidenceService` 返回时事务已经提交，由 callback route 随后发布 attempt。
 - CONFLICT / REJECTED：HTTP 结果确定后发布 attempt；不存在需要等待的 evidence 事务。
+- 请求级 attempt 诊断只登记后台写入，route 按原流程发布 SSE，不等待诊断数据库。通知携带冻结快照，不确认日志已落库；立即加载历史可能暂时缺行，写入失败或进程退出也可缺行。不新增补偿或轮询，可靠 Evidence 的提交与 ACK 边界保持。后台登记已由统一 API 日志基础能力承接。
 - evidence update：`process_one` 事务提交后发布最终 `APPLIED` 或 `RECONCILING` snapshot。
 - Redis 不可用、序列化失败、publish 失败或超过 1 秒只记录诊断日志，不改变 evidence、callback HTTP 响应或 ECS 重试语义。
 

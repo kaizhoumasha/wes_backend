@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from wes_plugin_sdk import (
     PickingTaskPlanAdmissionDecisionKind,
     PickingTaskPlanAdmissionFact,
+    PositionBindingSnapshot,
 )
 
 from src.app.execution.models import InboundEvidenceApplyStatus as ApplyStatus
@@ -163,6 +164,8 @@ class PickingTaskPlanDeltaService:
             return "REFERENCE_CONFLICT"
         if task.status not in (PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING):
             return "STATE_CONFLICT"
+        if data.plan_revision == 1 and data.target_rack is None and task.task_type != "MANUAL":
+            return "REFERENCE_CONFLICT"
         if data.plan_revision == task.last_applied_plan_revision:
             previous = await self._plans.get_evidence(db, task.last_plan_evidence_id)
             if (
@@ -267,6 +270,11 @@ class PickingTaskPlanDeltaService:
                 task_id=data.task_id,
                 plan_revision=data.plan_revision,
                 has_direct_picks=bool(data.added_direct_picks),
+                has_target_rack=data.target_rack is not None or task.target_rack_id is not None,
+                position_bindings=tuple(
+                    PositionBindingSnapshot(position_role=role, **binding)
+                    for role, binding in sorted(line.position_bindings.items())
+                ),
             )
         )
         if decision.kind is PickingTaskPlanAdmissionDecisionKind.REJECT:
@@ -275,8 +283,8 @@ class PickingTaskPlanDeltaService:
 
     async def apply_plan(self, db: Any, task: Any, data: Any, evidence: Any, *, received_at: datetime) -> None:
         if data.plan_revision == 1:
-            task.target_rack_id = data.target_rack.rack_id
-            task.target_rack_face = data.target_rack.rack_face
+            task.target_rack_id = data.target_rack.rack_id if data.target_rack is not None else None
+            task.target_rack_face = data.target_rack.rack_face if data.target_rack is not None else None
             task.initial_plan_evidence_id = evidence.id
             task.status = PickingTaskStatus.EXECUTING
         task.increment_version()

@@ -78,14 +78,19 @@ class _TransportResetSession(_FakeSession):
         fail_on_sql: str | None = None,
         fail_commit: bool = False,
         task_delete_rowcount: int | None = None,
+        drain_execution_id: int | None = None,
     ) -> None:
         super().__init__(fail_on_sql=fail_on_sql, fail_commit=fail_commit)
         self.task_row = task_row
         self.evidence_count = evidence_count
         self.task_delete_rowcount = task_delete_rowcount
+        self.drain_execution_id = drain_execution_id
 
     async def scalar(self, statement, parameters=None):
         self.statements.append(str(statement))
+        if "manual_picking_drain_executions" in str(statement):
+            return self.drain_execution_id
+        return None
 
     async def execute(self, statement, parameters=None):
         sql = str(statement)
@@ -128,6 +133,7 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
         ("wes_sys", "api_access_logs"),
     }.issubset(identities)
     assert {
+        ("wes_biz", "callback_logs"),
         ("wes_biz", "line_run_epochs"),
         ("wes_biz", "line_run_epoch_device_bindings"),
         ("wes_biz", "line_run_epoch_position_bindings"),
@@ -649,3 +655,27 @@ def test_wrapper_rejects_blank_transport_task_id_before_invoking_python(tmp_path
     assert result.returncode == 1
     assert "缺少任务 ID" in result.stderr
     assert not marker.exists()
+
+
+def test_runtime_reset_lists_drain_members_before_their_referenced_runtime_rows() -> None:
+    targets = [target.identity for target in reset_module.RUNTIME_TABLES]
+    member = targets.index("wes_biz.manual_picking_drain_return_members")
+    execution = targets.index("wes_biz.manual_picking_drain_executions")
+    assert member < execution
+    assert member < targets.index("wes_biz.bin_line_returns")
+    assert member < targets.index("wes_biz.wms_confirmations")
+    for referenced in ("inbound_evidences", "picking_tasks", "transport_tasks"):
+        assert execution < targets.index(f"wes_biz.{referenced}")
+
+
+@pytest.mark.asyncio
+async def test_targeted_transport_reset_preserves_drain_execution_reference() -> None:
+    session = _TransportResetSession(drain_execution_id=123)
+    with pytest.raises(RuntimeError, match=r"排空执行.*引用"):
+        await reset_module.reset_transport_task_data(session, transport_task_id="transport-test", apply=True)
+    queries = [sql for sql in session.statements if "manual_picking_drain_executions" in sql]
+    assert len(queries) == 1
+    assert "blocker_client_request_id = task.client_request_id" in queries[0]
+    assert "task.transport_task_id = :transport_task_id" in queries[0]
+    assert not any(_is_mutation(sql) for sql in session.statements)
+    assert session.commits == 0

@@ -62,6 +62,8 @@ class _Handler:
     def __call__(self, fact):  # type: ignore[no-untyped-def]
         self.fact = fact
         target = fact.target_rack
+        if target is None:
+            return PickingTaskPlanHandlingResult(transports=())
         return PickingTaskPlanHandlingResult(
             transports=(
                 PickingTaskRackTransportIntent(
@@ -232,7 +234,8 @@ async def test_reserved_workline_projects_applied_exit_before_scheduling_gate() 
 
 
 @pytest.mark.asyncio
-async def test_completed_task_source_obligation_does_not_block_new_executing_task() -> None:
+@pytest.mark.parametrize("managed_target", [True, False])
+async def test_completed_task_source_obligation_does_not_block_new_executing_task(managed_target: bool) -> None:
     driver = _BatchDriver(completed_count=1)
     handler = _Handler()
     creator = _Creator()
@@ -261,6 +264,8 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
         plan_blocked_evidence_id=None,
     )
     task_reader = AsyncMock(return_value=task)
+    if not managed_target:
+        task.target_rack_id = task.target_rack_face = None
     service = _service_type()(
         _Sessions(),
         plugins=(
@@ -284,11 +289,12 @@ async def test_completed_task_source_obligation_does_not_block_new_executing_tas
         ),
     )
 
-    assert await service.activate_batch() == 3
+    assert await service.activate_batch() == (3 if managed_target else 2)
     assert driver.context == ("L-1", "PICK-NEW")
     task_reader.assert_awaited_once()
     assert handler.fact is not None
-    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1"]
+    assert [call["resource_fence_id"] for call in creator.calls] == (["TARGET-1"] if managed_target else [])
+    assert (handler.fact.target_rack is not None) is managed_target
 
 
 @pytest.mark.asyncio
@@ -369,6 +375,72 @@ async def test_batch_creates_one_transport_per_rack_with_plugin_selected_mapping
         "pt:1:e:12:rack:BIN-2",
         "pt:1:e:11:rack:BIN-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_batch_excludes_racks_from_a_plan_revision_not_yet_applied() -> None:
+    """未应用计划版本的成员行不应出现在 pending_bin_source_racks，也不该拿到 Transport。"""
+    line = SimpleNamespace(
+        id=7,
+        line_code="L-1",
+        is_active=True,
+        is_deleted=False,
+        plugin_key="sample_plugin",
+        plugin_version="0.1.0",
+        position_bindings={
+            "SOURCE_SLOT": {"location_id": "SOURCE-POS", "location_type": "RACK_POSITION"},
+            "TARGET_SLOT": {"location_id": "TARGET-POS", "location_type": "RACK_POSITION"},
+        },
+    )
+    task = SimpleNamespace(
+        id=1,
+        task_id="TASK-1",
+        status="EXECUTING",
+        workline_id=7,
+        last_applied_plan_revision=2,
+        target_rack_id="TARGET-1",
+        target_rack_face="90",
+        initial_plan_evidence_id=10,
+        last_plan_evidence_id=12,
+        plan_blocked_evidence_id=None,
+    )
+    rows = [
+        SimpleNamespace(id=1, rack_id="BIN-1", rack_face="90", plan_revision=1, source_evidence_id=11),
+        # plan_revision=3 > last_applied_plan_revision=2：还没应用到这个版本，不该算首次候选。
+        SimpleNamespace(id=2, rack_id="BIN-NOT-YET", rack_face="90", plan_revision=3, source_evidence_id=13),
+    ]
+    handler = _Handler()
+    creator = _Creator()
+    batch_driver = _BatchDriver()
+    completion_driver = _CompletionDriver()
+    service = _service_type()(
+        _Sessions(),
+        plugins=(
+            SimpleNamespace(
+                plugin_key="sample_plugin",
+                plugin_version="0.1.0",
+                picking_task_plan_applied_handler=handler,
+                picking_task_batch_driver=batch_driver,
+                picking_task_completion_driver=completion_driver,
+            ),
+        ),
+        transport_creator=creator,
+        workline_repository=_Worklines(line),
+        task_repository=SimpleNamespace(get_executing_for_workline_for_update=AsyncMock(return_value=task)),
+        plan_repository=SimpleNamespace(
+            list_active_bin_source_racks=AsyncMock(return_value=rows),
+            list_active_direct_picks=AsyncMock(return_value=[]),
+        ),
+        transport_binding_repository=SimpleNamespace(
+            list_task_resource_fence_ids=AsyncMock(return_value=set()),
+            list_task_member_bindings=AsyncMock(return_value=set()),
+        ),
+    )
+
+    await service.activate_batch()
+
+    assert [rack.rack_id for rack in handler.fact.pending_bin_source_racks] == ["BIN-1"]
+    assert [call["resource_fence_id"] for call in creator.calls] == ["TARGET-1", "BIN-1"]
 
 
 @pytest.mark.asyncio

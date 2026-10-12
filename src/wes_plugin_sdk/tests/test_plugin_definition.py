@@ -22,6 +22,10 @@ def test_definition_preserves_named_resources_and_rejects_ambiguous_bindings():
     )
     assert definition.device_roles[0] is role  # nosec B101 - pytest assertion
     assert definition.position_slots[0] is slot  # nosec B101 - pytest assertion
+    assert slot.required is True  # nosec B101 - pytest assertion
+    assert replace(slot, required=False).required is False  # nosec B101 - pytest assertion
+    with pytest.raises(TypeError, match="required must be a bool"):
+        replace(slot, required=0)
     with pytest.raises(FrozenInstanceError):
         role.role_key = "OTHER"
     with pytest.raises(ValueError, match="duplicate device role"):

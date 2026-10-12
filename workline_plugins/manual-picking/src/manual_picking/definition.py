@@ -32,6 +32,7 @@ TRANSFER_RACK = WorkLinePositionSlot(
     position_type="RACK_POSITION",
     location_type="RACK_POSITION",
     allowed_rack_kind="TRANSFER",
+    required=False,
 )
 INLET = WorkLinePositionSlot(
     slot_key="INLET",

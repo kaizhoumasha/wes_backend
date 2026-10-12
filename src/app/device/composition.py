@@ -11,6 +11,7 @@ from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_dispatch_service import DeviceDispatchService
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
+from src.app.sys.services.api_access_log_observer import observe_outbound_api_access
 from src.app.sys.services.event_stream_service import event_stream_service
 from src.core.outbound_http import OutboundHttpTransport, build_outbound_http_transport
 
@@ -32,6 +33,7 @@ def _build_ecs_transport(endpoint_base_url: str, timeout_seconds: float) -> Outb
         system_id="ecs",
         base_url=endpoint_base_url,
         timeout_seconds=timeout_seconds,
+        completion_observer=observe_outbound_api_access,
     )
 
 

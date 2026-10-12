@@ -27,12 +27,15 @@ class WorkLinePositionSlot:
     position_type: Literal["RACK_POSITION", "STATION"]
     location_type: str
     allowed_rack_kind: Literal["SINGLE_LAYER", "FIVE_LAYER", "RETURN", "TRANSFER", "PRODUCTION"] | None = None
+    required: bool = True
 
     def __post_init__(self) -> None:
         for name in ("slot_key", "display_name", "location_type"):
             validate_persistable_text(getattr(self, name), name, max_length=100)
         if self.position_type not in ("RACK_POSITION", "STATION"):
             raise ValueError("invalid position_type")
+        if type(self.required) is not bool:
+            raise TypeError("required must be a bool")
         if self.allowed_rack_kind not in (None, "SINGLE_LAYER", "FIVE_LAYER", "RETURN", "TRANSFER", "PRODUCTION"):
             raise ValueError("invalid allowed_rack_kind")
         if self.position_type == "STATION" and self.allowed_rack_kind is not None:

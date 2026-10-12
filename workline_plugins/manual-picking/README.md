@@ -154,3 +154,7 @@ ALEMBIC_DATABASE_URL=$INTEGRATION_DATABASE_URL uv run alembic upgrade head
 未设置 `RUN_WORKLINE_INTEGRATION` 时，集成测试在 conftest 的 `integration_guard` fixture 处 SKIPPED，FAST 套件不受影响。
 完整业务顺序与联调边界见[人工出库拣料交互要求](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md)
 和[人工出库货架搬运规则](../../docs/integration/manual-outbound-rack-transport.md)。
+
+## 转运货架管理
+
+MANUAL 首批计划可省略 `target_rack` 并提供来源。省略时，人工在 WMS 管理转运架呼入、旋转与移出，插件不创建对应动作，也不以转运架限制来源、SCAN、作业结果或完成。指定时保留原有流程。`TRANSFER_RACK` 的位置绑定可选，指定架的任务仍需要有效绑定；后续 revision 禁止补充目标架，显式 null 仍拒绝。请求和响应示例见通用出库合同 §8.1。

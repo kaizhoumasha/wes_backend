@@ -76,6 +76,26 @@ class ReturnRepository:
         )
         return tuple(result.all())
 
+    async def by_ids_for_update(
+        self, db: AsyncSession, *, workline_id: int, return_ids: tuple[int, ...]
+    ) -> tuple[BinLineReturn, ...]:
+        rows = tuple(
+            (
+                await db.scalars(
+                    select(BinLineReturn)
+                    .where(
+                        _COLUMNS.workline_id == workline_id,
+                        _COLUMNS.id.in_(return_ids),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        by_id = {row.id: row for row in rows}
+        if len(by_id) != len(return_ids):
+            raise ValueError("frozen return execution missing or owner mismatch")
+        return tuple(by_id[return_id] for return_id in return_ids)
+
     async def requested_for_update(self, db: AsyncSession, workline_id: int) -> tuple[BinLineReturn, ...]:
         result = await db.scalars(
             select(BinLineReturn)
