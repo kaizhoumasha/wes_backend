@@ -1075,15 +1075,26 @@ WMS 内部以 `(workline_code, drain_operation_id)` 保存该线唯一活动容�
 `NO_BATCH` 表示本次回架决定闭合但没有可分配储位；无论是否已有 `READY` 批次，WES 都不得把它变成同面轮询或设备级卡点。
 当前货架继续 CTU02/CTU03；所有工作货架耗尽后由 drain 请求 WMS 补发空载货架。`UNAVAILABLE` 或响应未知只重试原 return_batch identity。
 
-已创建 drain 链不会被后来到达的 PickingTask 取消、覆盖或绕过。READY 的 `racks[]` 是无序 reservation 集合，WES 可在 CTU01
+正常 drain 不因后来到达的 PickingTask 取消或覆盖；独立 PickingTask 的 prepare、plan activation 与事实处理不以 drain reservation 作为整线门闩。直接依赖同一原成员或未闭合动作的步骤仍等待其权威事实。READY 的 `racks[]` 是无序 reservation 集合，WES 可在 CTU01
 窗口内提交各架进场，且任一货架取得匹配的 `SUCCEEDED` Transport、唯一 RACK 成员和当前 rack/face 投影后即可独立使用普通
 `return_batch` 为 FIFO 分配精确 slot 并搬回，不等待数组中其它货架。每架内部仍按 `rack_face[]` 顺序复用 `RACK_ROTATE`；源为所选
 rack_id 的既有 RACK 引用，目标为本线已配置工作位，不从 WMS 响应添加新位置字段。跨架时旧架 departure 获 `ACCEPTED` 后即可提交
 其它 reservation 货架进场，由 RCS 负责排队，不等待旧架最终位置。历史或无关 Transport 不构成 WorkLine 级门闩。
 冻结候选前缀及后续仍属本线的 FIFO 未排空、pre-buffer 仍有成员或相关可靠动作未闭合时不离场；排空后创建唯一 CTU03。
-CTU03 接纳释放窗口和业务 reservation；同架复用仍等待权威成功回调及明确 `RACK_POSITION`。WMS 拥有 rack/face、容量与储位分配，WES 拥有本地可靠编排，
-RCS/ECS 拥有接纳和最终物理事实。此设计不引入 Epoch、兼容别名、旧路径、队尾状态、缓存计数器、业务表或字段；
-仅为既有 `wms_confirmations` 增加 `workline_id + operation + operation_id` 查询索引。
+CTU03 接纳释放 WES 本地业务窗口；同架复用仍等待权威成功回调及明确 `RACK_POSITION`。WMS 拥有 rack/face、容量与储位分配及 reservation 释放，WES 拥有本地可靠编排，RCS/ECS 拥有接纳和最终物理事实。本地窗口释放或排空退出均不证明地点 EMPTY、物理成功或 WMS reservation 已释放；WMS 对后续分配的明确拒绝仍按原响应与重试合同处理。
+
+人工拣料插件通过 `ManualPickingDrainExecution` 持久表达本次本地排空状态：`ACTIVE` 可推进；各 reservation 货架离场已明确接纳且正常排空完成后为 `COMPLETED`；满足确定异常退出条件后为 `EXCEPTION_RETIRED`。两种终态均不再成为 current，不回退到历史前驱。该记录及原成员关联用于跨重启保留退出决定和因果身份，不复制请求、响应、位置或库存，不改变 wire/OpenAPI。
+
+异常退出只在既有工作线事务锁内重验：原 READY 已匹配并应用，存在有效未取消的独立后续 PickingTask（`QUEUED`、`PREPARING` 或 `EXECUTING`），且存在原 execution 绑定的确定 blocker。blocker 为原动作明确非成功终态且插件确认本次不再自动业务重试、已接纳且超过冻结结果期限仍无最终结果，或动作/位置已明确未知；原因依次选择 `DRAIN_ACTION_TERMINAL_EXCEPTION`、`DRAIN_RESULT_OVERDUE`、`DRAIN_RESULT_UNKNOWN`，同类按冻结执行身份稳定排序。无任务、任务取消、无 READY、仅接纳且尚未超期和仅请求发送未知均不触发退役。超时只结束本地业务后继，不把 Transport 改成 FAILED，不取消物理动作；已持久化可靠义务沿原身份、时间戳和正文恢复。
+
+| 内部行为 | 身份与恢复边界 |
+| --- | --- |
+| T1 退役后的迟到 `return_batch READY` | 按冻结 execution 关联可靠保存并完成响应消费，不创建旧 BIN_MOVE、不改已创建动作；当前 rack/face 被新任务复用不改变原归属，重复消费不重开排空 |
+| T2 两终态的原离场恢复 | `COMPLETED` 不重开整次排空；仅当原 Requirement 仍有效、权威目标未满足且原 Action 已明确终态时，保留既有对象级业务重试。`EXCEPTION_RETIRED` 禁止该 drain 的离场、旋转、返料后继及业务重试；两者都保留原身份技术恢复与匹配迟到事实，旧事实不能覆盖更新的因果事实 |
+| T3 原返料成员归属 | 创建 `return_batch` 可靠义务时，同事务冻结 execution、operation 与原 `BinLineReturn.id` 及顺序；原未闭合成员不会因退役重新入队或分配，同箱码合法新轮次使用新 Return.id，不继承旧关联 |
+| T4 两请求入口防重 | drain 与普通 batch 两个请求入口都禁止 ACTIVE 或退役的未决原 Return.id 进入另一批次；保留同 rack/face 门禁。ACTIVE 的确定 `NO_BATCH` 依原合同换面继续，未知响应保留原身份及成员依赖；不能用排除旧成员的查询越过同一未闭合 FIFO 队头 |
+
+已有 Transport、DeviceCommand、Evidence 和 WmsConfirmation 保持原身份及对象级依赖；匹配物理事实先可靠留存，再按原因果身份应用。只有原对象整体闭合且引用已可清理时，execution/member 关联才随历史清理；移除可清理历史不影响当前独立任务启动或恢复。此能力不引入 Epoch、兼容别名、旧路径或新的外部 operation。
 
 ### 9.3 Bin 工作计划
 

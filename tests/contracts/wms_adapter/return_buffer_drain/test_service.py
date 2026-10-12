@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock
 
 import pytest
+import wes_plugin_sdk as sdk
 
 from src.app.execution.models import InboundEvidenceKind, WmsConfirmationStatus
 from src.utils.canonical_json import canonical_json_digest
@@ -331,3 +332,92 @@ async def test_operation_id_for_evidence_returns_none_when_no_confirmation_match
 
     result = await ReturnBufferDrainResultReader().operation_id_for_evidence(Db(), workline_id=7, evidence_id=42)
     assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["valid", "owner", "request_drift", "response_drift", "unpublished", "unapplied"])
+async def test_for_operation_validates_frozen_owner_and_evidence(case):
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
+
+    payload, answer = request(), response()
+    confirmation = SimpleNamespace(
+        operation=OPERATION,
+        operation_id=OPERATION_ID,
+        workline_id=7,
+        status=WmsConfirmationStatus.COMPLETED,
+        created_at=datetime(2026, 10, 11),
+        completed_at=datetime(2026, 10, 11),
+        response_evidence_id=9,
+        request_payload=payload,
+        request_digest=canonical_json_digest(payload),
+        response_result="READY",
+    )
+    evidence = SimpleNamespace(
+        id=9,
+        operation=OPERATION,
+        operation_id=OPERATION_ID,
+        workline_id=7,
+        kind=InboundEvidenceKind.WMS_RESULT,
+        normalized_payload=answer,
+        payload_digest=canonical_json_digest(answer),
+        published_at=datetime(2026, 10, 11),
+        apply_status="APPLIED",
+    )
+    if case == "owner":
+        confirmation.workline_id = 8
+    elif case == "request_drift":
+        confirmation.request_digest = "0" * 64
+    elif case == "response_drift":
+        evidence.payload_digest = "0" * 64
+    elif case == "unpublished":
+        evidence.published_at = None
+    elif case == "unapplied":
+        evidence.apply_status = "RECONCILING"
+
+    class Db:
+        async def execute(self, statement):
+            params = statement.compile().params
+            assert set(params.values()) == {OPERATION, OPERATION_ID}
+            assert len(params) == 2
+            assert "ORDER BY" not in str(statement)
+            return SimpleNamespace(one_or_none=lambda: (confirmation, evidence))
+
+    if case in {"owner", "request_drift", "response_drift"}:
+        with pytest.raises(ValueError):
+            await ReturnBufferDrainResultReader().for_operation(Db(), workline_id=7, operation_id=OPERATION_ID)
+    else:
+        record = await ReturnBufferDrainResultReader().for_operation(Db(), workline_id=7, operation_id=OPERATION_ID)
+        assert record.intent == intent()
+        assert (record.result is not None) == (case == "valid")
+        assert record.evidence_id == (9 if case == "valid" else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", [False, True])
+async def test_pending_ready_retains_original_identity_until_plugin_publication(published):
+    from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord, ReturnBufferDrainResultReader
+
+    original = ReturnBufferDrainRecord(
+        7,
+        WmsConfirmationStatus.COMPLETED,
+        datetime(2026, 10, 11),
+        datetime(2026, 10, 11),
+        intent(),
+        None if not published else sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),)),
+        9 if published else None,
+    )
+    reader = ReturnBufferDrainResultReader()
+    reader.for_operation = AsyncMock(return_value=original)
+
+    class Db:
+        async def execute(self, statement):
+            assert statement.compile().params["param_1"] == 1
+            return SimpleNamespace(
+                one_or_none=lambda: SimpleNamespace(
+                    operation_id=OPERATION_ID, status=WmsConfirmationStatus.COMPLETED, response_result="READY"
+                )
+            )
+
+    result = await reader.pending_for_workline(Db(), workline_id=7)
+    assert result is (None if published else original)
+    reader.for_operation.assert_awaited_once()

@@ -658,6 +658,8 @@ async def test_face_gate_without_task_scope_tracks_return_confirmation_and_evide
 
 @pytest.mark.asyncio
 async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results() -> None:
+    from src.utils.canonical_json import canonical_json_digest
+
     module = import_module("manual_picking.application.batch_repository")
     engine, sessions = await _new_sessions()
     now = datetime(2026, 9, 13, 12)
@@ -692,6 +694,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                 status="COMPLETED",
                 completed_at=now,
             )
+            return_confirmation.request_digest = canonical_json_digest(return_confirmation.request_payload)
             db.add(return_confirmation)
             return_evidence = InboundEvidence(
                 kind="WMS_RESULT",
@@ -711,6 +714,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                 operation_id=return_confirmation.operation_id,
                 apply_status="APPLIED",
             )
+            return_evidence.payload_digest = canonical_json_digest(return_evidence.normalized_payload)
             db.add(return_evidence)
             await db.flush()
             return_confirmation.response_evidence_id = return_evidence.id

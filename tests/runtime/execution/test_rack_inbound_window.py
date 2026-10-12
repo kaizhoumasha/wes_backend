@@ -98,14 +98,14 @@ async def test_window_refills_only_after_leave_accepted_and_reuses_cross_revisio
         created.append(request_id)
         return TransportHandle(f"transport:{request_id}", request_id)
 
-    async def admit(rack_id, target="A"):
+    async def admit(rack_id, target="A", task_id=7):
         return await window.admit(
             db,
             workline_id=1,
             workline_code="LINE3",
             target_location_code=target,
             rack_id=rack_id,
-            picking_task_id=7,
+            picking_task_id=task_id,
             create=lambda: submit(rack_id, target),
         )
 
@@ -117,6 +117,7 @@ async def test_window_refills_only_after_leave_accepted_and_reuses_cross_revisio
         "PENDING",
     ]
     assert await admit("RACK-1") == "REUSED"  # rev2/另一面关联同一物理生命周期
+    assert await admit("RACK-1", task_id=None) == "PENDING"  # drain/source 不为同一货架创建第二个活动入场
     assert await admit("RACK-1", "B") == "PENDING"  # 同一物理货架不能占用另一目标点
     assert await admit("RETURN-RACK-1", "B") == "CREATED"  # 目标点窗口独立
     assert len(created) == 4

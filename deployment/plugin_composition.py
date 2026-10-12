@@ -61,8 +61,6 @@ from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.device.composition import DeviceEndpointAdapterProvider
@@ -107,7 +105,6 @@ def build_deployment_runtime(
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
-    prepare_workline_reserved: Callable[[AsyncSession, int], Awaitable[bool]] | None = None
     workline_owner = CombinedWorkLineConfirmationOwner(
         CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
         ReturnBufferDrainOwnerService(),
@@ -123,6 +120,7 @@ def build_deployment_runtime(
         from manual_picking.application.bin_line.return_repository import ReturnRepository
         from manual_picking.application.completion_flow import ManualPickingCompletionFlow
         from manual_picking.application.completion_repository import ManualPickingCompletionRepository
+        from manual_picking.application.drain_execution_repository import DrainExecutionRepository
         from manual_picking.application.drain_flow import ManualPickingDrainFlow
         from manual_picking.application.drain_repository import DrainRepository
         from manual_picking.application.plugin import build_plugin
@@ -140,9 +138,8 @@ def build_deployment_runtime(
         returns = ReturnRepository()
         batch_reader = BinBatchResultReader()
         drain_reader = ReturnBufferDrainResultReader()
-        drains = DrainRepository(drain_reader)
-
-        prepare_workline_reserved = drains.is_reserved
+        drain_executions = DrainExecutionRepository(batch_reader, transports=transport_runtime.service)
+        drains = DrainRepository(drain_reader, executions=drain_executions)
 
         batch_scheduler = BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner))
         rack_creator = ReliableRackTransportCreator(
@@ -150,7 +147,11 @@ def build_deployment_runtime(
         )
         batch_repository = BatchRepository(batch_reader)
         batch_result = ManualPickingBatchResultFlow(
-            batch_reader, ReliableBinTransportCreator(transport_runtime.service), returns, batch_repository
+            batch_reader,
+            ReliableBinTransportCreator(transport_runtime.service),
+            returns,
+            batch_repository,
+            drain_executions=drain_executions,
         )
         drain_flow = ManualPickingDrainFlow(
             drains,
@@ -159,11 +160,11 @@ def build_deployment_runtime(
                 session_factory,
                 policy=ManualPickingPreparePolicy(),
                 task_queue_gateway=task_queue_gateway,
-                workline_reserved=prepare_workline_reserved,
             ),
             ReturnBufferDrainScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
             batch_scheduler,
             batch_reader,
+            drain_executions=drain_executions,
         )
         batch_driver = ManualPickingBatchDriver(
             ManualPickingBatchFlow(
@@ -172,6 +173,7 @@ def build_deployment_runtime(
                 batch_scheduler,
                 batch_result,
                 uuid_factory=new_uuid7,
+                drain_executions=drain_executions,
             ),
             plans=PickingTaskPlanDeltaRepository(),
             positions=position_projection_repository,
@@ -190,6 +192,7 @@ def build_deployment_runtime(
             wms_reader=manual_bin_typed,
             batch_reader=batch_reader,
             batch_result=batch_result,
+            drain_executions=drain_executions,
             drain_repository=drains,
             drain_reader=drain_reader,
             rack_creator=rack_creator,
@@ -251,7 +254,6 @@ def build_deployment_runtime(
             session_factory,
             plugins=plugins,
             task_queue_gateway=task_queue_gateway,
-            workline_reserved=prepare_workline_reserved,
         ),
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory,

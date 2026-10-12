@@ -14,6 +14,7 @@ from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
     TRANSPORT_POSITION_OPERATION,
+    TRANSPORT_RESULT_OPERATION,
 )
 from src.app.transport.models import (
     TransportCallbackReceipt,
@@ -614,6 +615,22 @@ class TransportRepository:
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)
+
+    async def list_pending_result_evidence(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+    ) -> list[TransportEvidence]:
+        result = await db.scalars(
+            select(TransportEvidence)
+            .where(
+                col(TransportEvidence.transport_task_id) == transport_task_id,
+                col(TransportEvidence.operation) == TRANSPORT_RESULT_OPERATION,
+                col(TransportEvidence.status) == "PENDING",
+            )
+            .order_by(col(TransportEvidence.outcome_revision), col(TransportEvidence.id))
+        )
+        return list(result)
 
     async def list_applied_position_evidence(
         self,

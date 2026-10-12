@@ -7,6 +7,7 @@ from unittest.mock import ANY, AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
+from drain_execution_support import unbound_drain_executions
 
 from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 
@@ -52,7 +53,9 @@ class _Repository:
 
 class _Passages:
     def __init__(self, bins):  # type: ignore[no-untyped-def]
-        self.rows = tuple(SimpleNamespace(bin_code=code, return_state="READY") for code in bins)
+        self.rows = tuple(
+            SimpleNamespace(id=index, bin_code=code, return_state="READY") for index, code in enumerate(bins, 1)
+        )
 
     async def ready_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
         return self.rows
@@ -80,7 +83,9 @@ async def test_batch_flow_returns_between_inbound_chunks_and_keeps_single_wms_re
     repo = _Repository(between_chunks=True)
     passages = _Passages(("A000000001", "A000000002"))
     scheduler = _Scheduler()
-    flow = module.ManualPickingBatchFlow(repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1")
+    flow = module.ManualPickingBatchFlow(
+        repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1", drain_executions=unbound_drain_executions()
+    )
     now = datetime(2026, 9, 13, 12)
 
     created = await flow.advance_in_session(
@@ -129,7 +134,12 @@ async def test_batch_flow_uses_inbound_four_when_return_retry_waits() -> None:
     module = import_module("manual_picking.application.batch_flow")
     scheduler = _Scheduler()
     flow = module.ManualPickingBatchFlow(
-        _Repository(return_due=False), _Passages(("A000000001",)), scheduler, _Inbound(), uuid_factory=lambda: "op-2"
+        _Repository(return_due=False),
+        _Passages(("A000000001",)),
+        scheduler,
+        _Inbound(),
+        uuid_factory=lambda: "op-2",
+        drain_executions=unbound_drain_executions(),
     )
 
     assert await flow.advance_in_session(
@@ -161,6 +171,7 @@ async def test_batch_flow_requests_inbound_before_return_on_first_face(face_done
         scheduler,
         _Inbound(),
         uuid_factory=lambda: "return-op",
+        drain_executions=unbound_drain_executions(),
     )
 
     assert await flow.advance_in_session(
@@ -191,6 +202,7 @@ async def test_cancelled_rack_can_start_return_batch_without_inbound_progress() 
         scheduler,
         _Inbound(),
         uuid_factory=lambda: "return-op",
+        drain_executions=unbound_drain_executions(),
     )
 
     assert await flow.advance_in_session(
@@ -243,7 +255,12 @@ async def test_frozen_face_schedules_second_transport_without_second_wms_request
     scheduler = _Scheduler()
     inbound = _Inbound()
     flow = module.ManualPickingBatchFlow(
-        Repository(return_due=False), _Passages(()), scheduler, inbound, uuid_factory=lambda: "unused"
+        Repository(return_due=False),
+        _Passages(()),
+        scheduler,
+        inbound,
+        uuid_factory=lambda: "unused",
+        drain_executions=unbound_drain_executions(),
     )
     assert await flow.advance_in_session(
         object(),
@@ -288,7 +305,12 @@ async def test_cancelled_face_does_not_create_an_inbound_chunk() -> None:
     scheduler = _Scheduler()
     inbound = _Inbound()
     flow = module.ManualPickingBatchFlow(
-        Repository(return_due=False), _Passages(()), scheduler, inbound, uuid_factory=lambda: "unused"
+        Repository(return_due=False),
+        _Passages(()),
+        scheduler,
+        inbound,
+        uuid_factory=lambda: "unused",
+        drain_executions=unbound_drain_executions(),
     )
 
     assert not await flow.advance_in_session(
@@ -339,7 +361,9 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
 
     transport = Transport()
     batches = SimpleNamespace(record_allocation=AsyncMock())
-    flow = module.ManualPickingBatchResultFlow(Reader(), transport, _Passages(()), batches)
+    flow = module.ManualPickingBatchResultFlow(
+        Reader(), transport, _Passages(()), batches, drain_executions=unbound_drain_executions()
+    )
     evidence = SimpleNamespace(id=31, operation_id="batch-1")
 
     assert (
@@ -408,7 +432,9 @@ async def test_inbound_face_done_records_current_batch_without_transport() -> No
     )
     transport = SimpleNamespace(create=AsyncMock())
     batches = SimpleNamespace(record_allocation=AsyncMock())
-    flow = module.ManualPickingBatchResultFlow(reader, transport, _Passages(()), batches)
+    flow = module.ManualPickingBatchResultFlow(
+        reader, transport, _Passages(()), batches, drain_executions=unbound_drain_executions()
+    )
     evidence = SimpleNamespace(id=31, operation_id=intent.operation_id)
     assert (
         await flow.apply_inbound_in_session(
@@ -469,7 +495,9 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
         has_unclosed_return_transport_for_face=AsyncMock(return_value=True),
         has_conflicting_return_target=AsyncMock(return_value=True),
     )
-    flow = module.ManualPickingBatchResultFlow(reader, transport, passages, batches)
+    flow = module.ManualPickingBatchResultFlow(
+        reader, transport, passages, batches, drain_executions=unbound_drain_executions()
+    )
     evidence = SimpleNamespace(id=32, operation_id="batch-2")
     assert (
         await flow.apply_return_in_session(
@@ -514,7 +542,9 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
 
     new_passages = _Passages(("A000000001", "A000000002", "A000000003"))
     reader.outcome = sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000))
-    flow = module.ManualPickingBatchResultFlow(reader, transport, new_passages)
+    flow = module.ManualPickingBatchResultFlow(
+        reader, transport, new_passages, drain_executions=unbound_drain_executions()
+    )
     assert (
         await flow.apply_return_in_session(
             object(),
@@ -815,7 +845,9 @@ async def test_initial_feed_and_finished_face_do_not_start_opportunistic_return(
     passages = SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=()))
     repo = _Repository(face_done=face_done)
     scheduler = _Scheduler()
-    flow = module.ManualPickingBatchFlow(repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1")
+    flow = module.ManualPickingBatchFlow(
+        repo, passages, scheduler, _Inbound(), uuid_factory=lambda: "op-1", drain_executions=unbound_drain_executions()
+    )
     created = await flow.advance_in_session(
         object(),
         workline_id=7,
@@ -868,7 +900,12 @@ async def test_completed_return_check_resumes_feed_even_when_more_bins_are_ready
     repo.has_unclosed_action_for_face = AsyncMock(return_value=False)
     scheduler, inbound = _Scheduler(), _Inbound()
     flow = module.ManualPickingBatchFlow(
-        repo, _Passages(("RETURN-1",)), scheduler, inbound, uuid_factory=lambda: "return-1"
+        repo,
+        _Passages(("RETURN-1",)),
+        scheduler,
+        inbound,
+        uuid_factory=lambda: "return-1",
+        drain_executions=unbound_drain_executions(),
     )
     kwargs = {
         "workline_id": 7,
@@ -916,7 +953,12 @@ async def test_unclosed_return_transport_does_not_block_next_inbound_chunk() -> 
     )
     scheduler, inbound = _Scheduler(), _Inbound()
     flow = module.ManualPickingBatchFlow(
-        repo, _Passages(("RETURN-1",)), scheduler, inbound, uuid_factory=lambda: "return-1"
+        repo,
+        _Passages(("RETURN-1",)),
+        scheduler,
+        inbound,
+        uuid_factory=lambda: "return-1",
+        drain_executions=unbound_drain_executions(),
     )
 
     advanced = await flow.advance_in_session(
@@ -937,3 +979,105 @@ async def test_unclosed_return_transport_does_not_block_next_inbound_chunk() -> 
     assert advanced
     assert scheduler.intents == []
     assert [call["offset"] for call in inbound.calls] == [4]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleave", [False, True])
+async def test_active_pending_drain_member_is_not_requested_on_other_face(interleave):
+    module = import_module("manual_picking.application.batch_flow")
+    repo, scheduler = _Repository(between_chunks=interleave), _Scheduler()
+    if interleave:
+        repo.inbound_progress = AsyncMock(
+            return_value=SimpleNamespace(
+                next_offset=4,
+                feed_complete=False,
+                intent=object(),
+                result=object(),
+                evidence_id=51,
+            )
+        )
+    inbound = _Inbound()
+    flow = module.ManualPickingBatchFlow(
+        repo,
+        _Passages(("B1",)),
+        scheduler,
+        inbound,
+        uuid_factory=lambda: "op-new",
+        drain_executions=unbound_drain_executions(),
+    )
+    flow._drain_executions = SimpleNamespace(eligible_return_prefix=AsyncMock(return_value=()))
+    created = await flow.advance_in_session(
+        object(),
+        workline_id=7,
+        workline_code="LINE-1",
+        picking_task_id=31,
+        task_id="PICK-1",
+        plan_revision=1,
+        source_evidence_id=51,
+        rack_id="OTHER",
+        rack_face="270",
+        return_location="CNV0302",
+        inlet_location="CNV0301",
+        now=datetime(2026, 9, 13, 12),
+        allow_inbound=interleave,
+    )
+    assert tuple(row.id for row in flow._drain_executions.eligible_return_prefix.await_args.kwargs["rows"]) == (1,)
+    assert scheduler.intents == []
+    assert created is interleave
+    assert len(inbound.calls) == int(interleave)
+
+
+@pytest.mark.asyncio
+async def test_drain_ready_consumes_original_return_id_instead_of_same_bin_new_round():
+    from manual_picking.application.batch_result import ManualPickingBatchResultFlow
+
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="old-return",
+        workline_code="LINE-1",
+        rack_id="R1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "B1", "OUTLET"),),
+    )
+    outcome = sdk.BinReturnBatchOutcome(
+        sdk.BinReturnBatchReady((sdk.BinReturnMove(1, "B1", sdk.TransportRackBinSlot("R1", "90", "S1")),))
+    )
+    original, new = (
+        SimpleNamespace(id=41, bin_code="B1", return_state="READY"),
+        SimpleNamespace(id=99, bin_code="B1", return_state="READY"),
+    )
+    passages = SimpleNamespace(
+        by_ids_for_update=AsyncMock(return_value=(original,)), ready_prefix_for_update=AsyncMock(return_value=(new,))
+    )
+    transport = SimpleNamespace(create=AsyncMock())
+    repository = unbound_drain_executions()
+    repository.execution_for_return_batch.return_value = SimpleNamespace(status="ACTIVE")
+    repository.members_for_return_batch.return_value = (SimpleNamespace(return_id=41),)
+    batches = SimpleNamespace(
+        has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
+        has_conflicting_return_target=AsyncMock(return_value=False),
+    )
+    flow = ManualPickingBatchResultFlow(
+        SimpleNamespace(read_return=AsyncMock(return_value=(intent, outcome))),
+        transport,
+        passages,
+        batches,
+        drain_executions=repository,
+    )
+    db = object()
+    assert (
+        await flow.apply_return_in_session(
+            db,
+            SimpleNamespace(id=31, operation_id="old-return"),
+            workline_id=7,
+            workline_code="LINE-1",
+            confirmed_rack_id="R1",
+            confirmed_face="90",
+            return_location="OUTLET",
+        )
+        == "RETURN_READY"
+    )
+    passages.by_ids_for_update.assert_awaited_once_with(db, workline_id=7, return_ids=(41,))
+    passages.ready_prefix_for_update.assert_not_awaited()
+    assert original.return_state == "RETURN_REQUESTED" and original.return_batch_evidence_id == 31
+    assert new.return_state == "READY"
+    transport.create.assert_awaited_once()

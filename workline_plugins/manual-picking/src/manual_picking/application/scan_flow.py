@@ -24,7 +24,7 @@ from manual_picking.handlers.scan_types import PassageSnapshot, ScanFact, normal
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
+from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmationStatus
 from src.app.execution.plugin_binding import BusinessEvidenceApplication, BusinessEvidenceDisposition
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
@@ -41,6 +41,7 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BA
 from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
+from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.uuid7 import new_uuid7
@@ -56,6 +57,7 @@ from .batch_driver import (
 from .batch_repository import BatchRepository
 from .bin_line.return_model import BinLineReturn
 from .bin_line.return_repository import ReturnRepository
+from .drain_execution_repository import DrainExecutionRepository
 from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
@@ -104,11 +106,13 @@ class ManualPickingScanFlow:
         position_service: Any = None,
         batch_reader: Any = None,
         batch_result: Any = None,
+        drain_executions: Any = None,
         drain_repository: Any = None,
         drain_reader: Any = None,
         rack_creator: Any = None,
         transport_bindings: Any = transport_decision_binding_repository,
     ) -> None:
+        self._drain_executions = drain_executions or DrainExecutionRepository()
         self._drains = drain_repository
         self._drain_reader = drain_reader
         self._rack_creator = rack_creator
@@ -156,7 +160,7 @@ class ManualPickingScanFlow:
                 result = await self._apply_batch_result(db, evidence, workline)
                 role = "WMS_BATCH"
             elif evidence.operation == RETURN_BUFFER_DRAIN_OPERATION:
-                if self._drain_reader is None:
+                if self._drain_reader is None or self._drains is None:
                     return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
                 intent, outcome = await self._drain_reader.read(db, evidence, workline_id=workline_id)
                 result = (
@@ -167,6 +171,19 @@ class ManualPickingScanFlow:
                     )
                     else None
                 )
+                if result is not None and isinstance(outcome.result, ReturnBufferDrainReady):
+                    await self._drains.executions.ensure_ready_in_session(
+                        db,
+                        decision=ReturnBufferDrainRecord(
+                            workline_id=workline_id,
+                            status=WmsConfirmationStatus.COMPLETED,
+                            created_at=evidence.created_at,
+                            completed_at=evidence.created_at,
+                            intent=intent,
+                            result=outcome.result,
+                            evidence_id=evidence.id,
+                        ),
+                    )
                 role = "WMS_DRAIN"
             elif evidence.operation == RACK_DEPARTURE_OPERATION:
                 result = "DEPARTURE_RECEIVED"
@@ -209,14 +226,27 @@ class ManualPickingScanFlow:
             intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
             if intent.workline_code != workline.line_code:
                 return None
+            try:
+                execution = await self._drain_executions.execution_for_return_batch(
+                    db, workline_id=workline.id, operation_id=intent.operation_id
+                )
+            except ValueError:
+                return None
+            if execution is not None and execution.status != "ACTIVE":
+                return "DRAIN_RETURN_AFTER_CLOSE"
             source = await self._positions.get(db, "RACK", intent.rack_id)
-            drain = await self._drains.current(db, workline.id) if self._drains is not None else None
-            drain_faces = (
-                {(rack.rack_id, face) for rack in drain.result.racks for face in rack.rack_faces}
-                if drain is not None and isinstance(drain.result, ReturnBufferDrainReady)
-                else set()
-            )
-            if (intent.rack_id, intent.rack_face) in drain_faces:
+            if execution is not None:
+                if self._drains is None:
+                    return None
+                drain = await self._drains.for_evidence(db, workline.id, execution.decision_evidence_id)
+                if (
+                    drain is None
+                    or drain.intent.operation_id != execution.drain_operation_id
+                    or not isinstance(drain.result, ReturnBufferDrainReady)
+                    or (intent.rack_id, intent.rack_face)
+                    not in {(rack.rack_id, face) for rack in drain.result.racks for face in rack.rack_faces}
+                ):
+                    return None
                 ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP, intent.rack_id)
                 if (
                     source is None
@@ -354,9 +384,18 @@ class ManualPickingScanFlow:
         return status
 
     async def _resolve_drain_decision(self, db: Any, workline_id: int, step: str, binding: Any) -> Any | None:
-        """定位重试所依据的 drain 决定：进场/旋转要求仍是 current，退场按冻结 evidence 独立找回。"""
+        """按原 execution 判业务资格；正常闭合仅保留原离场恢复，不重开排空。"""
         if self._drains is None:
             return None
+        execution = await self._drains.executions.for_evidence(
+            db, workline_id=workline_id, evidence_id=binding.source_evidence_id
+        )
+        if execution is None or execution.status == "EXCEPTION_RETIRED":
+            return None
+        if execution.status == "COMPLETED":
+            if step != DRAIN_RACK_OUT_STEP:
+                return None
+            return await self._drains.for_evidence(db, workline_id, binding.source_evidence_id)
         current = await self._drains.current(db, workline_id)
         if current is not None and current.evidence_id == binding.source_evidence_id:
             return current
@@ -455,7 +494,7 @@ class ManualPickingScanFlow:
                 return "IGNORED"
         elif payload["step"] in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
             current = await self._resolve_drain_decision(db, workline_id, payload["step"], binding)
-            if current is None:
+            if current is None or task.status not in {"FAILED", "REJECTED"}:
                 return "IGNORED"
         else:
             return "IGNORED"

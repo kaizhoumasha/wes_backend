@@ -564,7 +564,11 @@ Bin 身份、FIFO 顺序、插件身份和生命周期原因由 WES 本地持有
 
 WMS 内部按 `(workline_code, drain_operation_id)` 保存每线唯一活动容量 reservation；后续普通 `return_batch` 按当前 rack/face 消费，
 未知物理结果不释放，本次数量全部权威回库后关闭。该内部关联不增加 wire 字段。
-当前面至少一个 READY 批次后的 `NO_BATCH` 才推进下一面；首批 `NO_BATCH`、越序 rack/face 或末面耗尽后数量仍未闭合进入对账。
+ACTIVE 的确定 `NO_BATCH` 按出库合同 §9.2.3 换面继续，不变成同面轮询；响应未知沿原身份重试并保留原成员依赖。
+
+本地排空生命周期及 T1–T4 以[出库合同 §9.2.3](wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)为准：独立后续任务不受整线 drain reservation 阻塞，正常 drain 不被新任务取消；原 READY、有效后续任务与确定 blocker 同时成立且锁内重验后，execution 才能异常退役。`COMPLETED` 保留符合原 Requirement/目标事实/明确 Action 终态的对象级离场恢复；`EXCEPTION_RETIRED` 不再创建业务后继或业务重试。两种终态不重新成为 current，原可靠义务与匹配迟到事实仍按冻结身份处理。
+
+`return_batch` 从义务创建时同事务冻结原 execution 和 `BinLineReturn.id`；退役后的迟到 READY 只完成原响应消费，不创建 BIN_MOVE。drain 与普通 batch 请求均不能重复申请 ACTIVE/退役的未决原成员，也不能越过同一未闭合 FIFO 队头；同箱码合法新轮次使用新 Return.id。WES 本地退出不证明物理完成、地点 EMPTY 或 WMS reservation 已释放，容量释放仍由 WMS 管理。
 
 `503 / UNAVAILABLE`、响应未知或单次收发失败时，WES 使用原 `operation_id`、原时间戳和原 payload 重试；`409 / CONFLICT` 或
 `422 / REJECTED` 进入对账，不换 identity 猜测结果。只有已可靠保存的 `READY` 才允许继续创建货架进场 Transport；HTTP 成功、
