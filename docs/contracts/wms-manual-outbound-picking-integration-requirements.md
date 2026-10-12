@@ -525,7 +525,7 @@ Evidence/Confirmation。
 Identifier 使用 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`。请求信封和 `data` 均为严格对象，额外字段、错误类型和非法 `null` 全部拒绝。
 Bin 身份、FIFO 顺序、插件身份和生命周期原因由 WES 本地持有；WMS 只根据 WorkLine 和总容量需求选择承接货架面计划。
 
-`READY` 表示 WMS 已选择满足总容量需求的有序货架和货架面计划：
+`READY` 表示 WMS 已选择满足总容量需求的无序货架 reservation 集合，每架的货架面计划有序：
 
 ```json
 {
@@ -557,7 +557,7 @@ Bin 身份、FIFO 顺序、插件身份和生命周期原因由 WES 本地持有
 }
 ```
 
-`READY` 只允许 `result + racks`；`racks[]` 非空有序、`rack_id` 不重复，每项 `rack_face[]` 非空有序且同架不重复；总面数在
+`READY` 只允许 `result + racks`；`racks[]` 非空无序、`rack_id` 不重复，每项 `rack_face[]` 非空有序且同架不重复；总面数在
 `1..required_slot_count` 且每面至少承担一个预留槽位。`WAIT` 只允许
 `result + reason_code=NO_DRAIN_RACK_AVAILABLE + retry_after_ms`，其中 `retry_after_ms` 为 `1～60000` 的整数。响应
 `operation_id` 必须匹配请求，响应对象同样拒绝额外字段。
@@ -572,8 +572,8 @@ ACTIVE 的确定 `NO_BATCH` 按出库合同 §9.2.3 换面继续，不变成同�
 
 `503 / UNAVAILABLE`、响应未知或单次收发失败时，WES 使用原 `operation_id`、原时间戳和原 payload 重试；`409 / CONFLICT` 或
 `422 / REJECTED` 进入对账，不换 identity 猜测结果。只有已可靠保存的 `READY` 才允许继续创建货架进场 Transport；HTTP 成功、
-WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权威物理结果。WES 按 `racks[]` 和 `rack_face[]` 顺序推进；
-同架换面等待精确到位后复用 `RACK_ROTATE`，跨架在旧架 departure `ACCEPTED` 后可提交下一架进场并由 RCS 排队。
+WMS 决定或 Transport ACK 都不替代货架精确到面及后续退箱的权威物理结果。WES 按各架权威到位事实独立推进，不以 `racks[]` 顺序等待其他货架；
+每架内部按 `rack_face[]` 顺序，换面等待精确到位后复用 `RACK_ROTATE`；跨架在旧架 departure `ACCEPTED` 后可提交其他 reservation 货架进场并由 RCS 排队。
 
 ## NOT in scope {#not-in-scope}
 
