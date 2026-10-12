@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.10.0] - 2026-10-12
+
+### Fixed
+
+- 六张软删除业务表的 `deleted_by` 使用 BIGINT，支持 64 位操作人 ID，保留原有可空语义与已有数据。
+
+### Changed
+
+- 迁移 `e1c64a8b9d20` 接入当前 `9d4e6b7a120c` 基线，保持唯一 head；降级遇到超出 32 位范围的操作人 ID 时明确拒绝并完整回滚。
+- PostgreSQL 校验跟随当前唯一迁移 head，字符外键可完整容纳被引用身份；数值类型与精度一致性检查保留。
+
 ## [0.49.9.0] - 2026-10-12
 
 ### Added
