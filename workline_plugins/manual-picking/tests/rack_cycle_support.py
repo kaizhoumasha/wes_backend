@@ -212,12 +212,19 @@ class _BusinessHandler(BaseHTTPRequestHandler):
                 "rack_destination": {"type": "ZONE", "location_code": "WH01"},
             }
         elif operation == "outbound.picking_task.prepare@v1":
-            status, code, result = 202, "PREPARE_ACCEPTED", {}
+            if self.server.reservation_conflict:
+                status, code, result = 409, "CONFLICT", {"reason_code": "STATE_CONFLICT"}
+            else:
+                status, code, result = 202, "PREPARE_ACCEPTED", {}
         else:
             raise AssertionError(f"unexpected operation {operation}")
         with self.server.condition:
             self.server.requests.append({"path": self.path, "envelope": envelope})
             self.server.condition.notify_all()
+        if operation == "outbound.bin.return_batch@v1" and self.server.disconnect_return_once:
+            self.server.disconnect_return_once = False
+            self.close_connection = True
+            return
         body = json.dumps(
             {
                 "operation_id": envelope["operation_id"],
@@ -237,10 +244,20 @@ class _BusinessHandler(BaseHTTPRequestHandler):
 
 
 class BusinessServer(MockWmsHttpServer):
-    def __init__(self, *, rack_id=None, transport_code="RECEIVED", wait=False):
+    def __init__(
+        self,
+        *,
+        rack_id=None,
+        transport_code="RECEIVED",
+        wait=False,
+        reservation_conflict=False,
+        disconnect_return_once=False,
+    ):
         super().__init__()
         self.RequestHandlerClass = _BusinessHandler
         self.transport_code = transport_code
+        self.reservation_conflict = reservation_conflict
+        self.disconnect_return_once = disconnect_return_once
         self.drain_rack_id = rack_id or f"RACK-{new_uuid7()[-12:]}"
         self.drain_result = (
             {"result": "WAIT", "reason_code": "NO_DRAIN_RACK_AVAILABLE", "retry_after_ms": 1}

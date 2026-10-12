@@ -93,6 +93,8 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
     *(
         _biz(table)
         for table in (
+            "manual_picking_drain_return_members",
+            "manual_picking_drain_executions",
             "bin_line_returns",
             "manual_picking_inbound_batches",
             "device_commands",
@@ -430,6 +432,17 @@ async def reset_transport_task_data(
         )
         if active_run is not None:
             raise RuntimeError("TransportTask 正被活动 Transport 自动联调轮次引用，拒绝清理")
+        drain_execution = await db.scalar(
+            text(
+                "SELECT execution.id FROM wes_biz.manual_picking_drain_executions AS execution "
+                "JOIN wes_biz.transport_tasks AS task "
+                "ON execution.blocker_client_request_id = task.client_request_id "
+                "WHERE task.transport_task_id = :transport_task_id LIMIT 1"
+            ),
+            {"transport_task_id": task_id},
+        )
+        if drain_execution is not None:
+            raise RuntimeError("TransportTask 正被排空执行记录引用，拒绝清理")
     receipt_result = await db.execute(
         text(
             "SELECT count(*) FROM wes_biz.transport_callback_receipts "

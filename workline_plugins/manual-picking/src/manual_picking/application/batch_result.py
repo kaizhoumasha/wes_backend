@@ -14,6 +14,7 @@ from wes_plugin_sdk import (
 )
 
 from .batch_transport import inbound_moves, return_moves
+from .drain_execution_repository import DrainExecutionRepository
 
 INBOUND_STEP = "MANUAL_PICKING_INBOUND_BATCH"
 RETURN_STEP = "MANUAL_PICKING_RETURN_BATCH"
@@ -21,9 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class ManualPickingBatchResultFlow:
-    def __init__(self, reader: Any, transport: Any, passages: Any, batches: Any = None) -> None:
+    def __init__(
+        self, reader: Any, transport: Any, passages: Any, batches: Any = None, *, drain_executions: Any = None
+    ) -> None:
         from .batch_repository import BatchRepository
 
+        self._drain_executions = drain_executions or DrainExecutionRepository()
         self._reader = reader
         self._transport = transport
         self._passages = passages
@@ -95,7 +99,7 @@ class ManualPickingBatchResultFlow:
             moves=moves,
         )
 
-    async def apply_return_in_session(
+    async def apply_return_in_session(  # noqa: PLR0911
         self,
         db: Any,
         evidence: Any,
@@ -114,7 +118,28 @@ class ManualPickingBatchResultFlow:
             or any(candidate.source_location_code != return_location for candidate in intent.return_candidates)
         ):
             return None
-        rows = await self._passages.ready_prefix_for_update(db, workline_id)
+        try:
+            execution = await self._drain_executions.execution_for_return_batch(
+                db, workline_id=workline_id, operation_id=intent.operation_id
+            )
+            if execution is not None and execution.status != "ACTIVE":
+                return "DRAIN_RETURN_AFTER_CLOSE"
+            members = (
+                await self._drain_executions.members_for_return_batch(
+                    db, workline_id=workline_id, operation_id=intent.operation_id
+                )
+                if execution is not None
+                else ()
+            )
+            rows = (
+                await self._passages.by_ids_for_update(
+                    db, workline_id=workline_id, return_ids=tuple(member.return_id for member in members)
+                )
+                if members
+                else await self._passages.ready_prefix_for_update(db, workline_id)
+            )
+        except ValueError:
+            return None
         candidates = intent.return_candidates
         if tuple(row.bin_code for row in rows[: len(candidates)]) != tuple(
             candidate.bin_code for candidate in candidates

@@ -1418,6 +1418,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260926_0941_bdf2d676d0a8_add_device_ecs_test_default.py",
         "migrations/versions/20261009_0000_7a0d19c4e632_允许手工拣料省略转运货架.py",
         "migrations/versions/20261009_0800_a16c9b2e7d04_统一外部系统API访问日志.py",
+        "migrations/versions/20261011_0000_9d4e6b7a120c_新增人工拣料排空执行.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[

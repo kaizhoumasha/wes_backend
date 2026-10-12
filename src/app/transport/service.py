@@ -1620,7 +1620,37 @@ class TransportService:
         task.updated_at = now
         await self._invalidate_other_task_positions(db, task, member)
 
-    async def _apply_result_evidence(  # noqa: PLR0912
+    async def has_pending_definite_result_in_session(self, db: AsyncSession, task: TransportTask) -> bool:
+        """只读判断宿主可应用的确定结果；应用仍由 process_pending_evidence 唯一拥有。"""
+        evidence_rows = await self._repository.list_pending_result_evidence(db, task.transport_task_id)
+        if not evidence_rows:
+            return False
+        members = await self._repository.list_members(db, task.transport_task_id)
+        for evidence in evidence_rows:
+            try:
+                results = _result_members(task, members, evidence.payload_json)
+                if _applicable_outcome_revision(evidence, task) is None or task.status in {
+                    TransportTaskStatus.SUCCEEDED.value,
+                    TransportTaskStatus.FAILED.value,
+                }:
+                    continue
+                validated = _validated_member_results(members, results, task)
+                if any(outcome.position_unknown for _, _, outcome, _ in validated):
+                    continue
+                required = _successful_rack_slot_result_members(task, evidence.payload_json, members)
+                positions = (
+                    await self._repository.list_applied_position_evidence(db, task.transport_task_id)
+                    if required
+                    else []
+                )
+                if not required or _has_applied_exact_target_position_evidence(required, positions):
+                    return True
+            except TransportContractError:  # noqa: S112 - 只读否定判定，冲突由原 Evidence owner 留存
+                # 不能确定应用的 Evidence 交由原 owner 留存冲突，不作为已确定终态。
+                continue
+        return False
+
+    async def _apply_result_evidence(
         self,
         db: AsyncSession,
         task: TransportTask,
@@ -1630,41 +1660,7 @@ class TransportService:
         if payload.get("kind") != task.kind:
             raise TransportContractError("result kind differs from frozen task")
         members = await self._repository.list_members(db, task.transport_task_id)
-        if task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}:
-            raw_results = [
-                {
-                    "object_id": payload.get("rack_id"),
-                    **{
-                        key: payload[key]
-                        for key in ("status", "final_position", "position_unknown", "failure_code", "arrival_face")
-                        if key in payload
-                    },
-                }
-            ]
-            # WMS/RCS 保证成功结果已按请求面向到位；仅补齐应用副本，保留原始 Evidence 与摘要。
-            if raw_results[0].get("status") == "SUCCEEDED" and raw_results[0].get("arrival_face") is None:
-                raw_results[0]["arrival_face"] = task.request_json.get("target_face")
-        else:
-            external_results = payload.get("results")
-            if not isinstance(external_results, list):
-                raise TransportContractError("results must be a list")
-            raw_results = [
-                {
-                    "object_id": item.get("container_id"),
-                    **{key: value for key, value in item.items() if key != "container_id"},
-                }
-                for item in external_results
-                if isinstance(item, dict)
-            ]
-        results: dict[object, dict[str, Any]] = {
-            item.get("object_id"): item for item in raw_results if isinstance(item, dict)
-        }
-        if set(results) != {member.object_id for member in members} or len(results) != len(raw_results):
-            raise TransportContractError("result members differ from frozen task")
-        if task.status == TransportTaskStatus.REJECTED.value:
-            raise TransportContractError("rejected task cannot accept result evidence")
-        # 迟到旧版本只跳过状态推进，仍必须匹配当前任务的冻结 kind、成员类型和成功目标。
-        _validate_result_frozen_identity(task, members, results)
+        results = _result_members(task, members, payload)
         outcome_revision = _applicable_outcome_revision(evidence, task)
         if outcome_revision is None:
             return True
@@ -1683,45 +1679,9 @@ class TransportService:
         await self._lock_projection_authority_root(db, task)
 
         now = timezone.now_for_db()
-        validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome, bool]] = []
-        any_unknown = False
-        any_failed = False
-        for member in members:
-            result = results[member.object_id]
-            status = result.get("status")
-            cancelled = status == "CANCELLED"
-            has_position = isinstance(result.get("final_position"), dict)
-            position_unknown = result.get("position_unknown") is True
-            if cancelled:
-                if (
-                    task.kind not in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
-                    or not has_position
-                    or position_unknown
-                    or result.get("failure_code") is not None
-                    or result.get("arrival_face") is not None
-                ):
-                    raise TransportContractError("invalid cancelled rack result")
-            elif has_position == position_unknown or status not in {"SUCCEEDED", "FAILED"}:
-                raise TransportContractError("invalid member result position or status")
-            failure_code = "RCS_TASK_CANCELLED" if cancelled else result.get("failure_code")
-            if status == "SUCCEEDED" and (not has_position or failure_code is not None):
-                raise TransportContractError("invalid successful member result")
-            if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
-                raise TransportContractError("failed member requires failure_code")
-            arrival_face = result.get("arrival_face")
-            final_position = result.get("final_position") if has_position else None
-            if _result_contradicts_definite_member_fact(member, result):
-                raise TransportContractError("result contradicts confirmed member fact")
-            outcome = TransportMemberOutcome(
-                object_id=member.object_id,
-                final_position=_contract_position(final_position) if final_position is not None else None,
-                position_unknown=position_unknown,
-                failure_code=failure_code,
-                arrival_face=arrival_face,
-            )
-            validated_results.append((member, result, outcome, cancelled))
-            any_unknown |= position_unknown
-            any_failed |= status in {"FAILED", "CANCELLED"}
+        validated_results = _validated_member_results(members, results, task)
+        any_unknown = any(outcome.position_unknown for _, _, outcome, _ in validated_results)
+        any_failed = any(result["status"] in {"FAILED", "CANCELLED"} for _, result, _, _ in validated_results)
 
         outcomes: list[TransportMemberOutcome] = []
         # 按对象稳定顺序锁定聚合写入；不跨 HTTP，也不参与独立任务准入。
@@ -2012,6 +1972,95 @@ def _position_matches_member_type(member: TransportMember, position: object) -> 
     if member.object_type == "RACK":
         return position.get("kind") == "RACK_POSITION"
     return position.get("kind") in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}
+
+
+def _result_members(
+    task: TransportTask,
+    members: list[TransportMember],
+    payload: dict[str, Any],
+) -> dict[object, dict[str, Any]]:
+    if payload.get("kind") != task.kind:
+        raise TransportContractError("result kind differs from frozen task")
+    if task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}:
+        raw_results = [
+            {
+                "object_id": payload.get("rack_id"),
+                **{
+                    key: payload[key]
+                    for key in ("status", "final_position", "position_unknown", "failure_code", "arrival_face")
+                    if key in payload
+                },
+            }
+        ]
+        # WMS/RCS 保证成功结果已按请求面向到位；仅补齐应用副本，保留原始 Evidence 与摘要。
+        if raw_results[0].get("status") == "SUCCEEDED" and raw_results[0].get("arrival_face") is None:
+            raw_results[0]["arrival_face"] = task.request_json.get("target_face")
+    else:
+        external_results = payload.get("results")
+        if not isinstance(external_results, list):
+            raise TransportContractError("results must be a list")
+        raw_results = [
+            {
+                "object_id": item.get("container_id"),
+                **{key: value for key, value in item.items() if key != "container_id"},
+            }
+            for item in external_results
+            if isinstance(item, dict)
+        ]
+    results: dict[object, dict[str, Any]] = {
+        item.get("object_id"): item for item in raw_results if isinstance(item, dict)
+    }
+    if set(results) != {member.object_id for member in members} or len(results) != len(raw_results):
+        raise TransportContractError("result members differ from frozen task")
+    if task.status == TransportTaskStatus.REJECTED.value:
+        raise TransportContractError("rejected task cannot accept result evidence")
+    # 迟到旧版本只跳过状态推进，仍必须匹配当前任务的冻结 kind、成员类型和成功目标。
+    _validate_result_frozen_identity(task, members, results)
+    return results
+
+
+def _validated_member_results(
+    members: list[TransportMember],
+    results: Mapping[object, dict[str, Any]],
+    task: TransportTask,
+) -> list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome, bool]]:
+    validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome, bool]] = []
+    for member in members:
+        result = results[member.object_id]
+        status = result.get("status")
+        cancelled = status == "CANCELLED"
+        has_position = isinstance(result.get("final_position"), dict)
+        position_unknown = result.get("position_unknown") is True
+        if cancelled:
+            if (
+                task.kind not in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
+                or not has_position
+                or position_unknown
+                or result.get("failure_code") is not None
+                or result.get("arrival_face") is not None
+            ):
+                raise TransportContractError("invalid cancelled rack result")
+        elif has_position == position_unknown or status not in {"SUCCEEDED", "FAILED"}:
+            raise TransportContractError("invalid member result position or status")
+        failure_code = "RCS_TASK_CANCELLED" if cancelled else result.get("failure_code")
+        if status == "SUCCEEDED" and (not has_position or failure_code is not None):
+            raise TransportContractError("invalid successful member result")
+        if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
+            raise TransportContractError("failed member requires failure_code")
+        arrival_face = result.get("arrival_face")
+        final_position = result.get("final_position") if has_position else None
+        if _result_contradicts_definite_member_fact(member, result):
+            raise TransportContractError("result contradicts confirmed member fact")
+        outcome = TransportMemberOutcome(
+            object_id=member.object_id,
+            final_position=_contract_position(final_position) if final_position is not None else None,
+            position_unknown=position_unknown,
+            failure_code=failure_code,
+            arrival_face=arrival_face,
+        )
+        validated_results.append((member, result, outcome, cancelled))
+
+    return validated_results
 
 
 def _validate_result_frozen_identity(

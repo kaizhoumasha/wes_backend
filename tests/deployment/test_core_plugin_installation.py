@@ -36,10 +36,11 @@ def test_empty_composition_builds_core_without_a_business_handler() -> None:
 
 
 def test_manual_picking_composition_installs_prepare_and_plan_activation_without_plugin_celery() -> None:
+    transport_runtime = SimpleNamespace(service=object(), position_projection_service=object(), client=object())
     runtime = build_deployment_runtime(
         enabled_plugin_keys=("manual-picking",),
         session_factory=object(),
-        transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        transport_runtime=transport_runtime,
         device_command_service=object(),
     )
 
@@ -48,6 +49,12 @@ def test_manual_picking_composition_installs_prepare_and_plan_activation_without
     assert plugin.picking_task_prepare_policy is not None
     assert plugin.picking_task_plan_applied_handler is not None
     assert plugin.transport_outcome_publisher is not None
+    assert plugin.picking_task_batch_driver._drain.repository.executions is not None
+    assert plugin.picking_task_batch_driver._drain.repository.executions._transports is transport_runtime.service
+    assert plugin.picking_task_batch_driver._drain._prepare._workline_reserved is None
+    assert runtime.picking_task_prepare_service._workline_reserved is None
+    assert runtime.picking_task_plan_activation_service._workline_reserved is None
+    assert runtime.execution.fact_processor._workline_reserved is None
     assert runtime.picking_task_plan_activation_service.plugin_identities == (("manual-picking", "0.1.0"),)
 
 

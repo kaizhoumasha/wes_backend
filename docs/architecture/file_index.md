@@ -60,8 +60,8 @@
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
-| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 出库交互合同；覆盖人工拣料 CTU01 业务步骤、transport-only feed_complete、跨任务 FIFO 与任务完成 drain 严格 wire；停线/切换触发未实现 |
-| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；覆盖四点扫码、人工任务准入与释放、来源架换面/离场及历史无归属 Evidence 的诊断边界；PDA 归属 WMS |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 出库交互合同；覆盖人工拣料 CTU01 业务步骤、transport-only feed_complete、跨任务 FIFO、任务完成 drain 严格 wire 与 §9.2.3 本地排空生命周期/T1–T4；停线/切换触发未实现 |
+| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；覆盖四点扫码、人工任务准入与释放、来源架换面/离场、引用排空异常退出与原成员身份边界及历史无归属 Evidence 的诊断边界；PDA 归属 WMS |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线/切换排空触发尚未实现，该场景仍为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |

@@ -250,6 +250,14 @@ class ManualPickingBatchDriver:
         )
         created = 0
         for row in pending:
+            if self._drain is not None and await self._drain.repository.has_retired_unclosed_inbound(
+                db,
+                workline_id=line.id,
+                rack_id=row.rack_id,
+                target_location_code=line.position_bindings[FIVE_RACK.slot_key]["location_id"],
+                target_face=row.rack_face,
+            ):
+                continue
             intent = PickingTaskRackTransportIntent(
                 task_id=task.task_id,
                 fact_id=f"picking-task-plan:{task.id}:{task.last_applied_plan_revision}",
@@ -275,12 +283,16 @@ class ManualPickingBatchDriver:
             created += admission == "CREATED"
         return created
 
-    async def _advance_drain(self, db: Any, line: Any) -> int:
+    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911
+        if await self._drain.retire_exception_in_session(db, line, timezone.now_for_db()):
+            return 1
         # Drain rack 是无序 reservation；按各自权威到位事实独立推进。
         count, decision = await self._drain.decide_in_session(db, line, timezone.now_for_db())
         if decision is None:
             return count
         repository = self._drain.repository
+        if await repository.complete_if_departed(db, decision, closed_at=timezone.now_for_db()):
+            return count + 1
         filled = await self._submit_drain_racks(db, line, decision)
         if filled:
             return count + filled
@@ -380,6 +392,14 @@ class ManualPickingBatchDriver:
         position = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         created = 0
         for rack in selected:
+            if await repository.has_retired_unclosed_inbound(
+                db,
+                workline_id=line.id,
+                rack_id=rack.rack_id,
+                target_location_code=position,
+                target_face=rack.rack_faces[0],
+            ):
+                continue
             admission = await self._rack_creator.create_windowed_inbound(
                 db,
                 workline_id=line.id,
