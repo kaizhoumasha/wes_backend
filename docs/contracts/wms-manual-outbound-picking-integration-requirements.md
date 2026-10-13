@@ -48,6 +48,7 @@ flowchart TD
 
     subgraph A["子流程 A：五层货架 Bin，点1～点4"]
         A00["来源架权威到位<br/>匹配原 Transport"] --> A0["当前面 bin.inbound_batch@v1"] --> A01["入站 BIN_MOVE<br/>等待权威成功"] --> A1["点1 SCAN<br/>实扫匹配并记录入线"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
+        A01 -->|当前批次成员直达 SCAN2| A2
         A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["当前架投料间隙或 drain<br/>bin.return_batch@v1"] --> A9["退箱 BIN_MOVE<br/>等待权威结果"]
         A01 --> A10{"全部分段 feed_complete？"}
         A10 -->|否，前段 SCAN1 清空入口| A01
@@ -56,7 +57,7 @@ flowchart TD
     end
 
     subgraph B["子流程 B：退料货架直接取料，§3.5"]
-        B0["WES→WMS<br/>return_rack.arrival_report@v1"] --> B1["PDA 黑盒直接取料"] --> B2["WMS→WES<br/>direct_pick_completed@v1"] --> B3["WES 本地判断<br/>该面已结清"] --> B4["WES→WMS<br/>rack.departure_decide@v1"]
+        B0["WES→WMS<br/>return_rack.arrival_report@v1"] --> B1["PDA 黑盒直接取料"] --> B2["WMS→WES<br/>direct_pick_completed@v1<br/>或 task_completed@v1"] --> B3["面级或整架权威事实<br/>当前业务已闭合"] --> B4["WES→WMS<br/>rack.departure_decide@v1"]
     end
 
     A7 -. "本地任务完成条件" .-> DONE["WES→WMS<br/>picking_task.completion_confirm@v1"]
@@ -654,7 +655,7 @@ operation identity 和 payload 保持幂等，载荷冲突、发送未知和原 
 | 测试 owner | 必须覆盖 |
 | --- | --- |
 | `workline_plugins/manual-picking/tests/test_scan_handlers.py` | 四点 `-B/-C/-B/-B` 校验；point3 未知左行、point4 未知保持占用。 |
-| `workline_plugins/manual-picking/tests/test_scan_flow.py` | point1→point2 FIFO、point3 双来源/NG 与 Passage→Return 交接、point4 首次到位冻结 FIFO 顺序及匹配 ECS `SUCCESS` 后的批次资格；drain ingress 校验。 |
+| `workline_plugins/manual-picking/tests/test_scan_flow.py` | point2 当前批次独立准入、直达 SCAN2、取消来源已入线例外及命令重放冻结；point3 双来源/NG 与 Passage→Return 交接、point4 首次到位冻结 FIFO 顺序及匹配 ECS `SUCCESS` 后的批次资格；drain ingress 校验。 |
 | `workline_plugins/manual-picking/tests/test_passage_model.py` | passage 唯一身份、未闭合计数与退箱 READY 候选顺序与未就绪箱隔离。 |
 | `workline_plugins/manual-picking/tests/test_batch_flow.py`、`test_batch_repository.py`、`test_batch_transport.py` | Bin inbound/return batch 的 FIFO、冻结 rack face、WMS 结果应用和 transport 绑定。 |
 | `workline_plugins/manual-picking/tests/test_drain_flow.py`、`test_drain_repository.py`、`test_transport_outcome.py` | drain 决定、READY 保留、逐面推进和权威 transport outcome。 |

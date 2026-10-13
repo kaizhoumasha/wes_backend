@@ -35,7 +35,7 @@
 | CTU01 步骤幂等、同架换面、CTU03 离场 | `application/batch_driver.py`、`batch_repository.py`、`tests/test_batch_*`、`tests/test_source_progression.py` | 出库合同 §9.1、§9.2.1、§9.4 | `PASS` |
 | SCAN1～SCAN4、FIFO、NG 分流 | `handlers/scan*.py`、`application/scan_flow.py`、`tests/test_scan_handlers.py`、`tests/test_scan_flow.py` | 人工合同 §3.1～§3.4 | `PARTIAL`（C4/C5：现有行为与局部测试一致，不替代现场物理验收） |
 | `MANUAL_PICK_NG` 持久化 | `passage_model.reason_code VARCHAR(64)`；`scan_flow._apply_completed` 在 `result=NG` 时写入 `MANUAL_PICK_NG`；新 migration `20260919_0409_1d3045ea8e62_add_manual_picking_passage_reason_code.py` | 人工合同 §5.2 | `PASS` |
-| Passage 完成身份 | `admission_operation_id` 是 WES 本地准入身份；WMS 完成通知以 `task_id + bin_code` 匹配当前等待的料箱 | 人工合同 §9.1 | `PASS` |
+| Passage 完成身份 | `admission_operation_id` 是 WES 本地准入身份；WMS 完成通知以 `task_id + bin_code` 匹配当前等待的料箱 | 人工合同 §5.1～§5.4 | `PASS` |
 | point2 `WORK_REQUIRED/NO_WORK/WAIT` 与 Bin 完成释放 | 宿主 `src/app/wms_adapter/outbound_picking/manual_bin_*` + 插件 `scan_flow.py`；FastTests 覆盖；真实 worker owner 为 `tests/test_business_loop.py`，统一入口为 `scripts/run-integration-tests.sh` | 人工合同 §5.1～§5.4 | `PARTIAL`（合同已批准；人工 Bin `NORMAL/NG` 纵向 owner 待补，自动化验收依赖 `RUN_WORKLINE_INTEGRATION=1`） |
 | 任务完成、跨任务 `RETURN_BUFFER` FIFO 和 drain | `completion_flow.py`、`drain_flow.py`、`tests/test_completion_flow.py`、`tests/test_drain_flow.py`；集成 `test_rack_cycle_postgresql.py` 覆盖 PostgreSQL 路径 | 人工合同 §2.1、§5.6；出库合同 §9.2.3 | `PARTIAL`（C6：行为与局部测试一致；真实 PG 由集成测试契约承担） |
 | 退料货架直接取料 | 宿主 `src/app/wms_adapter/outbound_picking/manual_rack_direct_pick_*` + `manual_rack_direct_pick_completed.py`；插件通过 `completion_repository` 消费面级或整架权威完成事实推进 `_advance_return_rack` | 人工合同 §3.5、§5.5 | `PARTIAL`（代码与 §8.1 自动化 owner 落地；现场物理验收仍 `NOT ACCEPTED`） |
