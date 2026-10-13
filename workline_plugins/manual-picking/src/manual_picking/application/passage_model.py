@@ -24,12 +24,12 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
         UniqueConstraint("wms_completed_evidence_id", name="ux_manual_picking_passages_wms_completed_evidence"),
         UniqueConstraint("admission_operation_id", name="ux_manual_picking_passages_admission_operation"),
         Index(
-            "ix_manual_picking_passages_scan2_fifo",
+            "ix_manual_picking_passages_current_bin",
             "workline_id",
-            "scan1_received_at",
-            "scan1_evidence_id",
-            postgresql_where=text("scan2_evidence_id IS NULL AND disposition <> 'CLOSED'"),
-            sqlite_where=text("scan2_evidence_id IS NULL AND disposition <> 'CLOSED'"),
+            "task_id",
+            "bin_code",
+            postgresql_where=text("disposition <> 'CLOSED'"),
+            sqlite_where=text("disposition <> 'CLOSED'"),
         ),
         CheckConstraint("disposition IN ('OPEN', 'NORMAL', 'NG', 'CLOSED')", name="manual_picking_disposition_valid"),
         CheckConstraint("wms_result IS NULL OR wms_result IN ('NORMAL', 'NG')", name="manual_picking_wms_result_valid"),
@@ -44,8 +44,10 @@ class ManualPickingPassage(EnterpriseMixin, DataTableMixin, table=True):
     task_id: str = Field(min_length=1, max_length=100)
     bin_code: str | None = Field(default=None, max_length=100)
     raw_scan1_code: str | None = Field(default=None, max_length=160)
-    scan1_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
-    scan1_received_at: datetime
+    scan1_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    scan1_received_at: datetime | None = Field(default=None)
     scan2_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )

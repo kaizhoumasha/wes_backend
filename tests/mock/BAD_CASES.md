@@ -1,5 +1,74 @@
 # MOCK BAD CASE
 
+## KT16 / A000002121：来源取消后已入线箱的 SCAN2 被拒绝
+
+任务 `A0878D74053AD4116871A6BACAFA3BB6F`。原 inbound batch
+`01a131ce-9b42-743d-a19c-c4a4af7774ee`，投箱 Transport
+`transport-4d73ab30-2373-43e1-85ad-af5334156a3c` 于 2026-10-12 20:30:25 UTC
+成功将箱从 `510002A3F1C101 / 90` 送至 `CNV0301`，SCAN1 已确认并成功放行。
+20:58:54 UTC WMS 以 `PLAN_MEMBERS` 取消 `510002/90` revision 1，取消 Evidence `359512206320192`。
+21:13:52 UTC 收到本箱 SCAN2 `A000002121-C`，Evidence `359515884413504`，
+旧来源未取消过滤将它置为 RECONCILING，未发起 WMS admission。
+
+取消只停止未入线的新投箱，不改写已入线事实。SCAN2 保留原任务和 batch 身份；
+已有原批次入线记录，或匹配成功、结果已发布且到达冻结交接位的投箱事实时，继续交由 WMS 判断是否取料。
+不得借此放行未知批次、仅 ACCEPTED 的取消来源或不匹配的投箱事实，也不要求旧位置仍为当前位。
+
+[现场批次和投箱身份 fixture](../../workline_plugins/manual-picking/tests/fixtures/kt16_a087_a000002121_cancelled_source_scan2.json)。
+可执行回归归属 `test_batch_repository.py`：
+
+- `test_scan2_membership_preserves_entered_bin_after_source_cancellation`：已有入线事实在来源取消后继续有效；没有入线事实的取消成员仍拒绝。
+- `test_mock_a000002121_cancelled_source_allows_confirmed_inbound_without_scan1`：真实 Repository + SQLite 注入本次已取消来源和原投箱；
+  接纳但未成功、结果未发布、批次身份不匹配、最终位置不匹配均拒绝；匹配事实允许且不重复写入批次进度，其他箱不被放行。
+
+现场恢复仅重新消费原 SCAN2 Evidence，payload、source_identity、event_id、扫码时间保持；
+不生成替代入站搬运。WMS 的 WORK_REQUIRED/NO_WORK 与放行 Command 结果分别验收，不以 ACK 代替作业或物理完成。
+
+## KT16 / A0878D74053AD4116871A6BACAFA3BB6F：回架未完成却旋转同架
+
+料箱 `A000002668` 的原回架 Transport
+`transport-a0c1255c-f1a6-4f36-9d1a-ecaca865e806`，原 client_request_id
+`01a131d3-be76-7bc7-b19e-20d512571be6`，冻结目标为 `510004B2F2C101 / 270`。
+2026-10-12 20:35:22.873729 UTC 创建回架，20:35:24.400503 UTC 获 `ACCEPTED`。
+同架旋转 `transport-e4f8465d-5969-4eb0-bb25-dd227498b915` 在回架创建约 109 毫秒后创建，
+20:37:08.450798 UTC 已 `SUCCEEDED`，货架转为 `90` 面；20:50:32 UTC 取证时原回架仍无最终结果。
+
+根因：换面路径只检查 WMS 请求/响应和 READY 箱，未检查已进入 RETURN_REQUESTED/EXITED 交接阶段的回架 Transport。
+换面与离场影响整架，不能仅检查当前面，也不能用旋转后的到位时间过滤原回架。
+
+[现场身份与冻结正文 fixture](../../workline_plugins/manual-picking/tests/fixtures/kt16_a087_a000002668_return_before_rotate.json)
+由以下可执行隔离 Mock 回归使用，禁止向现场重放该 fixture：
+
+- `test_batch_repository.py::test_mock_bad_case_a087_a000002668_preserves_original_return_dependency`：
+  实际 Repository + SQLite 注入原 Transport/Member；PENDING、ACCEPTED、RECONCILING 保持整架依赖，
+  不改变原身份/正文/目标；成功目标事实及结果发布后放行，删除已闭合历史后仍可继续，无关货架不受阻塞。
+- `test_source_progression.py::test_mock_bad_case_a087_a000002668_return_blocks_same_rack_rotation`：
+  本次任务与货架面顺序注入真实 Driver，原回架未闭合不得创建 CTU02，闭合后可转至下一面。
+- `test_source_progression.py::test_return_dependency_blocks_departure_before_wms_decision`：
+  来源架、排空架、退料架均不得在原回架未闭合时启动离场。
+- `test_source_progression.py::test_drain_rotation_waits_for_return_dependency_on_entire_rack`
+  与 `test_return_rack_progression.py::test_return_rack_rotation_waits_for_unclosed_return_on_another_face`：
+  排空架和退料架同样检查整架依赖。
+
+所有测试归属 `workline_plugins/manual-picking/tests/`。请求未决与正常响应未发布的窗口由
+`test_rack_return_dependency_checks_unpublished_response_before_transport` 覆盖。
+技术恢复保留原回架身份；已执行的错误旋转不改写为未执行，不自动生成反向旋转、替代回架或新目标。
+
+```bash
+PYTHONPATH=.:workline_plugins/manual-picking/src uv run pytest \
+  workline_plugins/manual-picking/tests/test_source_progression.py \
+  workline_plugins/manual-picking/tests/test_batch_repository.py \
+  workline_plugins/manual-picking/tests/test_return_rack_progression.py -q -o addopts=''
+```
+
+## KT16 / A86FE0A0825564E29B57D2FBB692B9A08：全过程恢复案例
+
+[完整过程、逐箱结果与 Mock 验收切片](acceptance_cases/KT16-A86FE0A0825564E29B57D2FBB692B9A08/README.md)。
+覆盖旧 `510017` drain 窗口、人工清理、CTU 故障、SCAN2 乱序准入和冻结命令重放。
+2026-10-12 19:47:05 UTC 快照：任务业务完成，`A000002701` 回架 Transport 成功；
+`A000002213`、`A000000702` 的返料尚未闭环，因此不列为全箱完成的 GOOD CASE。
+本例保存原始持久化快照、时间线和人工处理摘要，尚未接入可执行 Mock replay runner。
+
 ## KT16-20260925：旧退箱异常阻塞货架下一轮执行
 
 现场：`510002 / 270` 已再次成功到达 KT16，WES 没有继续申请下一批作业。

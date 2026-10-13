@@ -688,8 +688,8 @@ A4 的 `RACK_SLOT` 来源是单盘储位，目标响应省略 `next_source_actio
 | --- | --- |
 | 方向 / 端点 | WMS → WES；`POST {{WES_BASE_URL}}/api/v1/wms/events`，复用公共回调信封 |
 | operation | `outbound.return_rack.task_completed@v1` |
-| 触发 | WMS 已确认该 `task_id + rack_id` 截至 `through_plan_revision` 的全部直接取料成员完成或取消，且不再向该任务/货架追加成员；同架其他 PickingTask 分别判定 |
-| 业务完成身份 | `task_id + rack_id`；WMS 对该业务身份只生成一条完成消息并沿原 `operation_id` 重试；`through_plan_revision` 是完成范围截止点 |
+| 触发 | WMS 已确认该 `task_id + rack_id` 截至 `through_plan_revision` 的全部直接取料成员完成或取消；后续 revision 仍可向同架追加，同架其他 PickingTask 分别判定 |
+| 业务完成范围 | `task_id + rack_id + through_plan_revision`；每条通知沿原 `operation_id` 和冻结正文重试，扩大范围使用新通知身份；当前完成截止版本只前进 |
 | ACK | `ack_mode=EVIDENCE_ACCEPTED`；首次 `202 / RECEIVED` 前同事务提交 `InboundEvidence` 和消息接收身份，后续关联及业务应用可异步进行 |
 
 目标 `data` 为严格对象，只含下表字段；顶层 `operation_id + operation + timestamp + data`、UUIDv7、Identifier 和响应格式遵守[公共回调合同](../contracts/wms-async-callback-envelope-contract.md)。
@@ -752,9 +752,9 @@ POST {{WES_BASE_URL}}/api/v1/wms/events
 }
 ```
 
-**业务应用与验收边界：** WES 接收后先确认同任务计划流已连续应用至 `through_plan_revision`，再按 `task_id + rack_id` 核对该范围内所有面级结果及成员取消证据；前置计划或成员结果缺失时保留 Evidence 等待原有 owner 收敛。该截止点保留逐成员结果；若后续计划又向同任务/同货架追加成员，则与 WMS 的终结性承诺冲突，须对账。同架另一 PickingTask 独立核对；已接纳而结果未知的换面/离场动作继续沿原 Transport 身份对账。整架完成与 `departure_decide`、WMS 释放占用的先后关系按对应工作线离场合同执行。
+**业务应用与验收边界：** WES 接收后先确认同任务计划流已连续应用至 `through_plan_revision`，再将整架通知作为 `task_id + rack_id` 且 `plan_revision <= through_plan_revision` 的成员已闭合的权威业务事实，不等待面级结果，也不补造逐面完成或取消证据。计划未齐时保留 Evidence 由持久 owner 继续等待。同任务后续 revision 允许再次向同架追加成员，旧完成事实不能阻止或闭合新成员；已有后续成员不阻止旧通知应用。后续范围完成使用新通知身份推进最大截止版本，旧通知重放不回退当前完成范围。同架另一 PickingTask 独立核对；已接纳而结果未知的换面/离场动作继续沿原 Transport 身份对账。整架完成与 `departure_decide`、WMS 释放占用的先后关系按对应工作线离场合同执行。
 
-**WMS Decision：Accepted。** 整架完成是 WMS 业务事实，按 `task_id + rack_id` 和 `through_plan_revision` 形成终结性声明；ACK、错误及应用规则如上。联合验收覆盖多面、跨 revision、多任务复用同架、取消、先完成任务后离场、重复/迟到及内容漂移。出库主合同已记录目标 wire；WES 严格 DTO/OpenAPI 与接线待实施。
+**当前修订：** 按已批准的 SRS 原则修正整架完成的作用范围；原“同任务同架以后不再追加”的终结性承诺退出当前合同。整架完成是按 `task_id + rack_id + through_plan_revision` 限定范围的 WMS 业务事实，ACK、错误及应用规则如上。联合验收覆盖多面、完成后同任务同架跨 revision 再次追加、旧完成不闭合新成员、范围推进、取消、先完成任务后离场、重复/迟到及内容漂移。严格 DTO/OpenAPI 和现有接线沿用，双方联调按本次范围语义验收。
 
 ## 7. 其他 API 的身份依据与 MVP 边界
 

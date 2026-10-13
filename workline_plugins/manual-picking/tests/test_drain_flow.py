@@ -52,7 +52,9 @@ def _flow(*, current=None, rows=(), active_task=False, five_rack_window_active=T
     history.read_return = AsyncMock(side_effect=lambda _db, outcome, *, workline_id: (None, outcome))
     tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=active_task))
     bindings = SimpleNamespace(
-        list_active_window_for_target=AsyncMock(return_value=[SimpleNamespace()] if five_rack_window_active else [])
+        list_active_window_for_target=AsyncMock(
+            return_value=[SimpleNamespace(step="PICKING_TASK_BIN_SOURCE_RACK_IN")] if five_rack_window_active else []
+        )
     )
     flow = ManualPickingDrainFlow(
         repository,
@@ -87,6 +89,31 @@ async def test_decide_keeps_active_task_gate_when_five_rack_window_is_occupied()
     flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(id=41, bin_code="B1"),), active_task=True)
 
     assert await flow.decide_in_session(object(), _line(), NOW) == (0, None)
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_current_drain_ignores_residual_drain_window() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(id=41, bin_code="B1"),), active_task=True)
+    flow._bindings.list_active_window_for_target.return_value = [
+        SimpleNamespace(step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN")
+    ]
+
+    db = SimpleNamespace(flush=AsyncMock())
+    assert await flow.decide_in_session(db, _line(), NOW) == (1, None)
+    assert flow._bindings.list_active_window_for_target.return_value[0].window_released_at is not None
+    db.flush.assert_awaited_once()
+    scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_residual_drain_window_does_not_hide_current_source_window() -> None:
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(id=41, bin_code="B1"),), active_task=True)
+    flow._bindings.list_active_window_for_target.return_value.append(
+        SimpleNamespace(step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN")
+    )
+
+    assert await flow.decide_in_session(SimpleNamespace(flush=AsyncMock()), _line(), NOW) == (0, None)
     scheduler.create_in_session.assert_not_awaited()
 
 

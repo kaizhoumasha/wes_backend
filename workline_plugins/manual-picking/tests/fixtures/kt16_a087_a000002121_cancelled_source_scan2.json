@@ -1,0 +1,205 @@
+{
+  "task_id": "A0878D74053AD4116871A6BACAFA3BB6F",
+  "transport": {
+    "id": 248,
+    "kind": "BIN_MOVE",
+    "status": "SUCCEEDED",
+    "created_at": "2026-10-12T20:29:52.781582",
+    "updated_at": "2026-10-12T20:30:25.756898",
+    "caller_json": {
+      "station_id": null,
+      "workline_id": "348950323769920"
+    },
+    "reason_code": null,
+    "outcome_json": {
+      "caller": {
+        "station_id": null,
+        "workline_id": "348950323769920"
+      },
+      "status": "SUCCEEDED",
+      "members": [
+        {
+          "object_id": "A000002121",
+          "arrival_face": null,
+          "failure_code": null,
+          "final_position": {
+            "kind": "HANDOFF_POSITION",
+            "location_code": "CNV0301"
+          },
+          "position_unknown": false
+        }
+      ],
+      "reason_code": null,
+      "outcome_version": 1,
+      "client_request_id": "01a131ce-b509-7af9-95cb-3321437c693f",
+      "transport_task_id": "transport-4d73ab30-2373-43e1-85ad-af5334156a3c"
+    },
+    "request_json": {
+      "kind": "BIN_MOVE",
+      "moves": [
+        {
+          "source": {
+            "kind": "RACK_BIN_SLOT",
+            "rack_id": "510002",
+            "slot_id": "510002A3F1C101",
+            "rack_face": "90"
+          },
+          "target": {
+            "kind": "HANDOFF_POSITION",
+            "location_code": "CNV0301"
+          },
+          "bin_code": "A000002121"
+        }
+      ],
+      "caller": {
+        "station_id": null,
+        "workline_id": "348950323769920"
+      },
+      "client_request_id": "01a131ce-b509-7af9-95cb-3321437c693f"
+    },
+    "next_submit_at": null,
+    "request_digest": "5cdf7cb9cbcc35448beb2852048399f30ff3573795648a26fec8daf22806c292",
+    "outcome_version": 1,
+    "send_started_at": "2026-10-12T20:29:52.813866",
+    "client_request_id": "01a131ce-b509-7af9-95cb-3321437c693f",
+    "transport_task_id": "transport-4d73ab30-2373-43e1-85ad-af5334156a3c",
+    "result_deadline_at": "2026-10-12T20:49:54.317027",
+    "submit_claim_token": null,
+    "submit_claim_until": null,
+    "outcome_claim_token": null,
+    "outcome_claim_until": null,
+    "submit_operation_id": "01a131ce-b50d-7446-aa0e-ddbea080eb80",
+    "submit_request_body": "{\"data\":{\"kind\":\"BIN_MOVE\",\"moves\":[{\"container_id\":\"A000002121\",\"source\":{\"kind\":\"RACK_BIN_SLOT\",\"rack_face\":\"90\",\"rack_id\":\"510002\",\"slot_id\":\"510002A3F1C101\"},\"target\":{\"kind\":\"HANDOFF_POSITION\",\"location_code\":\"CNV0301\"}}],\"transport_task_id\":\"transport-4d73ab30-2373-43e1-85ad-af5334156a3c\"},\"operation\":\"transport.task.submit@v1\",\"operation_id\":\"01a131ce-b50d-7446-aa0e-ddbea080eb80\",\"timestamp\":1791836992781}",
+    "submit_timestamp_ms": 1791836992781,
+    "submit_attempt_count": 1,
+    "authority_workline_id": 348950323769920,
+    "published_outcome_version": 1,
+    "submit_request_body_digest": "7368a060f3b443f5cdff2a5dc3863a70ce3ecdf5c090354fc41508f69668c188",
+    "last_applied_wms_outcome_revision": 1
+  },
+  "member": {
+    "id": 249,
+    "status": "SUCCEEDED",
+    "ordinal": 0,
+    "object_id": "A000002121",
+    "updated_at": "2026-10-12T20:30:25.708513",
+    "object_type": "BIN",
+    "source_json": {
+      "kind": "RACK_BIN_SLOT",
+      "rack_id": "510002",
+      "slot_id": "510002A3F1C101",
+      "rack_face": "90"
+    },
+    "target_json": {
+      "kind": "HANDOFF_POSITION",
+      "location_code": "CNV0301"
+    },
+    "arrival_face": null,
+    "failure_code": null,
+    "position_unknown": false,
+    "last_operation_id": "01a131cf-358c-7186-afe2-9d2877862e43",
+    "transport_task_id": "transport-4d73ab30-2373-43e1-85ad-af5334156a3c",
+    "final_position_json": {
+      "kind": "HANDOFF_POSITION",
+      "location_code": "CNV0301"
+    }
+  },
+  "binding": {
+    "id": 359505071215168,
+    "step": "MANUAL_PICKING_INBOUND_BATCH",
+    "version": 0,
+    "created_at": "2026-10-12T20:29:52.777667",
+    "created_by": null,
+    "updated_at": null,
+    "updated_by": null,
+    "workline_id": 348950323769920,
+    "causal_token": 534,
+    "correlation_id": "01a131ce-9b42-743d-a19c-c4a4af7774ee:0",
+    "picking_task_id": 359500596499008,
+    "client_request_id": "01a131ce-b509-7af9-95cb-3321437c693f",
+    "resource_fence_id": "01a131ce-9b42-743d-a19c-c4a4af7774ee",
+    "source_evidence_id": 359505070551616,
+    "window_released_at": null,
+    "window_target_location_code": null,
+    "window_departure_client_request_id": null
+  },
+  "source": {
+    "id": 359500702442049,
+    "rack_id": "510002",
+    "version": 0,
+    "rack_face": "90",
+    "created_at": "2026-10-12T20:12:06.182913",
+    "created_by": null,
+    "updated_at": "2026-10-12T20:58:54.756262",
+    "updated_by": null,
+    "plan_revision": 1,
+    "picking_task_id": 359500596499008,
+    "source_evidence_id": 359500702294592,
+    "cancelled_evidence_id": 359512206320192
+  },
+  "batch": {
+    "id": 359505071202880,
+    "rack_id": "510002",
+    "task_id": "A0878D74053AD4116871A6BACAFA3BB6F",
+    "version": 0,
+    "rack_face": "90",
+    "created_at": "2026-10-12T20:29:52.773931",
+    "created_by": null,
+    "updated_at": null,
+    "updated_by": null,
+    "workline_id": 348950323769920,
+    "operation_id": "01a131ce-9b42-743d-a19c-c4a4af7774ee",
+    "plan_revision": 1,
+    "picking_task_id": 359500596499008,
+    "response_evidence_id": 359505070551616
+  },
+  "evidence": {
+    "id": 359505070551616,
+    "kind": "WMS_RESULT",
+    "version": 0,
+    "operation": "outbound.bin.inbound_batch@v1",
+    "created_at": "2026-10-12T20:29:52.615551",
+    "created_by": null,
+    "updated_at": "2026-10-12T20:29:52.788947",
+    "updated_by": null,
+    "device_code": null,
+    "received_at": "2026-10-12T20:29:52.604512",
+    "workline_id": 348950323769920,
+    "apply_status": "APPLIED",
+    "command_code": null,
+    "contract_key": "outbound.bin.inbound_batch@v1",
+    "operation_id": "01a131ce-9b42-743d-a19c-c4a4af7774ee",
+    "processed_at": null,
+    "published_at": "2026-10-12T20:29:52.761778",
+    "payload_digest": "8f733adab1dacaf23696c1f02f09c2b820d9055393d758c4df9fa8bdb003a425",
+    "decision_digest": "d92a4ed7cc84a8c412aa7be6e07c40e7dad3a28f8f7d694b374840b298209564",
+    "picking_task_id": null,
+    "source_identity": "outbound.bin.inbound_batch@v1:01a131ce-9b42-743d-a19c-c4a4af7774ee",
+    "contract_version": "1.0",
+    "transport_task_id": null,
+    "normalized_payload": {
+      "code": "DECIDED",
+      "data": {
+        "bins": [
+          {
+            "bin_code": "A000002121",
+            "source_locator": {
+              "type": "RACK_BIN_SLOT",
+              "rack_id": "510002",
+              "slot_id": "510002A3F1C101",
+              "rack_face": "90"
+            }
+          }
+        ],
+        "result": "READY"
+      },
+      "timestamp": 1791836992176,
+      "operation_id": "01a131ce-9b42-743d-a19c-c4a4af7774ee"
+    },
+    "decision_claim_token": null,
+    "material_execution_id": null,
+    "decision_attempt_count": 0,
+    "decision_next_attempt_at": null,
+    "decision_claim_expires_at": null
+  }
+}

@@ -58,6 +58,11 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from src.app.transport.composition import TransportRuntime
 
+from src.app.wms_adapter.return_rack_task_completion.openapi import (
+    RETURN_RACK_TASK_COMPLETED_SCHEMA,
+)
+from src.app.wms_adapter.return_rack_task_completion.wire import RETURN_RACK_TASK_COMPLETED_OPERATION
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 WMS_EVENT_REQUEST_SCHEMA = {
@@ -70,6 +75,7 @@ WMS_EVENT_REQUEST_SCHEMA = {
         PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
         MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA,
         MANUAL_RACK_DIRECT_PICK_EVENT_REQUEST_SCHEMA,
+        RETURN_RACK_TASK_COMPLETED_SCHEMA,
     ]
 }
 WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
@@ -490,8 +496,12 @@ async def _receive_wms_event(  # noqa: PLR0911, PLR0912 - 每个固定 operation
             )
             return response
         result = await handler.handle(envelope, observation=observation)
-    elif operation == MANUAL_RACK_DIRECT_PICK_OPERATION:
-        handler = getattr(request.app.state, "wms_manual_rack_direct_pick_handler", None)
+    elif operation in {MANUAL_RACK_DIRECT_PICK_OPERATION, RETURN_RACK_TASK_COMPLETED_OPERATION}:
+        handler = (
+            getattr(request.app.state, "wms_manual_rack_direct_pick_handler", None)
+            if operation == MANUAL_RACK_DIRECT_PICK_OPERATION
+            else getattr(request.app.state, "wms_return_rack_task_completed_handler", None)
+        )
         if handler is None:
             operation_id = envelope.get("operation_id") if envelope is not None else None
             response = (

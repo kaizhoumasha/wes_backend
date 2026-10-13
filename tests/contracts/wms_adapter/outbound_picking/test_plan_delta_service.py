@@ -47,6 +47,7 @@ def test_outbound_picking_runtime_exposes_only_wms_event_handlers() -> None:
         "picking_task_queue_changed_handler",
         "manual_bin_completed_handler",
         "manual_rack_direct_pick_handler",
+        "return_rack_task_completed_handler",
     }
 
 
@@ -828,3 +829,28 @@ def test_all_persisted_face_columns_are_varchar_ten():
         (PickingTaskBinSourceRack, "rack_face"),
     ):
         assert model.__table__.c[name].type.length == 10
+
+
+async def test_completed_return_rack_accepts_later_revision_members():
+    service, task, evidence, _ = setup_service(status=Status.RECONCILING)
+    task.status = "EXECUTING"
+    task.last_applied_plan_revision = 3
+    task.plan_blocked_evidence_id = evidence.id
+    incoming = event(
+        revision=4,
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "CLOSED-RACK", "rack_face": "90", "slot_id": "S1"}}
+        ],
+    )
+    evidence.normalized_payload = incoming.model_dump(mode="json", exclude_none=True)
+    evidence.operation = OP
+    response = service._plans.get_evidence.return_value
+    service._plans.get_evidence.side_effect = lambda _db, evidence_id: (
+        evidence if evidence_id == evidence.id else response
+    )
+    result = await service.record(incoming, received_at=NOW)
+    assert result.code == "RECEIVED"
+    assert result.reason_code is None
+    assert task.last_applied_plan_revision == 4
+    assert task.plan_blocked_evidence_id is None
+    service._plans.add_members.assert_awaited_once_with(ANY, task.id, incoming.data, evidence.id)

@@ -215,7 +215,7 @@ def outbound_rack_departure_decide(
     task_id: str | None,
     rack_id: str,
     current_location: TransportRackPosition,
-    current_face: str,
+    current_face: str | None,
 ) -> RackDepartureIntent:
     return RackDepartureIntent(
         operation_id=operation_id,

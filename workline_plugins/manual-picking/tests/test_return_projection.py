@@ -71,8 +71,11 @@ async def test_transport_handoff_closes_only_its_current_return(status, deadline
         passages=returns,
         bindings=bindings,
         evidences=SimpleNamespace(get_by_id=AsyncMock(return_value=evidence)),
+        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
     )
-    line = SimpleNamespace(id=7, position_bindings={"OUTLET": {"location_id": "OUT"}})
+    line = SimpleNamespace(
+        id=7, position_bindings={"OUTLET": {"location_id": "OUT"}, "FIVE_RACK": {"location_id": "KT16"}}
+    )
     db = object()
 
     row.return_batch_evidence_id = None

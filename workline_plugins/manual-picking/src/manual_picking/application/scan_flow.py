@@ -42,6 +42,7 @@ from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPE
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord
+from src.app.wms_integration.return_rack_task_completion.reader import ReturnRackTaskCompletedReader
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.uuid7 import new_uuid7
@@ -68,6 +69,7 @@ from .drain_repository import (
 )
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
+from .return_rack_task_completion import ManualPickingReturnRackTaskCompletion
 
 _WAIT_FOR_RESULT = "WAIT_FOR_RESULT"
 # R3：重试候选因未决首次候选持续让路超过此时长仍未补位，记录一次告警（可观测性兜底）。
@@ -112,6 +114,8 @@ class ManualPickingScanFlow:
         rack_creator: Any = None,
         transport_bindings: Any = transport_decision_binding_repository,
     ) -> None:
+        self._return_rack_completion_reader = ReturnRackTaskCompletedReader()
+        self._return_rack_completion = ManualPickingReturnRackTaskCompletion(tasks=tasks)
         self._drain_executions = drain_executions or DrainExecutionRepository()
         self._drains = drain_repository
         self._drain_reader = drain_reader
@@ -142,7 +146,7 @@ class ManualPickingScanFlow:
         self._scan3 = Scan3Handler()
         self._scan4 = Scan4Handler()
 
-    async def apply_in_session(self, db: Any, evidence_id: int, *, workline_id: int) -> BusinessEvidenceApplication:
+    async def apply_in_session(self, db: Any, evidence_id: int, *, workline_id: int) -> BusinessEvidenceApplication:  # noqa: PLR0911
         workline = await self._worklines.get_for_authority_update(db, workline_id)
         evidence = await self._evidences.get_by_id_for_update(db, evidence_id)
         if (
@@ -192,6 +196,12 @@ class ManualPickingScanFlow:
                 result = await self._apply_admission_result(db, evidence, workline_id, bindings)
                 role = "WMS_ADMISSION"
         elif evidence.kind == InboundEvidenceKind.WMS_EVENT:
+            try:
+                completion_fact = self._return_rack_completion_reader.read(evidence)
+            except ValueError:
+                return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
+            if completion_fact is not None:
+                return await self._return_rack_completion.apply_in_session(db, completion_fact, workline_id)
             result = await self._apply_completed(db, evidence, workline_id, bindings)
             role = "WMS_COMPLETED"
         elif evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
@@ -984,6 +994,8 @@ class ManualPickingScanFlow:
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN1"):
             return _WAIT_FOR_RESULT
         for prior in prior_passages:
+            if prior.scan1_evidence_id is None and prior.scan2_evidence_id is not None:
+                continue
             if prior.scan1_command_code is None:
                 return None
             prior_command = await self._command_reader.get_by_command_code(db, prior.scan1_command_code)
@@ -1099,43 +1111,47 @@ class ManualPickingScanFlow:
         raw_code: str | None,
         scanned_at: int,
     ) -> str | None:
-        in_flight = await self._passages.scan2_in_flight_for_update(db, workline_id)
-        identity = scanned_bin_identity(raw_code)
-        duplicate = identity is not None and any(prior.bin_code == identity for prior in in_flight)
-        if duplicate or await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
-            return None if duplicate else _WAIT_FOR_RESULT
-        for prior in in_flight:
-            if prior.scan2_command_code is None:
-                return _WAIT_FOR_RESULT
-            prior_command = await self._command_reader.get_by_command_code(db, prior.scan2_command_code)
-            if prior_command is None or prior_command.status != CommandStatus.SUCCEEDED:
-                return (
-                    _WAIT_FOR_RESULT
-                    if prior_command is not None and prior_command.status != CommandStatus.FAILED
-                    else None
-                )
-        passage = await self._passages.scan2_head_for_update(db, workline_id)
-        if passage is None or passage.scan2_fault_evidence_id is not None:
+        task = await self._tasks.get_executing_for_workline_for_update(db, workline_id)
+        identity = normal_bin_code(raw_code, "-C")
+        if (
+            task is None
+            or identity is None
+            or not await self._batch_progress.record_scan2(
+                db, workline_id=workline_id, picking_task_id=task.id, bin_code=identity
+            )
+        ):
             return None
-        if passage.scan1_command_code is None:
+        candidates = await self._passages.scan2_candidates_for_update(
+            db, workline_id=workline_id, task_id=task.task_id, bin_code=identity
+        )
+        if len(candidates) > 1:
             return None
-        command = await self._command_reader.get_by_command_code(db, passage.scan1_command_code)
-        if command is None or command.status != CommandStatus.SUCCEEDED:
-            return _WAIT_FOR_RESULT if command is not None and command.status != CommandStatus.FAILED else None
-        if identity is None or identity != passage.bin_code:
-            command_code = await self._move(db, workline_id, bindings, "SCAN2", evidence.id, "MOVE_FORWARD")
-            passage.scan2_fault_evidence_id = evidence.id
-            passage.scan2_fault_command_code = command_code
-            return "NG_MOVE_FORWARD"
+        passage = candidates[0] if candidates else None
+        if passage is not None and passage.scan2_evidence_id is not None:
+            return None
+        if await self._returns.current_bin_for_update(db, workline_id, identity) is not None:
+            return None
+        if await self._device_has_unclosed(db, workline_id, bindings, "SCAN2"):
+            return _WAIT_FOR_RESULT
+        if passage is None:
+            passage = await self._passages.add(
+                db,
+                ManualPickingPassage(
+                    workline_id=workline_id,
+                    task_id=task.task_id,
+                    bin_code=identity,
+                ),
+            )
         decision = self._scan2.decide(
             ScanFact(
                 "SCAN2",
                 evidence.id,
                 raw_code,
-                PassageSnapshot(bin_code=passage.bin_code, ng=passage.disposition == "NG"),
+                PassageSnapshot(bin_code=passage.bin_code, ng=False),
                 passage.task_id,
             )
         )
+        passage.disposition = "OPEN"
         passage.scan2_evidence_id = evidence.id
         if decision.route == "REQUEST_WMS":
             operation_id = new_uuid7()
@@ -1166,19 +1182,33 @@ class ManualPickingScanFlow:
         )
         if binding is None:
             raise ValueError("扫码设备缺少冻结命令合同")
+        execution_ref_id = self._command_execution_ref(evidence_id, role)
+        prior = await self._command_reader.get_by_execution_ref_for_update(
+            db,
+            workline_id=workline_id,
+            device_code=device_code,
+            execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
+            execution_ref_id=execution_ref_id,
+        )
+        # 技术重放沿用冻结期限；基础服务继续校验正文，且复用原命令不再次派发。
+        deadline_at = (
+            prior.deadline_at
+            if prior is not None
+            else (timezone.now_for_db() + timedelta(milliseconds=binding.command_timeout_ms))
+        )
         handle = await self._commands.create_command_in_session(
             db,
             DeviceCommandRequest(
                 device_code=device_code,
                 workline_id=workline_id,
                 execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
-                execution_ref_id=self._command_execution_ref(evidence_id, role),
+                execution_ref_id=execution_ref_id,
                 material_execution_id=None,
                 contract_key=binding.contract_key,
                 contract_version=binding.contract_version,
                 task_type=route,
                 params={},
-                deadline_at=timezone.now_for_db() + timedelta(milliseconds=binding.command_timeout_ms),
+                deadline_at=deadline_at,
             ),
         )
         return cast("str", handle.command_code)

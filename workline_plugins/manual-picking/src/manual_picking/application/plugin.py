@@ -13,6 +13,7 @@ from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import MANUA
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
+from src.app.wms_adapter.return_rack_task_completion.wire import RETURN_RACK_TASK_COMPLETED_OPERATION
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 
 
@@ -38,6 +39,7 @@ def build_plugin(
                 BIN_RETURN_BATCH_OPERATION,
                 RACK_DEPARTURE_OPERATION,
                 RETURN_BUFFER_DRAIN_OPERATION,
+                RETURN_RACK_TASK_COMPLETED_OPERATION,
             ),
         ),
         picking_task_prepare_policy=ManualPickingPreparePolicy(),

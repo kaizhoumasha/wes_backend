@@ -360,16 +360,13 @@ class _Passages:
         passage.id = len(self.rows)
         return passage
 
-    async def scan2_head_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
-        return next((row for row in self.rows if row.scan2_evidence_id is None and row.disposition == "OPEN"), None)
-
-    async def scan2_in_flight_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
+    async def scan2_candidates_for_update(self, db, *, workline_id, task_id, bin_code):
         return tuple(
             row
             for row in self.rows
             if row.workline_id == workline_id
-            and row.scan2_evidence_id is not None
-            and row.scan3_evidence_id is None
+            and row.task_id == task_id
+            and row.bin_code == bin_code
             and row.disposition != "CLOSED"
         )
 
@@ -443,6 +440,9 @@ class _Returns:
 class _BatchProgress:
     active_transport = False
 
+    async def record_scan2(self, db, *, workline_id, picking_task_id, bin_code):
+        return bin_code in {"A000000001", "A000000002"}
+
     async def has_active_bin_transport(self, db, bin_code):  # type: ignore[no-untyped-def]
         return self.active_transport
 
@@ -465,7 +465,20 @@ class _Commands:
         self.requests = []
         self.statuses = {}
 
-    async def create_command_in_session(self, db, request):  # type: ignore[no-untyped-def]
+    async def get_by_execution_ref_for_update(self, db, **identity):
+        for index, request in enumerate(self.requests, start=1):
+            if all(getattr(request, key, None) == value for key, value in identity.items()):
+                return SimpleNamespace(command_code=f"COMMAND-{index}", deadline_at=request.deadline_at)
+        return None
+
+    async def create_command_in_session(self, db, request):
+        from src.app.device.services.device_command_service import DeviceCommandIdentityConflictError
+
+        for index, prior in enumerate(self.requests, start=1):
+            if getattr(prior, "execution_ref_id", None) == request.execution_ref_id:
+                if prior != request:
+                    raise DeviceCommandIdentityConflictError(request.execution_ref_id)
+                return SimpleNamespace(command_code=f"COMMAND-{index}")
         self.requests.append(request)
         return SimpleNamespace(command_code=f"COMMAND-{len(self.requests)}")
 
@@ -2205,63 +2218,28 @@ async def test_scan3_current_valid_b_overrides_scan1_direct_route() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scan2_other_bin_does_not_claim_or_mutate_fifo_head() -> None:
+async def test_scan2_non_batch_bin_does_not_mutate_another_passage() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     evidences.rows[2] = _scan(2, "S2", "A000000099-C")
     await flow.apply_in_session(object(), 1, workline_id=7)
-
     result = await flow.apply_in_session(object(), 2, workline_id=7)
-
-    assert result.disposition is BusinessEvidenceDisposition.APPLIED
-    assert passages.rows[0].bin_code == "A000000001"
-    assert passages.rows[0].scan2_evidence_id is None
-    assert passages.rows[0].disposition == "OPEN"
-    assert passages.rows[0].scan2_fault_evidence_id == 2
-    assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD", "MOVE_FORWARD"]
-    assert admissions.intents == []
-    evidences.rows[3] = _scan(3, "S2", "A000000001-C")
-    assert (
-        await flow.apply_in_session(object(), 3, workline_id=7)
-    ).disposition is BusinessEvidenceDisposition.RECONCILING
-    assert len(commands.requests) == 2
-
-
-@pytest.mark.asyncio
-async def test_scan2_without_fifo_head_never_releases_unknown_bin() -> None:
-    flow, _, _, commands, admissions = _setup()
-
-    result = await flow.apply_in_session(object(), 2, workline_id=7)
-
     assert result.disposition is BusinessEvidenceDisposition.RECONCILING
-    assert commands.requests == []
-    assert admissions.intents == []
-
-
-@pytest.mark.asyncio
-async def test_scan2_abnormal_code_waits_for_head_physical_success() -> None:
-    flow, evidences, passages, commands, _ = _setup()
-    evidences.rows[2] = _scan(2, "S2", "A000000099-C")
-    await flow.apply_in_session(object(), 1, workline_id=7)
-    commands.statuses[passages.rows[0].scan1_command_code] = "ACKNOWLEDGED"
-
-    assert (await flow.apply_in_session(object(), 2, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
+    assert passages.rows[0].scan2_evidence_id is None
     assert passages.rows[0].scan2_fault_evidence_id is None
     assert len(commands.requests) == 1
+    assert admissions.intents == []
 
 
 @pytest.mark.asyncio
-async def test_scan2_does_not_release_a_second_bin_while_first_waits_for_wms() -> None:
+async def test_scan2_invalid_code_does_not_claim_another_box() -> None:
     flow, evidences, passages, commands, admissions = _setup()
     await flow.apply_in_session(object(), 1, workline_id=7)
-    await flow.apply_in_session(object(), 2, workline_id=7)
-    evidences.rows[3] = _scan(3, "S2", "A000000099-C")
-
-    result = await flow.apply_in_session(object(), 3, workline_id=7)
-
-    assert result.disposition is BusinessEvidenceDisposition.DEFERRED
+    evidences.rows[2] = _scan(2, "S2", "A000000001-B")
+    result = await flow.apply_in_session(object(), 2, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.RECONCILING
+    assert passages.rows[0].scan2_evidence_id is None
     assert len(commands.requests) == 1
-    assert len(admissions.intents) == 1
-    assert passages.rows[0].scan2_evidence_id == 2
+    assert admissions.intents == []
 
 
 @pytest.mark.asyncio
@@ -2998,3 +2976,86 @@ async def test_retired_drain_ready_is_consumed_without_bin_move():
 @pytest.mark.asyncio
 async def test_old_batch_owner_survives_reused_rack_face():
     await _assert_retired_drain_batch_consumed(True)
+
+
+@pytest.mark.asyncio
+async def test_scan2_batch_member_without_scan1_or_projection_requests_own_admission() -> None:
+    flow, _, passages, commands, admissions = _setup(missing_projection=("BIN", "A000000001"))
+    result = await flow.apply_in_session(object(), 2, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(admissions.intents) == 1
+    assert passages.rows[0].bin_code == "A000000001"
+    assert passages.rows[0].scan1_evidence_id is None
+    assert passages.rows[0].scan2_evidence_id == 2
+    assert commands.requests == []
+
+
+@pytest.mark.asyncio
+async def test_scan2_batch_member_out_of_order_does_not_mutate_other_box() -> None:
+    flow, evidences, passages, commands, admissions = _setup()
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    commands.statuses[passages.rows[0].scan1_command_code] = "RECONCILING"
+    evidences.rows[3] = _scan(3, "S2", "A000000002-C")
+    result = await flow.apply_in_session(object(), 3, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert admissions.intents[0].bin_code == "A000000002"
+    assert passages.rows[0].scan2_evidence_id is None
+    assert passages.rows[0].scan2_fault_evidence_id is None
+    assert passages.rows[1].scan2_evidence_id == 3
+
+
+@pytest.mark.asyncio
+async def test_scan2_unrelated_admission_wait_does_not_block_valid_batch_member() -> None:
+    flow, evidences, _, _, admissions = _setup()
+    await flow.apply_in_session(object(), 2, workline_id=7)
+    evidences.rows[3] = _scan(3, "S2", "A000000002-C")
+    result = await flow.apply_in_session(object(), 3, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert [intent.bin_code for intent in admissions.intents] == ["A000000001", "A000000002"]
+
+
+@pytest.mark.asyncio
+async def test_scan2_valid_batch_member_does_not_inherit_scan1_ng() -> None:
+    flow, _, passages, _, admissions = _setup()
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    passages.rows[0].disposition = "NG"
+    assert (await flow.apply_in_session(object(), 2, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(admissions.intents) == 1
+    assert passages.rows[0].disposition == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_scan2_multiple_current_candidates_cannot_choose_or_dispatch() -> None:
+    flow, _, passages, commands, admissions = _setup()
+    passages.scan2_candidates_for_update = AsyncMock(return_value=[object(), object()])
+    result = await flow.apply_in_session(object(), 2, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.RECONCILING
+    assert passages.rows == []
+    assert admissions.intents == [] and commands.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["SCAN1", "SCAN2", "SCAN3", "SCAN4"])
+async def test_scan_command_replay_reuses_frozen_deadline_without_second_dispatch(role) -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+
+    flow, _, _, commands, _ = _setup()
+    bindings = {role: "S" + role[-1]}
+    first = await flow._move(object(), 7, bindings, role, 99, "MOVE_FORWARD")
+    frozen = commands.requests[0].deadline_at
+    commands.requests[0] = replace(commands.requests[0], deadline_at=frozen - timedelta(days=1))
+    assert await flow._move(object(), 7, bindings, role, 99, "MOVE_FORWARD") == first
+    assert len(commands.requests) == 1
+    assert commands.requests[0].deadline_at == frozen - timedelta(days=1)
+
+
+@pytest.mark.asyncio
+async def test_scan_command_replay_still_rejects_payload_drift() -> None:
+    from src.app.device.services.device_command_service import DeviceCommandIdentityConflictError
+
+    flow, _, _, commands, _ = _setup()
+    await flow._move(object(), 7, {"SCAN2": "S2"}, "SCAN2", 99, "MOVE_FORWARD")
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await flow._move(object(), 7, {"SCAN2": "S2"}, "SCAN2", 99, "MOVE_LEFT")
+    assert len(commands.requests) == 1

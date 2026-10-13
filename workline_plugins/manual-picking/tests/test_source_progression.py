@@ -144,7 +144,9 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     positions, plans, flow, creator = Positions(), Plans(), Flow(), Creator()
     batches = SimpleNamespace(
+        cancelled_source_windows=AsyncMock(return_value=[]),
         has_current_rack_dependency=AsyncMock(return_value=False),
+        has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
         has_unclosed_action_for_face=AsyncMock(return_value=False),
         has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
     )
@@ -170,6 +172,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         departure_scheduler=departure_scheduler,
         departure_reader=departure_reader,
         passages=SimpleNamespace(
+            requested_for_update=AsyncMock(return_value=()),
             has_bin_before_return_buffer=AsyncMock(return_value=False),
             ready_prefix_for_update=AsyncMock(return_value=()),
         ),
@@ -614,6 +617,78 @@ async def test_cancelled_source_rack_without_arrival_does_not_start_inbound_batc
     assert flow.calls == []
     scheduler.create_in_session.assert_not_awaited()
     assert creator.rotate == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_status", ["EXECUTING", "EXECUTION_COMPLETED", "COMPLETED"])
+async def test_cancelled_source_window_clearance_survives_parent_completion(parent_status) -> None:
+    driver, line, task, _, _, _, _, _, scheduler = setup_driver()
+    task.status = parent_status
+    started_at = timezone.now_for_db()
+    window = SimpleNamespace(
+        resource_fence_id="510021",
+        picking_task_id=31,
+        source_evidence_id=51,
+        created_at=started_at,
+        window_target_location_code="FIVE-POS",
+    )
+    terminal = SimpleNamespace(
+        transport_task_id="cancelled-arrival",
+        status="FAILED",
+        outcome_version=1,
+        published_outcome_version=1,
+        created_at=started_at,
+    )
+    position = SimpleNamespace(arrival_face=None)
+    # 第一条事实不满足清退资格；第二条到达后持久窗口扫描必定重新求值。
+    assert await driver.project_exits_in_session(object(), line) == 0
+    driver._batches.cancelled_source_windows.return_value = [(window, terminal, position)]
+    driver._transports.get_task.return_value = terminal
+    assert await driver.project_exits_in_session(object(), line) == 1
+    request = scheduler.create_in_session.await_args.args[1]
+    assert request.rack_id == "510021" and request.current_face is None
+    assert request.task_id is None
+
+
+@pytest.mark.asyncio
+async def test_clearance_owner_prevents_new_batch_even_with_older_uncancelled_member() -> None:
+    driver, line, task, positions, plans, flow, _, _, _ = setup_driver()
+    plans.rows[0].cancelled_evidence_id = 91
+    flow.created = True
+    window = SimpleNamespace(resource_fence_id="R1")
+    driver._batches.cancelled_source_windows.return_value = [(window, object(), positions.source)]
+    assert await driver._advance_current_rack(object(), line, task) == 0
+    assert flow.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,published,dependency",
+    [
+        ("PENDING", 0, False),
+        ("ACCEPTED", 0, False),
+        ("RECONCILING", 0, False),
+        ("FAILED", 0, False),
+        ("FAILED", 1, True),
+    ],
+)
+async def test_cancelled_source_clearance_preserves_current_action_and_round_dependencies(
+    status, published, dependency
+) -> None:
+    driver, line, _, _, _, _, _, _, scheduler = setup_driver()
+    started_at = timezone.now_for_db()
+    window = SimpleNamespace(
+        resource_fence_id="510021",
+        picking_task_id=31,
+        source_evidence_id=51,
+        created_at=started_at,
+        window_target_location_code="FIVE-POS",
+    )
+    current = SimpleNamespace(status=status, outcome_version=1, published_outcome_version=published)
+    driver._batches.cancelled_source_windows.return_value = [(window, current, SimpleNamespace(arrival_face=None))]
+    driver._batches.has_current_rack_dependency.return_value = dependency
+    assert await driver.project_exits_in_session(object(), line) == 0
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1075,3 +1150,84 @@ async def test_source_inbound_preserves_retired_unknown_dependency_only_for_equi
         {"workline_id": line.id, "rack_id": rack, "target_location_code": "FIVE-POS", "target_face": "90"}
         for rack in ("R1", "R2")
     ]
+
+
+@pytest.mark.asyncio
+async def test_mock_bad_case_a087_a000002668_return_blocks_same_rack_rotation() -> None:
+    driver, line, task, positions, plans, flow, creator, _, scheduler = setup_driver()
+    task.task_id = "A0878D74053AD4116871A6BACAFA3BB6F"
+    positions.source.object_id = "510004"
+    positions.source.arrival_face = "270"
+    plans.rows = [
+        SimpleNamespace(id=11, rack_id="510004", rack_face="270", source_evidence_id=51, plan_revision=4),
+        SimpleNamespace(id=12, rack_id="510004", rack_face="90", source_evidence_id=51, plan_revision=4),
+    ]
+    flow.complete = {("510004", "270")}
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    db = object()
+
+    assert await driver._advance_current_rack(db, line, task) == 0
+    assert creator.rotate == []
+    scheduler.create_in_session.assert_not_awaited()
+    driver._batches.has_unclosed_return_dependency_for_rack.assert_awaited_with(db, workline_id=7, rack_id="510004")
+
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = False
+    assert await driver._advance_current_rack(db, line, task) == 1
+    assert creator.rotate[0]["target_face"] == "90"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_DRAIN_RACK_OUT", "MANUAL_PICKING_RETURN_RACK_OUT"]
+)
+async def test_return_dependency_blocks_departure_before_wms_decision(step: str) -> None:
+    driver, line, _, _, _, _, creator, reader, scheduler = setup_driver()
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    assert (
+        await driver._advance_workline_departure(
+            object(),
+            line,
+            rack_id="510004",
+            current_face="90",
+            step=step,
+            picking_task_id=31,
+            arrival_transport_task_id="arrival-1",
+            now=timezone.now_for_db(),
+        )
+        == 0
+    )
+    reader.latest_for_workline.assert_not_awaited()
+    scheduler.create_in_session.assert_not_awaited()
+    assert creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_drain_rotation_waits_for_return_dependency_on_entire_rack() -> None:
+    driver, line, _, positions, _, _, creator, _, _ = setup_driver()
+    decision = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("270",)),)),
+        evidence_id=91,
+    )
+    driver._drain = SimpleNamespace(
+        retire_exception_in_session=AsyncMock(return_value=False),
+        decide_in_session=AsyncMock(return_value=(0, decision)),
+        active_rack_face=AsyncMock(return_value=("R1", "270", False)),
+        repository=SimpleNamespace(
+            complete_if_departed=AsyncMock(return_value=False),
+            has_unclosed_rack_action=AsyncMock(return_value=False),
+            transport=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1"),
+                    SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1"),
+                    None,
+                ]
+            ),
+            arrival_matches=AsyncMock(return_value=True),
+        ),
+    )
+    positions.source.source_transport_task_id = "arrival-1"
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    assert await driver._advance_drain(object(), line) == 0
+    assert creator.rotate == []
+    driver._batches.has_unclosed_return_dependency_for_rack.assert_awaited_once()

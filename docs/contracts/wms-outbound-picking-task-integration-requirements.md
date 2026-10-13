@@ -277,7 +277,7 @@ PickingTask。
 | `outbound.picking_task.queue_changed@v1` | `BUSINESS_FACT_COMMITTED` | Evidence 与 `QUEUED` 任务的队列字段、连续 `queue_revision` 同事务提交 |
 | `outbound.picking_task.cancel@v1` | `BUSINESS_FACT_COMMITTED` | Evidence 与任务取消终态或计划成员取消边界同事务提交 |
 | `outbound.picking_task.plan_delta@v1` | `BUSINESS_FACT_COMMITTED` | Evidence 与本批计划成员、来源绑定及 `plan_revision` 同事务提交 |
-| `outbound.return_rack.task_completed@v1` | `EVIDENCE_ACCEPTED` | Evidence 与消息接收身份同事务提交；计划流与面级结果由后续 owner 应用 |
+| `outbound.return_rack.task_completed@v1` | `EVIDENCE_ACCEPTED` | Evidence 与消息接收身份同事务提交；后续 owner 等待连续计划后应用截止版本内的整架完成，不等待面级结果 |
 
 分类不改变各节的严格 DTO、冲突或重放规则，不表示后续执行或物理动作完成，也不替代 plan_delta 的 WMS 联合合同门禁。
 
@@ -320,7 +320,7 @@ WMS 已确认的目标字段及 WES 当前接线状态如下：
 
 上述已实施的新增字段均为正整数，必须等于原 `plan_delta` 成员的 revision；同一可靠调用重提沿用原 `operation_id` 和冻结正文，响应仍按该 `operation_id` 关联原请求，不重复携带 revision。跨 revision 成员各自保留业务完成及取消事实；同架进场 Transport 生命周期由基础层复用，按货架而非成员占用目标点窗口。`CANCELLED` 后只评估原成员是否仍有效且目标未满足，物理接纳仍由 RCS 裁决。
 
-`return_rack.arrival_report` 由 `transport_task_id` 标识物理到位事实，同一事实可以供多个有效成员求值。WES 先以该 Transport 的绑定确认所属任务，再逐个核对同架有效 revision 成员的面级完成事实；离场动作沿用本次到位绑定的成员因果身份。`work_completed` 以通知的 `task_id + bin_code` 匹配当前工作位等待完成的料箱；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 以 `last_applied_plan_revision` 核对计划流。`work_plan` 按 §9.3 的 SCAN2 Passage 和 WMS 当前业务决定执行。
+`return_rack.arrival_report` 由 `transport_task_id` 标识物理到位事实，同一事实可以供多个有效成员求值。WES 先以该 Transport 的绑定确认所属任务，再逐个判断同架有效 revision 成员是否已被面级完成或 §6.2 整架权威完成事实闭合；离场动作沿用本次到位绑定的成员因果身份。`work_completed` 以通知的 `task_id + bin_code` 匹配当前工作位等待完成的料箱；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 以 `last_applied_plan_revision` 核对计划流。`work_plan` 按 §9.3 的 SCAN2 Passage 和 WMS 当前业务决定执行。
 
 表中前四项已同步 WES 严格 DTO、OpenAPI 中的入站事件和生产调用；第五项已获 WMS 确认，仍待 WES 严格 DTO、OpenAPI 和生产调用实施。联调以双方实际接线状态为准。
 
@@ -328,7 +328,7 @@ WMS 已确认的目标字段及 WES 当前接线状态如下：
 
 ### 6.2 退料货架整架任务完成
 
-WMS 通过 `POST {{WES_BASE_URL}}/api/v1/wms/events` 发送 `outbound.return_rack.task_completed@v1`，声明一个 `task_id + rack_id` 截至 `through_plan_revision` 的全部直接取料成员已完成或取消，且不会再向该任务/货架追加成员。同架其他 PickingTask 分别判定。面级 `direct_pick_completed`、任务级 `completion_confirm` 和 Transport 物理终态分别保留自身语义。
+WMS 通过 `POST {{WES_BASE_URL}}/api/v1/wms/events` 发送 `outbound.return_rack.task_completed@v1`，声明一个 `task_id + rack_id` 截至 `through_plan_revision` 的全部直接取料成员已完成或取消。完成范围仅为 `plan_revision <= through_plan_revision`；同一任务的后续 revision 仍可向同架追加成员，新成员形成独立业务依据，旧完成事实不能闭合或阻止新成员。同架其他 PickingTask 分别判定。面级 `direct_pick_completed`、任务级 `completion_confirm` 和 Transport 物理终态分别保留自身语义。
 
 ```json
 {
@@ -353,9 +353,37 @@ WMS 通过 `POST {{WES_BASE_URL}}/api/v1/wms/events` 发送 `outbound.return_rac
 }
 ```
 
-`task_id`、`rack_id` 是必填 Identifier；`through_plan_revision` 是必填正整数，表示 WMS 已发送的连续计划流截止版本；`completed_at` 是必填正整数 UTC Unix 毫秒，不晚于请求顶层 `timestamp`。同一 `task_id + rack_id` 的完成消息沿原 `operation_id` 和冻结正文重试；首次接收持久化后返回 `202 / RECEIVED`，原身份重放返回 `200 / DUPLICATE`，相同身份内容漂移返回 `409 / CONFLICT`。非法字段、不可持久接收及响应格式沿公共回调合同处理。
+`task_id`、`rack_id` 是必填 Identifier；`through_plan_revision` 是必填正整数，表示 WMS 已发送的连续计划流截止版本；`completed_at` 是必填正整数 UTC Unix 毫秒，不晚于请求顶层 `timestamp`。每条完成消息沿原 `operation_id` 和冻结正文重试；后续扩大完成范围使用新 `operation_id` 和新的截止版本。首次接收持久化后返回 `202 / RECEIVED`，原身份重放返回 `200 / DUPLICATE`，相同身份内容漂移返回 `409 / CONFLICT`。非法字段、不可持久接收及响应格式沿公共回调合同处理。
 
-WES 接收后等待计划流连续应用至 `through_plan_revision`，再核对该范围内全部面级完成或取消事实；`RECEIVED` 只证明 Evidence 已持久接收。若后续又向同任务/同货架追加成员，按业务身份冲突对账。整架完成是否作为离场决定或释放占用的前置条件，须与该工作线的离场合同共同执行；本消息本身不代表物理离场。WMS 目标 wire 已确认，WES 严格 DTO、OpenAPI 和生产接线仍待实施。
+尚未可靠保存对应 PickingTask 时返回 `503 / UNAVAILABLE`，WMS 沿原身份和正文重试；禁止成功 ACK 后留下无应用 Owner 的记录。WES 接收后等待计划流连续应用至 `through_plan_revision`，以该整架通知作为该范围内直接取料业务已闭合的权威事实，不等待面级完成通知；`RECEIVED` 只证明 Evidence 已持久接收。首次建立或推进完成范围时，范围内没有该架成员则进入对账；已存在范围外的后续成员不阻止旧通知应用。截止版本已被当前完成范围覆盖的通知只保存自身应用结果，不改变当前完成记录，也不重新依赖已闭合的成员历史。
+
+WES 在现有 `task_id + rack_id` 完成记录中保存已应用的最大截止版本。更大截止版本的通知推进完成范围，旧通知或同范围通知不回退、覆盖当前完成记录，原消息身份及正文仍由 Evidence 独立保留。新成员只由覆盖其版本的整架完成或匹配其版本的面级完成闭合，不查询已闭合接收历史决定新计划准入。逐面通知保留过程记录，不作为整架完成应用的前置条件，不补造逐面完成或取消结果。
+
+例如，`PICK-20260902-001 / RETURN-RACK-01` 完成至 revision 2 后，仍可提交以下新的计划：
+
+```json
+{
+  "operation_id": "019f3405-a100-7b01-8b01-000000000100",
+  "operation": "outbound.picking_task.plan_delta@v1",
+  "timestamp": 1788390300000,
+  "data": {
+    "task_id": "PICK-20260902-001",
+    "plan_revision": 3,
+    "added_direct_picks": [{
+      "source_locator": {
+        "type": "RACK_SLOT",
+        "rack_id": "RETURN-RACK-01",
+        "rack_face": "90",
+        "slot_id": "S-01"
+      }
+    }]
+  }
+}
+```
+
+其他准入条件满足且计划版本连续时返回 `202 / RECEIVED`；revision 3 成员保持未完成，旧的 revision 2 整架通知重放不能完成它。WMS 可使用新身份发送 `through_plan_revision=3` 的整架完成通知来闭合该范围，或发送 revision 3 的面级完成通知。
+
+整架完成是否作为离场决定或释放占用的前置条件，须与该工作线的离场合同共同执行；本消息本身不代表物理离场。后续直接取料完成判断同时接受面级事实和覆盖相应版本的整架权威事实；回箱、旋转及离场的物理依赖仍按各自合同执行。新 revision 不复用已闭合成员的动作身份；原动作仍在途或结果未知时保留原身份和直接因果依赖，不以整架业务完成推定物理完成。
 
 ## 7. PickingTask 发布与准备
 
@@ -494,11 +522,13 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
 `409 / CONFLICT`，不得因为成员集合部分失效而整条拒绝。
 
 取消只停止尚未发生的业务准入。仅在 WES 本地创建且尚未开始外部发送的 Transport 可以终止发送；已经发出、被接纳、在途或结果未知的
-Transport/DeviceCommand 保留原身份和围栏继续收口。已到位货架仍调用 `inbound_batch` 取得最终 `RACK_FACE_DONE`；已进入滚筒线但尚无工作计划的
+Transport/DeviceCommand 保留原身份和围栏继续收口。仍有有效来源成员的已到位货架继续调用 `inbound_batch` 取得最终 `RACK_FACE_DONE`；来源成员均取消后由 §9.4 清退扫描承接，已持久化批次继续交付；已进入滚筒线但尚无工作计划的
 Bin 到工作位后由 `work_plan` 返回 `NO_WORK`；已经返回 `READY` 的工作按本次授权继续。`PREPARING` 取消不撤销已发出的 prepare
 `WmsConfirmation`，迟到 `plan_delta` 按 `STATE_CONFLICT` 拒绝且不创建计划成员。
 
-`RACK_FACE_DONE` 是 WMS 对 `inbound_batch` 的响应。货架面已按原 Transport 的权威事实到位后，即使对应 member 后来取消，WES 仍可创建该面的唯一 `inbound_batch` 请求以取得最终结果；未到位且已取消的 member 不启动新货架搬运或批次请求。请求一旦可靠持久化，`PickingTask` 完成、归档或 member 后续变化均不撤销原交付义务；派发与重提保持原 `operation_id` 和冻结正文，直到 WMS 权威结果闭合。仅父级状态变化不构成对账冲突。
+成员取消通知可在 Transport 取消终态之后 3～180 秒到达，也可以先于终态到达。任一事实提交后，WES 由持久工作线扫描重新评估未释放的当前进场窗口；不得等待 180 秒后推定成员取消。只有 Transport 取消而原成员仍有效时，仍按既有业务重试规则执行；成员取消停止尚未创建的重试，但不撤销已发送动作。当前窗口的来源成员均已取消且货架确认仍在目标点时，改由 §9.4 清退流程承接，不再创建新的取箱批次；已持久化批次的可靠义务和已授权动作继续收口。
+
+`RACK_FACE_DONE` 是 WMS 对 `inbound_batch` 的响应。同架仍有有效来源成员时，货架面已按原 Transport 的权威事实到位后，即使对应 member 后来取消，WES 仍可创建该面的唯一 `inbound_batch` 请求以取得最终结果；同架来源成员均取消后不创建新批次，由 §9.4 清退扫描承接。未到位且已取消的 member 不启动新货架搬运或批次请求。请求一旦可靠持久化，`PickingTask` 完成、归档或 member 后续变化均不撤销原交付义务；派发与重提保持原 `operation_id` 和冻结正文，直到 WMS 权威结果闭合。仅父级状态变化不构成对账冲突。
 
 ## 8. 分批计划增量
 
@@ -1167,6 +1197,10 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
 | `data.bin_code` | 是 | string / 扫码证据 | 必须命中当前任务某次 `inbound_batch` 已返回的 Bin；可识别但不匹配时禁止发送本请求，按本节下方规则保存证据并冻结在安全位置，等待恢复，不自动进入退箱 FIFO |
 | `data.scanned_at` | 是 | UTC Unix 毫秒 / 设备证据 | SCAN2 有效读码发生时间，不使用 HTTP 发送时间代替 |
 
+SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、已发布 `inbound_batch READY.bins`。来源资格满足以下任一条件：来源计划成员未取消；本箱已在原批次记录入线；原批次匹配的投箱 Transport 已成功、结果已发布且本成员明确到达冻结交接位。来源成员取消只停止尚未入线的新投箱，不阻止已成功入线的原批次成员继续 SCAN2 准入；是否仍需取料由 WMS 决定。不要求 SCAN1 队首、前序方向命令成功或当前仍处于批次投箱目标位置；已取消来源的例外只核实原批次已入线事实，不以历史位置投影作为准入依据；同批次可乱序到达，缺少 SCAN1 时直接建立本箱 Passage，并记录批次入线进度。不得把本箱到位或异常挂到其他箱子的 Passage。
+
+本箱已有未闭合准入时重放同一身份，不因重复扫码创建第二个准入；非当前有效批次成员保留异常 Evidence、不请求 WMS、不自动放行。当前节点自身在途命令仍沿原身份处理。下述 WORK_BUFFER 顺序指当前直接物理执行依赖，不以 SCAN1 记录排序建立 SCAN2 准入门闩；SCAN4 RETURN_BUFFER FIFO 保持 §9.2.2 不变。
+
 各响应结果：
 
 | `data.result` | 必填字段 | 禁止字段 | 语义 |
@@ -1186,8 +1220,7 @@ WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当
 `UNKNOWN/RECONCILING`、身份冲突或等待 ECS 权威结果时，整个 Cell 保持阻塞，禁止通过
 新的 PickingTask、计划增量或命令身份跳过栈顶。不同 Cell 只有在 WorkLine 拓扑和设备安全合同允许时才能并行。
 
-CTU 投箱顺序也不构成业务顺序；`WORK_BUFFER` 是单向 FIFO，队首没有明确
-`READY | NO_WORK | NG` 结果时，后续 Bin 不能绕行。同一次 Passage 只能形成一个最终 `READY | NO_WORK`，同任务同箱再次经过是新 Passage；
+CTU 投箱顺序和 SCAN1 历史到位顺序不构成 SCAN2 准入顺序；SCAN2 按实际扫码箱号和当前有效批次成员独立求值。实际物理动作的直接依赖仍须匹配其本身的权威结果。同一次 Passage 只能形成一个最终 `READY | NO_WORK`，同任务同箱再次经过是新 Passage；
 确定 `WAIT` 后，WES 以新 `operation_id` 和本次 SCAN2 的 `task_id + bin_code + scanned_at` 重新请求；响应未知时沿原 `operation_id` 和冻结正文重试。
 
 确定 `WAIT` 后的重问示例（本地仍关联同次 Passage）：
@@ -1273,12 +1306,18 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 | `data.task_id` | 是 | string 或 `null` / WES 冻结业务上下文 | 转运架离场必须为真实 PickingTask `task_id`；来源架、drain 架及后续获批的直接取料货架固定为 `null` |
 | `data.rack_id` | 是 | string / 已接收计划 | 人工拣料工作线使用转运货架；其它工作线按所属货架合同，不接收 `rack_role` |
 | `data.current_location` | 是 | `RACK_POSITION` / WES 已确认位置 | 当前已确认物理位置，禁止使用计划目标代替 |
-| `data.current_face` | 是 | code / WES 已确认位置 | 当前已确认货架面 |
+| `data.current_face` | 是 | code 或 `null` / WES 已确认位置 | 已知面向原样提供；取消后清退仅确认位置而无法确认面向时显式为 `null`，不得省略或以计划目标面补造；WMS 离场决定必须支持该分支 |
 | `data.result` | 响应必填 | enum / WMS | `READY \| WAIT` |
 | `data.rack_destination` | `READY` 必填 | `ZONE \| RACK_POSITION` / WMS | 人工拣料转运货架使用 WMS 返回的原 `ZONE` 或 `RACK_POSITION` 创建 `F01`，不得等于 `current_location` |
 | `data.retry_after_ms` | `WAIT` 必填 | positive integer / WMS | 无新业务数据时的兜底重试间隔 |
 
 五层来源货架在同架所有面 `feed_complete`、drain 货架在本次 FIFO 排空、转运货架在任务完成且仍权威在位时，分别请求当前 departure 决定。
+来源架、直接取料架和 drain 架在换面或请求离场前，回架依赖只检查当前进场窗口内与该架直接关联的可靠义务及搬运。以唯一未释放的进场窗口创建时间限定本轮范围；同一窗口内换面或跨 revision 复用货架不重置轮次。窗口不存在或不唯一时明确报错，不能推定依赖已解除。
+本轮所有面的在途回架、结果未知、成功但终位不匹配或结果尚未发布仍阻止换面和离场；窗口之前的旧 Transport 和 Evidence 保留原身份及结果，不因旧失败或未知终位阻止本轮独立执行。回架批次的可靠派发和原身份重提不受本轮范围过滤影响。
+
+已取消来源架仍确认在目标点时，唯一 Next Owner 是 manual-picking 的持久工作线窗口清退扫描。扫描不依赖 PickingTask 仍为 `EXECUTING`，按当前未释放进场窗口、同架成员取消边界、本轮最新货架动作因果身份及匹配的权威位置重新求值。来源成员均已取消，当前最新货架动作已明确终态且结果已发布，位置事实属于本轮并仍在目标点，本轮取箱/回架动作及批次可靠义务已闭合后，才请求 `outbound.rack.departure_decide@v1`；成功到位不是取消清退的必要条件。若取消通知晚到时新重试已发送、已接纳、在途或结果未知，先保留并收口该当前动作，不以旧取消终位创建清退。终位在目标点外由基础层释放窗口；仍在目标点则收到离场 Transport `ACCEPTED` 后释放。原 Transport/Evidence 保留；成员取消后已创建的离场义务仍独立有效，按原身份可靠交付及其终态恢复。
+
+成员资格以该 PickingTask 同架的当前成员取消事实判断，不以窗口创建时间排除已经接纳的 revision；物理动作与位置事实才按窗口因果范围隔离旧轮次。清退扫描承接首次离场及明确 `REJECTED` 后的重新决定；窗口已经绑定离场 Transport 时，不把其 `FAILED`、在途或未知结果再解释成首次取消清退。已绑定离场继续遵守原 Transport 恢复边界，不能以新决定覆盖原动作；既有失败离场面向不足的对账限制保持本节约定。
 收到 `READY` 后以当前决定 `operation_id` 派生稳定 `client_request_id`：来源架和 drain 架使用静态 `CTU03`，转运架使用静态 `F01`，
 目标均为 WMS 原样返回的 `rack_destination`；不得拆分，也不得由 destination 类型动态选择模板。
 `WAIT` 到期、新事实出现，或离场 Transport 明确 `REJECTED` 后，以新 `operation_id` 和权威当前位置、面向重新决定；`UNAVAILABLE` 或响应未知只重试原身份与原请求。
@@ -2082,7 +2121,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 首批增量只有初始接料货架面 | 可以提前运输目标架，但不能凭空创建来源取盘动作 |
 | 增量追加多个货架类型 | 五层、退料和转运货架按各自固定目标位并行运输 |
 | revision 跳号或同版本不同内容 | 该消息留存且不推进；WMS 以合法新 identity/连续 revision 纠正，不覆盖已接收计划 |
-| 退料货架整架任务完成 | WMS 按 `task_id + rack_id + through_plan_revision` 报告业务完成；WES 持久接收后等待连续计划和面级结果，再应用整架完成事实；同身份重放返回 `DUPLICATE`，内容漂移返回 `CONFLICT` |
+| 退料货架整架任务完成 | WMS 按 `task_id + rack_id + through_plan_revision` 报告范围内业务完成；WES 持久接收后等待连续计划再应用，不等待面级结果；后续同架 revision 可追加，旧完成不闭合新成员，截止版本只前进；同身份重放返回 `DUPLICATE`，内容漂移返回 `CONFLICT` |
 | WMS 内部资源计算仍在继续 | 不向 WES 暴露计算完成字段；已接收明细继续执行，状态确认返回 `BUSINESS_IN_PROGRESS` |
 | 执行中补充正常计划 | 更高 `plan_revision` 可以增加当前任务尚未发布的直接取料来源或五层来源货架面；不能用来替换空取、NG 或 Transport 确定失败的明细 |
 | 扫码后才确认尺寸 | WMS 返回精确 SLOT 和可选换面/换架方案；当前盘允许在扫码台有界等待 |

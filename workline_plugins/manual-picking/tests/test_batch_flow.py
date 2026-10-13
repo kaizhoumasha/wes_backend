@@ -629,6 +629,7 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         departure_reader=object(),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
         bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(11, "R1")})),
+        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
     )
     line = SimpleNamespace(
         id=7,
@@ -723,6 +724,7 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
         departure_scheduler=object(),
         departure_reader=object(),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=(SimpleNamespace(bin_code="BIN-1"),))),
+        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
     )
     line = SimpleNamespace(
         id=7,
@@ -821,6 +823,7 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         departure_scheduler=object(),
         departure_reader=object(),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
+        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
     )
     line = SimpleNamespace(
         id=7,

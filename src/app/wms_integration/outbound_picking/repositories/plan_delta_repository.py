@@ -303,6 +303,18 @@ class PickingTaskPlanDeltaRepository:
             is not None
         )
 
+    async def is_direct_pick_face_business_closed(
+        self, db: AsyncSession, *, picking_task_id: int, plan_revision: int, rack_id: str, rack_face: str
+    ) -> bool:
+        from src.app.wms_integration.return_rack_task_completion.repository import ReturnRackTaskCompletionRepository
+
+        whole = await ReturnRackTaskCompletionRepository().get(db, picking_task_id, rack_id)
+        if whole is not None and plan_revision <= whole.through_plan_revision:
+            return True
+        return await self.has_direct_pick_face_completion(
+            db, picking_task_id=picking_task_id, plan_revision=plan_revision, rack_id=rack_id, rack_face=rack_face
+        )
+
     async def add_direct_pick_face_completion(
         self,
         db: AsyncSession,
