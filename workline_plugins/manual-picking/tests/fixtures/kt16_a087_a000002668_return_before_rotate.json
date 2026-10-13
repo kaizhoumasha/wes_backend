@@ -1,0 +1,152 @@
+{
+  "captured_at": "2026-10-12T20:50:32.451977+00:00",
+  "task_id": "A0878D74053AD4116871A6BACAFA3BB6F",
+  "transport": {
+    "id": 253,
+    "kind": "BIN_MOVE",
+    "status": "ACCEPTED",
+    "created_at": "2026-10-12T20:35:22.873729",
+    "updated_at": "2026-10-12T20:35:24.400503",
+    "caller_json": {
+      "station_id": null,
+      "workline_id": "348950323769920"
+    },
+    "reason_code": null,
+    "outcome_json": null,
+    "request_json": {
+      "kind": "BIN_MOVE",
+      "moves": [
+        {
+          "source": {
+            "kind": "HANDOFF_POSITION",
+            "location_code": "CNV0302"
+          },
+          "target": {
+            "kind": "RACK_BIN_SLOT",
+            "rack_id": "510004",
+            "slot_id": "510004B2F2C101",
+            "rack_face": "270"
+          },
+          "bin_code": "A000002668"
+        }
+      ],
+      "caller": {
+        "station_id": null,
+        "workline_id": "348950323769920"
+      },
+      "client_request_id": "01a131d3-be76-7bc7-b19e-20d512571be6"
+    },
+    "next_submit_at": null,
+    "request_digest": "001b1226d90d7e9c3c15e613a20743479bb1aebeb6b6f5b1feed0fad3f6c6690",
+    "outcome_version": 0,
+    "send_started_at": "2026-10-12T20:35:22.909914",
+    "client_request_id": "01a131d3-be76-7bc7-b19e-20d512571be6",
+    "transport_task_id": "transport-a0c1255c-f1a6-4f36-9d1a-ecaca865e806",
+    "result_deadline_at": "2026-10-12T20:55:24.400503",
+    "submit_claim_token": null,
+    "submit_claim_until": null,
+    "outcome_claim_token": null,
+    "outcome_claim_until": null,
+    "submit_operation_id": "01a131d3-be79-74bb-abf4-86c8ee251a34",
+    "submit_request_body": "{\"data\":{\"kind\":\"BIN_MOVE\",\"moves\":[{\"container_id\":\"A000002668\",\"source\":{\"kind\":\"HANDOFF_POSITION\",\"location_code\":\"CNV0302\"},\"target\":{\"kind\":\"RACK_BIN_SLOT\",\"rack_face\":\"270\",\"rack_id\":\"510004\",\"slot_id\":\"510004B2F2C101\"}}],\"transport_task_id\":\"transport-a0c1255c-f1a6-4f36-9d1a-ecaca865e806\"},\"operation\":\"transport.task.submit@v1\",\"operation_id\":\"01a131d3-be79-74bb-abf4-86c8ee251a34\",\"timestamp\":1791837322873}",
+    "submit_timestamp_ms": 1791837322873,
+    "submit_attempt_count": 1,
+    "authority_workline_id": 348950323769920,
+    "published_outcome_version": 0,
+    "submit_request_body_digest": "791abf5f31195b64794d6e098f3244a61df24256a90e07d8104e4771582241ac",
+    "last_applied_wms_outcome_revision": 0
+  },
+  "member": {
+    "id": 254,
+    "status": "PENDING",
+    "ordinal": 0,
+    "object_id": "A000002668",
+    "updated_at": "2026-10-12T20:35:22.873729",
+    "object_type": "BIN",
+    "source_json": {
+      "kind": "HANDOFF_POSITION",
+      "location_code": "CNV0302"
+    },
+    "target_json": {
+      "kind": "RACK_BIN_SLOT",
+      "rack_id": "510004",
+      "slot_id": "510004B2F2C101",
+      "rack_face": "270"
+    },
+    "arrival_face": null,
+    "failure_code": null,
+    "position_unknown": false,
+    "last_operation_id": null,
+    "transport_task_id": "transport-a0c1255c-f1a6-4f36-9d1a-ecaca865e806",
+    "final_position_json": null
+  },
+  "rotation": {
+    "id": 254,
+    "kind": "RACK_ROTATE",
+    "status": "SUCCEEDED",
+    "created_at": "2026-10-12T20:35:22.982749",
+    "updated_at": "2026-10-12T20:37:08.450798",
+    "caller_json": {
+      "station_id": null,
+      "workline_id": "348950323769920"
+    },
+    "reason_code": null,
+    "outcome_json": {
+      "caller": {
+        "station_id": null,
+        "workline_id": "348950323769920"
+      },
+      "status": "SUCCEEDED",
+      "members": [
+        {
+          "object_id": "510004",
+          "arrival_face": "90",
+          "failure_code": null,
+          "final_position": {
+            "kind": "RACK_POSITION",
+            "location_code": "KT16"
+          },
+          "position_unknown": false
+        }
+      ],
+      "reason_code": null,
+      "outcome_version": 1,
+      "client_request_id": "01a131d3-bee4-7d62-b524-da12c5b10739",
+      "transport_task_id": "transport-e4f8465d-5969-4eb0-bb25-dd227498b915"
+    },
+    "request_json": {
+      "kind": "RACK_ROTATE",
+      "caller": {
+        "station_id": null,
+        "workline_id": "348950323769920"
+      },
+      "rack_id": "510004",
+      "position": {
+        "kind": "RACK_POSITION",
+        "location_code": "KT16"
+      },
+      "target_face": "90",
+      "rcs_template_id": "CTU02",
+      "client_request_id": "01a131d3-bee4-7d62-b524-da12c5b10739"
+    },
+    "next_submit_at": null,
+    "request_digest": "d30d58628d0a93ce547449cf9da5632df8da0fed282feb6f71f722fb8c5834f5",
+    "outcome_version": 1,
+    "send_started_at": "2026-10-12T20:35:24.431754",
+    "client_request_id": "01a131d3-bee4-7d62-b524-da12c5b10739",
+    "transport_task_id": "transport-e4f8465d-5969-4eb0-bb25-dd227498b915",
+    "result_deadline_at": "2026-10-12T20:55:25.891074",
+    "submit_claim_token": null,
+    "submit_claim_until": null,
+    "outcome_claim_token": null,
+    "outcome_claim_until": null,
+    "submit_operation_id": "01a131d3-bee6-7105-a1ac-a6d9544d1995",
+    "submit_request_body": "{\"data\":{\"kind\":\"RACK_ROTATE\",\"rack_id\":\"510004\",\"rcs_template_id\":\"CTU02\",\"source\":{\"kind\":\"RACK_POSITION\",\"location_code\":\"KT16\"},\"target\":{\"kind\":\"RACK_POSITION\",\"location_code\":\"KT16\"},\"target_face\":\"90\",\"transport_task_id\":\"transport-e4f8465d-5969-4eb0-bb25-dd227498b915\"},\"operation\":\"transport.task.submit@v1\",\"operation_id\":\"01a131d3-bee6-7105-a1ac-a6d9544d1995\",\"timestamp\":1791837322982}",
+    "submit_timestamp_ms": 1791837322982,
+    "submit_attempt_count": 1,
+    "authority_workline_id": 348950323769920,
+    "published_outcome_version": 1,
+    "submit_request_body_digest": "234be1e27e2c552133f7add374724d109c1c40258f83e39bfe6e9c8d1e9b43f4",
+    "last_applied_wms_outcome_revision": 1
+  }
+}

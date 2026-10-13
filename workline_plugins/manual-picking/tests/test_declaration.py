@@ -48,6 +48,7 @@ def test_manual_picking_deployment_assembles_prepare_policy_without_device_handl
         "outbound.bin.return_batch@v1",
         "outbound.rack.departure_decide@v1",
         "workline.return_buffer.drain_rack_decide@v1",
+        "outbound.return_rack.task_completed@v1",
     )
     assert (
         "outbound.manual_rack.direct_pick_completed@v1"

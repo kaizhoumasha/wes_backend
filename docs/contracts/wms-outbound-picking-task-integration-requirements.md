@@ -320,7 +320,7 @@ WMS 已确认的目标字段及 WES 当前接线状态如下：
 
 上述已实施的新增字段均为正整数，必须等于原 `plan_delta` 成员的 revision；同一可靠调用重提沿用原 `operation_id` 和冻结正文，响应仍按该 `operation_id` 关联原请求，不重复携带 revision。跨 revision 成员各自保留业务完成及取消事实；同架进场 Transport 生命周期由基础层复用，按货架而非成员占用目标点窗口。`CANCELLED` 后只评估原成员是否仍有效且目标未满足，物理接纳仍由 RCS 裁决。
 
-`return_rack.arrival_report` 由 `transport_task_id` 标识物理到位事实，同一事实可以供多个有效成员求值。WES 先以该 Transport 的绑定确认所属任务，再逐个核对同架有效 revision 成员的面级完成事实；离场动作沿用本次到位绑定的成员因果身份。`work_completed` 以通知的 `task_id + bin_code` 匹配当前工作位等待完成的料箱；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 以 `last_applied_plan_revision` 核对计划流。`work_plan` 按 §9.3 的 SCAN2 Passage 和 WMS 当前业务决定执行。
+`return_rack.arrival_report` 由 `transport_task_id` 标识物理到位事实，同一事实可以供多个有效成员求值。WES 先以该 Transport 的绑定确认所属任务，再逐个判断同架有效 revision 成员是否已被面级完成或 §6.2 整架权威完成事实闭合；离场动作沿用本次到位绑定的成员因果身份。`work_completed` 以通知的 `task_id + bin_code` 匹配当前工作位等待完成的料箱；`return_batch` 消费实际 RETURN_BUFFER FIFO，`departure_decide` 处理当前货架离场，任务级 `completion_confirm` 以 `last_applied_plan_revision` 核对计划流。`work_plan` 按 §9.3 的 SCAN2 Passage 和 WMS 当前业务决定执行。
 
 表中前四项已同步 WES 严格 DTO、OpenAPI 中的入站事件和生产调用；第五项已获 WMS 确认，仍待 WES 严格 DTO、OpenAPI 和生产调用实施。联调以双方实际接线状态为准。
 
@@ -355,7 +355,7 @@ WMS 通过 `POST {{WES_BASE_URL}}/api/v1/wms/events` 发送 `outbound.return_rac
 
 `task_id`、`rack_id` 是必填 Identifier；`through_plan_revision` 是必填正整数，表示 WMS 已发送的连续计划流截止版本；`completed_at` 是必填正整数 UTC Unix 毫秒，不晚于请求顶层 `timestamp`。同一 `task_id + rack_id` 的完成消息沿原 `operation_id` 和冻结正文重试；首次接收持久化后返回 `202 / RECEIVED`，原身份重放返回 `200 / DUPLICATE`，相同身份内容漂移返回 `409 / CONFLICT`。非法字段、不可持久接收及响应格式沿公共回调合同处理。
 
-WES 接收后等待计划流连续应用至 `through_plan_revision`，再核对该范围内全部面级完成或取消事实；`RECEIVED` 只证明 Evidence 已持久接收。若后续又向同任务/同货架追加成员，按业务身份冲突对账。整架完成是否作为离场决定或释放占用的前置条件，须与该工作线的离场合同共同执行；本消息本身不代表物理离场。WMS 目标 wire 已确认，WES 严格 DTO、OpenAPI 和生产接线仍待实施。
+尚未可靠保存对应 PickingTask 时返回 `503 / UNAVAILABLE`，WMS 沿原身份和正文重试；禁止成功 ACK 后留下无应用 Owner 的记录。WES 接收后等待计划流连续应用至 `through_plan_revision`，以该整架通知作为该范围内直接取料业务已闭合的权威事实，不等待面级完成通知；`RECEIVED` 只证明 Evidence 已持久接收。若后续又向同任务/同货架追加成员，按业务身份冲突对账。整架完成是否作为离场决定或释放占用的前置条件，须与该工作线的离场合同共同执行；本消息本身不代表物理离场。WES 已接入严格 DTO、OpenAPI、同事务 Evidence 接收与后续插件业务应用。整架事实覆盖同任务、同架且计划版本不大于截止版本的全部直接取料成员；逐面通知保留过程记录，不作为整架完成应用的前置条件，不补造逐面完成或取消结果。计划版本未齐时由持久扫描继续等待。后续直接取料完成判断同时接受面级事实和整架权威事实；回箱、旋转及离场的物理依赖仍按各自合同执行。已接收的完成承诺禁止截止版本之后向同任务/同架追加直接取料成员；已应用的当前完成事实独立保留，不以可清理的接收历史作为后续准入依据。
 
 ## 7. PickingTask 发布与准备
 
@@ -1167,6 +1167,10 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
 | `data.bin_code` | 是 | string / 扫码证据 | 必须命中当前任务某次 `inbound_batch` 已返回的 Bin；可识别但不匹配时禁止发送本请求，按本节下方规则保存证据并冻结在安全位置，等待恢复，不自动进入退箱 FIFO |
 | `data.scanned_at` | 是 | UTC Unix 毫秒 / 设备证据 | SCAN2 有效读码发生时间，不使用 HTTP 发送时间代替 |
 
+SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、已发布 `inbound_batch READY.bins`。来源资格满足以下任一条件：来源计划成员未取消；本箱已在原批次记录入线；原批次匹配的投箱 Transport 已成功、结果已发布且本成员明确到达冻结交接位。来源成员取消只停止尚未入线的新投箱，不阻止已成功入线的原批次成员继续 SCAN2 准入；是否仍需取料由 WMS 决定。不要求 SCAN1 队首、前序方向命令成功或当前仍处于批次投箱目标位置；已取消来源的例外只核实原批次已入线事实，不以历史位置投影作为准入依据；同批次可乱序到达，缺少 SCAN1 时直接建立本箱 Passage，并记录批次入线进度。不得把本箱到位或异常挂到其他箱子的 Passage。
+
+本箱已有未闭合准入时重放同一身份，不因重复扫码创建第二个准入；非当前有效批次成员保留异常 Evidence、不请求 WMS、不自动放行。当前节点自身在途命令仍沿原身份处理。下述 WORK_BUFFER 顺序指当前直接物理执行依赖，不以 SCAN1 记录排序建立 SCAN2 准入门闩；SCAN4 RETURN_BUFFER FIFO 保持 §9.2.2 不变。
+
 各响应结果：
 
 | `data.result` | 必填字段 | 禁止字段 | 语义 |
@@ -1186,8 +1190,7 @@ WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当
 `UNKNOWN/RECONCILING`、身份冲突或等待 ECS 权威结果时，整个 Cell 保持阻塞，禁止通过
 新的 PickingTask、计划增量或命令身份跳过栈顶。不同 Cell 只有在 WorkLine 拓扑和设备安全合同允许时才能并行。
 
-CTU 投箱顺序也不构成业务顺序；`WORK_BUFFER` 是单向 FIFO，队首没有明确
-`READY | NO_WORK | NG` 结果时，后续 Bin 不能绕行。同一次 Passage 只能形成一个最终 `READY | NO_WORK`，同任务同箱再次经过是新 Passage；
+CTU 投箱顺序和 SCAN1 历史到位顺序不构成 SCAN2 准入顺序；SCAN2 按实际扫码箱号和当前有效批次成员独立求值。实际物理动作的直接依赖仍须匹配其本身的权威结果。同一次 Passage 只能形成一个最终 `READY | NO_WORK`，同任务同箱再次经过是新 Passage；
 确定 `WAIT` 后，WES 以新 `operation_id` 和本次 SCAN2 的 `task_id + bin_code + scanned_at` 重新请求；响应未知时沿原 `operation_id` 和冻结正文重试。
 
 确定 `WAIT` 后的重问示例（本地仍关联同次 Passage）：

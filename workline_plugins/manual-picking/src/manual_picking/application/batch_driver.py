@@ -323,6 +323,10 @@ class ManualPickingBatchDriver:
             if projection.arrival_face != rack_face:
                 rotation = await repository.transport(db, decision, DRAIN_RACK_ROTATE_STEP, rack_id, rack_face)
                 if rotation is None:
+                    if await self._batches.has_unclosed_return_dependency_for_rack(
+                        db, workline_id=line.id, rack_id=rack_id
+                    ):
+                        continue
                     await self._rack_creator.create_rotate(
                         db,
                         workline_id=line.id,
@@ -535,6 +539,10 @@ class ManualPickingBatchDriver:
                 )
             if next_progress is not None:
                 return 0
+            if await self._batches.has_unclosed_return_dependency_for_rack(
+                db, workline_id=line.id, rack_id=current.rack_id
+            ):
+                return 0
             await self._rack_creator.create_rotate(
                 db,
                 workline_id=line.id,
@@ -559,13 +567,13 @@ class ManualPickingBatchDriver:
         )
 
     async def _advance_return_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911, PLR0912
-        """取货由 PDA 黑盒完成；WES 只识别到位、上报事实，并按 WMS 面级完成事实换面或离场。"""
+        """取货由 PDA 完成；WES 按到位及 WMS 面级或整架业务完成事实推进换面、离场。"""
         location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
         if not location or self._arrival_scheduler is None or self._arrival_reader is None:
             return 0
         faces_by_rack: dict[str, list[Any]] = {}
         for row in await self._plans.list_active_direct_picks(db, task.id):
-            # 完成事实是面级的，同面多个 slot_id 只占一个换面位置。
+            # 同面多个 slot_id 只占一个换面位置。
             faces = faces_by_rack.setdefault(row.rack_id, [])
             if all((face.plan_revision, face.rack_face) != (row.plan_revision, row.rack_face) for face in faces):
                 faces.append(row)
@@ -599,7 +607,7 @@ class ManualPickingBatchDriver:
                 ]
                 current = matching_faces[0] if matching_faces else None
                 for face in matching_faces:
-                    if not await self._plans.has_direct_pick_face_completion(
+                    if not await self._plans.is_direct_pick_face_business_closed(
                         db,
                         picking_task_id=task.id,
                         plan_revision=face.plan_revision,
@@ -668,7 +676,7 @@ class ManualPickingBatchDriver:
                 },
             )
             return 0
-        if not await self._plans.has_direct_pick_face_completion(
+        if not await self._plans.is_direct_pick_face_business_closed(
             db,
             picking_task_id=task.id,
             plan_revision=current.plan_revision,
@@ -679,7 +687,7 @@ class ManualPickingBatchDriver:
         # 到位面由外部搬运决定，不保证是计划首面；遍历全部面而非 index 之后的切片，
         # 否则更早的未结面会被静默跳过。
         for next_face in faces_by_rack[current.rack_id]:
-            if next_face is current or await self._plans.has_direct_pick_face_completion(
+            if next_face is current or await self._plans.is_direct_pick_face_business_closed(
                 db,
                 picking_task_id=task.id,
                 plan_revision=next_face.plan_revision,
@@ -688,6 +696,10 @@ class ManualPickingBatchDriver:
             ):
                 continue
             if next_face.rack_face == projection.arrival_face:
+                return 0
+            if await self._batches.has_unclosed_return_dependency_for_rack(
+                db, workline_id=line.id, rack_id=current.rack_id
+            ):
                 return 0
             await self._rack_creator.create_rotate(
                 db,
@@ -713,7 +725,7 @@ class ManualPickingBatchDriver:
             current_location=location,
         )
 
-    async def _advance_workline_departure(
+    async def _advance_workline_departure(  # noqa: PLR0911
         self,
         db: Any,
         line: Any,
@@ -727,6 +739,8 @@ class ManualPickingBatchDriver:
         source_evidence_id: int | None = None,
         current_location: str | None = None,
     ) -> int:
+        if await self._batches.has_unclosed_return_dependency_for_rack(db, workline_id=line.id, rack_id=rack_id):
+            return 0
         location = current_location or line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         arrival = await self._transports.get_task(db, arrival_transport_task_id)
         snapshot = await self._departure_reader.latest_for_workline(db, line.id, rack_id, arrived_at=arrival.created_at)

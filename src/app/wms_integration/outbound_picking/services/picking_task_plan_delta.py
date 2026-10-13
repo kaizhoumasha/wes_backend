@@ -217,6 +217,13 @@ class PickingTaskPlanDeltaService:
             return "PENDING"
         else:
             return "STATE_CONFLICT"
+        if await self._plans.has_return_rack_completion(
+            db,
+            task.id,
+            tuple({pick.source_locator.rack_id for pick in data.added_direct_picks or ()}),
+            data.plan_revision,
+        ):
+            return "REFERENCE_CONFLICT"
         incoming_picks = [
             (p.source_locator.rack_id, p.source_locator.rack_face, p.source_locator.slot_id)
             for p in data.added_direct_picks or ()

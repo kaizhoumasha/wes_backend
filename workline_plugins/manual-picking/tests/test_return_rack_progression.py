@@ -44,14 +44,15 @@ class Plans:
         ]
         self.completed: set[tuple[str, str]] = set()
         self.released_racks: set[str] = set()
+        self.whole_completed: dict[str, int] = {}
 
     async def list_active_direct_picks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return self.picks
 
-    async def has_direct_pick_face_completion(self, _db, *, picking_task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
+    async def is_direct_pick_face_business_closed(self, _db, *, picking_task_id, plan_revision, rack_id, rack_face):  # type: ignore[no-untyped-def]
         assert picking_task_id == 31
         assert plan_revision >= 1
-        return (rack_id, rack_face) in self.completed
+        return (rack_id, rack_face) in self.completed or plan_revision <= self.whole_completed.get(rack_id, 0)
 
     async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
         return []
@@ -128,6 +129,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
         SimpleNamespace(
             has_unclosed_action_for_face=AsyncMock(return_value=False),
         ),
+        batches=SimpleNamespace(has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False)),
         plans=plans,
         positions=positions,
         transports=SimpleNamespace(
@@ -274,11 +276,16 @@ async def test_reused_return_rack_uses_the_revision_that_arrived() -> None:
         SimpleNamespace(id=22, plan_revision=2, rack_id="RETURN-RACK-01", rack_face="A", source_evidence_id=62),
     ]
     plans.return_rack_transport_source = AsyncMock(return_value=62)
-    plans.has_direct_pick_face_completion = AsyncMock(side_effect=lambda _db, **kwargs: kwargs["plan_revision"] == 1)
+    plans.is_direct_pick_face_business_closed = AsyncMock(
+        side_effect=lambda _db, **kwargs: kwargs["plan_revision"] == 1
+    )
     reader.latest.return_value = recorded_snapshot()
 
     assert await driver.advance_in_session(object(), line, task) == 0
-    assert {call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list} == {1, 2}
+    assert {call.kwargs["plan_revision"] for call in plans.is_direct_pick_face_business_closed.await_args_list} == {
+        1,
+        2,
+    }
     assert creator.rotate == [] and creator.depart == []
     departure.create_in_session.assert_not_awaited()
 
@@ -307,13 +314,18 @@ async def test_shared_return_rack_arrival_waits_for_both_revision_completions() 
         SimpleNamespace(id=21, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="A", source_evidence_id=61),
         SimpleNamespace(id=22, plan_revision=2, rack_id="RETURN-RACK-01", rack_face="A", source_evidence_id=62),
     ]
-    plans.has_direct_pick_face_completion = AsyncMock(side_effect=lambda _db, **kwargs: kwargs["plan_revision"] == 1)
+    plans.is_direct_pick_face_business_closed = AsyncMock(
+        side_effect=lambda _db, **kwargs: kwargs["plan_revision"] == 1
+    )
     reader.latest.return_value = recorded_snapshot()
 
     assert await driver.advance_in_session(object(), line, task) == 0
-    assert {call.kwargs["plan_revision"] for call in plans.has_direct_pick_face_completion.await_args_list} == {1, 2}
+    assert {call.kwargs["plan_revision"] for call in plans.is_direct_pick_face_business_closed.await_args_list} == {
+        1,
+        2,
+    }
     departure.create_in_session.assert_not_awaited()
-    plans.has_direct_pick_face_completion = AsyncMock(return_value=True)
+    plans.is_direct_pick_face_business_closed = AsyncMock(return_value=True)
     assert await driver.advance_in_session(object(), line, task) == 1
     assert creator.rotate == []
     departure.create_in_session.assert_awaited_once()
@@ -537,3 +549,36 @@ async def test_completed_task_found_by_both_lookups_advances_its_return_rack_onl
 
     assert await driver.advance_completed_in_session(object(), line) == 1
     scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_return_rack_rotation_waits_for_unclosed_return_on_another_face() -> None:
+    driver, line, task, _, plans, creator, reader, _, _ = setup_driver()
+    reader.latest.return_value = recorded_snapshot()
+    plans.picks.append(
+        SimpleNamespace(
+            id=23, plan_revision=1, rack_id="RETURN-RACK-01", rack_face="B", slot_id="B-01", source_evidence_id=61
+        )
+    )
+    plans.completed.add(("RETURN-RACK-01", "A"))
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    assert await driver._advance_return_rack(object(), line, task) == 0
+    assert creator.rotate == []
+    driver._batches.has_unclosed_return_dependency_for_rack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unclosed_return", [False, True])
+async def test_whole_completion_without_face_notifications_advances_departure_without_rotation(unclosed_return):
+    driver, line, task, _, plans, creator, reader, _, departure = setup_driver()
+    plans.picks[1].rack_face = "B"
+    plans.whole_completed["RETURN-RACK-01"] = 1
+    reader.latest.return_value = recorded_snapshot()
+    assert plans.completed == set()
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = unclosed_return
+    assert await driver.advance_in_session(object(), line, task) == (0 if unclosed_return else 1)
+    if unclosed_return:
+        departure.create_in_session.assert_not_awaited()
+    else:
+        departure.create_in_session.assert_awaited_once()
+    assert creator.rotate == []

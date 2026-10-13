@@ -59,6 +59,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_picking_task_queue_changed_handler = None
         _app.state.wms_manual_bin_completed_handler = None
         _app.state.wms_manual_rack_direct_pick_handler = None
+        _app.state.wms_return_rack_task_completed_handler = None
         _app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         await init_db()
         if db_module.AsyncSessionLocal is None:
@@ -143,6 +144,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_picking_task_queue_changed_handler = outbound_picking_runtime.picking_task_queue_changed_handler
         _app.state.wms_manual_bin_completed_handler = outbound_picking_runtime.manual_bin_completed_handler
         _app.state.wms_manual_rack_direct_pick_handler = outbound_picking_runtime.manual_rack_direct_pick_handler
+        _app.state.wms_return_rack_task_completed_handler = outbound_picking_runtime.return_rack_task_completed_handler
         await init_redis()
 
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
@@ -175,6 +177,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_picking_task_queue_changed_handler = None
         _app.state.wms_manual_bin_completed_handler = None
         _app.state.wms_manual_rack_direct_pick_handler = None
+        _app.state.wms_return_rack_task_completed_handler = None
         cleanup_errors: list[BaseException] = []
         if transport_runtime is not None:
             try:

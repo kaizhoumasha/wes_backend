@@ -24,6 +24,7 @@ from src.app.wms_integration.outbound_picking.models import (
 from src.app.wms_integration.outbound_picking.repositories.picking_task_cancel_repository import (
     PickingTaskCancelRepository,
 )
+from src.app.wms_integration.return_rack_task_completion.models import ReturnRackTaskCompletion
 
 
 async def _record_inbound_decision(db, operation_id, result):  # type: ignore[no-untyped-def]
@@ -79,6 +80,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
+            ReturnRackTaskCompletion.__table__,
             PickingTaskBinSourceRack.__table__,
             ManualPickingPassage.__table__,
             ManualPickingInboundBatch.__table__,
@@ -294,6 +296,7 @@ async def test_completion_only_waits_for_wes_managed_target_transport(managed_ta
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
+            ReturnRackTaskCompletion.__table__,
             ManualPickingPassage.__table__,
             ManualPickingInboundBatch.__table__,
             ManualPickingInboundBatchScan.__table__,
@@ -370,6 +373,7 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
+            ReturnRackTaskCompletion.__table__,
             PickingTaskBinSourceRack.__table__,
             ManualPickingPassage.__table__,
             ManualPickingInboundBatch.__table__,

@@ -1,7 +1,9 @@
 """批次互斥只依赖本线未闭合可靠义务与物理结果。"""
 
+import json
 from datetime import datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,7 +11,7 @@ import pytest
 import wes_plugin_sdk as sdk
 from manual_picking.application.batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
 from manual_picking.application.passage_model import ManualPickingPassage
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -22,6 +24,7 @@ from src.app.execution.models import (
 )
 from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask
+from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
 
 
@@ -46,6 +49,7 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
             PickingTask.__table__,
             TransportDecisionBinding.__table__,
             ManualPickingPassage.__table__,
+            PickingTaskBinSourceRack.__table__,
             ManualPickingInboundBatch.__table__,
             ManualPickingInboundBatchScan.__table__,
         ):
@@ -1339,5 +1343,185 @@ async def test_mock_bad_case_ctu03_waits_only_for_current_rack_moves(status, sid
             member.position_unknown = False
             await db.flush()
             assert not await repo.has_current_rack_dependency(db, 7, "510027", now)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan2_membership_preserves_entered_bin_after_source_cancellation() -> None:
+    from manual_picking.application.batch_repository import BatchRepository
+
+    engine, sessions = await _new_sessions()
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="019f0000-0000-7000-8000-000000000099",
+        task_id="PICK-1",
+        plan_revision=1,
+        rack_id="R1",
+        rack_face="90",
+    )
+    result = sdk.BinInboundBatchReady(
+        bins=(
+            sdk.BinInboundBatchMember(
+                bin_code="BIN-1", source_locator=sdk.TransportRackBinSlot(rack_id="R1", rack_face="90", slot_id="S1")
+            ),
+        )
+    )
+    try:
+        async with sessions.begin() as db:
+            await _seed_current_inbound(db, intent, result)
+            source = PickingTaskBinSourceRack(
+                picking_task_id=31, plan_revision=1, rack_id="R1", rack_face="90", source_evidence_id=31
+            )
+            db.add(source)
+            await db.flush()
+            repo = BatchRepository()
+            assert await repo.record_scan2(db, workline_id=7, picking_task_id=31, bin_code="BIN-1")
+            assert not await repo.record_scan2(db, workline_id=8, picking_task_id=31, bin_code="BIN-1")
+            assert not await repo.record_scan2(db, workline_id=7, picking_task_id=32, bin_code="BIN-1")
+            assert not await repo.record_scan2(db, workline_id=7, picking_task_id=31, bin_code="BIN-2")
+            source.cancelled_evidence_id = 31
+            await db.flush()
+            assert await repo.record_scan2(db, workline_id=7, picking_task_id=31, bin_code="BIN-1")
+            scans = (await db.scalars(select(ManualPickingInboundBatchScan))).all()
+            assert len(scans) == 1
+            await db.delete(scans[0])
+            await db.flush()
+            assert not await repo.record_scan2(db, workline_id=7, picking_task_id=31, bin_code="BIN-1")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rack_return_dependency_checks_unpublished_response_before_transport() -> None:
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    db = SimpleNamespace(scalar=AsyncMock(return_value=19))
+    assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(
+        db.scalar.await_args.args[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "outbound.bin.return_batch@v1" in sql
+    assert "510004" in sql
+    assert "published_at IS NULL" in sql
+    assert "DISPATCHING" in sql
+    assert "rack_face" not in sql
+
+
+@pytest.mark.asyncio
+async def test_rack_return_dependency_checks_all_faces_without_closed_history_fence() -> None:
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[None, 253, None, None]))
+    assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
+    assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(
+        db.scalar.await_args_list[1]
+        .args[0]
+        .compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "'ACCEPTED'" in sql
+    assert "'510004'" in sql
+    assert "created_at" not in sql.split("WHERE", 1)[1]
+    assert "target_json ->> 'rack_face') =" not in sql
+
+
+@pytest.mark.asyncio
+async def test_mock_bad_case_a087_a000002668_preserves_original_return_dependency() -> None:
+    case = json.loads((Path(__file__).parent / "fixtures/kt16_a087_a000002668_return_before_rotate.json").read_text())
+    engine, sessions = await _new_sessions()
+    try:
+        async with sessions.begin() as db:
+            task = TransportTask.model_validate(case["transport"])
+            member = TransportMember.model_validate(case["member"])
+            db.add_all([task, member])
+            await db.flush()
+            repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+            frozen = (
+                task.transport_task_id,
+                task.client_request_id,
+                task.submit_request_body,
+                member.target_json.copy(),
+            )
+            for status in ("PENDING", "ACCEPTED", "RECONCILING"):
+                task.status = status
+                await db.flush()
+                assert await repo.has_unclosed_return_dependency_for_rack(
+                    db, workline_id=348950323769920, rack_id="510004"
+                )
+                assert not await repo.has_unclosed_return_dependency_for_rack(
+                    db, workline_id=348950323769920, rack_id="OTHER"
+                )
+            assert (
+                task.transport_task_id,
+                task.client_request_id,
+                task.submit_request_body,
+                member.target_json,
+            ) == frozen
+            task.status = member.status = "SUCCEEDED"
+            member.final_position_json = member.target_json.copy()
+            task.outcome_version = 1
+            task.published_outcome_version = 0
+            await db.flush()
+            assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=348950323769920, rack_id="510004")
+            task.published_outcome_version = 1
+            await db.flush()
+            assert not await repo.has_unclosed_return_dependency_for_rack(
+                db, workline_id=348950323769920, rack_id="510004"
+            )
+            await db.delete(member)
+            await db.delete(task)
+            await db.flush()
+            assert not await repo.has_unclosed_return_dependency_for_rack(
+                db, workline_id=348950323769920, rack_id="510004"
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mock_a000002121_cancelled_source_allows_confirmed_inbound_without_scan1() -> None:
+    case = json.loads((Path(__file__).parent / "fixtures/kt16_a087_a000002121_cancelled_source_scan2.json").read_text())
+    engine, sessions = await _new_sessions()
+    try:
+        async with sessions.begin() as db:
+            transport = TransportTask.model_validate(case["transport"])
+            db.add_all(
+                [
+                    transport,
+                    TransportMember.model_validate(case["member"]),
+                    TransportDecisionBinding.model_validate(case["binding"]),
+                    PickingTaskBinSourceRack.model_validate(case["source"]),
+                    ManualPickingInboundBatch.model_validate(case["batch"]),
+                    InboundEvidence.model_validate(case["evidence"]),
+                ]
+            )
+            await db.flush()
+            repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+            args = {"workline_id": 348950323769920, "picking_task_id": 359500596499008, "bin_code": "A000002121"}
+            transport.status = "ACCEPTED"
+            await db.flush()
+            assert not await repo.record_scan2(db, **args)
+            transport.status = "SUCCEEDED"
+            transport.published_outcome_version = 0
+            await db.flush()
+            assert not await repo.record_scan2(db, **args)
+            transport.published_outcome_version = transport.outcome_version
+            binding = await db.get(TransportDecisionBinding, case["binding"]["id"])
+            binding.resource_fence_id = "OTHER-BATCH"
+            await db.flush()
+            assert not await repo.record_scan2(db, **args)
+            binding.resource_fence_id = case["binding"]["resource_fence_id"]
+            member = await db.get(TransportMember, case["member"]["id"])
+            member.final_position_json = {"kind": "HANDOFF_POSITION", "location_code": "OTHER"}
+            await db.flush()
+            assert not await repo.record_scan2(db, **args)
+            member.final_position_json = case["member"]["final_position_json"]
+            await db.flush()
+            assert await repo.record_scan2(db, **args)
+            assert await repo.record_scan2(db, **args)
+            assert len((await db.scalars(select(ManualPickingInboundBatchScan))).all()) == 1
+            assert not await repo.record_scan2(db, **{**args, "bin_code": "OTHER"})
     finally:
         await engine.dispose()

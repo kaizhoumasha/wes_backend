@@ -145,6 +145,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
     positions, plans, flow, creator = Positions(), Plans(), Flow(), Creator()
     batches = SimpleNamespace(
         has_current_rack_dependency=AsyncMock(return_value=False),
+        has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
         has_unclosed_action_for_face=AsyncMock(return_value=False),
         has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
     )
@@ -1075,3 +1076,84 @@ async def test_source_inbound_preserves_retired_unknown_dependency_only_for_equi
         {"workline_id": line.id, "rack_id": rack, "target_location_code": "FIVE-POS", "target_face": "90"}
         for rack in ("R1", "R2")
     ]
+
+
+@pytest.mark.asyncio
+async def test_mock_bad_case_a087_a000002668_return_blocks_same_rack_rotation() -> None:
+    driver, line, task, positions, plans, flow, creator, _, scheduler = setup_driver()
+    task.task_id = "A0878D74053AD4116871A6BACAFA3BB6F"
+    positions.source.object_id = "510004"
+    positions.source.arrival_face = "270"
+    plans.rows = [
+        SimpleNamespace(id=11, rack_id="510004", rack_face="270", source_evidence_id=51, plan_revision=4),
+        SimpleNamespace(id=12, rack_id="510004", rack_face="90", source_evidence_id=51, plan_revision=4),
+    ]
+    flow.complete = {("510004", "270")}
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    db = object()
+
+    assert await driver._advance_current_rack(db, line, task) == 0
+    assert creator.rotate == []
+    scheduler.create_in_session.assert_not_awaited()
+    driver._batches.has_unclosed_return_dependency_for_rack.assert_awaited_with(db, workline_id=7, rack_id="510004")
+
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = False
+    assert await driver._advance_current_rack(db, line, task) == 1
+    assert creator.rotate[0]["target_face"] == "90"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_DRAIN_RACK_OUT", "MANUAL_PICKING_RETURN_RACK_OUT"]
+)
+async def test_return_dependency_blocks_departure_before_wms_decision(step: str) -> None:
+    driver, line, _, _, _, _, creator, reader, scheduler = setup_driver()
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    assert (
+        await driver._advance_workline_departure(
+            object(),
+            line,
+            rack_id="510004",
+            current_face="90",
+            step=step,
+            picking_task_id=31,
+            arrival_transport_task_id="arrival-1",
+            now=timezone.now_for_db(),
+        )
+        == 0
+    )
+    reader.latest_for_workline.assert_not_awaited()
+    scheduler.create_in_session.assert_not_awaited()
+    assert creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_drain_rotation_waits_for_return_dependency_on_entire_rack() -> None:
+    driver, line, _, positions, _, _, creator, _, _ = setup_driver()
+    decision = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-1"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("270",)),)),
+        evidence_id=91,
+    )
+    driver._drain = SimpleNamespace(
+        retire_exception_in_session=AsyncMock(return_value=False),
+        decide_in_session=AsyncMock(return_value=(0, decision)),
+        active_rack_face=AsyncMock(return_value=("R1", "270", False)),
+        repository=SimpleNamespace(
+            complete_if_departed=AsyncMock(return_value=False),
+            has_unclosed_rack_action=AsyncMock(return_value=False),
+            transport=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1"),
+                    SimpleNamespace(status="SUCCEEDED", transport_task_id="arrival-1"),
+                    None,
+                ]
+            ),
+            arrival_matches=AsyncMock(return_value=True),
+        ),
+    )
+    positions.source.source_transport_task_id = "arrival-1"
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = True
+    assert await driver._advance_drain(object(), line) == 0
+    assert creator.rotate == []
+    driver._batches.has_unclosed_return_dependency_for_rack.assert_awaited_once()

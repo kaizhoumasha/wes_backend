@@ -47,6 +47,7 @@ def test_outbound_picking_runtime_exposes_only_wms_event_handlers() -> None:
         "picking_task_queue_changed_handler",
         "manual_bin_completed_handler",
         "manual_rack_direct_pick_handler",
+        "return_rack_task_completed_handler",
     }
 
 
@@ -130,6 +131,7 @@ def setup_service(
         get_by_task_id_for_update=AsyncMock(return_value=task),
     )
     plans = SimpleNamespace(
+        has_return_rack_completion=AsyncMock(return_value=False),
         prepare_context=AsyncMock(
             return_value=(
                 [confirmation],
@@ -828,3 +830,17 @@ def test_all_persisted_face_columns_are_varchar_ten():
         (PickingTaskBinSourceRack, "rack_face"),
     ):
         assert model.__table__.c[name].type.length == 10
+
+
+async def test_completed_return_rack_rejects_later_direct_pick_members():
+    service, _, _, _ = setup_service()
+    service._plans.has_return_rack_completion.return_value = True
+    incoming = event(
+        added_direct_picks=[
+            {"source_locator": {"type": "RACK_SLOT", "rack_id": "CLOSED-RACK", "rack_face": "90", "slot_id": "S1"}}
+        ]
+    )
+    result = await service.record(incoming, received_at=NOW)
+    assert result.code == "CONFLICT"
+    assert result.reason_code == "REFERENCE_CONFLICT"
+    service._plans.add_members.assert_not_awaited()

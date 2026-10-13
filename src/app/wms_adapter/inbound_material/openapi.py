@@ -11,6 +11,7 @@ from src.app.wms_adapter.outbound_picking.openapi import (
     PICKING_TASK_EVENT_EXAMPLES,
 )
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictData
+from src.app.wms_adapter.return_rack_task_completion.openapi import RETURN_RACK_TASK_COMPLETED_EXAMPLE
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_EXAMPLES, TRANSPORT_EVENT_RESPONSES
 
 _IDENTIFIER = {
@@ -135,6 +136,7 @@ WMS_EVENT_EXAMPLES = {
     },
     **MANUAL_BIN_COMPLETED_EVENT_EXAMPLE,
     **MANUAL_RACK_DIRECT_PICK_EVENT_EXAMPLE,
+    "10_return_rack_task_completed": RETURN_RACK_TASK_COMPLETED_EXAMPLE,
 }
 
 

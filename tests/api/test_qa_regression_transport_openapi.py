@@ -17,6 +17,7 @@ def test_swagger_event_examples_are_executable_wire_requests() -> None:
     from src.app.wms_adapter.outbound_picking.plan_delta_wire import parse_picking_task_plan_delta_event
     from src.app.wms_adapter.outbound_picking.queue_changed_wire import parse_picking_task_queue_changed_event
     from src.app.wms_adapter.outbound_picking.wire import parse_picking_task_issued_event
+    from src.app.wms_adapter.return_rack_task_completion.wire import parse_return_rack_task_completed_event
     from src.app.wms_adapter.transport_wire import validate_callback_envelope
 
     app = FastAPI()
@@ -29,6 +30,7 @@ def test_swagger_event_examples_are_executable_wire_requests() -> None:
         "outbound.picking_task.plan_delta@v1": parse_picking_task_plan_delta_event,
         "outbound.manual_bin.work_completed@v1": parse_manual_bin_completed_event,
         "outbound.manual_rack.direct_pick_completed@v1": parse_manual_rack_direct_pick_event,
+        "outbound.return_rack.task_completed@v1": parse_return_rack_task_completed_event,
     }
     parsers.update(
         {
@@ -80,9 +82,11 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 9
+    assert len(request_variants) == 10
     assert all(variant["type"] == "object" for variant in request_variants)
-    assert all(variant.get("additionalProperties", True) is True for variant in request_variants)
+    assert all(variant.get("additionalProperties", True) is True for variant in request_variants[:-1])
+    assert request_variants[-1]["additionalProperties"] is False
+    assert request_variants[-1]["properties"]["data"]["additionalProperties"] is False
     assert all(
         variant["required"] == ["operation_id", "operation", "timestamp", "data"] for variant in request_variants
     )
@@ -96,6 +100,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         ["outbound.picking_task.queue_changed@v1"],
         ["outbound.manual_bin.work_completed@v1"],
         ["outbound.manual_rack.direct_pick_completed@v1"],
+        ["outbound.return_rack.task_completed@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
@@ -110,6 +115,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
                 "outbound.picking_task.issued@v1",
                 "outbound.manual_bin.work_completed@v1",
                 "outbound.manual_rack.direct_pick_completed@v1",
+                "outbound.return_rack.task_completed@v1",
             }
             else 0
         )

@@ -1,0 +1,114 @@
+{
+  "provenance": "本会话已执行操作与用户报告的整理；不是被删除记录的原始数据库导出",
+  "time_basis": "UTC；近似时间 explicit approximate=true",
+  "events": [
+    {
+      "at": "2026-10-09T14:06:00",
+      "approximate": true,
+      "type": "AUTHORIZED_CLEANUP",
+      "action": "删除旧 drain Confirmation 355300318065216，保留绑定、Evidence、Transport；解除新任务准备阻塞",
+      "related_bin": "A000001624",
+      "operation_id": "01a0f49e-c7ee-7c10-991d-58e841b4ef3b",
+      "remaining_dependency": "510017 的 DRAIN_RACK_IN_STEP binding 355300362981952 仍未释放"
+    },
+    {
+      "at": null,
+      "type": "USER_REPORTED_PHYSICAL_HANDLING",
+      "action": "RCS 手动取消，WMS 手动回架；WMS 无通知 WES 的途径",
+      "related_bin": "A000001624",
+      "verification": "用户报告；无匹配权威终态回调，不推导 Transport SUCCEEDED"
+    },
+    {
+      "at": "2026-10-09T15:38:00",
+      "approximate": true,
+      "type": "AUTHORIZED_CLEANUP",
+      "action": "按用户指令删除 A000001624 相关 24 条记录；人工移出滚筒线为用户处理指令，未做物理确认",
+      "deleted_counts": {
+        "callback_logs": 8,
+        "bin_line_returns": 1,
+        "transport_members": 1,
+        "device_commands": 2,
+        "transport_decision_bindings": 1,
+        "transport_tasks": 1,
+        "wms_confirmations": 1,
+        "inbound_evidences": 9
+      },
+      "deleted_transport_task_id": "transport-17cfb9bc-7658-47a7-afa4-1c601f0089e4",
+      "deleted_confirmation_id": 355325393756736,
+      "deleted_return_batch_operation_id": "01a0f4fc-31fb-740b-9847-f78c234b0b6b",
+      "gap": "已删除原始记录不可从当前快照恢复",
+      "deleted_record_ids": {
+        "callback_logs": [
+          355300242809408,
+          355300258611776,
+          355300274889280,
+          355300292198976,
+          358368271077952,
+          358368734016064,
+          358369073582656,
+          358370727543360
+        ],
+        "bin_line_returns": [
+          355300243149376
+        ],
+        "transport_members": [
+          189
+        ],
+        "device_commands": [
+          355300243108416,
+          355300275765824
+        ],
+        "transport_decision_bindings": [
+          355325437370944
+        ],
+        "transport_tasks": [
+          188
+        ],
+        "wms_confirmations": [
+          355325393756736
+        ],
+        "inbound_evidences": [
+          355300242784832,
+          355300258587200,
+          355300274864704,
+          355300292174400,
+          355325436981824,
+          358368271053376,
+          358368733983296,
+          358369073558080,
+          358370727514688
+        ]
+      }
+    },
+    {
+      "at": null,
+      "type": "USER_REPORTED_DEVICE_FAILURE",
+      "action": "A000001885 回 510021 已下发但 CTU 故障；当时不能把 ACCEPTED 当作完成",
+      "related_bin": "A000001885",
+      "later_evidence": "当前导出对应 Transport SUCCEEDED；不推测具体现场维修过程"
+    },
+    {
+      "at": "2026-10-12T18:37:03.884794",
+      "type": "AUTHORIZED_WINDOW_RELEASE",
+      "binding_id": 355300362981952,
+      "action": "释放 510017 残留业务窗口；后续实现无 current drain 时自动释放残留 drain window，保持真实 source window 检查"
+    },
+    {
+      "at": null,
+      "type": "AUTHORIZED_EVIDENCE_REPLAY",
+      "evidence_ids": [
+        359481302495808
+      ],
+      "action": "SCAN2 规则修复后重放原 Evidence；请求本箱 WMS admission，清除 A000002213 被错误归属的 scan2_fault 字段；保留旧原命令与证据"
+    },
+    {
+      "at": null,
+      "type": "AUTHORIZED_EVIDENCE_REPLAY",
+      "evidence_ids": [
+        359486370964032,
+        359487957180992
+      ],
+      "action": "SCAN2 命令冻结期限修复部署后，恢复原 WMS 完成通知和 SCAN3 Evidence 的持久消费；保持原 payload、operation_id、command_code 和 deadline_at；不伪造新通知"
+    }
+  ]
+}

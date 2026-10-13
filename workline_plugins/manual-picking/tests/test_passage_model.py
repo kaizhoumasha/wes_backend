@@ -168,3 +168,34 @@ async def test_archive_and_closed_passage_cleanup_preserve_return_workload() -> 
             }
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan2_can_persist_passage_without_fabricated_scan1() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(connection, _record):
+        connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")
+
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(ManualPickingPassage.__table__.create)
+            await db.execute(
+                insert(ManualPickingPassage.__table__).values(
+                    id=7,
+                    workline_id=7,
+                    task_id="PICK-1",
+                    bin_code="BIN-1",
+                    scan2_evidence_id=9,
+                    created_at=datetime(2026, 10, 13),
+                    version=0,
+                    disposition="OPEN",
+                )
+            )
+            row = (await db.execute(ManualPickingPassage.__table__.select())).mappings().one()
+            assert row["scan1_evidence_id"] is None
+            assert row["scan1_received_at"] is None
+            assert row["scan2_evidence_id"] == 9
+    finally:
+        await engine.dispose()

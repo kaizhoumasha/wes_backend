@@ -17,6 +17,7 @@ from manual_picking.definition import FIVE_RACK
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import picking_task_repository
 from src.core.uuid7 import new_uuid7
+from src.utils.timezone import timezone
 
 from .drain_execution_repository import DrainExecutionRepository
 from .drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DRAIN_RACK_ROTATE_STEP
@@ -152,7 +153,14 @@ class ManualPickingDrainFlow:
         active = await self._bindings.list_active_window_for_target(
             db, workline_id=line.id, target_location_code=location
         )
-        return bool(active)
+        # 调用方已确认没有当前 drain；旧 drain 窗口不能重新成为业务门闩。
+        retired = [window for window in active if window.step == DRAIN_RACK_IN_STEP]
+        if retired:
+            closed_at = timezone.now_for_db()
+            for window in retired:
+                window.window_released_at = closed_at
+            await db.flush()
+        return any(window.step != DRAIN_RACK_IN_STEP for window in active)
 
     async def trigger_full_drain_in_session(self, db: Any, line: Any, now: Any) -> None:
         """停线前主动排空：不等待下一次 tick，一次性纳入当前全部待回库料箱。"""

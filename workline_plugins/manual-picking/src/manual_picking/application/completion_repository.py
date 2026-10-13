@@ -14,6 +14,7 @@ from src.app.wms_integration.outbound_picking.models import DirectPickExecution,
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionResultReader
+from src.app.wms_integration.return_rack_task_completion.models import ReturnRackTaskCompletion
 
 from .batch_repository import BatchRepository
 from .passage_model import ManualPickingPassage
@@ -44,9 +45,10 @@ class ManualPickingCompletionRepository:
         return await self._completion_reader.latest(db, picking_task_id)
 
     async def ready_to_confirm(self, db: AsyncSession, line: Any, task: Any) -> bool:
-        """计划已接纳直接取料，因此只有未结清的面（未取消且无面级完成事实）才阻塞完成确认。"""
+        """计划已接纳直接取料，因此只有未结清的面（未取消且未由面级或整架权威事实闭合）才阻塞完成确认。"""
         direct = cast("Any", DirectPickExecution).__table__.c
         completed = cast("Any", DirectPickFaceCompletion).__table__.c
+        whole = cast("Any", ReturnRackTaskCompletion).__table__.c
         unclosed_face = (
             select(direct.id)
             .where(
@@ -58,6 +60,13 @@ class ManualPickingCompletionRepository:
                     completed.plan_revision == direct.plan_revision,
                     completed.rack_id == direct.rack_id,
                     completed.rack_face == direct.rack_face,
+                )
+                .exists(),
+                ~select(whole.id)
+                .where(
+                    whole.picking_task_id == direct.picking_task_id,
+                    whole.rack_id == direct.rack_id,
+                    whole.through_plan_revision >= direct.plan_revision,
                 )
                 .exists(),
             )

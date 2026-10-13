@@ -49,7 +49,7 @@ class InboundFaceProgress:
     result: BinInboundBatchReady | BinInboundBatchRackFaceDone
     evidence_id: int
     next_offset: int | None
-    complete: bool  # 业务完成仍要求所有投料 BIN 已有 SCAN1。
+    complete: bool  # 业务完成要求所有投料 BIN 已在 SCAN1 或 SCAN2 确认入线。
     feed_complete: bool  # RackCycle 只要求可靠投料终态，不等待线内业务。
     last_chunk_created_at: datetime | None
 
@@ -57,6 +57,99 @@ class InboundFaceProgress:
 class BatchRepository:
     def __init__(self, history: BinBatchResultReader | None = None) -> None:
         self._history = history or BinBatchResultReader()
+
+    async def record_scan2(self, db: AsyncSession, *, workline_id: int, picking_task_id: int, bin_code: str) -> bool:
+        """来源取消停止新投箱；原批次已入线成员继续交由 WMS 判断需求。"""
+        batches = ManualPickingInboundBatch.__table__.c
+        sources = PickingTaskBinSourceRack.__table__.c
+        scans = ManualPickingInboundBatchScan.__table__.c
+        entered = (
+            select(scans.id)
+            .where(
+                scans.workline_id == workline_id,
+                scans.operation_id == batches.operation_id,
+                scans.bin_code == bin_code,
+            )
+            .exists()
+        )
+        transports = cast("Any", TransportTask).__table__.c
+        members = cast("Any", TransportMember).__table__.c
+        bindings = cast("Any", TransportDecisionBinding).__table__.c
+        delivered = (
+            select(members.id)
+            .join(TransportTask, transports.transport_task_id == members.transport_task_id)
+            .join(TransportDecisionBinding, bindings.client_request_id == transports.client_request_id)
+            .where(
+                bindings.workline_id == workline_id,
+                bindings.picking_task_id == picking_task_id,
+                bindings.step == INBOUND_STEP,
+                bindings.resource_fence_id == batches.operation_id,
+                bindings.source_evidence_id == batches.response_evidence_id,
+                transports.authority_workline_id == workline_id,
+                transports.kind == "BIN_MOVE",
+                transports.status == "SUCCEEDED",
+                transports.outcome_version > 0,
+                transports.published_outcome_version == transports.outcome_version,
+                members.object_type == "BIN",
+                members.object_id == bin_code,
+                members.status == "SUCCEEDED",
+                members.position_unknown.is_(False),
+                members.target_json["kind"].as_string() == "HANDOFF_POSITION",
+                members.final_position_json["kind"].as_string() == "HANDOFF_POSITION",
+                members.final_position_json["location_code"].as_string()
+                == members.target_json["location_code"].as_string(),
+            )
+            .exists()
+        )
+        rows = (
+            await db.scalars(
+                select(ManualPickingInboundBatch)
+                .join(
+                    PickingTaskBinSourceRack,
+                    and_(
+                        sources.picking_task_id == batches.picking_task_id,
+                        sources.plan_revision == batches.plan_revision,
+                        sources.rack_id == batches.rack_id,
+                        sources.rack_face == batches.rack_face,
+                    ),
+                )
+                .where(
+                    batches.workline_id == workline_id,
+                    batches.picking_task_id == picking_task_id,
+                    or_(sources.cancelled_evidence_id.is_(None), entered, delivered),
+                )
+            )
+        ).all()
+        for batch in rows:
+            evidence = await db.get(InboundEvidence, batch.response_evidence_id)
+            if (
+                evidence is None
+                or evidence.workline_id != workline_id
+                or evidence.operation != BIN_INBOUND_BATCH_OPERATION
+                or evidence.operation_id != batch.operation_id
+                or evidence.kind != InboundEvidenceKind.WMS_RESULT
+                or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+                or evidence.published_at is None
+            ):
+                continue
+            result = decode_inbound(evidence.normalized_payload).result
+            if isinstance(result, BinInboundBatchReady) and any(member.bin_code == bin_code for member in result.bins):
+                existing = await db.scalar(
+                    select(scans.id).where(
+                        scans.operation_id == batch.operation_id,
+                        scans.bin_code == bin_code,
+                    )
+                )
+                if existing is None:
+                    db.add(
+                        ManualPickingInboundBatchScan(
+                            workline_id=workline_id,
+                            operation_id=batch.operation_id,
+                            bin_code=bin_code,
+                        )
+                    )
+                return True
+        return False
 
     async def has_active_bin_transport(self, db: AsyncSession, bin_code: str) -> bool:
         """同箱当前在途搬运不能被 SCAN3 重新投入重复执行；终态历史不参与。"""
@@ -383,13 +476,49 @@ class BatchRepository:
         )
         return unpublished is not None
 
+    async def has_unclosed_return_dependency_for_rack(
+        self, db: AsyncSession, *, workline_id: int, rack_id: str
+    ) -> bool:
+        """换面和离场影响整架；回架依赖不能按当前面或旋转时间截断。"""
+        confirmations = cast("Any", WmsConfirmation).__table__.c
+        evidences = cast("Any", InboundEvidence).__table__.c
+        pending = await db.scalar(
+            select(confirmations.id)
+            .outerjoin(InboundEvidence, evidences.id == confirmations.response_evidence_id)
+            .where(
+                confirmations.workline_id == workline_id,
+                confirmations.operation == BIN_RETURN_BATCH_OPERATION,
+                confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                or_(
+                    confirmations.status.in_(
+                        (
+                            WmsConfirmationStatus.PENDING,
+                            WmsConfirmationStatus.DISPATCHING,
+                            WmsConfirmationStatus.RECONCILING,
+                        )
+                    ),
+                    and_(
+                        evidences.kind == InboundEvidenceKind.WMS_RESULT,
+                        evidences.apply_status.in_(("PENDING", "APPLIED")),
+                        evidences.published_at.is_(None),
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        if pending is not None:
+            return True
+        return await self.has_unclosed_return_transport_for_face(
+            db, workline_id=workline_id, rack_id=rack_id, rack_face=None
+        )
+
     async def has_unclosed_return_transport_for_face(
         self,
         db: AsyncSession,
         *,
         workline_id: int,
         rack_id: str,
-        rack_face: str,
+        rack_face: str | None,
     ) -> bool:
         """本面回架 BIN_MOVE 的终态、最终位置和结果未闭合时，禁止下一轮分配。"""
         transports = cast("Any", TransportTask).__table__.c
@@ -416,7 +545,7 @@ class BatchRepository:
                 transports.kind == "BIN_MOVE",
                 members.c.object_type == "BIN",
                 members.c.target_json["rack_id"].as_string() == rack_id,
-                members.c.target_json["rack_face"].as_string() == rack_face,
+                (members.c.target_json["rack_face"].as_string() == rack_face) if rack_face is not None else True,
                 or_(
                     transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
                     and_(

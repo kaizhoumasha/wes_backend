@@ -57,6 +57,7 @@ from src.app.transport.models import (  # noqa: F401
 )
 from src.app.transport_debug.models import TransportDebugRun, TransportDebugRunStep  # noqa: F401
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
+from src.app.wms_integration.return_rack_task_completion.models import ReturnRackTaskCompletion  # noqa: F401
 from src.app.workline.models import (  # noqa: F401
     WorkLine,
 )

@@ -47,7 +47,7 @@ flowchart TD
     T3 --> B0
 
     subgraph A["子流程 A：五层货架 Bin，点1～点4"]
-        A00["来源架权威到位<br/>匹配原 Transport"] --> A0["当前面 bin.inbound_batch@v1"] --> A01["入站 BIN_MOVE<br/>等待权威成功"] --> A1["点1 SCAN<br/>实扫匹配并入 FIFO"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
+        A00["来源架权威到位<br/>匹配原 Transport"] --> A0["当前面 bin.inbound_batch@v1"] --> A01["入站 BIN_MOVE<br/>等待权威成功"] --> A1["点1 SCAN<br/>实扫匹配并记录入线"] --> A2["点2 SCAN<br/>到位"] --> A3["WES→WMS<br/>work_admission_decide@v1"]
         A3 -->|WORK_REQUIRED| A4["PDA 黑盒拣料"] --> A5["WMS→WES<br/>work_completed@v1"] --> A6["WES 本地应用<br/>确认点2释放"] --> A7["点3/点4 SCAN<br/>放行、入 RETURN_BUFFER"] --> A8["当前架投料间隙或 drain<br/>bin.return_batch@v1"] --> A9["退箱 BIN_MOVE<br/>等待权威结果"]
         A01 --> A10{"全部分段 feed_complete？"}
         A10 -->|否，前段 SCAN1 清空入口| A01
@@ -83,8 +83,8 @@ flowchart TD
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `plan_revision=1, rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
 | 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
-| 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2 FIFO |
-| 6A | 设备 → WES | 点2 SCAN | `A000000001-A` 到达工作位 | 校验本次经过并保存到位事实 |
+| 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2通道 |
+| 6A | 设备 → WES | 点2 SCAN | `A000000001-C` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
 | — | PDA（黑盒） | 人工按 WMS 指示拣料 | 具体拣了哪个 Cell，WES 不知道、不查询 | — |
 | 8A | WMS → WES | `outbound.manual_bin.work_completed@v1` | `task_id + bin_code` 指向当前等待完成的料箱任务，`result=NORMAL`，`completed_at=1788389999000` | `202/RECEIVED` |
@@ -189,9 +189,9 @@ driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建
 
 ```mermaid
 flowchart LR
-    P1["点1 SCAN<br/>-B 正常向前 / 异常向右"] --> BUF["点1→点2 FIFO"]
+    P1["点1 SCAN<br/>-B 正常向前 / 异常向右"] --> BUF["点1→点2通道"]
     P1 -->|NG 直达| P3["点3 SCAN<br/>-B 正常向前 / 未授权向左"]
-    BUF --> P2SCAN["点2 SCAN<br/>-A 到位与 WMS 准入"]
+    BUF --> P2SCAN["点2 SCAN<br/>-C 到位与 WMS 准入"]
     P2SCAN --> ASK["WES 请求 WMS<br/>当前 Bin 是否有任务"]
     ASK -->|WORK_REQUIRED| P2["点2 停留<br/>PDA 人工拣料<br/>(WMS 内部, 对 WES 黑盒)"]
     ASK -->|NO_WORK| P3
@@ -209,7 +209,7 @@ flowchart LR
 不可读、箱码格式错误或后缀不为 `-B` 时记录本次 NG 并创建 `MOVE_RIGHT`，由点1直达点3，不向 WMS 发送猜测的箱码。
 SCAN1 放行不依赖目标货架到位，只校验本箱的任务、当前轮次、计划来源和入站位置/Transport 等必要依据。
 目标货架与料箱同时就绪由实际人工拣料的 WMS/PDA 作业准入负责，不提前串联到 SCAN1 或点2到位上报。
-`MOVE_FORWARD` 的匹配物理结果闭合后，按实际可靠到达顺序冻结点1→点2 FIFO 身份；不能把命令创建或 ACK 当作到达。
+`MOVE_FORWARD` 的匹配物理结果只闭合点1动作，不建立点2业务准入队首；不能把命令创建或 ACK 当作到达。
 本线前一个点1方向命令未取得权威成功结果时，不为后一个扫码下发方向命令；同一未闭合料箱重扫也不建立第二次经过。
 本条按点1设备的未闭合命令判断，不因其料箱已在下游标记 `CLOSED` 就越过原命令。
 
@@ -218,9 +218,9 @@ WES 对上游供箱只按已确认的缓存容量、FIFO 顺序和出库合同�
 
 ### 3\.2 点2：人工工作位（PDA，对 WES 黑盒） {#32-2pda-wes}
 
-FIFO 队首进入点2后，设备扫码并由 ECS 上报 WES。点2只接受本点 `-C` 后缀，去后缀的正常 `bin_code` 必须与点1冻结的本次经过一致。
-该扫码是当前料箱到达人工工作位的事实；点1证据不能替代它。WES 不把实际料箱与计划预期料箱做错箱比较，使用冻结的 `task_id` 与实际正常 `bin_code` 请求 WMS 判断是否
-存在人工任务。PDA 的呼叫、Cell 分配、拣料确认等内部流程完全由 WMS 负责，WES 不集成、不查询、不持有其中任何字段（对照 §2.2）。
+料箱实际到达点2后，设备扫码并由 ECS 上报 WES。点2只接受本点 `-C` 后缀；正常 `bin_code` 只须命中当前有效 PickingTask 的已应用、已发布 inbound_batch 成员，来源计划成员未取消；已取消来源中，本箱已有原批次入线记录，或有匹配原批次的投箱成功、结果已发布且明确到达冻结交接位的事实，也继续准入。取消不改变已入线事实，是否仍需取料由 WMS 判断。无需匹配点1队首、前序方向命令结果或当前仍处于批次投箱目标位置；已取消来源只额外核实本箱原批次已入线事实。CTU 投箱可以乱序，允许缺少点1证据直接在点2建立本箱 Passage；点1字段为空，点2确认同时记录批次入线进度。
+
+扫码是本点实际到位事实，不能用历史投影替代。每箱绑定自身 Passage 与当前 `task_id`；旧箱/其他箱等待不会阻止独立有效成员准入，同箱重复扫码不创建第二个准入。本节点自身在途动作仍保持原身份；PDA 内部流程由 WMS 拥有。
 
 WES 在点2的唯一职责是：
 
@@ -232,14 +232,11 @@ WES 在点2的唯一职责是：
    校验 `task_id + bin_code` 与冻结请求一致，绑定成功后才向 point2
    下发 `MOVE_FORWARD` 释放当前料箱。料箱由滚筒线自动流向点3，后一个料箱自动进入 point2 并重新触发扫码上报。
 
-点2不可读、后缀错误、箱码无效或与当前 FIFO 身份不符时，先要求队首点1方向命令取得匹配 ECS `SUCCESS`；否则只留证对账、零命令。
-满足前序物理结果后，不请求 WMS，创建 `MOVE_FORWARD` 到点3；
-若存在队首，其原身份与顺序被冻结，不被异常码覆盖，后续点2扫码不得越过该队首，直到现场对账明确物理身份。
-与 WMS 交互只使用去后缀的正常 `bin_code`。
+点2不可读、后缀错误、箱码无效或不是当前有效批次成员时，仅保存异常证据，不请求 WMS、不自动放行，不将异常绑定到其他料箱。正常准入只使用去后缀的 `bin_code`。本次调整不改变点3/点4回程通道与 RETURN_BUFFER 的 FIFO 合同。
 
 ### 3\.3 点3：NG 判定 {#33-3ng}
 
-点3独立校验实际扫码的 `-B` 后缀，并用正常箱码唯一关联本线尚未闭合的本次经过；不按点1→点2 FIFO 队首猜测身份。未经过点2且能唯一关联的直达箱，以点3当前有效 `-B` 决定正常向前；点1的非 `-B` 分流决定不能永久标记该箱为 NG。经过点2的箱仍须按其 WMS 确定结果决定方向。
+点3独立校验实际扫码的 `-B` 后缀，并用正常箱码唯一关联本线尚未闭合的本次经过；不按点1→点2通道 队首猜测身份。未经过点2且能唯一关联的直达箱，以点3当前有效 `-B` 决定正常向前；点1的非 `-B` 分流决定不能永久标记该箱为 NG。经过点2的箱仍须按其 WMS 确定结果决定方向。
 不可读、后缀错误、身份不唯一或当前经过点2但缺少确定正常授权时创建 `MOVE_LEFT`，不停箱，也不伪造 WMS NG。
 若无法识别有效正常箱码、无法关联任何经过且本点已有未闭合方向命令，新扫码先留证对账，不另下发第二条物理命令；“不停箱”不允许越过结果未知的原命令。
 已关联当前经过的料箱只等待自身因果前置；另一料箱在同设备的未闭合命令不构成业务门禁，物理接纳由 ECS 裁决。
@@ -484,6 +481,8 @@ Evidence/Confirmation。
 黑盒（对照 §2.2、§4）。完成事件只能结清其明确指向的 revision 成员，供既有
 `outbound.rack.departure_decide@v1` 的发起条件和换面（`RACK_ROTATE`）判断复用；换面还是彻底退场仍由 WES 按出库合同
 §9.2.1/§9.4 既有逻辑自主决定，本 operation 不参与、不影响该决定本身。
+
+整架 `outbound.return_rack.task_completed@v1` 按[出库合同 §6.2](wms-outbound-picking-task-integration-requirements.md#62-退料货架整架任务完成)独立作为权威业务完成事实，覆盖同任务、同架且不超过截止版本的直接取料成员，不等待逐面通知，也不补造逐面结果。后续换面、离场和任务完成判断接受该覆盖事实；回箱及其他物理执行依赖保持原合同约束。
 
 ### 5\.6 `workline.return_buffer.drain_rack_decide@v1`（复用） {#56-worklinereturn_bufferdrain_rack_decidev1}
 

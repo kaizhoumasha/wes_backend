@@ -24,28 +24,20 @@ class PassageRepository:
         await db.flush()
         return passage
 
-    async def scan2_head_for_update(self, db: AsyncSession, workline_id: int) -> ManualPickingPassage | None:
+    async def scan2_candidates_for_update(
+        self, db: AsyncSession, *, workline_id: int, task_id: str, bin_code: str
+    ) -> tuple[ManualPickingPassage, ...]:
         statement = (
             select(ManualPickingPassage)
             .where(
                 _COLUMNS.workline_id == workline_id,
-                _COLUMNS.scan2_evidence_id.is_(None),
-                _COLUMNS.disposition == "OPEN",
+                _COLUMNS.task_id == task_id,
+                _COLUMNS.bin_code == bin_code,
+                _COLUMNS.disposition != "CLOSED",
             )
-            .order_by(_COLUMNS.scan1_received_at, _COLUMNS.scan1_evidence_id)
-            .limit(1)
             .with_for_update()
         )
-        return (await db.execute(statement)).scalar_one_or_none()
-
-    async def scan2_in_flight_for_update(self, db: AsyncSession, workline_id: int) -> tuple[ManualPickingPassage, ...]:
-        statement = select(ManualPickingPassage).where(
-            _COLUMNS.workline_id == workline_id,
-            _COLUMNS.scan2_evidence_id.is_not(None),
-            _COLUMNS.scan3_evidence_id.is_(None),
-            _COLUMNS.disposition != "CLOSED",
-        )
-        return tuple((await db.execute(statement.with_for_update())).scalars().all())
+        return tuple((await db.scalars(statement)).all())
 
     async def by_admission_operation_for_update(
         self, db: AsyncSession, operation_id: str
