@@ -266,11 +266,6 @@ class PickingTaskPlanDeltaRepository:
             is not None
         )
 
-    async def has_return_rack_completion(self, db, task_id, rack_ids, plan_revision):
-        from src.app.wms_integration.return_rack_task_completion.repository import ReturnRackTaskCompletionRepository
-
-        return await ReturnRackTaskCompletionRepository().has_completed_racks(db, task_id, rack_ids, plan_revision)
-
     async def has_active_direct_pick_face(
         self, db: AsyncSession, *, picking_task_id: int, plan_revision: int, rack_id: str, rack_face: str
     ) -> bool:

@@ -129,7 +129,10 @@ def setup_driver():  # type: ignore[no-untyped-def]
         SimpleNamespace(
             has_unclosed_action_for_face=AsyncMock(return_value=False),
         ),
-        batches=SimpleNamespace(has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False)),
+        batches=SimpleNamespace(
+            has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
+            cancelled_source_windows=AsyncMock(return_value=[]),
+        ),
         plans=plans,
         positions=positions,
         transports=SimpleNamespace(

@@ -29,18 +29,18 @@ async def test_whole_completion_waits_only_for_plan_without_faking_faces():
 
 
 @pytest.mark.asyncio
-async def test_later_same_rack_members_are_conflict_not_silent_success():
+async def test_completion_applies_covered_members_with_later_same_rack_members():
     task = SimpleNamespace(id=31, workline_id=7, last_applied_plan_revision=3)
     store = SimpleNamespace(
         get=AsyncMock(return_value=None),
-        members=AsyncMock(return_value=(3,)),
+        members=AsyncMock(return_value=(1, 3)),
         add=AsyncMock(),
     )
     app = ManualPickingReturnRackTaskCompletion(
         tasks=SimpleNamespace(get_by_task_id_for_update=AsyncMock(return_value=task)), completions=store
     )
-    assert (await app.apply_in_session(object(), FACT, 7)).disposition == BusinessEvidenceDisposition.RECONCILING
-    store.add.assert_not_awaited()
+    assert (await app.apply_in_session(object(), FACT, 7)).disposition == BusinessEvidenceDisposition.APPLIED
+    store.add.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -56,36 +56,36 @@ async def test_completion_rejects_task_or_workline_identity_mismatch(task):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed", [None, "operation_id", "through_plan_revision", "completed_at_ms"])
-async def test_existing_marker_replay_preserves_frozen_identity(changed):
+@pytest.mark.parametrize("revision", [1, 2, 3])
+async def test_completion_advances_cutoff_and_older_notification_does_not_regress_it(revision):
     marker = SimpleNamespace(
-        operation_id=FACT.operation_id,
-        through_plan_revision=FACT.through_plan_revision,
-        completed_at_ms=FACT.completed_at_ms,
+        operation_id="another-operation",
+        through_plan_revision=revision,
+        completed_at_ms=FACT.completed_at_ms - 1,
     )
-    if changed is not None:
-        setattr(marker, changed, "other" if changed == "operation_id" else getattr(marker, changed) + 1)
-    store = SimpleNamespace(get=AsyncMock(return_value=marker), members=AsyncMock(), add=AsyncMock())
+    store = SimpleNamespace(get=AsyncMock(return_value=marker), members=AsyncMock(return_value=(1, 3)), add=AsyncMock())
     app = ManualPickingReturnRackTaskCompletion(
         tasks=SimpleNamespace(
             get_by_task_id_for_update=AsyncMock(
-                return_value=SimpleNamespace(id=31, workline_id=7, last_applied_plan_revision=2)
+                return_value=SimpleNamespace(id=31, workline_id=7, last_applied_plan_revision=3)
             )
         ),
         completions=store,
     )
     result = await app.apply_in_session(object(), FACT, 7)
-    assert result.disposition == (
-        BusinessEvidenceDisposition.APPLIED if changed is None else BusinessEvidenceDisposition.RECONCILING
-    )
-    assert bool(result.decision_digest) is (changed is None)
-    store.members.assert_not_awaited()
-    store.add.assert_not_awaited()
+    assert result.disposition == BusinessEvidenceDisposition.APPLIED
+    assert result.decision_digest
+    if revision < FACT.through_plan_revision:
+        store.add.assert_awaited_once()
+    else:
+        store.members.assert_not_awaited()
+        store.add.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_completion_without_rack_members_cannot_create_marker():
-    store = SimpleNamespace(get=AsyncMock(return_value=None), members=AsyncMock(return_value=()), add=AsyncMock())
+@pytest.mark.parametrize("members", [(), (3,)])
+async def test_completion_without_covered_rack_members_cannot_create_marker(members):
+    store = SimpleNamespace(get=AsyncMock(return_value=None), members=AsyncMock(return_value=members), add=AsyncMock())
     app = ManualPickingReturnRackTaskCompletion(
         tasks=SimpleNamespace(
             get_by_task_id_for_update=AsyncMock(

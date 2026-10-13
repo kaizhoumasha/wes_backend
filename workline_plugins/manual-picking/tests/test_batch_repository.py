@@ -57,6 +57,169 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", ["member_first", "transport_first"])
+async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_action(order) -> None:
+    engine, sessions = await _new_sessions()
+    started = datetime(2026, 10, 14)
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+
+    def transport(identity, status):
+        return TransportTask(
+            transport_task_id=identity,
+            client_request_id=identity,
+            kind="RACK_MOVE",
+            authority_workline_id=7,
+            caller_json={"workline_id": "7"},
+            request_json={},
+            request_digest="a" * 64,
+            submit_operation_id=identity,
+            submit_timestamp_ms=1,
+            submit_request_body="{}",
+            submit_request_body_digest="b" * 64,
+            status=status,
+            outcome_version=0,
+            published_outcome_version=0,
+            created_at=started,
+            updated_at=started,
+        )
+
+    try:
+        async with sessions.begin() as db:
+            window = TransportDecisionBinding(
+                workline_id=7,
+                picking_task_id=11,
+                correlation_id="round",
+                causal_token=100,
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id="510021",
+                client_request_id="ingress",
+                source_evidence_id=31,
+                window_target_location_code="KT16",
+                created_at=started,
+            )
+            source = PickingTaskBinSourceRack(
+                picking_task_id=11,
+                plan_revision=1,
+                rack_id="510021",
+                rack_face="90",
+                source_evidence_id=31,
+            )
+            ingress = transport("ingress", "ACCEPTED")
+            position = PositionProjection(
+                workline_id=7,
+                object_type="RACK",
+                object_id="510021",
+                position_unknown=True,
+                source_operation_id="cancel-result",
+                source_transport_task_id="ingress",
+                source_causal_token=100,
+            )
+            db.add_all([window, source, ingress, position])
+            await db.flush()
+
+            async def contexts():
+                return await repo.cancelled_source_windows(db, workline_id=7, target_location_code="KT16")
+
+            def cancelled_result():
+                ingress.status = "FAILED"
+                ingress.outcome_version = ingress.published_outcome_version = 1
+                position.position_unknown = False
+                position.position_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
+
+            if order == "member_first":
+                source.cancelled_evidence_id = 91
+            else:
+                cancelled_result()
+            await db.flush()
+            assert await contexts() == []
+            source.cancelled_evidence_id = 91
+            cancelled_result()
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "ingress"
+
+            old_member = PickingTaskBinSourceRack(
+                picking_task_id=11,
+                plan_revision=1,
+                rack_id="510021",
+                rack_face="270",
+                source_evidence_id=30,
+                created_at=started - timedelta(days=1),
+            )
+            db.add(old_member)
+            await db.flush()
+            assert await contexts() == []
+            old_member.cancelled_evidence_id = 90
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "ingress"
+
+            retry = transport("retry", "ACCEPTED")
+            retry_binding = TransportDecisionBinding(
+                workline_id=7,
+                picking_task_id=11,
+                correlation_id="retry",
+                causal_token=101,
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id="510021",
+                client_request_id="retry",
+                source_evidence_id=31,
+                created_at=started,
+            )
+            db.add_all([retry, retry_binding])
+            await db.flush()
+            # 即使投影仍是旧取消终位，也必须交出当前重试，不能拿旧失败清退。
+            assert (await contexts())[0][1].status == "ACCEPTED"
+            retry.status = "FAILED"
+            retry.outcome_version = retry.published_outcome_version = 1
+            position.source_transport_task_id = "retry"
+            position.source_causal_token = 101
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "retry"
+
+            retry_binding.step = "MANUAL_PICKING_SOURCE_RACK_OUT"
+            window.window_departure_client_request_id = "retry"
+            await db.flush()
+            assert await contexts() == []
+            retry.status = "REJECTED"
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "retry"
+            retry.status = "FAILED"
+            retry_binding.step = "PICKING_TASK_BIN_SOURCE_RACK_IN"
+            window.window_departure_client_request_id = None
+            await db.flush()
+
+            new_member = PickingTaskBinSourceRack(
+                picking_task_id=11,
+                plan_revision=2,
+                rack_id="510021",
+                rack_face="90",
+                source_evidence_id=32,
+                created_at=started - timedelta(seconds=1),
+            )
+            db.add(new_member)
+            await db.flush()
+            assert await contexts() == []
+            new_member.cancelled_evidence_id = 92
+            position.source_causal_token = 99
+            await db.flush()
+            assert await contexts() == []
+            position.source_causal_token = 101
+            retry_binding.workline_id = 8
+            await db.flush()
+            assert await contexts() == []
+            retry_binding.workline_id = 7
+            position.position_json = {"kind": "RACK_POSITION", "location_code": "STORAGE"}
+            await db.flush()
+            assert await contexts() == []
+            position.position_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
+            window.window_released_at = started + timedelta(seconds=1)
+            await db.flush()
+            assert await contexts() == []
+            assert (await db.scalars(select(TransportTask))).all() == [ingress, retry]
+    finally:
+        await engine.dispose()
+
+
 async def _seed_current_inbound(db, intent, result, *, evidence_id=31):  # type: ignore[no-untyped-def]
     data = (
         {"result": "RACK_FACE_DONE"}
@@ -1394,7 +1557,11 @@ async def test_scan2_membership_preserves_entered_bin_after_source_cancellation(
 @pytest.mark.asyncio
 async def test_rack_return_dependency_checks_unpublished_response_before_transport() -> None:
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
-    db = SimpleNamespace(scalar=AsyncMock(return_value=19))
+    started_at = datetime(2026, 10, 13, 13, 53)
+    db = SimpleNamespace(
+        scalar=AsyncMock(return_value=19),
+        scalars=AsyncMock(return_value=[SimpleNamespace(created_at=started_at)]),
+    )
     assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
     from sqlalchemy.dialects import postgresql
 
@@ -1406,12 +1573,16 @@ async def test_rack_return_dependency_checks_unpublished_response_before_transpo
     assert "published_at IS NULL" in sql
     assert "DISPATCHING" in sql
     assert "rack_face" not in sql
+    assert "wms_confirmations.created_at >= '2026-10-13 13:53:00'" in sql
 
 
 @pytest.mark.asyncio
 async def test_rack_return_dependency_checks_all_faces_without_closed_history_fence() -> None:
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
-    db = SimpleNamespace(scalar=AsyncMock(side_effect=[None, 253, None, None]))
+    db = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[None, 253, None, None]),
+        scalars=AsyncMock(return_value=[SimpleNamespace(created_at=datetime(2026, 10, 13, 13, 53))]),
+    )
     assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
     assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510004")
     from sqlalchemy.dialects import postgresql
@@ -1423,7 +1594,7 @@ async def test_rack_return_dependency_checks_all_faces_without_closed_history_fe
     )
     assert "'ACCEPTED'" in sql
     assert "'510004'" in sql
-    assert "created_at" not in sql.split("WHERE", 1)[1]
+    assert "transport_tasks.created_at >= '2026-10-13 13:53:00'" in sql
     assert "target_json ->> 'rack_face') =" not in sql
 
 
@@ -1436,6 +1607,18 @@ async def test_mock_bad_case_a087_a000002668_preserves_original_return_dependenc
             task = TransportTask.model_validate(case["transport"])
             member = TransportMember.model_validate(case["member"])
             db.add_all([task, member])
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=348950323769920,
+                    correlation_id="current-rack-window",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    resource_fence_id="510004",
+                    client_request_id="rack-arrival",
+                    source_evidence_id=31,
+                    window_target_location_code="KT16",
+                    created_at=task.created_at - timedelta(seconds=1),
+                )
+            )
             await db.flush()
             repo = import_module("manual_picking.application.batch_repository").BatchRepository()
             frozen = (
@@ -1450,9 +1633,8 @@ async def test_mock_bad_case_a087_a000002668_preserves_original_return_dependenc
                 assert await repo.has_unclosed_return_dependency_for_rack(
                     db, workline_id=348950323769920, rack_id="510004"
                 )
-                assert not await repo.has_unclosed_return_dependency_for_rack(
-                    db, workline_id=348950323769920, rack_id="OTHER"
-                )
+                with pytest.raises(ValueError, match="exactly one active inbound window"):
+                    await repo.has_unclosed_return_dependency_for_rack(db, workline_id=348950323769920, rack_id="OTHER")
             assert (
                 task.transport_task_id,
                 task.client_request_id,
@@ -1478,6 +1660,146 @@ async def test_mock_bad_case_a087_a000002668_preserves_original_return_dependenc
             )
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,final_known,final_matches,published,blocked",
+    [
+        ("PENDING", False, False, 0, True),
+        ("ACCEPTED", False, False, 0, True),
+        ("RECONCILING", False, False, 0, True),
+        ("FAILED", False, False, 1, True),
+        ("FAILED", True, False, 1, False),
+        ("SUCCEEDED", True, False, 1, True),
+        ("SUCCEEDED", True, True, 0, True),
+        ("SUCCEEDED", True, True, 1, False),
+    ],
+)
+async def test_rack_departure_ignores_old_failed_return_but_preserves_current_round_dependency(
+    status, final_known, final_matches, published, blocked
+):
+    engine, sessions = await _new_sessions()
+    started_at = datetime(2026, 10, 13, 13, 53)
+    target = {"kind": "RACK_BIN_SLOT", "rack_id": "510002", "rack_face": "270", "slot_id": "S1"}
+    try:
+        async with sessions.begin() as db:
+            window = TransportDecisionBinding(
+                workline_id=7,
+                correlation_id="current-window",
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id="510002",
+                client_request_id="current-arrival",
+                source_evidence_id=31,
+                window_target_location_code="KT16",
+                created_at=started_at,
+            )
+            db.add(window)
+            tasks = []
+            members = []
+            for identity, created_at in (
+                ("old", datetime(2026, 9, 25)),
+                ("current", started_at + timedelta(seconds=1)),
+            ):
+                old = identity == "old"
+                task = TransportTask(
+                    transport_task_id=identity,
+                    client_request_id=identity,
+                    request_digest="a" * 64,
+                    kind="BIN_MOVE",
+                    caller_json={"workline_id": "7"},
+                    authority_workline_id=7,
+                    request_json={},
+                    submit_operation_id=identity,
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="FAILED" if old else status,
+                    reason_code="OPERATOR_CONFIRMED_CANCELLED" if old else None,
+                    outcome_version=1,
+                    published_outcome_version=1 if old else published,
+                    created_at=created_at,
+                    updated_at=started_at + timedelta(minutes=1),
+                )
+                position = None if old or not final_known else {**target, "slot_id": "S1" if final_matches else "OTHER"}
+                member = TransportMember(
+                    transport_task_id=identity,
+                    ordinal=1,
+                    object_type="BIN",
+                    object_id=identity,
+                    source_json={"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+                    target_json=target.copy(),
+                    status=task.status,
+                    final_position_json=position,
+                    position_unknown=position is None,
+                    updated_at=created_at,
+                )
+                tasks.append(task)
+                members.append(member)
+                db.add_all([task, member])
+            await db.flush()
+            repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+            assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002") is blocked
+            # 换面不新建窗口；其他面的本轮在途回架仍然属于整架依赖。
+            assert window.created_at == started_at
+            assert tasks[0].status == "FAILED" and tasks[0].reason_code == "OPERATOR_CONFIRMED_CANCELLED"
+            assert members[0].final_position_json is None and members[0].position_unknown
+            assert len((await db.scalars(select(TransportTask))).all()) == 2
+            tasks[1].authority_workline_id = 8
+            await db.flush()
+            assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["outbound.bin.return_batch@v1", "outbound.bin.inbound_batch@v1"])
+async def test_rack_departure_filters_old_confirmation_but_keeps_current_pending_delivery(operation):
+    engine, sessions = await _new_sessions()
+    started_at = datetime(2026, 10, 13, 13, 53)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=7,
+                    correlation_id="current-window",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    resource_fence_id="510002",
+                    client_request_id="current-arrival",
+                    source_evidence_id=31,
+                    window_target_location_code="KT16",
+                    created_at=started_at,
+                )
+            )
+            confirmation = WmsConfirmation(
+                operation=operation,
+                operation_id="return-delivery",
+                workline_id=7,
+                request_digest="a" * 64,
+                request_payload={"data": {"rack_id": "510002", "rack_face": "270"}},
+                deadline_at=started_at + timedelta(hours=1),
+                status="PENDING",
+                created_at=started_at - timedelta(days=1),
+            )
+            db.add(confirmation)
+            await db.flush()
+            repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+            assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
+            confirmation.created_at = started_at
+            await db.flush()
+            assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("windows", [[], [SimpleNamespace(created_at=datetime(2026, 10, 13))] * 2])
+async def test_rack_departure_requires_unique_current_window(windows):
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    db = SimpleNamespace(scalars=AsyncMock(return_value=windows), scalar=AsyncMock())
+    with pytest.raises(ValueError, match="exactly one active inbound window"):
+        await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
+    db.scalar.assert_not_awaited()
 
 
 @pytest.mark.asyncio

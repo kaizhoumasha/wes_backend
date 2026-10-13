@@ -375,7 +375,7 @@ class RackDepartureIntent:
     task_id: str | None
     rack_id: str
     current_location: TransportRackPosition
-    current_face: str
+    current_face: str | None
 
     def __post_init__(self) -> None:
         from .decisions import TransportRackPosition
@@ -392,7 +392,8 @@ class RackDepartureIntent:
             raise TypeError("departure requires TransportRackPosition")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", self.current_location.location_code) is None:
             raise ValueError("current_location must use a business identifier")
-        validate_opaque_face(self.current_face, "current_face")
+        if self.current_face is not None:
+            validate_opaque_face(self.current_face, "current_face")
 
 
 @dataclass(frozen=True, slots=True)

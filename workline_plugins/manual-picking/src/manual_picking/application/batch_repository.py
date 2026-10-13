@@ -19,10 +19,12 @@ from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
     InboundEvidenceKind,
+    PositionProjection,
     TransportDecisionBinding,
     WmsConfirmation,
     WmsConfirmationStatus,
 )
+from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.transport.models import TransportEvidence, TransportMember, TransportTask
 from src.app.wms_adapter.outbound_picking.inbound_batch_typed import decode_outcome as decode_inbound
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
@@ -57,6 +59,64 @@ class InboundFaceProgress:
 class BatchRepository:
     def __init__(self, history: BinBatchResultReader | None = None) -> None:
         self._history = history or BinBatchResultReader()
+
+    async def cancelled_source_windows(
+        self, db: AsyncSession, *, workline_id: int, target_location_code: str
+    ) -> list[tuple[TransportDecisionBinding, TransportTask, PositionProjection]]:
+        """未释放窗口是清退扫描的 owner；只读本轮事实，不依赖父任务仍在执行。"""
+        windows = await transport_decision_binding_repository.list_active_window_for_target(
+            db, workline_id=workline_id, target_location_code=target_location_code
+        )
+        contexts = []
+        binding = cast("Any", TransportDecisionBinding).__table__.c
+        task = cast("Any", TransportTask).__table__.c
+        source = cast("Any", PickingTaskBinSourceRack).__table__.c
+        projection = cast("Any", PositionProjection).__table__.c
+        for window in windows:
+            if window.step != "PICKING_TASK_BIN_SOURCE_RACK_IN":
+                continue
+            cancelled = list(
+                await db.scalars(
+                    select(source.cancelled_evidence_id).where(
+                        source.picking_task_id == window.picking_task_id,
+                        source.rack_id == window.resource_fence_id,
+                    )
+                )
+            )
+            if not cancelled or any(value is None for value in cancelled):
+                continue
+            latest = (
+                await db.execute(
+                    select(TransportDecisionBinding, TransportTask)
+                    .join(TransportTask, task.client_request_id == binding.client_request_id)
+                    .where(
+                        binding.resource_fence_id == window.resource_fence_id,
+                        binding.causal_token >= window.causal_token,
+                        task.kind.in_(("RACK_MOVE", "RACK_ROTATE")),
+                    )
+                    .order_by(binding.causal_token.desc())
+                    .limit(1)
+                )
+            ).one_or_none()
+            if latest is None or latest[0].workline_id != workline_id:
+                continue
+            if window.window_departure_client_request_id is not None and latest[1].status != "REJECTED":
+                continue
+            position = await db.scalar(
+                select(PositionProjection).where(
+                    projection.workline_id == workline_id,
+                    projection.object_type == "RACK",
+                    projection.object_id == window.resource_fence_id,
+                    projection.position_unknown.is_(False),
+                    projection.position_json["kind"].as_string() == "RACK_POSITION",
+                    projection.position_json["location_code"].as_string() == target_location_code,
+                    projection.source_causal_token >= window.causal_token,
+                    projection.source_causal_token <= latest[0].causal_token,
+                )
+            )
+            if position is not None:
+                contexts.append((window, latest[1], position))
+        return contexts
 
     async def record_scan2(self, db: AsyncSession, *, workline_id: int, picking_task_id: int, bin_code: str) -> bool:
         """来源取消停止新投箱；原批次已入线成员继续交由 WMS 判断需求。"""
@@ -479,7 +539,13 @@ class BatchRepository:
     async def has_unclosed_return_dependency_for_rack(
         self, db: AsyncSession, *, workline_id: int, rack_id: str
     ) -> bool:
-        """换面和离场影响整架；回架依赖不能按当前面或旋转时间截断。"""
+        """换面和离场只检查当前进场窗口；同一轮所有面的回架依赖保持有效。"""
+        windows = await transport_decision_binding_repository.list_active_window_for_rack(
+            db, workline_id=workline_id, rack_id=rack_id
+        )
+        if len(windows) != 1:
+            raise ValueError("rack motion requires exactly one active inbound window")
+        round_started_at = windows[0].created_at
         confirmations = cast("Any", WmsConfirmation).__table__.c
         evidences = cast("Any", InboundEvidence).__table__.c
         pending = await db.scalar(
@@ -487,8 +553,9 @@ class BatchRepository:
             .outerjoin(InboundEvidence, evidences.id == confirmations.response_evidence_id)
             .where(
                 confirmations.workline_id == workline_id,
-                confirmations.operation == BIN_RETURN_BATCH_OPERATION,
+                confirmations.operation.in_(_BATCH_OPERATIONS),
                 confirmations.request_payload["data"]["rack_id"].as_string() == rack_id,
+                confirmations.created_at >= round_started_at,
                 or_(
                     confirmations.status.in_(
                         (
@@ -509,7 +576,7 @@ class BatchRepository:
         if pending is not None:
             return True
         return await self.has_unclosed_return_transport_for_face(
-            db, workline_id=workline_id, rack_id=rack_id, rack_face=None
+            db, workline_id=workline_id, rack_id=rack_id, rack_face=None, round_started_at=round_started_at
         )
 
     async def has_unclosed_return_transport_for_face(
@@ -519,6 +586,7 @@ class BatchRepository:
         workline_id: int,
         rack_id: str,
         rack_face: str | None,
+        round_started_at: datetime | None = None,
     ) -> bool:
         """本面回架 BIN_MOVE 的终态、最终位置和结果未闭合时，禁止下一轮分配。"""
         transports = cast("Any", TransportTask).__table__.c
@@ -546,6 +614,7 @@ class BatchRepository:
                 members.c.object_type == "BIN",
                 members.c.target_json["rack_id"].as_string() == rack_id,
                 (members.c.target_json["rack_face"].as_string() == rack_face) if rack_face is not None else True,
+                (transports.created_at >= round_started_at) if round_started_at is not None else True,
                 or_(
                     transports.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
                     and_(

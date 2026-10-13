@@ -131,7 +131,6 @@ def setup_service(
         get_by_task_id_for_update=AsyncMock(return_value=task),
     )
     plans = SimpleNamespace(
-        has_return_rack_completion=AsyncMock(return_value=False),
         prepare_context=AsyncMock(
             return_value=(
                 [confirmation],
@@ -832,15 +831,26 @@ def test_all_persisted_face_columns_are_varchar_ten():
         assert model.__table__.c[name].type.length == 10
 
 
-async def test_completed_return_rack_rejects_later_direct_pick_members():
-    service, _, _, _ = setup_service()
-    service._plans.has_return_rack_completion.return_value = True
+async def test_completed_return_rack_accepts_later_revision_members():
+    service, task, evidence, _ = setup_service(status=Status.RECONCILING)
+    task.status = "EXECUTING"
+    task.last_applied_plan_revision = 3
+    task.plan_blocked_evidence_id = evidence.id
     incoming = event(
+        revision=4,
         added_direct_picks=[
             {"source_locator": {"type": "RACK_SLOT", "rack_id": "CLOSED-RACK", "rack_face": "90", "slot_id": "S1"}}
-        ]
+        ],
+    )
+    evidence.normalized_payload = incoming.model_dump(mode="json", exclude_none=True)
+    evidence.operation = OP
+    response = service._plans.get_evidence.return_value
+    service._plans.get_evidence.side_effect = lambda _db, evidence_id: (
+        evidence if evidence_id == evidence.id else response
     )
     result = await service.record(incoming, received_at=NOW)
-    assert result.code == "CONFLICT"
-    assert result.reason_code == "REFERENCE_CONFLICT"
-    service._plans.add_members.assert_not_awaited()
+    assert result.code == "RECEIVED"
+    assert result.reason_code is None
+    assert task.last_applied_plan_revision == 4
+    assert task.plan_blocked_evidence_id is None
+    service._plans.add_members.assert_awaited_once_with(ANY, task.id, incoming.data, evidence.id)

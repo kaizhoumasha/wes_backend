@@ -21,16 +21,10 @@ class ManualPickingReturnRackTaskCompletion:
         if task.last_applied_plan_revision < fact.through_plan_revision:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
         existing = await self._completions.get(db, task.id, fact.rack_id)
-        if existing is not None:
-            if (
-                existing.operation_id != fact.operation_id
-                or existing.through_plan_revision != fact.through_plan_revision
-                or existing.completed_at_ms != fact.completed_at_ms
-            ):
-                return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
+        if existing is not None and existing.through_plan_revision >= fact.through_plan_revision:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.APPLIED, digest)
         members = await self._completions.members(db, task.id, fact.rack_id)
-        if not members or any(revision > fact.through_plan_revision for revision in members):
+        if not any(revision <= fact.through_plan_revision for revision in members):
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
         await self._completions.add(db, fact)
         return BusinessEvidenceApplication(BusinessEvidenceDisposition.APPLIED, digest)

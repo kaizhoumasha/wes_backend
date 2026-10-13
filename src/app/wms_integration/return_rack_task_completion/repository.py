@@ -2,7 +2,6 @@
 
 from sqlalchemy import select
 
-from src.app.execution.models import InboundEvidence
 from src.app.wms_integration.outbound_picking.models.plan_members import DirectPickExecution
 
 from .models import ReturnRackTaskCompletion
@@ -30,48 +29,23 @@ class ReturnRackTaskCompletionRepository:
         )
 
     async def add(self, db, fact):
-        db.add(
-            ReturnRackTaskCompletion(
-                picking_task_id=fact.picking_task_id,
-                rack_id=fact.rack_id,
-                operation_id=fact.operation_id,
-                through_plan_revision=fact.through_plan_revision,
-                completed_at_ms=fact.completed_at_ms,
-                source_evidence_id=fact.evidence_id,
+        # 调用方持有 PickingTask 锁；截止版本只前进，迟到旧通知不覆盖新完成事实。
+        existing = await self.get(db, fact.picking_task_id, fact.rack_id)
+        if existing is None:
+            db.add(
+                ReturnRackTaskCompletion(
+                    picking_task_id=fact.picking_task_id,
+                    rack_id=fact.rack_id,
+                    operation_id=fact.operation_id,
+                    through_plan_revision=fact.through_plan_revision,
+                    completed_at_ms=fact.completed_at_ms,
+                    source_evidence_id=fact.evidence_id,
+                )
             )
-        )
+        elif existing.through_plan_revision < fact.through_plan_revision:
+            existing.through_plan_revision = fact.through_plan_revision
+            existing.operation_id = fact.operation_id
+            existing.completed_at_ms = fact.completed_at_ms
+            existing.source_evidence_id = fact.evidence_id
+            existing.increment_version()
         await db.flush()
-
-    async def has_completed_racks(self, db, picking_task_id, rack_ids, plan_revision):
-        if not rack_ids:
-            return False
-        applied = (
-            await db.scalar(
-                select(ReturnRackTaskCompletion.id)
-                .where(
-                    ReturnRackTaskCompletion.picking_task_id == picking_task_id,
-                    ReturnRackTaskCompletion.rack_id.in_(rack_ids),
-                )
-                .limit(1)
-            )
-        ) is not None
-
-        if applied:
-            return True
-        # 未发布接收事实是当前可靠义务；已发布历史由独立当前完成事实承接。
-        columns = InboundEvidence.__table__.c
-        return (
-            await db.scalar(
-                select(columns.id)
-                .where(
-                    columns.picking_task_id == picking_task_id,
-                    columns.operation == "outbound.return_rack.task_completed@v1",
-                    columns.kind == "WMS_EVENT",
-                    columns.apply_status.in_(("PENDING", "APPLIED")),
-                    columns.published_at.is_(None),
-                    columns.normalized_payload["data"]["rack_id"].as_string().in_(rack_ids),
-                    columns.normalized_payload["data"]["through_plan_revision"].as_integer() < plan_revision,
-                )
-                .limit(1)
-            )
-        ) is not None

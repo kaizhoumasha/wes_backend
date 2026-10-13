@@ -483,7 +483,11 @@ Evidence/Confirmation。
 `outbound.rack.departure_decide@v1` 的发起条件和换面（`RACK_ROTATE`）判断复用；换面还是彻底退场仍由 WES 按出库合同
 §9.2.1/§9.4 既有逻辑自主决定，本 operation 不参与、不影响该决定本身。
 
-整架 `outbound.return_rack.task_completed@v1` 按[出库合同 §6.2](wms-outbound-picking-task-integration-requirements.md#62-退料货架整架任务完成)独立作为权威业务完成事实，覆盖同任务、同架且不超过截止版本的直接取料成员，不等待逐面通知，也不补造逐面结果。后续换面、离场和任务完成判断接受该覆盖事实；回箱及其他物理执行依赖保持原合同约束。
+整架 `outbound.return_rack.task_completed@v1` 按[出库合同 §6.2](wms-outbound-picking-task-integration-requirements.md#62-退料货架整架任务完成)独立作为权威业务完成事实，覆盖同任务、同架且不超过截止版本的直接取料成员，不等待逐面通知，也不补造逐面结果。同任务后续 revision 可以再次向同架追加成员；旧整架完成只闭合其覆盖的版本，旧通知重放不闭合新成员或回退已推进的完成范围。后续换面、离场和任务完成判断按成员版本接受该覆盖事实；回箱及其他物理执行依赖保持原合同约束。
+
+来源架、直接取料架和 drain 架的换面与离场，只检查唯一未释放进场窗口内与本架直接关联的回架依赖。窗口创建时间是本轮范围起点，换面不重置；本轮其他面仍在途、终位未知或结果未发布时继续等待。旧轮次的 Transport 和 Evidence 保留，不以其失败或未知终位阻止本轮独立执行；依赖判定不撤销已有可靠交付义务。详见出库合同 §9.4。
+
+来源成员取消与 Transport 终态不要求到达顺序；取消通知晚到 3～180 秒不能成为推定取消的定时器。当前未释放进场窗口由 manual-picking 持久工作线扫描承接：本轮来源成员均已取消、最新货架动作及直接依赖已闭合、权威位置仍在目标点时请求离场决定。父任务完成不撤销该 Next Owner；当前重试仍在途时保留身份等待结果。取消结果没有面向时 departure 决定显式提供 `current_face=null`，不补造计划面，WMS 必须支持该分支；收到离场接纳后才释放窗口。详见出库合同 §7.3/§9.4。
 
 ### 5\.6 `workline.return_buffer.drain_rack_decide@v1`（复用） {#56-worklinereturn_bufferdrain_rack_decidev1}
 

@@ -26,7 +26,7 @@ from tests.support.postgresql_heavy import migrated_database
 
 
 @pytest.mark.asyncio
-async def test_durable_receipt_duplicate_drift_pending_promise_and_current_completion(monkeypatch):
+async def test_durable_receipt_duplicate_drift_pending_plan_and_current_completion(monkeypatch):
     async with migrated_database() as (_, sessions):
         payload = {
             "operation": "outbound.return_rack.task_completed@v1",
@@ -143,9 +143,7 @@ async def test_durable_receipt_duplicate_drift_pending_promise_and_current_compl
             assert evidence.decision_next_attempt_at is not None
             fact = ReturnRackTaskCompletedReader().read(evidence)
             repo = ReturnRackTaskCompletionRepository()
-            assert await repo.has_completed_racks(db, task.id, ("R1",), 3)
-            assert not await repo.has_completed_racks(db, task.id, ("R1",), 2)
-            assert not await repo.has_completed_racks(db, task.id, ("OTHER",), 3)
+            assert await repo.get(db, task.id, "R1") is None
             assert await repo.members(db, task.id, "R1") == (1,)
             task_in_db = await db.get(PickingTask, task.id)
             task_in_db.last_applied_plan_revision = 2
@@ -178,4 +176,9 @@ async def test_durable_receipt_duplicate_drift_pending_promise_and_current_compl
             )
             await db.delete(evidence)
             await db.flush()
-            assert await repo.has_completed_racks(db, task.id, ("R1",), 3)
+            assert await plans.is_direct_pick_face_business_closed(
+                db, picking_task_id=task.id, plan_revision=1, rack_id="R1", rack_face="90"
+            )
+            assert not await plans.is_direct_pick_face_business_closed(
+                db, picking_task_id=task.id, plan_revision=3, rack_id="R1", rack_face="90"
+            )

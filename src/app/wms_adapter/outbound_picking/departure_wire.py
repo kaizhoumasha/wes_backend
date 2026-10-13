@@ -19,7 +19,7 @@ class RackDepartureData(StrictWireModel):
     task_id: Identifier | None
     rack_id: Identifier
     current_location: RackPosition
-    current_face: RackFaceText
+    current_face: RackFaceText | None
 
 
 class RackDepartureRequest(StrictWireModel):

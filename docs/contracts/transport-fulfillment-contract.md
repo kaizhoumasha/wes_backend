@@ -549,6 +549,8 @@ arrival_face?
   与是否指定 `target_face` 无关；非空实际面向原样保存。
 - `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或非空到达面；到达面 `null`、空字符串统一视为未提供。
 - `CANCELLED` 必须携带权威 `RACK_POSITION final_position`，不得携带 `position_unknown`、`failure_code` 或 `arrival_face`。WES 以该终位判断进场货架是否仍在目标点；目标外的终位释放进场窗口，并由插件按当前业务依据重新申请搬运。
+
+成员取消与 Transport 取消终态允许任意到达顺序，WMS 的成员取消通知可能晚到 3～180 秒。该延迟不授权 WES 推定需求撤销。manual-picking 用持久工作线扫描重新求值当前未释放进场窗口：原需求仍有效时按既有规则重试；当前来源成员均已取消、最新货架动作及直接依赖已闭合且终位仍在目标点时，按出库合同 §9.4 请求清退。`CANCELLED` 只证明终位，不证明成功到位或面向；清退 departure 的未知面向显式为 `null`，不猜测目标面。已接纳重试必须先取得自身终态，旧取消终位不得覆盖当前动作。
 - 货架结果不使用只有一个成员的 `results[]`。
 
 已接纳的离场 Transport 若返回 `FAILED`，且权威终位仍在目标点，当前 `FAILED` DTO 允许省略 `arrival_face`。以下请求可以被可靠接收，但只确认失败终位，不能证明当前工作面，也不能据此创建新的离场 Transport：

@@ -34,6 +34,25 @@ def request(task_id="TASK-1"):
     }
 
 
+def test_cancelled_source_clearance_keeps_unknown_face_explicit() -> None:
+    from src.app.wms_adapter.outbound_picking.departure_typed import encode_request
+    from src.app.wms_adapter.outbound_picking.departure_wire import parse_rack_departure_request
+
+    intent = wms_operations.outbound_rack_departure_decide(
+        operation_id=OPERATION_ID,
+        task_id=None,
+        rack_id="510021",
+        current_location=sdk.TransportRackPosition("KT16"),
+        current_face=None,
+    )
+    body = encode_request(intent, timestamp=0)
+    assert body["data"]["current_face"] is None
+    assert parse_rack_departure_request(body).data.current_face is None
+    del body["data"]["current_face"]
+    with pytest.raises(ValueError):
+        parse_rack_departure_request(body)
+
+
 def response(data, code="DECIDED"):
     return {"operation_id": OPERATION_ID, "code": code, "timestamp": 0, "data": data}
 
