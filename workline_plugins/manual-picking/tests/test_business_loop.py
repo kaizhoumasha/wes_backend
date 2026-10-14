@@ -4,13 +4,20 @@ import json
 import os
 import signal
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import timedelta
 
 import pytest
 from manual_picking.application.batch_driver import SOURCE_RACK_OUT_STEP
+from manual_picking.application.batch_progress_model import ManualPickingInboundBatch
 from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.application.drain_execution_model import ManualPickingDrainExecution, ManualPickingDrainReturnMember
-from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DrainRepository
+from manual_picking.application.drain_repository import (
+    DRAIN_RACK_IN_STEP,
+    DRAIN_RACK_OUT_STEP,
+    RETIRED_DRAIN_RACK_OUT_STEP,
+    DrainRepository,
+)
 from manual_picking.application.passage_model import ManualPickingPassage
 from rack_cycle_support import BusinessServer, locked_line, rack_database, runtime_for, seed_line, seed_task
 from sqlalchemy import select
@@ -25,6 +32,7 @@ from src.app.wms_integration.outbound_picking.composition import build_outbound_
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.models.plan_members import PickingTaskBinSourceRack
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareCoordinator
+from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_broker import TransportBrokerWorker, close_transport_test_resources
@@ -52,6 +60,63 @@ async def test_scan2_deferred_evidence_is_reclaimed_after_old_command_closes(rac
     async with sessions.begin() as db:
         line, task = await seed_line(db, bins=0)
         task.status = PickingTaskStatus.EXECUTING
+        # 本例验证设备等待；SCAN2 的当前有效批次准入仍须成立。
+        operation_id = new_uuid7()
+        batch_evidence = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=f"outbound.bin.inbound_batch@v1:{operation_id}",
+            operation="outbound.bin.inbound_batch@v1",
+            operation_id=operation_id,
+            workline_id=line.id,
+            payload_digest="a" * 64,
+            normalized_payload={
+                "operation_id": operation_id,
+                "code": "DECIDED",
+                "timestamp": 1,
+                "data": {
+                    "result": "READY",
+                    "bins": [
+                        {
+                            "bin_code": "A000000001",
+                            "source_locator": {
+                                "type": "RACK_BIN_SLOT",
+                                "rack_id": "R1",
+                                "rack_face": "90",
+                                "slot_id": "S1",
+                            },
+                        }
+                    ],
+                },
+            },
+            received_at=now,
+            processed_at=now,
+            published_at=now,
+            decision_digest="b" * 64,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        db.add(batch_evidence)
+        await db.flush()
+        db.add_all(
+            [
+                PickingTaskBinSourceRack(
+                    picking_task_id=task.id,
+                    plan_revision=1,
+                    rack_id="R1",
+                    rack_face="90",
+                    source_evidence_id=task.issued_evidence_id,
+                ),
+                ManualPickingInboundBatch(
+                    workline_id=line.id,
+                    picking_task_id=task.id,
+                    task_id=task.task_id,
+                    operation_id=operation_id,
+                    plan_revision=1,
+                    rack_id="R1",
+                    rack_face="90",
+                    response_evidence_id=batch_evidence.id,
+                ),
+            ]
+        )
         line.device_contracts = {
             line.config["device_bindings"]["SCAN2"]: {
                 "device_id": 1,
@@ -1250,8 +1315,12 @@ async def test_restart_and_missing_wakeup_preserve_retired_state_and_obligations
             ).all()
             if pending_result:
                 new_bindings = [row for row in bindings if row.client_request_id not in original_clients]
-                assert len(new_bindings) == 1 and new_bindings[0].step == "MANUAL_PICKING_RETURN_BATCH"
-                binding = new_bindings[0]
+                returning = [row for row in new_bindings if row.step == "MANUAL_PICKING_RETURN_BATCH"]
+                departing = [row for row in new_bindings if row.step == DRAIN_RACK_OUT_STEP]
+                assert len(new_bindings) == 2 and len(returning) == len(departing) == 1
+                assert departing[0].resource_fence_id == original.request_json["rack_id"]
+                assert departing[0].source_evidence_id == execution.decision_evidence_id
+                binding = returning[0]
                 assert binding.source_evidence_id == response.id and binding.resource_fence_id == saved.operation_id
                 submitted = await db.scalar(
                     select(TransportTask).where(TransportTask.client_request_id == binding.client_request_id)
@@ -1272,8 +1341,34 @@ async def test_restart_and_missing_wakeup_preserve_retired_state_and_obligations
                     else:
                         assert row.return_state == "READY" and row.return_batch_evidence_id is None
             else:
-                assert len(bindings) == len(original_clients)
+                # 退役业务不能重开；权威仍在位的两架由独立清退 owner 承接。
+                clearance = [row for row in bindings if row.client_request_id not in original_clients]
+                assert len(clearance) == len(originals)
+                assert {row.step for row in clearance} == {RETIRED_DRAIN_RACK_OUT_STEP}
+                assert {row.resource_fence_id for row in clearance} == {
+                    row.request_json["rack_id"] for row in originals
+                }
+                assert all(row.source_evidence_id == execution.decision_evidence_id for row in clearance)
+                assert all(row.correlation_id.startswith("departure:") for row in clearance)
+                departing = clearance
                 assert all(row.return_state == "READY" and row.return_batch_evidence_id is None for row in returns)
+            for binding in departing:
+                assert binding.picking_task_id is None
+                decided = await RackDepartureResultReader().by_operation_id(
+                    db,
+                    workline_id=line.id,
+                    operation_id=binding.correlation_id.removeprefix("departure:"),
+                    rack_id=binding.resource_fence_id,
+                )
+                clearing = await db.scalar(
+                    select(TransportTask).where(
+                        TransportTask.client_request_id == binding.client_request_id,
+                    )
+                )
+                assert clearing.kind == "RACK_MOVE"
+                assert clearing.request_json["rcs_template_id"] == "CTU03"
+                assert clearing.request_json["rack_id"] == binding.resource_fence_id
+                assert clearing.request_json["target"] == asdict(decided.outcome.result.rack_destination)
             assert len((await db.scalars(select(ManualPickingDrainReturnMember))).all()) == 2
             evidence = (
                 await db.scalars(

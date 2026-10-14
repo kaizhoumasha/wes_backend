@@ -83,7 +83,7 @@ flowchart TD
 | 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
 | 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `plan_revision=1, rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
-| 4A-2 | WES/RCS/ECS | `feed_complete` 后立即换面或换架（与 5A～12A-1 解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
+| 4A-2 | WES/RCS/ECS | `feed_complete` 后，有可派发退箱先按当前实际到位面请求一次，相关义务闭合后换面或换架（与后续 SCAN/业务完成解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2通道 |
 | 6A | 设备 → WES | 点2 SCAN | `A000000001-C` 到达工作位 | 校验本次经过并保存到位事实 |
 | 7A | WES → WMS | `outbound.manual_bin.work_admission_decide@v1` | `task_id=PICK-20260902-001`，`bin_code=A000000001`，`scanned_at=1788389899900` | `WORK_REQUIRED`，`task_id=PICK-20260902-001` |
@@ -100,9 +100,13 @@ flowchart TD
 `workline_positions.capacity` 是基础层按目标点维护的滚动 CTU01 下发窗口，按物理货架的进场生命周期计数。货架到位后仍占窗；业务完成且对应 CTU03 获得 `ACCEPTED` 后释放名额，并从 pending 补发下一架。RCS 负责物理排队、自主进位和工作位互斥；真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认，不按提交先后推断。
 
 CTU03 的执行准入独立于 Return 派发队列：本轮 `departure_decide=READY` 只表示取得业务离场决定。
+所有货架离场/换面前，若当前 FIFO 有可派发退箱，先根据货架实际到达工作位的 rack 和当前 face 请求一次 `return_batch`。候选快照不代表储位预分配，只有该次 WMS READY 才冻结目标槽位并创建 BIN_MOVE；运动前阶段只求值一次，新的候选、重复扫描和重启不重开该阶段；新的实际到位轮次/当前面或同面新的有效投料服务结束才可创建新请求。投料间隙机会式请求不替代最终投料完成后的运动前求值，离场决定已冻结后不再追加回架或投料。普通来源架、直接取料架、转运架和退役 drain 的独立清退使用相同规则；不要求旧排空重开或父任务仍在执行。请求未知、未应用/未发布结果及本轮直接搬运保持依赖，NO_BATCH 后可继续货架动作。全线未分配 FIFO 不参与当前架留架判断，正常 drain 当前面 READY 所选搬运闭合后也应推进下一面或离场。
+直接取料当前成员由 WMS 完成/取消后，可基于本地权威到位事实推进换面和离场，不等待到位报告 ACK；原报告可靠义务继续履约，PickingTask 完成仍等待 `RECORDED | DUPLICATE`。业务完成不解除当前在途、未知或未发布结果的依赖。转运架保留现有完成与到位报告门禁。
 离场请求持久化提交后立即唤醒 WMS confirmation 派发；确定响应提交后立即唤醒现有 PickingTask/Plan driver。
 driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建 CTU03，Transport 提交后由现有唤醒立即派发。
 唤醒不携带业务快照，可重复或丢失；同一确认身份、原离场决定关联及 Transport 幂等防止重复请求和动作。
+来源/退料架离场结果发布按 binding 的冻结 `departure:<operation_id>` 精确恢复原 WorkLine-owned READY，不查询最新决定、不以计划 Evidence 代替离场依据。 既有业务重试沿 `retry:<n>:<原 transport_task_id>` 的冻结父身份逐跳恢复同一 departure 身份，校验同 owner/rack/step/source 引用、递减因果序号与一致目标；缺失、循环或身份漂移拒绝发布。父动作当前状态或发布状态不重新决定已创建子结果的交付资格，当前执行门禁仍由创建流程及 driver 承接。原请求摘要、owner/rack、已应用并已发布的响应 Evidence 和 Transport 冻结目的地须一致；否则保留原结果未发布并报对账错误。新绑定冻结 READY Evidence，既有绑定、原 Transport 与 Evidence 保留。恢复通过现有持久结果扫描按原身份补投递，不重发搬运、不重开旧业务；旧成功结果只收口旧义务，不能覆盖新因果投影或阻塞新轮次独立执行，当前直接依赖仍受保护。
+
 现有 10 秒扫描保持不变，只作为漏通知、worker 异常或重启后的恢复兜底，事务回滚不得发送唤醒。
 来源货架与 drain 货架在创建 CTU03 前，均检查当前进站 Transport 创建以来、本 WorkLine 中以该 rack 为来源或目标的 `BIN_MOVE` 成员。
 仍为 `PENDING`、`ACCEPTED`、`RECONCILING` 且没有确定放置事实的成员暂缓离场；不能把 Return 在 `ACCEPTED` 后退出队列当成放箱完成。
@@ -570,9 +574,13 @@ WMS 内部按 `(workline_code, drain_operation_id)` 保存每线唯一活动容�
 未知物理结果不释放，本次数量全部权威回库后关闭。该内部关联不增加 wire 字段。
 ACTIVE 的确定 `NO_BATCH` 按出库合同 §9.2.3 换面继续，不变成同面轮询；响应未知沿原身份重试并保留原成员依赖。
 
-本地排空生命周期及 T1–T4 以[出库合同 §9.2.3](wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)为准：独立后续任务不受整线 drain reservation 阻塞，正常 drain 不被新任务取消；原 READY、有效后续任务与确定 blocker 同时成立且锁内重验后，execution 才能异常退役。`COMPLETED` 保留符合原 Requirement/目标事实/明确 Action 终态的对象级离场恢复；`EXCEPTION_RETIRED` 不再创建业务后继或业务重试。两种终态不重新成为 current，原可靠义务与匹配迟到事实仍按冻结身份处理。
+本地排空生命周期及 T1–T5 以[出库合同 §9.2.3](wms-outbound-picking-task-integration-requirements.md#923-return-buffer-drain)为准：独立后续任务不受整线 drain reservation 阻塞，正常 drain 不被新任务取消；原 READY、有效后续任务与确定 blocker 同时成立且锁内重验后，execution 才能异常退役。`COMPLETED` 保留符合原 Requirement/目标事实/明确 Action 终态的对象级离场恢复；`EXCEPTION_RETIRED` 不再创建原排空业务后继或业务重试。两种终态不重新成为 current，原可靠义务与匹配迟到事实仍按冻结身份处理。
 
-`return_batch` 从义务创建时同事务冻结原 execution 和 `BinLineReturn.id`；退役后的迟到 READY 只完成原响应消费，不创建 BIN_MOVE。drain 与普通 batch 请求均不能重复申请 ACTIVE/退役的未决原成员，也不能越过同一未闭合 FIFO 队头；同箱码合法新轮次使用新 Return.id。WES 本地退出不证明物理完成、地点 EMPTY 或 WMS reservation 已释放，容量释放仍由 WMS 管理。
+退役 drain 的货架迟到到位后，若当前原因果事实仍属于原进场轮次且仍在原工作位，由独立清退 Next Owner 经现有 `departure_decide(task_id=null)` 和 CTU03 收口。本轮范围使用原进场绑定的创建时间，窗口释放不抹去该范围，也不重开业务窗口；当前在途 RACK、本轮本架直接 BIN/回架义务及结果发布必须闭合。计划成员、未来 revision 和 ACTIVE drain reservation 不单独构成接管；当前在途/未知/未发布的 RACK 动作、当前物理因果事实或不同 owner 的未释放实际进场窗口才构成接管；已发布且不再承接当前事实/窗口的终态历史不构成接管。普通投料、直接取料、正常 drain、取消/退役清退、READY 恢复与业务重试共享该判断，旧清退让路并保留原证据，提交但未 ACK 的新动作仍构成直接依赖。唯一推进 owner 为持久工作线离场扫描，明确失败后也先重新评估再决定去向；不恢复旧旋转/返料、不直接从回调创建清退重试、不依赖通知或超时推定离场。
+
+来源、直接取料及 drain 架只为当前服务临时停靠。已知当前位置而面向为 `null` 时，不新建回架分配；未分配候选留在原 FIFO，直接义务闭合后以 nullable 面向请求清退。直接取料成员取消后的清退由原进场窗口扫描承接，旧 revision 完成事实不阻塞新成员取消收口，也不满足新成员完成。面级批次、换面/离场和失败恢复统一使用原进场轮次，不能以最新旋转/离场时间缩短依赖范围；转运架任务完成门禁保持不变。
+
+`return_batch` 的原 execution / Return 关联用于追溯，候选进入请求不代表已分配储位。退役后的原迟到 READY 只完成原响应消费，不创建旧 drain 后继；已确定分配和在途动作保持原身份。已应用且发布的 NO_BATCH 或 READY 未分配尾部可由当前到位面的新请求使用，旧 drain 不继续占有。普通回架和 drain 的未知请求均防止候选重复分配，不能越过同一未闭合 FIFO 队头；同箱码新 Return 不继承旧请求。WES 本地退出不证明物理完成、地点 EMPTY 或 WMS reservation 已释放，容量释放仍由 WMS 管理。
 
 `503 / UNAVAILABLE`、响应未知或单次收发失败时，WES 使用原 `operation_id`、原时间戳和原 payload 重试；`409 / CONFLICT` 或
 `422 / REJECTED` 进入对账，不换 identity 猜测结果。只有已可靠保存的 `READY` 才允许继续创建货架进场 Transport；HTTP 成功、

@@ -140,6 +140,11 @@ def test_transport_submit_openapi_documents_closed_ack_unions() -> None:
     assert rejected["properties"]["code"]["enum"] == ["REJECTED"]
     assert len(rejected["properties"]["data"]["oneOf"]) == 2
     assert all(branch["additionalProperties"] is False for branch in rejected["properties"]["data"]["oneOf"])
+    assert all(
+        "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf"
+        in branch["properties"]["reason_code"]["enum"]
+        for branch in rejected["properties"]["data"]["oneOf"]
+    )
     assert "content" not in responses["400"]
     assert "content" not in responses["413"]
 

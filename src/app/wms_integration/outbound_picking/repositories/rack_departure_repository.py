@@ -8,10 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models import InboundEvidence, WmsConfirmation
+from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 
 
 class RackDepartureRepository:
+    async def by_operation_id(self, db: AsyncSession, operation_id: str) -> WmsConfirmation | None:
+        return await wms_confirmation_repository.get_by_identity(db, RACK_DEPARTURE_OPERATION, operation_id)
+
     async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> WmsConfirmation | None:
         columns = cast("Any", WmsConfirmation).__table__.c
         return await db.scalar(

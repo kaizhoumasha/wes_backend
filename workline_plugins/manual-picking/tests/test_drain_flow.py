@@ -211,6 +211,22 @@ async def test_untried_face_waits_after_prior_no_batch_when_return_buffer_has_no
 
 
 @pytest.mark.asyncio
+async def test_unpublished_current_face_request_cannot_fall_back_to_exhausted_face():
+    current = decision(sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90", "270")),)))
+    flow, _, _, history = _flow(rows=())
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="pending-270",
+        workline_code="LINE-1",
+        rack_id="R1",
+        rack_face="270",
+        return_candidates=(sdk.BinReturnCandidate(1, "B1", "OUTLET"),),
+    )
+    flow._drain_executions.pending_return_for_rack.return_value = (intent, None, None)
+    assert await flow.active_rack_face(object(), _line(), current, "R1") == ("R1", "270", False)
+    history.latest_return.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_return_history_before_current_drain_does_not_exhaust_reserved_face() -> None:
     ready = sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("R1", ("90",)),))
     current = decision(ready)
@@ -244,7 +260,7 @@ async def test_ready_return_batch_allows_departure_after_passage_is_closed() -> 
     flow, _, _, history = _flow(rows=())
     history.latest_return.return_value = (SimpleNamespace(result=object()), NOW)
 
-    assert await flow.active_rack_face(object(), _line(), decision, "R1") == ("R1", "90", False)
+    assert await flow.active_rack_face(object(), _line(), decision, "R1") == ("R1", "90", True)
 
 
 @pytest.mark.asyncio
@@ -400,6 +416,7 @@ async def test_drain_request_freezes_return_execution_ids():
         eligible_return_prefix=AsyncMock(return_value=rows),
         freeze_return_members_in_session=AsyncMock(),
         latest_return_evidence_for_execution=AsyncMock(return_value=None),
+        pending_return_for_rack=AsyncMock(return_value=None),
     )
     db = object()
     assert await flow.return_in_session(db, _line(), current, "R1", "OUTLET", NOW)
@@ -420,6 +437,7 @@ async def test_active_pending_drain_member_is_not_requested_on_other_face():
         eligible_return_prefix=AsyncMock(return_value=()),
         freeze_return_members_in_session=AsyncMock(),
         latest_return_evidence_for_execution=AsyncMock(return_value=None),
+        pending_return_for_rack=AsyncMock(return_value=None),
     )
     assert not await flow.return_in_session(object(), _line(), current, "R1", "OUTLET", NOW)
     scheduler.create_in_session.assert_not_awaited()

@@ -166,15 +166,16 @@ def build_deployment_runtime(
             batch_reader,
             drain_executions=drain_executions,
         )
+        batch_flow = ManualPickingBatchFlow(
+            batch_repository,
+            returns,
+            batch_scheduler,
+            batch_result,
+            uuid_factory=new_uuid7,
+            drain_executions=drain_executions,
+        )
         batch_driver = ManualPickingBatchDriver(
-            ManualPickingBatchFlow(
-                batch_repository,
-                returns,
-                batch_scheduler,
-                batch_result,
-                uuid_factory=new_uuid7,
-                drain_executions=drain_executions,
-            ),
+            batch_flow,
             plans=PickingTaskPlanDeltaRepository(),
             positions=position_projection_repository,
             transports=TransportRepository(),
@@ -192,6 +193,7 @@ def build_deployment_runtime(
             wms_reader=manual_bin_typed,
             batch_reader=batch_reader,
             batch_result=batch_result,
+            batch_flow=batch_flow,
             drain_executions=drain_executions,
             drain_repository=drains,
             drain_reader=drain_reader,

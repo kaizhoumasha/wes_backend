@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Protocol
 
-from wes_plugin_sdk import ReturnBufferDrainReady
+from wes_plugin_sdk import RackDepartureReady, ReturnBufferDrainReady
 
 from src.app.execution.models.inbound_evidence import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.repositories import inbound_evidence_repository, transport_decision_binding_repository
@@ -14,6 +14,7 @@ from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
 from src.utils.timezone import timezone
 
@@ -22,6 +23,7 @@ from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
     DRAIN_RACK_ROTATE_STEP,
+    RETIRED_DRAIN_RACK_OUT_STEP,
     RETURN_RACK_OUT_STEP,
     RETURN_RACK_ROTATE_STEP,
 )
@@ -64,14 +66,61 @@ class ManualPickingTransportOutcomePublisher:
         evidence_service: InboundEvidenceService | None = None,
         transports: TransportRepository | None = None,
         drain_reader: ReturnBufferDrainResultReader | None = None,
+        departure_reader: RackDepartureResultReader | None = None,
     ) -> None:
         self._bindings = binding_repository
         self._evidences = evidence_repository
         self._evidence_service = evidence_service or InboundEvidenceService()
         self._transports = transports or TransportRepository()
         self._drain_reader = drain_reader or ReturnBufferDrainResultReader()
+        self._departure_reader = departure_reader or RackDepartureResultReader()
 
-    async def publish(self, db: Any, outcome: TransportOutcome) -> bool:
+    async def _departure_operation_id(self, db: Any, binding: Any, task: Any) -> str:
+        current = binding
+        seen: set[str] = set()
+        identity = (
+            binding.workline_id,
+            binding.picking_task_id,
+            binding.resource_fence_id,
+            binding.step,
+            binding.source_evidence_id,
+        )
+        while current.correlation_id.startswith("retry:"):
+            parts = current.correlation_id.split(":", 2)
+            if len(parts) != 3 or not parts[1].isdigit() or int(parts[1]) < 1 or current.client_request_id in seen:
+                raise ValueError("departure retry identity is malformed or cyclic")
+            seen.add(current.client_request_id)
+            parent_task = await self._transports.get_task(db, parts[2])
+            parent = (
+                await self._bindings.get_by_client_request_id(db, parent_task.client_request_id)
+                if parent_task is not None
+                else None
+            )
+            if parent is None or parent_task is None:
+                raise LookupError("departure retry lacks frozen parent")
+            if (
+                (
+                    parent.workline_id,
+                    parent.picking_task_id,
+                    parent.resource_fence_id,
+                    parent.step,
+                    parent.source_evidence_id,
+                )
+                != identity
+                or parent.causal_token >= current.causal_token
+                or parent_task.transport_task_id != parts[2]
+                or parent.client_request_id != parent_task.client_request_id
+                or parent_task.kind != "RACK_MOVE"
+                or parent_task.request_json.get("rack_id") != binding.resource_fence_id
+                or parent_task.request_json.get("target") != task.request_json.get("target")
+            ):
+                raise ValueError("departure retry differs from frozen parent")
+            current = parent
+        if not current.correlation_id.startswith("departure:"):
+            raise ValueError("manual-picking departure lacks frozen operation identity")
+        return current.correlation_id.removeprefix("departure:")
+
+    async def publish(self, db: Any, outcome: TransportOutcome) -> bool:  # noqa: PLR0912
         binding = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
         if binding is None or binding.client_request_id != outcome.client_request_id:
             raise LookupError("manual-picking Transport outcome 缺少原 binding")
@@ -96,14 +145,24 @@ class ManualPickingTransportOutcomePublisher:
                 DRAIN_RACK_IN_STEP,
                 DRAIN_RACK_ROTATE_STEP,
                 DRAIN_RACK_OUT_STEP,
+                RETIRED_DRAIN_RACK_OUT_STEP,
             }
             | batch_operations.keys()
         ):
             raise ValueError("manual-picking Transport binding step 非法")
         if outcome.caller.workline_id != str(binding.workline_id):
             raise ValueError("manual-picking Transport outcome WorkLine 不匹配")
-        source = await self._evidences.get_by_id(db, binding.source_evidence_id)
-        if binding.step in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP}:
+        source = (
+            None
+            if binding.step in {SOURCE_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}
+            else await self._evidences.get_by_id(db, binding.source_evidence_id)
+        )
+        if binding.step in {
+            DRAIN_RACK_IN_STEP,
+            DRAIN_RACK_ROTATE_STEP,
+            DRAIN_RACK_OUT_STEP,
+            RETIRED_DRAIN_RACK_OUT_STEP,
+        }:
             intent, decision = await self._drain_reader.read(db, source, workline_id=binding.workline_id)
             business_identity = _drain_business_identity(binding, intent, decision, outcome)
         elif binding.step in rack_steps:
@@ -115,7 +174,36 @@ class ManualPickingTransportOutcomePublisher:
             if not isinstance(task_id, str) or not task_id:
                 raise ValueError("manual-picking 原计划 Evidence 缺少 PickingTask identity")
             business_identity = {"picking_task_id": task_id, "rack_id": binding.resource_fence_id}
-        elif binding.step in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}:
+        elif binding.step in {SOURCE_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}:
+            task = await self._transports.get_task_by_client_request(db, outcome.client_request_id)
+            if task is None:
+                raise LookupError("manual-picking departure lacks original Transport")
+            operation_id = await self._departure_operation_id(db, binding, task)
+            snapshot = await self._departure_reader.by_operation_id(
+                db,
+                workline_id=binding.workline_id,
+                operation_id=operation_id,
+                rack_id=binding.resource_fence_id,
+            )
+            if (
+                snapshot is None
+                or snapshot.outcome is None
+                or not isinstance(snapshot.outcome.result, RackDepartureReady)
+            ):
+                raise LookupError("manual-picking Transport outcome 缺少原离场 READY")
+            if (
+                task.kind != "RACK_MOVE"
+                or task.transport_task_id != outcome.transport_task_id
+                or task.client_request_id != binding.client_request_id
+                or task.request_json.get("rack_id") != binding.resource_fence_id
+                or task.request_json.get("target") != asdict(snapshot.outcome.result.rack_destination)
+                or any(member.object_id != binding.resource_fence_id for member in outcome.members)
+            ):
+                raise ValueError("manual-picking departure differs from frozen Transport")
+            business_identity = {"rack_id": binding.resource_fence_id}
+            if binding.picking_task_id is not None:
+                business_identity["picking_task_id"] = str(binding.picking_task_id)
+        elif binding.step == TRANSFER_RACK_OUT_STEP:
             if source is None or any(member.object_id != binding.resource_fence_id for member in outcome.members):
                 raise LookupError("manual-picking Transport outcome 缺少原货架离场依据")
             if source.kind != InboundEvidenceKind.WMS_RESULT or source.operation != RACK_DEPARTURE_OPERATION:

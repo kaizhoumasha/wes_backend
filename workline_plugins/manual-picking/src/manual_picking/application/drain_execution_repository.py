@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import and_, or_, select
-from wes_plugin_sdk import BinBatchNoBatch, BinReturnBatchIntent, BinReturnBatchReady, ReturnBufferDrainReady
+from wes_plugin_sdk import (
+    BinBatchNoBatch,
+    BinReturnBatchIntent,
+    BinReturnBatchOutcome,
+    BinReturnBatchReady,
+    ReturnBufferDrainReady,
+)
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -367,10 +373,9 @@ class DrainExecutionRepository:
         ).all()
         blocked = set()
         results = {}
-        for member, status, confirmation, evidence in records:
+        for member, _status, confirmation, evidence in records:
             if (
-                status not in {"ACTIVE", "COMPLETED"}
-                or confirmation.status != WmsConfirmationStatus.COMPLETED
+                confirmation.status != WmsConfirmationStatus.COMPLETED
                 or evidence is None
                 or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
                 or evidence.published_at is None
@@ -386,8 +391,7 @@ class DrainExecutionRepository:
                     raise ValueError("drain return batch frozen members missing")
                 results[confirmation.id] = outcome.result
             result = results[confirmation.id]
-            # Normal completion preserves an applied response's definitely unallocated tail;
-            # retirement and assigned members retain their original dependency.
+            # 候选快照不是储位分配；确定未分配的成员不由 drain 生命周期继续占有。
             if isinstance(result, BinBatchNoBatch) or (
                 isinstance(result, BinReturnBatchReady) and member.sequence_no > len(result.moves)
             ):
@@ -395,8 +399,68 @@ class DrainExecutionRepository:
             blocked.add(member.return_id)
         for index, row in enumerate(rows):
             if row.id in blocked:
+                rows = rows[:index]
+                break
+        if not rows:
+            return ()
+        confirmations = (
+            await db.scalars(
+                select(WmsConfirmation)
+                .outerjoin(InboundEvidence, InboundEvidence.id == WmsConfirmation.response_evidence_id)
+                .where(
+                    WmsConfirmation.workline_id == workline_id,
+                    WmsConfirmation.operation == BIN_RETURN_BATCH_OPERATION,
+                    or_(
+                        WmsConfirmation.status != WmsConfirmationStatus.COMPLETED,
+                        InboundEvidence.published_at.is_(None),
+                    ),
+                )
+            )
+        ).all()
+        for confirmation in confirmations:
+            intent = self._reader.read_return_intent(
+                confirmation, workline_id=workline_id, operation_id=confirmation.operation_id
+            )
+            candidates = {candidate.bin_code for candidate in intent.return_candidates}
+            blocked.update(
+                row.id for row in rows if row.bin_code in candidates and row.created_at <= confirmation.created_at
+            )
+        for index, row in enumerate(rows):
+            if row.id in blocked:
                 return rows[:index]
         return rows
+
+    async def pending_return_for_rack(
+        self, db: AsyncSession, *, execution_id: int, workline_id: int, rack_id: str
+    ) -> tuple[BinReturnBatchIntent, BinReturnBatchOutcome | None, InboundEvidence | None] | None:
+        confirmation_ids = select(ManualPickingDrainReturnMember.return_batch_confirmation_id).where(
+            ManualPickingDrainReturnMember.execution_id == execution_id
+        )
+        record = (
+            await db.execute(
+                select(WmsConfirmation, InboundEvidence)
+                .outerjoin(InboundEvidence, InboundEvidence.id == WmsConfirmation.response_evidence_id)
+                .where(
+                    WmsConfirmation.id.in_(confirmation_ids),
+                    WmsConfirmation.workline_id == workline_id,
+                    WmsConfirmation.operation == BIN_RETURN_BATCH_OPERATION,
+                    WmsConfirmation.request_payload["data"]["rack_id"].as_string() == rack_id,
+                    InboundEvidence.published_at.is_(None),
+                )
+                .order_by(WmsConfirmation.created_at.desc())
+                .limit(1)
+            )
+        ).first()
+        if record is None:
+            return None
+        confirmation, evidence = record
+        intent = self._reader.read_return_intent(
+            confirmation, workline_id=workline_id, operation_id=confirmation.operation_id
+        )
+        outcome = None
+        if confirmation.status == WmsConfirmationStatus.COMPLETED and evidence is not None:
+            _, outcome = await self._reader.read_return(db, evidence, workline_id=workline_id)
+        return intent, outcome, evidence
 
     async def latest_return_evidence_for_execution(
         self, db: AsyncSession, *, execution_id: int, workline_id: int, rack_id: str, rack_face: str

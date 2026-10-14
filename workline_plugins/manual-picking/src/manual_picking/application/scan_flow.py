@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from wes_plugin_sdk import (
+    BinBatchNoBatch,
     BinInboundBatchRackFaceDone,
     ReturnBufferDrainReady,
     ReturnBufferDrainWait,
@@ -63,6 +64,7 @@ from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
     DRAIN_RACK_ROTATE_STEP,
+    RETIRED_DRAIN_RACK_OUT_STEP,
     RETURN_RACK_OUT_STEP,
     RETURN_RACK_ROTATE_STEP,
     SOURCE_RACK_IN_STEP,
@@ -108,6 +110,7 @@ class ManualPickingScanFlow:
         position_service: Any = None,
         batch_reader: Any = None,
         batch_result: Any = None,
+        batch_flow: Any = None,
         drain_executions: Any = None,
         drain_repository: Any = None,
         drain_reader: Any = None,
@@ -141,6 +144,7 @@ class ManualPickingScanFlow:
         )
         self._batch_reader = batch_reader
         self._batch_result = batch_result
+        self._batch_flow = batch_flow
         self._scan1 = Scan1Handler()
         self._scan2 = Scan2Handler()
         self._scan3 = Scan3Handler()
@@ -233,7 +237,7 @@ class ManualPickingScanFlow:
             return None
         positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
         if evidence.operation == BIN_RETURN_BATCH_OPERATION:
-            intent, _ = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
+            intent, outcome = await self._batch_reader.read_return(db, evidence, workline_id=workline.id)
             if intent.workline_code != workline.line_code:
                 return None
             try:
@@ -245,6 +249,16 @@ class ManualPickingScanFlow:
             if execution is not None and execution.status != "ACTIVE":
                 return "DRAIN_RETURN_AFTER_CLOSE"
             source = await self._positions.get(db, "RACK", intent.rack_id)
+            if (
+                not isinstance(outcome.result, BinBatchNoBatch)
+                and not await self._batch_progress.has_return_batch_transport(
+                    db, workline_id=workline.id, operation_id=intent.operation_id
+                )
+                and await self._batch_progress.has_newer_rack_action(
+                    db, rack_id=intent.rack_id, causal_token=getattr(source, "source_causal_token", None)
+                )
+            ):
+                return _WAIT_FOR_RESULT
             if execution is not None:
                 if self._drains is None:
                     return None
@@ -259,13 +273,63 @@ class ManualPickingScanFlow:
                     return None
                 ingress = await self._drains.transport(db, drain, DRAIN_RACK_IN_STEP, intent.rack_id)
                 if (
+                    source is not None
+                    and ingress is not None
+                    and source.source_transport_task_id != ingress.transport_task_id
+                ):
+                    ingress = await self._drains.transport(
+                        db, drain, DRAIN_RACK_ROTATE_STEP, intent.rack_id, intent.rack_face
+                    )
+                if (
                     source is None
                     or ingress is None
                     or not await self._drains.arrival_matches(db, ingress, source, intent.rack_id, intent.rack_face)
                 ):
                     return None
-            elif not await self._source_racks.has_source_face(db, workline.id, intent.rack_id, intent.rack_face):
-                return None
+            else:
+                if isinstance(outcome.result, BinBatchNoBatch):
+                    return await self._batch_result.apply_return_in_session(
+                        db,
+                        evidence,
+                        workline_id=workline.id,
+                        workline_code=workline.line_code,
+                        confirmed_rack_id=intent.rack_id,
+                        confirmed_face=intent.rack_face,
+                        return_location=positions["OUTLET"],
+                    )
+                if source is None or source.position_unknown:
+                    return _WAIT_FOR_RESULT
+                physical = await self._transport_reader.get_task(db, source.source_transport_task_id)
+                arrived_at = await self._batch_progress.current_rack_arrival_at(
+                    db,
+                    workline_id=workline.id,
+                    rack_id=intent.rack_id,
+                    transport_task_id=source.source_transport_task_id,
+                )
+                if (
+                    physical is None
+                    or arrived_at is None
+                    or physical.transport_task_id != source.source_transport_task_id
+                    or physical.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
+                    or source.workline_id != workline.id
+                    or source.position_json.get("kind") != "RACK_POSITION"
+                    or source.position_json.get("location_code")
+                    not in {positions[FIVE_RACK.slot_key], positions.get("RETURN_RACK"), positions.get("TRANSFER_RACK")}
+                    or source.arrival_face != intent.rack_face
+                    or not await self._batch_progress.return_request_in_round(
+                        db, workline_id=workline.id, operation_id=intent.operation_id, arrived_at=arrived_at
+                    )
+                ):
+                    return None
+                return await self._batch_result.apply_return_in_session(
+                    db,
+                    evidence,
+                    workline_id=workline.id,
+                    workline_code=workline.line_code,
+                    confirmed_rack_id=intent.rack_id,
+                    confirmed_face=intent.rack_face,
+                    return_location=positions["OUTLET"],
+                )
             readiness = await self._position_readiness(
                 db, source, workline.id, "RACK_POSITION", positions[FIVE_RACK.slot_key], intent.rack_face
             )
@@ -337,6 +401,7 @@ class ManualPickingScanFlow:
                 DRAIN_RACK_IN_STEP,
                 DRAIN_RACK_ROTATE_STEP,
                 DRAIN_RACK_OUT_STEP,
+                RETIRED_DRAIN_RACK_OUT_STEP,
             }
         ):
             return None
@@ -357,7 +422,11 @@ class ManualPickingScanFlow:
                 "PICKING_TASK_RETURN_RACK_IN",
                 DRAIN_RACK_IN_STEP,
             }
-        ) or (status == "FAILED" and payload.get("reason_code") == "RCS_TASK_CANCELLED"):
+        ) or (
+            status == "FAILED"
+            and payload.get("reason_code") == "RCS_TASK_CANCELLED"
+            and payload["step"] != RETIRED_DRAIN_RACK_OUT_STEP
+        ):
             return await self._retry_terminal_rack(db, evidence, task, workline_id)
         if status == "SUCCEEDED":
             members = payload.get("members")
@@ -384,7 +453,13 @@ class ManualPickingScanFlow:
                 or not matching_position
                 or (
                     payload.get("step")
-                    not in {SOURCE_RACK_OUT_STEP, TRANSFER_RACK_OUT_STEP, DRAIN_RACK_OUT_STEP, RETURN_RACK_OUT_STEP}
+                    not in {
+                        SOURCE_RACK_OUT_STEP,
+                        TRANSFER_RACK_OUT_STEP,
+                        DRAIN_RACK_OUT_STEP,
+                        RETURN_RACK_OUT_STEP,
+                        RETIRED_DRAIN_RACK_OUT_STEP,
+                    }
                     and members[0].get("arrival_face") != task.request_json.get("target_face")
                 )
             ):
@@ -465,7 +540,7 @@ class ManualPickingScanFlow:
             return True
         return source_task.request_json.get("target") == target
 
-    async def _retry_terminal_rack(  # noqa: PLR0911
+    async def _retry_terminal_rack(  # noqa: PLR0911, PLR0912
         self, db: Any, evidence: Any, task: Any, workline_id: int
     ) -> str | int | None:
         payload = evidence.normalized_payload
@@ -508,6 +583,10 @@ class ManualPickingScanFlow:
                 return "IGNORED"
         else:
             return "IGNORED"
+        if await self._batch_progress.has_newer_rack_action(
+            db, rack_id=payload["rack_id"], causal_token=getattr(binding, "causal_token", None)
+        ):
+            return "IGNORED"
         request = task.request_json
         target = request.get("position") if task.kind == "RACK_ROTATE" else request.get("target")
         if (
@@ -523,6 +602,57 @@ class ManualPickingScanFlow:
             return min(1000 * 2 ** min(prior_attempt, 6), 60_000)
         if self._rack_creator is None:
             return None
+        if binding.step not in {
+            "PICKING_TASK_TARGET_RACK_IN",
+            SOURCE_RACK_IN_STEP,
+            "PICKING_TASK_RETURN_RACK_IN",
+            DRAIN_RACK_IN_STEP,
+        }:
+            projection = await self._positions.get(db, "RACK", payload["rack_id"])
+            if projection is None or projection.position_unknown:
+                return None
+            if projection.source_transport_task_id != task.transport_task_id:
+                return "IGNORED"
+            workline = await self._worklines.get_for_authority_update(db, workline_id)
+            if workline is None or self._batch_flow is None:
+                return None
+            if (
+                projection.workline_id != workline_id
+                or projection.position_json.get("kind") != "RACK_POSITION"
+                or projection.position_json.get("location_code")
+                not in {
+                    workline.position_bindings[role]["location_id"]
+                    for role in ("FIVE_RACK", "RETURN_RACK", "TRANSFER_RACK")
+                    if role in workline.position_bindings
+                }
+            ):
+                return None
+            round_started_at = await self._batch_progress.current_round_started_at(
+                db, workline_id=workline_id, rack_id=payload["rack_id"]
+            )
+            if await self._batch_progress.has_current_rack_dependency(
+                db, workline_id, payload["rack_id"], round_started_at
+            ) or await self._batch_progress.has_unclosed_return_dependency_for_rack(
+                db, workline_id=workline_id, rack_id=payload["rack_id"], round_started_at=round_started_at
+            ):
+                return 1000
+            arrived_at = await self._batch_progress.current_rack_arrival_at(
+                db, workline_id=workline_id, rack_id=payload["rack_id"], transport_task_id=task.transport_task_id
+            )
+            if arrived_at is None:
+                return None
+            returned = await self._batch_flow.return_before_motion(
+                db,
+                workline_id=workline_id,
+                workline_code=workline.line_code,
+                rack_id=payload["rack_id"],
+                rack_face=projection.arrival_face,
+                return_location=workline.position_bindings[OUTLET.slot_key]["location_id"],
+                arrived_at=arrived_at,
+                now=timezone.now_for_db(),
+            )
+            if returned is not None:
+                return 1000
         correlation_id = f"retry:{prior_attempt + 1}:{task.transport_task_id}"
         common = {
             "workline_id": workline_id,

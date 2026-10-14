@@ -8,6 +8,7 @@ from datetime import timedelta
 from typing import Any
 
 from wes_plugin_sdk import (
+    BinReturnBatchReady,
     FactRecorded,
     PickingTaskRackTransportIntent,
     RackDepartureReady,
@@ -36,6 +37,7 @@ from .drain_repository import (
     DRAIN_RACK_IN_STEP,
     DRAIN_RACK_OUT_STEP,
     DRAIN_RACK_ROTATE_STEP,
+    RETIRED_DRAIN_RACK_OUT_STEP,
     RETURN_RACK_OUT_STEP,
     RETURN_RACK_ROTATE_STEP,
     SOURCE_RACK_IN_STEP,
@@ -135,6 +137,7 @@ class ManualPickingBatchDriver:
     async def project_exits_in_session(self, db: Any, line: Any) -> int:
         """扫描持久离场义务；原 Transport 接纳只完成交接，不声明物理取走。"""
         count = await self._advance_cancelled_source_windows(db, line)
+        count += await self._advance_retired_drain_clearance(db, line) if self._drain is not None else 0
         outlet = line.position_bindings[OUTLET.slot_key]["location_id"]
         for row in await self._passages.requested_for_update(db, line.id):
             if row.return_batch_evidence_id is None:
@@ -184,6 +187,31 @@ class ManualPickingBatchDriver:
                 count += 1
         return count
 
+    async def _advance_retired_drain_clearance(self, db: Any, line: Any) -> int:
+        count = 0
+        for root, current, position in await self._drain.repository.retired_clearance_racks(db, workline_id=line.id):
+            if (
+                current.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
+                or current.outcome_version < 1
+                or current.published_outcome_version < current.outcome_version
+                or await self._batches.has_current_rack_dependency(db, line.id, root.resource_fence_id, root.created_at)
+            ):
+                continue
+            count += await self._advance_workline_departure(
+                db,
+                line,
+                rack_id=root.resource_fence_id,
+                current_face=position.arrival_face,
+                step=RETIRED_DRAIN_RACK_OUT_STEP,
+                picking_task_id=None,
+                source_evidence_id=root.source_evidence_id,
+                arrival_transport_task_id=current.transport_task_id,
+                now=timezone.now_for_db(),
+                current_location=root.window_target_location_code,
+                round_started_at=root.created_at,
+            )
+        return count
+
     async def advance_completed_in_session(self, db: Any, line: Any) -> int:
         owner = await self._plans.first_completed_source_owner_at_position(
             db,
@@ -220,11 +248,22 @@ class ManualPickingBatchDriver:
         return source_count + await self._advance_transfer_departure(db, line, task, timezone.now_for_db())
 
     async def _advance_cancelled_source_windows(self, db: Any, line: Any) -> int:
-        contexts = await self._batches.cancelled_source_windows(
-            db, workline_id=line.id, target_location_code=line.position_bindings[FIVE_RACK.slot_key]["location_id"]
-        )
+        contexts = [
+            (context, SOURCE_RACK_OUT_STEP)
+            for context in await self._batches.cancelled_source_windows(
+                db, workline_id=line.id, target_location_code=line.position_bindings[FIVE_RACK.slot_key]["location_id"]
+            )
+        ]
+        return_location = (line.position_bindings.get(RETURN_RACK.slot_key) or {}).get("location_id")
+        if return_location:
+            contexts += [
+                (context, RETURN_RACK_OUT_STEP)
+                for context in await self._batches.cancelled_return_windows(
+                    db, workline_id=line.id, target_location_code=return_location
+                )
+            ]
         count = 0
-        for window, current, position in contexts:
+        for (window, current, position), step in contexts:
             if (
                 current.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
                 or current.outcome_version < 1
@@ -239,12 +278,12 @@ class ManualPickingBatchDriver:
                 line,
                 rack_id=window.resource_fence_id,
                 current_face=position.arrival_face,
-                step=SOURCE_RACK_OUT_STEP,
+                step=step,
                 picking_task_id=window.picking_task_id,
-                source_evidence_id=window.source_evidence_id,
                 arrival_transport_task_id=current.transport_task_id,
                 now=timezone.now_for_db(),
                 current_location=window.window_target_location_code,
+                round_started_at=window.created_at,
             )
         return count
 
@@ -312,7 +351,92 @@ class ManualPickingBatchDriver:
             created += admission == "CREATED"
         return created
 
-    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911
+    async def _resume_drain_return(self, db: Any, line: Any, decision: Any, rack_id: str) -> int | None:  # noqa: PLR0911
+        repository = self._drain.repository
+        executions = repository.executions
+        execution = await executions.for_evidence(db, workline_id=line.id, evidence_id=decision.evidence_id)
+        pending = await executions.pending_return_for_rack(
+            db, execution_id=execution.id, workline_id=line.id, rack_id=rack_id
+        )
+        if pending is None:
+            return None
+        intent, outcome, evidence = pending
+        if intent.workline_code != line.line_code or (rack_id, intent.rack_face) not in {
+            (rack.rack_id, face) for rack in decision.result.racks for face in rack.rack_faces
+        }:
+            return 0
+        if outcome is None or not isinstance(outcome.result, BinReturnBatchReady):
+            return 0
+        if await repository.has_unclosed_rack_action(db, decision, rack_id):
+            return 0
+        ingress = await repository.transport(db, decision, DRAIN_RACK_IN_STEP, rack_id)
+        source = await self._positions.get(db, "RACK", rack_id)
+        if ingress is None or ingress.status != "SUCCEEDED" or source is None or source.position_unknown:
+            return 0
+        if (
+            source.workline_id != line.id
+            or source.position_json
+            != {"kind": "RACK_POSITION", "location_code": line.position_bindings[FIVE_RACK.slot_key]["location_id"]}
+            or source.arrival_face is None
+        ):
+            return 0
+        current = ingress
+        if source.source_transport_task_id != ingress.transport_task_id:
+            current = await repository.transport(db, decision, DRAIN_RACK_ROTATE_STEP, rack_id, source.arrival_face)
+        if current is None or not await repository.arrival_matches(db, current, source, rack_id, source.arrival_face):
+            return 0
+        if (
+            await self._batches.has_newer_rack_action(db, rack_id=rack_id, causal_token=source.source_causal_token)
+            or await self._batches.has_current_rack_dependency(db, line.id, rack_id, ingress.created_at)
+            or await self._batches.has_unclosed_return_dependency_for_rack(
+                db,
+                workline_id=line.id,
+                rack_id=rack_id,
+                round_started_at=ingress.created_at,
+                exclude_operation_id=intent.operation_id,
+            )
+            or await self._batches.has_return_batch_transport(db, workline_id=line.id, operation_id=intent.operation_id)
+        ):
+            return 0
+        members = await executions.members_for_return_batch(db, workline_id=line.id, operation_id=intent.operation_id)
+        moves = outcome.result.moves
+        rows = await self._passages.by_ids_for_update(
+            db, workline_id=line.id, return_ids=tuple(member.return_id for member in members[: len(moves)])
+        )
+        if len(rows) != len(moves) or tuple(row.bin_code for row in rows) != tuple(move.bin_code for move in moves):
+            return 0
+        for row in rows:
+            current_return = await self._passages.current_bin_for_update(db, line.id, row.bin_code)
+            if row.return_state != "READY" or current_return is None or current_return.id != row.id:
+                return 0
+        if source.arrival_face != intent.rack_face:
+            # 恢复冻结 READY 的到位前提；原动作终态后以当前事实冻结新身份。
+            correlation_id = f"drain:{decision.intent.operation_id}:rack:{rack_id}:face:{intent.rack_face}:after:{source.source_transport_task_id}"
+            if (
+                await self._bindings.get_by_decision_identity_for_update(
+                    db, workline_id=line.id, correlation_id=correlation_id, step=DRAIN_RACK_ROTATE_STEP
+                )
+                is not None
+            ):
+                return 0
+            await self._rack_creator.create_rotate(
+                db,
+                workline_id=line.id,
+                source_evidence_id=decision.evidence_id,
+                correlation_id=correlation_id,
+                step=DRAIN_RACK_ROTATE_STEP,
+                rack_id=rack_id,
+                position=TransportRackPosition(line.position_bindings[FIVE_RACK.slot_key]["location_id"]),
+                target_face=intent.rack_face,
+            )
+            return 1
+        if evidence is not None and evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING:
+            # WorkLine-owned WMS 结果由 processed_at=NULL 的标准 Decision 领取链重领。
+            await self._evidences.mark_applied(db, evidence, processed_at=None)
+            return 1
+        return 0
+
+    async def _advance_drain(self, db: Any, line: Any) -> int:  # noqa: PLR0911, PLR0912
         if await self._drain.retire_exception_in_session(db, line, timezone.now_for_db()):
             return 1
         # Drain rack 是无序 reservation；按各自权威到位事实独立推进。
@@ -328,6 +452,10 @@ class ManualPickingBatchDriver:
         position = line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         for reserved_rack in decision.result.racks:
             rack_id = reserved_rack.rack_id
+            resumed = await self._resume_drain_return(db, line, decision, rack_id)
+            if resumed is not None:
+                count += resumed
+                continue
             if await repository.has_unclosed_rack_action(db, decision, rack_id):
                 continue
             active = await self._drain.active_rack_face(db, line, decision, rack_id)
@@ -349,9 +477,39 @@ class ManualPickingBatchDriver:
             projection_transport = await self._transports.get_task(db, projection.source_transport_task_id)
             if projection_transport is None or projection_transport.status != "SUCCEEDED":
                 continue
+            if await self._batches.has_newer_rack_action(
+                db, rack_id=rack_id, causal_token=getattr(projection, "source_causal_token", None)
+            ):
+                continue
+            arrived_at = await self._batches.current_rack_arrival_at(db, workline_id=line.id, rack_id=rack_id)
+            if (
+                arrived_at is not None
+                and await self._departure_reader.latest_for_workline(db, line.id, rack_id, arrived_at=arrived_at)
+                is not None
+            ):
+                return count + await self._advance_workline_departure(
+                    db,
+                    line,
+                    rack_id=rack_id,
+                    current_face=projection.arrival_face,
+                    step=DRAIN_RACK_OUT_STEP,
+                    picking_task_id=None,
+                    source_evidence_id=decision.evidence_id,
+                    arrival_transport_task_id=projection.source_transport_task_id,
+                    now=timezone.now_for_db(),
+                )
             if projection.arrival_face != rack_face:
                 rotation = await repository.transport(db, decision, DRAIN_RACK_ROTATE_STEP, rack_id, rack_face)
                 if rotation is None:
+                    returned = await self._return_before_rack_motion(
+                        db,
+                        line,
+                        rack_id,
+                        projection.arrival_face,
+                        timezone.now_for_db(),
+                    )
+                    if returned is not None:
+                        return count + returned
                     if await self._batches.has_unclosed_return_dependency_for_rack(
                         db, workline_id=line.id, rack_id=rack_id
                     ):
@@ -376,30 +534,29 @@ class ManualPickingBatchDriver:
                     db, rotation, projection, rack_id, rack_face
                 ):
                     continue
+            elif projection.source_transport_task_id != ingress.transport_task_id:
+                rotation = await repository.transport(db, decision, DRAIN_RACK_ROTATE_STEP, rack_id, rack_face)
+                if rotation is None or not await repository.arrival_matches(
+                    db, rotation, projection, rack_id, rack_face
+                ):
+                    continue
             elif not await repository.arrival_matches(db, ingress, projection, rack_id, rack_face):
                 continue
             if await self._batches.has_unclosed_action_for_face(db, line.id, None, None, rack_id, rack_face):
                 continue
-            if (
-                not exhausted
-                and not await self._batches.has_unclosed_return_transport_for_face(
-                    db, workline_id=line.id, rack_id=rack_id, rack_face=rack_face
-                )
-                and await self._drain.return_in_session(
-                    db,
-                    line,
-                    decision,
-                    rack_id,
-                    line.position_bindings[OUTLET.slot_key]["location_id"],
-                    timezone.now_for_db(),
-                )
+            if await self._batches.has_unclosed_return_transport_for_face(
+                db, workline_id=line.id, rack_id=rack_id, rack_face=rack_face
+            ):
+                continue
+            if not exhausted and await self._drain.return_in_session(
+                db,
+                line,
+                decision,
+                rack_id,
+                line.position_bindings[OUTLET.slot_key]["location_id"],
+                timezone.now_for_db(),
             ):
                 return count + 1
-            if not exhausted and any(
-                row.return_state in {"READY", "RETURN_REQUESTED"}
-                for row in await self._passages.unfinished_prefix_for_update(db, line.id)
-            ):
-                return count
             return count + await self._advance_workline_departure(
                 db,
                 line,
@@ -452,7 +609,7 @@ class ManualPickingBatchDriver:
             created += admission == "CREATED"
         return created
 
-    async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911
+    async def _advance_current_rack(self, db: Any, line: Any, task: Any) -> int:  # noqa: PLR0911, PLR0912
         bindings = line.position_bindings
         sources = await self._plans.list_bin_source_racks(db, task.id)
         faces_by_rack: dict[str, list[Any]] = {}
@@ -502,6 +659,26 @@ class ManualPickingBatchDriver:
             return 0
         if current is None or projection is None:
             return 0
+        if await self._batches.has_newer_rack_action(
+            db, rack_id=current.rack_id, causal_token=getattr(projection, "source_causal_token", None)
+        ):
+            return 0
+        arrived_at = await self._batches.current_rack_arrival_at(db, workline_id=line.id, rack_id=current.rack_id)
+        if (
+            arrived_at is not None
+            and await self._departure_reader.latest_for_workline(db, line.id, current.rack_id, arrived_at=arrived_at)
+            is not None
+        ):
+            return await self._advance_workline_departure(
+                db,
+                line,
+                rack_id=current.rack_id,
+                current_face=projection.arrival_face,
+                step=SOURCE_RACK_OUT_STEP,
+                picking_task_id=task.id,
+                arrival_transport_task_id=projection.source_transport_task_id,
+                now=timezone.now_for_db(),
+            )
         if await self._flow.has_unclosed_action_for_face(
             db, line.id, task.task_id, current.plan_revision, current.rack_id, current.rack_face
         ):
@@ -528,18 +705,8 @@ class ManualPickingBatchDriver:
             )
             if advanced or getattr(current, "cancelled_evidence_id", None) is None:
                 return int(advanced)
-        if await self._advance_return_batch_before_rack_action(
-            db,
-            line,
-            task,
-            current.plan_revision,
-            current.source_evidence_id,
-            current.rack_id,
-            current.rack_face,
-            inlet_location,
-            timezone.now_for_db(),
-        ):
-            return 1
+        service_finished_at = getattr(progress, "last_chunk_created_at", None)
+        next_rotation = None
         for next_face in faces_by_rack[current.rack_id]:
             if next_face is current:
                 continue
@@ -555,6 +722,12 @@ class ManualPickingBatchDriver:
                 inlet_location,
             )
             if next_progress is not None and next_progress.feed_complete:
+                if next_face.rack_face == projection.arrival_face:
+                    finished_at = getattr(next_progress, "last_chunk_created_at", None)
+                    if finished_at is not None:
+                        service_finished_at = (
+                            max(service_finished_at, finished_at) if service_finished_at else finished_at
+                        )
                 continue
             if next_face.rack_face == projection.arrival_face:
                 return int(
@@ -576,6 +749,15 @@ class ManualPickingBatchDriver:
                 )
             if next_progress is not None:
                 return 0
+            if next_rotation is None:
+                next_rotation = next_face
+        returned = await self._return_before_rack_motion(
+            db, line, current.rack_id, projection.arrival_face, timezone.now_for_db(), after=service_finished_at
+        )
+        if returned is not None:
+            return returned
+        if next_rotation is not None:
+            next_face = next_rotation
             if await self._batches.has_unclosed_return_dependency_for_rack(
                 db, workline_id=line.id, rack_id=current.rack_id
             ):
@@ -655,6 +837,10 @@ class ManualPickingBatchDriver:
                         break
         if current is None or projection is None:
             return 0
+        if await self._batches.has_newer_rack_action(
+            db, rack_id=current.rack_id, causal_token=getattr(projection, "source_causal_token", None)
+        ):
+            return 0
         now = timezone.now_for_db()
         snapshot = await self._arrival_reader.latest(db, task.id, current.rack_id, projection.source_transport_task_id)
         if snapshot is None:
@@ -686,33 +872,33 @@ class ManualPickingBatchDriver:
                 },
             )
             return 0
-        if snapshot.status != WmsConfirmationStatus.COMPLETED:
-            # PENDING/DISPATCHING 是正常在途；RECONCILING/SUPERSEDED 不会自愈，货架将永久滞留。
-            if snapshot.status in {WmsConfirmationStatus.RECONCILING, WmsConfirmationStatus.SUPERSEDED}:
-                logger.warning(
-                    "manual_picking.return_rack_arrival_stuck",
-                    extra={
-                        "picking_task_id": task.id,
-                        "task_id": task.task_id,
-                        "rack_id": current.rack_id,
-                        "operation_id": snapshot.intent.operation_id,
-                        "status": snapshot.status,
-                    },
-                )
-            return 0
-        if snapshot.outcome is None or not isinstance(snapshot.outcome.result, FactRecorded):
-            # REJECTED/CONFLICT/UNAVAILABLE 派生的结果同样不会自愈，必须留下可检索的告警。
+        if snapshot.status in {WmsConfirmationStatus.RECONCILING, WmsConfirmationStatus.SUPERSEDED}:
             logger.warning(
-                "manual_picking.return_rack_arrival_not_recorded",
-                extra={
-                    "picking_task_id": task.id,
-                    "task_id": task.task_id,
-                    "rack_id": current.rack_id,
-                    "operation_id": snapshot.intent.operation_id,
-                    "result": type(snapshot.outcome.result).__name__ if snapshot.outcome is not None else None,
-                },
+                "manual_picking.return_rack_arrival_stuck", extra={"operation_id": snapshot.intent.operation_id}
             )
-            return 0
+        elif snapshot.status == WmsConfirmationStatus.COMPLETED and (
+            snapshot.outcome is None or not isinstance(snapshot.outcome.result, FactRecorded)
+        ):
+            logger.warning(
+                "manual_picking.return_rack_arrival_not_recorded", extra={"operation_id": snapshot.intent.operation_id}
+            )
+        arrived_at = await self._batches.current_rack_arrival_at(db, workline_id=line.id, rack_id=current.rack_id)
+        if (
+            arrived_at is not None
+            and await self._departure_reader.latest_for_workline(db, line.id, current.rack_id, arrived_at=arrived_at)
+            is not None
+        ):
+            return await self._advance_workline_departure(
+                db,
+                line,
+                rack_id=current.rack_id,
+                current_face=projection.arrival_face,
+                step=RETURN_RACK_OUT_STEP,
+                picking_task_id=task.id,
+                arrival_transport_task_id=projection.source_transport_task_id,
+                now=now,
+                current_location=location,
+            )
         if not await self._plans.is_direct_pick_face_business_closed(
             db,
             picking_task_id=task.id,
@@ -721,6 +907,15 @@ class ManualPickingBatchDriver:
             rack_face=current.rack_face,
         ):
             return 0
+        returned = await self._return_before_rack_motion(
+            db,
+            line,
+            current.rack_id,
+            projection.arrival_face,
+            now,
+        )
+        if returned is not None:
+            return returned
         # 到位面由外部搬运决定，不保证是计划首面；遍历全部面而非 index 之后的切片，
         # 否则更早的未结面会被静默跳过。
         for next_face in faces_by_rack[current.rack_id]:
@@ -775,12 +970,26 @@ class ManualPickingBatchDriver:
         now: Any,
         source_evidence_id: int | None = None,
         current_location: str | None = None,
+        round_started_at: Any = None,
     ) -> int:
-        if await self._batches.has_unclosed_return_dependency_for_rack(db, workline_id=line.id, rack_id=rack_id):
+        round_scope = {} if round_started_at is None else {"round_started_at": round_started_at}
+        if await self._batches.has_unclosed_return_dependency_for_rack(
+            db, workline_id=line.id, rack_id=rack_id, **round_scope
+        ):
             return 0
         location = current_location or line.position_bindings[FIVE_RACK.slot_key]["location_id"]
         arrival = await self._transports.get_task(db, arrival_transport_task_id)
         snapshot = await self._departure_reader.latest_for_workline(db, line.id, rack_id, arrived_at=arrival.created_at)
+        returned = await self._return_before_rack_motion(
+            db,
+            line,
+            rack_id,
+            current_face,
+            now,
+            round_started_at=round_started_at,
+        )
+        if returned is not None:
+            return returned
         if snapshot is None:
             intent = wms_operations.outbound_rack_departure_decide(
                 operation_id=self._uuid_factory(),
@@ -842,41 +1051,47 @@ class ManualPickingBatchDriver:
         )
         return 1
 
-    async def _advance_return_batch_before_rack_action(
+    async def _return_before_rack_motion(
         self,
         db: Any,
         line: Any,
-        task: Any,
-        plan_revision: int,
-        source_evidence_id: int,
         rack_id: str,
-        rack_face: str,
-        inlet_location: str,
+        rack_face: str | None,
         now: Any,
-    ) -> bool:
-        if not await self._passages.ready_prefix_for_update(db, line.id):
-            return False
-        if await self._flow.has_unclosed_action_for_face(db, line.id, task.task_id, plan_revision, rack_id, rack_face):
-            return False
-        return bool(
-            await self._flow.advance_in_session(
-                db,
-                workline_id=line.id,
-                workline_code=line.line_code,
-                picking_task_id=task.id,
-                task_id=task.task_id,
-                plan_revision=plan_revision,
-                source_evidence_id=source_evidence_id,
-                rack_id=rack_id,
-                rack_face=rack_face,
-                return_location=line.position_bindings[OUTLET.slot_key]["location_id"],
-                inlet_location=inlet_location,
-                now=now,
-                allow_inbound=False,
-            )
+        *,
+        round_started_at: Any = None,
+        after: Any = None,
+    ) -> int | None:
+        if round_started_at is None:
+            round_started_at = await self._batches.current_round_started_at(db, workline_id=line.id, rack_id=rack_id)
+        if await self._batches.has_current_rack_dependency(
+            db, line.id, rack_id, round_started_at
+        ) or await self._batches.has_unclosed_return_dependency_for_rack(
+            db, workline_id=line.id, rack_id=rack_id, round_started_at=round_started_at
+        ):
+            return 0
+        arrived_at = await self._batches.current_rack_arrival_at(db, workline_id=line.id, rack_id=rack_id)
+        if arrived_at is None:
+            return 0
+        projection = await self._positions.get(db, "RACK", rack_id)
+        if await self._batches.has_newer_rack_action(
+            db, rack_id=rack_id, causal_token=getattr(projection, "source_causal_token", None)
+        ):
+            return 0
+        if await self._departure_reader.latest_for_workline(db, line.id, rack_id, arrived_at=arrived_at) is not None:
+            return None
+        return await self._flow.return_before_motion(
+            db,
+            workline_id=line.id,
+            workline_code=line.line_code,
+            rack_id=rack_id,
+            rack_face=rack_face,
+            return_location=line.position_bindings[OUTLET.slot_key]["location_id"],
+            arrived_at=max(arrived_at, after) if after is not None else arrived_at,
+            now=now,
         )
 
-    async def _advance_transfer_departure(self, db: Any, line: Any, task: Any, now: Any) -> int:
+    async def _advance_transfer_departure(self, db: Any, line: Any, task: Any, now: Any) -> int:  # noqa: PLR0911
         if task.target_rack_id is None:
             return 0
         current_location = line.position_bindings[TRANSFER_RACK.slot_key]["location_id"]
@@ -891,6 +1106,15 @@ class ManualPickingBatchDriver:
         )
         if projection is None:
             return 0
+        returned = await self._return_before_rack_motion(
+            db,
+            line,
+            task.target_rack_id,
+            projection.arrival_face,
+            now,
+        )
+        if returned is not None:
+            return returned
         snapshot = await self._departure_reader.latest(db, task.id, task.target_rack_id)
         if snapshot is not None:
             if snapshot.intent.task_id != task.task_id or snapshot.intent.rack_id != task.target_rack_id:

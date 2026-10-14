@@ -134,6 +134,7 @@ async def test_return_batch_rows_share_evidence_and_rollback_together() -> None:
             SimpleNamespace(
                 has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
                 has_conflicting_return_target=AsyncMock(return_value=False),
+                return_request_in_round=AsyncMock(return_value=True),
             ),
             drain_executions=unbound_drain_executions(),
         )
@@ -299,6 +300,7 @@ async def test_drain_unallocated_candidates_start_independent_request_after_comp
             SimpleNamespace(
                 has_unclosed_return_transport_for_face=AsyncMock(return_value=False),
                 has_conflicting_return_target=AsyncMock(return_value=False),
+                return_request_in_round=AsyncMock(return_value=True),
             ),
             drain_executions=repository,
         )
@@ -404,7 +406,7 @@ async def test_drain_unallocated_candidates_start_independent_request_after_comp
                     blocker_client_request_id="original-blocker",
                     trigger_picking_task_id=1,
                 )
-                assert await repository.eligible_return_prefix(db, workline_id=7, rows=ready) == ()
+                assert await repository.eligible_return_prefix(db, workline_id=7, rows=ready) == unallocated
                 assert not await flow.return_in_session(db, line, decision, "R1", "OUT", now)
                 return
             # Matching authoritative exits close the assigned prefix before the next request.
@@ -428,7 +430,9 @@ async def test_drain_unallocated_candidates_start_independent_request_after_comp
                 assert next_execution.id != execution.id
                 assert execution.status == "COMPLETED"
             else:
-                next_execution = execution
+                assert await repository.eligible_return_prefix(db, workline_id=7, rows=ready) == unallocated
+                assert not await flow.return_in_session(db, line, decision, "R1", "OUT", now)
+                return
             assert await flow.return_in_session(db, line, decision, "R1", "OUT", now)
             obligations = (
                 await db.scalars(

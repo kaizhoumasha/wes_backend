@@ -54,7 +54,8 @@ class _Repository:
 class _Passages:
     def __init__(self, bins):  # type: ignore[no-untyped-def]
         self.rows = tuple(
-            SimpleNamespace(id=index, bin_code=code, return_state="READY") for index, code in enumerate(bins, 1)
+            SimpleNamespace(id=index, bin_code=code, return_state="READY", created_at=datetime(2026, 9, 13))
+            for index, code in enumerate(bins, 1)
         )
 
     async def ready_prefix_for_update(self, _db, _workline_id):  # type: ignore[no-untyped-def]
@@ -493,6 +494,7 @@ async def test_return_ready_moves_only_selected_fifo_prefix_and_no_batch_leaves_
     passages = _Passages(("A000000001", "A000000002", "A000000003"))
     batches = SimpleNamespace(
         has_unclosed_return_transport_for_face=AsyncMock(return_value=True),
+        return_request_in_round=AsyncMock(return_value=True),
         has_conflicting_return_target=AsyncMock(return_value=True),
     )
     flow = module.ManualPickingBatchResultFlow(
@@ -626,10 +628,14 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         transports=TransportReader(),
         rack_creator=object(),
         departure_scheduler=object(),
-        departure_reader=object(),
+        departure_reader=SimpleNamespace(latest_for_workline=AsyncMock(return_value=None)),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
         bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(11, "R1")})),
-        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
+        batches=SimpleNamespace(
+            cancelled_source_windows=AsyncMock(return_value=[]),
+            current_rack_arrival_at=AsyncMock(return_value=None),
+            has_newer_rack_action=AsyncMock(return_value=False),
+        ),
     )
     line = SimpleNamespace(
         id=7,
@@ -684,9 +690,9 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
         async def face_progress(self, *_args):  # type: ignore[no-untyped-def]
             return SimpleNamespace(feed_complete=True)
 
-        async def advance_in_session(self, _db, **kwargs):  # type: ignore[no-untyped-def]
+        async def return_before_motion(self, _db, **kwargs):  # type: ignore[no-untyped-def]
             self.calls.append(kwargs)
-            return True
+            return 1
 
     class Plans:
         async def list_bin_source_racks(self, _db, _task_id):  # type: ignore[no-untyped-def]
@@ -712,7 +718,7 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
 
     class Transports:
         async def get_task(self, _db, _task_id):  # type: ignore[no-untyped-def]
-            return SimpleNamespace(status="SUCCEEDED")
+            return SimpleNamespace(status="SUCCEEDED", created_at=datetime(2026, 9, 13))
 
     flow = Flow()
     driver = module.ManualPickingBatchDriver(
@@ -722,9 +728,17 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
         transports=Transports(),
         rack_creator=object(),
         departure_scheduler=object(),
-        departure_reader=object(),
+        departure_reader=SimpleNamespace(latest_for_workline=AsyncMock(return_value=None)),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=(SimpleNamespace(bin_code="BIN-1"),))),
-        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
+        batches=SimpleNamespace(
+            has_newer_rack_action=AsyncMock(return_value=False),
+            cancelled_source_windows=AsyncMock(return_value=[]),
+            cancelled_return_windows=AsyncMock(return_value=[]),
+            current_round_started_at=AsyncMock(return_value=datetime(2000, 1, 1)),
+            current_rack_arrival_at=AsyncMock(return_value=datetime(2026, 9, 13)),
+            has_current_rack_dependency=AsyncMock(return_value=False),
+            has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
+        ),
     )
     line = SimpleNamespace(
         id=7,
@@ -740,7 +754,8 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
     )
 
     assert await driver._advance_current_rack(object(), line, task) == 1
-    assert flow.calls[0]["allow_inbound"] is False
+    assert flow.calls[0]["rack_face"] == "90"
+    assert flow.calls[0]["return_location"] == "CNV0302"
 
 
 @pytest.mark.asyncio
@@ -821,9 +836,13 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         tasks=Tasks(),
         rack_creator=object(),
         departure_scheduler=object(),
-        departure_reader=object(),
+        departure_reader=SimpleNamespace(latest_for_workline=AsyncMock(return_value=None)),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
-        batches=SimpleNamespace(cancelled_source_windows=AsyncMock(return_value=[])),
+        batches=SimpleNamespace(
+            cancelled_source_windows=AsyncMock(return_value=[]),
+            current_rack_arrival_at=AsyncMock(return_value=None),
+            has_newer_rack_action=AsyncMock(return_value=False),
+        ),
     )
     line = SimpleNamespace(
         id=7,

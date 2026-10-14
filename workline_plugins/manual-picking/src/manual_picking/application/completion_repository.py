@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, or_, select
 
-from src.app.execution.models import TransportDecisionBinding
+from src.app.execution.models import TransportDecisionBinding, WmsConfirmation
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
+from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK_ARRIVAL_REPORT_OPERATION
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, DirectPickFaceCompletion
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
@@ -43,6 +44,24 @@ class ManualPickingCompletionRepository:
 
     async def latest_confirmation(self, db: AsyncSession, picking_task_id: int) -> Any:
         return await self._completion_reader.latest(db, picking_task_id)
+
+    async def arrival_reports_closed(self, db: AsyncSession, picking_task_id: int) -> bool:
+        return (
+            await db.scalar(
+                select(WmsConfirmation.id)
+                .where(
+                    WmsConfirmation.picking_task_id == picking_task_id,
+                    WmsConfirmation.operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION,
+                    or_(
+                        WmsConfirmation.status != "COMPLETED",
+                        WmsConfirmation.response_result.is_(None),
+                        WmsConfirmation.response_result.not_in(("RECORDED", "DUPLICATE")),
+                    ),
+                )
+                .limit(1)
+            )
+            is None
+        )
 
     async def ready_to_confirm(self, db: AsyncSession, line: Any, task: Any) -> bool:
         """计划已接纳直接取料，因此只有未结清的面（未取消且未由面级或整架权威事实闭合）才阻塞完成确认。"""
