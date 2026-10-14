@@ -12,6 +12,10 @@ class _Repository:
     def __init__(self) -> None:
         self.ready = True
         self.latest = None
+        self.arrivals_closed = True
+
+    async def arrival_reports_closed(self, _db, _task_id):
+        return self.arrivals_closed
 
     async def ready_to_confirm(self, _db, _line, _task):  # type: ignore[no-untyped-def]
         return self.ready
@@ -123,3 +127,29 @@ async def test_unknown_confirmation_never_changes_identity_or_task_status() -> N
     assert await flow.advance_in_session(object(), SimpleNamespace(id=7), task, now=datetime(2026, 9, 14, 4)) == 0
     assert task.status == "EXECUTING"
     assert scheduler.intents == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_confirmed", [False, True])
+async def test_task_completion_waits_for_existing_arrival_ack_without_reissuing_confirmation(already_confirmed):
+    repository, scheduler = _Repository(), _Scheduler()
+    flow = ManualPickingCompletionFlow(repository, scheduler, uuid_factory=lambda: "op-next")
+    task = SimpleNamespace(
+        id=11, task_id="PICK-1", status="EXECUTING", last_applied_plan_revision=2, plan_blocked_evidence_id=None
+    )
+    now = datetime(2026, 10, 14)
+    if already_confirmed:
+        repository.latest = SimpleNamespace(
+            status="COMPLETED",
+            task_id=task.task_id,
+            plan_revision=2,
+            completed_at=now,
+            outcome=sdk.CompletionConfirmOutcome(sdk.PickingTaskCompleted()),
+        )
+    repository.arrivals_closed = False
+    assert await flow.advance_in_session(object(), SimpleNamespace(id=7), task, now=now) == 0
+    assert task.status == "EXECUTING" and scheduler.intents == []
+    repository.arrivals_closed = True
+    assert await flow.advance_in_session(object(), SimpleNamespace(id=7), task, now=now) == 1
+    assert task.status == ("EXECUTION_COMPLETED" if already_confirmed else "EXECUTING")
+    assert len(scheduler.intents) == int(not already_confirmed)

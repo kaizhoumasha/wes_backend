@@ -30,6 +30,8 @@ class ManualPickingCompletionFlow:
         now = now or timezone.now_for_db()
         if task.status != PickingTaskStatus.EXECUTING or task.plan_blocked_evidence_id is not None:
             return 0
+        if not await self._repository.arrival_reports_closed(db, task.id):
+            return 0
         latest = await self._repository.latest_confirmation(db, task.id)
         if latest is not None:
             if (

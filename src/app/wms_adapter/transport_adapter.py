@@ -28,7 +28,13 @@ if TYPE_CHECKING:
 _BODY_LIMIT = 256 * 1024
 _SIGNED_INT64_MAX = 2**63 - 1
 _REJECTED_REASON_CODES = frozenset(
-    {"INVALID_ENVELOPE", "UNSUPPORTED_OPERATION", "INVALID_DATA", "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"}
+    {
+        "INVALID_ENVELOPE",
+        "UNSUPPORTED_OPERATION",
+        "INVALID_DATA",
+        "COORDINATED_BIN_EXCHANGE_UNSUPPORTED",
+        "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf",
+    }
 )
 
 

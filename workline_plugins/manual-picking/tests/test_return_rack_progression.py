@@ -128,10 +128,16 @@ def setup_driver():  # type: ignore[no-untyped-def]
     driver = ManualPickingBatchDriver(
         SimpleNamespace(
             has_unclosed_action_for_face=AsyncMock(return_value=False),
+            return_before_motion=AsyncMock(return_value=None),
         ),
         batches=SimpleNamespace(
+            has_newer_rack_action=AsyncMock(return_value=False),
+            current_rack_arrival_at=AsyncMock(return_value=timezone.now_for_db()),
+            has_current_rack_dependency=AsyncMock(return_value=False),
             has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
             cancelled_source_windows=AsyncMock(return_value=[]),
+            cancelled_return_windows=AsyncMock(return_value=[]),
+            current_round_started_at=AsyncMock(return_value=timezone.now_for_db()),
         ),
         plans=plans,
         positions=positions,
@@ -502,7 +508,7 @@ async def test_rejected_arrival_result_returns_zero_with_a_greppable_warning(cap
 
 
 @pytest.mark.asyncio
-async def test_reconciling_confirmation_warns_because_the_rack_will_never_leave_on_its_own(caplog) -> None:  # type: ignore[no-untyped-def]
+async def test_reconciling_arrival_obligation_warns_without_completing_open_business(caplog) -> None:  # type: ignore[no-untyped-def]
     driver, line, task, _, _, _, reader, scheduler, _ = setup_driver()
     snapshot = recorded_snapshot()
     snapshot.status = WmsConfirmationStatus.RECONCILING
@@ -585,3 +591,32 @@ async def test_whole_completion_without_face_notifications_advances_departure_wi
     else:
         departure.create_in_session.assert_awaited_once()
     assert creator.rotate == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["PENDING", "RECONCILING", "SUPERSEDED"])
+async def test_closed_direct_pick_leaves_without_waiting_for_arrival_ack(status):
+    driver, line, task, _, plans, _, reader, scheduler, departure = setup_driver()
+    plans.whole_completed["RETURN-RACK-01"] = 1
+    snapshot = recorded_snapshot()
+    snapshot.status = status
+    reader.latest.return_value = snapshot
+    assert await driver._advance_return_rack(object(), line, task) == 1
+    scheduler.create_in_session.assert_not_awaited()
+    departure.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["current_owner", "current_action", "return_result"])
+async def test_closed_direct_pick_still_waits_for_current_physical_dependencies(held):
+    driver, line, task, _, plans, creator, reader, _, departure = setup_driver()
+    plans.whole_completed["RETURN-RACK-01"] = 1
+    snapshot = recorded_snapshot()
+    snapshot.status = "RECONCILING"
+    reader.latest.return_value = snapshot
+    driver._batches.has_newer_rack_action.return_value = held == "current_owner"
+    driver._batches.has_current_rack_dependency.return_value = held == "current_action"
+    driver._batches.has_unclosed_return_dependency_for_rack.return_value = held == "return_result"
+    assert await driver._advance_return_rack(object(), line, task) == 0
+    assert creator.rotate == [] and creator.depart == []
+    departure.create_in_session.assert_not_awaited()

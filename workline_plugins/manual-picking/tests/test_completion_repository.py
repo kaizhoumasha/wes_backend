@@ -13,7 +13,7 @@ from manual_picking.application.passage_model import ManualPickingPassage
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from src.app.execution.models import InboundEvidence, TransportDecisionBinding
+from src.app.execution.models import InboundEvidence, TransportDecisionBinding, WmsConfirmation
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelMembersData
 from src.app.wms_integration.outbound_picking.models import (
@@ -77,6 +77,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
 
     async with engine.begin() as connection:
         for table in (
+            WmsConfirmation.__table__,
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
@@ -293,6 +294,7 @@ async def test_completion_only_waits_for_wes_managed_target_transport(managed_ta
 
     async with engine.begin() as connection:
         for table in (
+            WmsConfirmation.__table__,
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
@@ -370,6 +372,7 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
 
     async with engine.begin() as connection:
         for table in (
+            WmsConfirmation.__table__,
             InboundEvidence.__table__,
             DirectPickExecution.__table__,
             DirectPickFaceCompletion.__table__,
@@ -457,5 +460,47 @@ async def test_mixed_five_rack_and_direct_pick_task_reaches_completion_confirm()
                     now,
                 )
             ]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,result,closed",
+    [
+        ("PENDING", None, False),
+        ("RECONCILING", None, False),
+        ("COMPLETED", None, False),
+        ("COMPLETED", "REJECTED", False),
+        ("COMPLETED", "RECORDED", True),
+        ("COMPLETED", "DUPLICATE", True),
+    ],
+)
+async def test_task_arrival_ack_gate_uses_existing_obligation_identity(status, result, closed):
+    from datetime import timedelta
+
+    from test_batch_repository import _new_sessions
+
+    engine, sessions = await _new_sessions()
+    try:
+        async with sessions.begin() as db:
+            now = datetime(2026, 10, 14)
+            report = WmsConfirmation(
+                operation="outbound.return_rack.arrival_report@v1",
+                operation_id="report-original",
+                picking_task_id=11,
+                request_payload={},
+                request_digest="a" * 64,
+                created_at=now,
+                deadline_at=now + timedelta(seconds=30),
+                status=status,
+                response_result=result,
+            )
+            db.add(report)
+            await db.flush()
+            repo = ManualPickingCompletionRepository()
+            assert await repo.arrival_reports_closed(db, 11) is closed
+            assert await repo.arrival_reports_closed(db, 12)
+            assert report.operation_id == "report-original" and report.request_digest == "a" * 64
     finally:
         await engine.dispose()

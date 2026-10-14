@@ -47,8 +47,8 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
 
 与 RCS、WMS 沟通确认：搬运对象当前不可用时，RCS 可能通过以下两条路径返回不可变终态；Transport 核心不做自动业务重试：
 
-- 同步 submit 直接返回 `422 / REJECTED`；线上 `reason_code` 尚未与 RCS/WMS 确认最终枚举值，暂不计入 §4.2 已批准
-  的封闭 `reason_code` 列表，见本节末 TODO。
+- 同步 submit 直接返回 `422 / REJECTED`。2026-10-14 联调确认「货架还有未完成任务」使用 §4.2 的完整线上
+  `reason_code` 字面量；WES 精确校验并保留原值，不按子串、翻译或模糊匹配推定拒绝。
 - 已接纳（`202 / RECEIVED` → `ACCEPTED`）后 RCS 主动取消，经 `transport.task.resulted@v1` 以
   `status=CANCELLED` 报告，并携带权威 `RACK_POSITION final_position`。WES 将该 wire 分支归一化为内部
   `FAILED + failure_code=RCS_TASK_CANCELLED`，不新增内部 Transport 状态。manual-picking 对仍有原业务依据的货架动作统一按指数退避重试所有明确 `CANCELLED`；明确未接纳或有权威终位的失败进场 Transport 同样按当前成员依据重试；原 plan_delta 成员被取消时停止，不因 PickingTask 进入 `EXECUTION_COMPLETED` 而停止。已有成功 Transport 的权威到位事实满足动作目标时不再重复动作。每次业务重试使用新请求身份，原因细分待联调数据形成后再定。
@@ -61,10 +61,42 @@ owner）在自身重试循环中以指数退避方式发起重试：退避上限
 且每次重试必须使用全新 `client_request_id` 创建全新 TransportTask，不复用原 `transport_task_id`、`operation_id`
 或已冻结的请求体。
 
-TODO（合同尚未闭合项）：
+已确认的同步拒绝示例。原提交请求（WES → WMS，`POST /api/v1/wes/transport-requests`）：
 
-- 与 RCS/WMS 确认「目标当前不可用」同步 REJECTED 的最终线上 `reason_code` 字符串，并据此更新 §4.2 封闭枚举列表。
-- 确认该 `reason_code` 是否需要区分货架不可用与料箱不可用两种场景，或统一为单一值。
+```json
+{
+  "operation_id": "01a13b00-cabd-7390-890a-0c093e7c07a1",
+  "operation": "transport.task.submit@v1",
+  "timestamp": 1791991270077,
+  "data": {
+    "transport_task_id": "transport-9af2751b-4d01-4203-88a7-649bbf69e810",
+    "kind": "RACK_MOVE",
+    "rack_id": "510004",
+    "rcs_template_id": "CTU01",
+    "source": {"kind": "RACK", "location_code": "510004"},
+    "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+    "target_face": "90"
+  }
+}
+```
+
+拒绝应答（WMS → WES，HTTP `422`）：
+
+```json
+{
+  "operation_id": "01a13b00-cabd-7390-890a-0c093e7c07a1",
+  "code": "REJECTED",
+  "timestamp": 1791992148964,
+  "data": {
+    "transport_task_id": "transport-9af2751b-4d01-4203-88a7-649bbf69e810",
+    "reason_code": "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf"
+  }
+}
+```
+
+该应答使原 Transport 从 `PENDING / SUBMIT_DELIVERY_UNKNOWN` 收敛为 `REJECTED`，发布明确终态并停止该身份的技术重提。
+它证明当前提交未被接纳，不证明其他任务已完成。后续是否业务重试仍按本节的直接业务依据、新身份和退避规则决定。
+其他货架或料箱不可用场景的同步 `reason_code` 仍须逐项确认，未批准值继续按未知应答处理。
 
 
 ## 1. 文档定位
@@ -399,8 +431,9 @@ CTU 物理动作顺序。
   `transport_task_id`。
 
 搬运提交 `REJECTED.reason_code` 只允许 `INVALID_ENVELOPE | UNSUPPORTED_OPERATION | INVALID_DATA |
-COORDINATED_BIN_EXCHANGE_UNSUPPORTED`。WES 对这些诊断码执行相同的确定拒绝处理，不按码自动重试或补偿。
-目标（货架、料箱）当前不可用导致的同步 REJECTED 见 T1；其 `reason_code` 尚未确认，不计入本列表。
+COORDINATED_BIN_EXCHANGE_UNSUPPORTED`，以及已确认的完整字面量
+`There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf`。
+WES 对这些诊断码执行相同的确定拒绝处理，不按码自动重试或补偿；后者的业务重试见 T1。
 
 `BIN_EXCHANGE` 只有在 WMS 确认 RCS 能将 1～2 个二元闭环作为一个协调任务整体接纳时才返回 `RECEIVED`。不支持时固定返回
 `422 / REJECTED / COORDINATED_BIN_EXCHANGE_UNSUPPORTED`；WES 不拆分或降级。

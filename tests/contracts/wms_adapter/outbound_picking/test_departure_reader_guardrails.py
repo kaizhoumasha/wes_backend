@@ -156,3 +156,71 @@ async def test_reader_rejects_unapproved_or_drifting_completed_result(evidence, 
 
     with pytest.raises(ValueError, match=message):
         await reader.latest(object(), 11, "RACK-1")
+
+
+@pytest.mark.asyncio
+async def test_frozen_departure_read_does_not_use_latest_or_current_task_state():
+    from src.utils.canonical_json import canonical_json_digest
+
+    request = _request()
+    request["data"]["task_id"] = None
+    confirmation = _confirmation(
+        request_payload=request,
+        request_digest=canonical_json_digest(request),
+        operation=OPERATION,
+        workline_id=7,
+        picking_task_id=None,
+    )
+    reader, repository = _reader(confirmation, _evidence(published_at=datetime(2026, 9, 14)))
+    repository.by_operation_id = AsyncMock(return_value=confirmation)
+    db = object()
+    snapshot = await reader.by_operation_id(db, workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID)
+    assert snapshot.intent.operation_id == OPERATION_ID and snapshot.evidence_id == 31
+    repository.by_operation_id.assert_awaited_once_with(db, OPERATION_ID)
+    repository.latest.assert_not_awaited()
+    repository.latest_for_workline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["missing", "workline", "owner", "operation", "operation_id", "digest", "rack", "unpublished"]
+)
+async def test_frozen_departure_read_rejects_other_owner_identity_or_unpublished_result(case):
+    from src.utils.canonical_json import canonical_json_digest
+
+    request = _request()
+    request["data"]["task_id"] = None
+    confirmation = _confirmation(
+        request_payload=request,
+        request_digest=canonical_json_digest(request),
+        operation=OPERATION,
+        workline_id=7,
+        picking_task_id=None,
+    )
+    evidence = _evidence(published_at=datetime(2026, 9, 14))
+    if case == "workline":
+        confirmation.workline_id = 8
+    elif case == "owner":
+        confirmation.picking_task_id = 11
+    elif case == "operation":
+        confirmation.operation = "OTHER"
+    elif case == "operation_id":
+        confirmation.operation_id = "OTHER"
+    elif case == "digest":
+        confirmation.request_digest = "a" * 64
+    elif case == "rack":
+        request["data"]["rack_id"] = "OTHER"
+        confirmation.request_digest = canonical_json_digest(request)
+    elif case == "unpublished":
+        evidence.published_at = None
+    reader, repository = _reader(confirmation, evidence)
+    repository.by_operation_id = AsyncMock(return_value=None if case == "missing" else confirmation)
+    if case == "missing":
+        assert (
+            await reader.by_operation_id(object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID) is None
+        )
+    else:
+        with pytest.raises(ValueError):
+            await reader.by_operation_id(object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID)
+    repository.latest.assert_not_awaited()
+    repository.latest_for_workline.assert_not_awaited()

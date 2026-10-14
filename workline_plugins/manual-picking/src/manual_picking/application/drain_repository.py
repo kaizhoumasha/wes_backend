@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import aliased
 from wes_plugin_sdk import ReturnBufferDrainReady
 
-from src.app.execution.models import TransportDecisionBinding
+from src.app.execution.models import PositionProjection, TransportDecisionBinding
+from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord, ReturnBufferDrainResultReader
 
@@ -17,6 +19,7 @@ from .drain_execution_repository import DrainExecutionRepository
 DRAIN_RACK_IN_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN"
 DRAIN_RACK_ROTATE_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE"
 DRAIN_RACK_OUT_STEP = "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT"
+RETIRED_DRAIN_RACK_OUT_STEP = "MANUAL_PICKING_RETIRED_DRAIN_RACK_OUT"
 SOURCE_RACK_IN_STEP = "PICKING_TASK_BIN_SOURCE_RACK_IN"
 SOURCE_RACK_ROTATE_STEP = "MANUAL_PICKING_SOURCE_RACK_ROTATE"
 SOURCE_RACK_OUT_STEP = "MANUAL_PICKING_SOURCE_RACK_OUT"
@@ -24,10 +27,154 @@ RETURN_RACK_ROTATE_STEP = "MANUAL_PICKING_RETURN_RACK_ROTATE"
 RETURN_RACK_OUT_STEP = "MANUAL_PICKING_RETURN_RACK_OUT"
 
 
+def current_rack_action_predicate(binding: Any, task: Any, owner: Any) -> Any:
+    """当前动作/物理事实/有效窗口才构成接管；闭合历史不占有货架。"""
+    window = aliased(TransportDecisionBinding)
+    same_owner = and_(
+        binding.workline_id == owner.workline_id,
+        and_(binding.picking_task_id.is_not(None), binding.picking_task_id == owner.picking_task_id)
+        if owner.picking_task_id is not None
+        else and_(binding.picking_task_id.is_(None), binding.source_evidence_id == owner.source_evidence_id),
+    )
+    active_owner = (
+        select(window.id)
+        .where(
+            window.workline_id == binding.workline_id,
+            window.resource_fence_id == binding.resource_fence_id,
+            window.window_target_location_code.is_not(None),
+            window.window_released_at.is_(None),
+            or_(
+                window.picking_task_id == binding.picking_task_id,
+                and_(
+                    window.picking_task_id.is_(None),
+                    binding.picking_task_id.is_(None),
+                    window.source_evidence_id == binding.source_evidence_id,
+                ),
+            ),
+        )
+        .exists()
+    )
+    current_fact = (
+        select(PositionProjection.id)
+        .where(
+            PositionProjection.object_type == "RACK",
+            PositionProjection.object_id == binding.resource_fence_id,
+            PositionProjection.source_causal_token == binding.causal_token,
+        )
+        .exists()
+    )
+    return or_(
+        task.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+        task.outcome_version > task.published_outcome_version,
+        current_fact,
+        and_(~same_owner, active_owner),
+    )
+
+
 class DrainRepository:
     def __init__(self, reader: Any = None, *, executions: Any = None) -> None:
         self._reader = reader or ReturnBufferDrainResultReader()
         self.executions = executions or DrainExecutionRepository()
+
+    async def retired_clearance_racks(self, db: Any, *, workline_id: int) -> list[tuple[Any, Any, Any]]:
+        """当前物理事实仍属于退役轮次时，原进场绑定承接独立清退，窗口无需重开。"""
+        fact = aliased(TransportDecisionBinding)
+        roots = (
+            await db.execute(
+                select(TransportDecisionBinding, PositionProjection)
+                .join(
+                    ManualPickingDrainExecution,
+                    ManualPickingDrainExecution.decision_evidence_id == TransportDecisionBinding.source_evidence_id,
+                )
+                .join(PositionProjection, PositionProjection.object_id == TransportDecisionBinding.resource_fence_id)
+                .join(fact, fact.causal_token == PositionProjection.source_causal_token)
+                .where(
+                    ManualPickingDrainExecution.workline_id == workline_id,
+                    ManualPickingDrainExecution.status == "EXCEPTION_RETIRED",
+                    TransportDecisionBinding.workline_id == workline_id,
+                    TransportDecisionBinding.picking_task_id.is_(None),
+                    TransportDecisionBinding.step == DRAIN_RACK_IN_STEP,
+                    TransportDecisionBinding.window_target_location_code.is_not(None),
+                    PositionProjection.workline_id == workline_id,
+                    PositionProjection.object_type == "RACK",
+                    PositionProjection.position_unknown.is_(False),
+                    PositionProjection.source_effect_phase == "FINAL_RESULT",
+                    PositionProjection.position_json["kind"].as_string() == "RACK_POSITION",
+                    PositionProjection.position_json["location_code"].as_string()
+                    == TransportDecisionBinding.window_target_location_code,
+                    fact.workline_id == workline_id,
+                    fact.picking_task_id.is_(None),
+                    fact.resource_fence_id == TransportDecisionBinding.resource_fence_id,
+                    fact.source_evidence_id == TransportDecisionBinding.source_evidence_id,
+                    fact.causal_token >= TransportDecisionBinding.causal_token,
+                )
+                .order_by(TransportDecisionBinding.causal_token.desc())
+            )
+        ).all()
+        contexts, seen = [], set()
+        for root, position in roots:
+            rack_id = root.resource_fence_id
+            if rack_id in seen:
+                continue
+            seen.add(rack_id)
+            await transport_decision_binding_repository.lock_object_authority(db, object_type="RACK", object_id=rack_id)
+            await db.refresh(position)
+            if (
+                position.workline_id != workline_id
+                or position.position_unknown
+                or position.source_effect_phase != "FINAL_RESULT"
+                or position.source_causal_token is None
+                or position.source_causal_token < root.causal_token
+                or position.position_json
+                != {"kind": "RACK_POSITION", "location_code": root.window_target_location_code}
+            ):
+                continue
+            latest = (
+                await db.execute(
+                    select(TransportDecisionBinding, TransportTask)
+                    .join(TransportTask, TransportTask.client_request_id == TransportDecisionBinding.client_request_id)
+                    .where(
+                        TransportDecisionBinding.resource_fence_id == rack_id,
+                        TransportDecisionBinding.causal_token >= root.causal_token,
+                        TransportTask.kind.in_(("RACK_MOVE", "RACK_ROTATE")),
+                        or_(
+                            and_(
+                                TransportDecisionBinding.workline_id == root.workline_id,
+                                TransportDecisionBinding.picking_task_id.is_(None),
+                                TransportDecisionBinding.source_evidence_id == root.source_evidence_id,
+                            ),
+                            current_rack_action_predicate(TransportDecisionBinding, TransportTask, root),
+                        ),
+                    )
+                    .order_by(TransportDecisionBinding.causal_token.desc())
+                    .limit(1)
+                )
+            ).one_or_none()
+            if latest is None:
+                continue
+            binding, task = latest
+            if (
+                binding.workline_id != workline_id
+                or binding.picking_task_id is not None
+                or binding.source_evidence_id != root.source_evidence_id
+                or binding.step
+                not in {DRAIN_RACK_IN_STEP, DRAIN_RACK_ROTATE_STEP, DRAIN_RACK_OUT_STEP, RETIRED_DRAIN_RACK_OUT_STEP}
+            ):
+                continue
+            in_flight = await db.scalar(
+                select(TransportTask.id)
+                .where(
+                    TransportTask.kind.in_(("RACK_MOVE", "RACK_ROTATE")),
+                    TransportTask.request_json["rack_id"].as_string() == rack_id,
+                    TransportTask.created_at >= root.created_at,
+                    TransportTask.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                )
+                .limit(1)
+            )
+            if in_flight is not None:
+                continue
+            contexts.append((root, task, position))
+        return contexts
 
     async def current(self, db: Any, workline_id: int) -> ReturnBufferDrainRecord | None:
         execution = await self.executions.active_for_workline(db, workline_id)
@@ -208,6 +355,7 @@ __all__ = [
     "DRAIN_RACK_IN_STEP",
     "DRAIN_RACK_OUT_STEP",
     "DRAIN_RACK_ROTATE_STEP",
+    "RETIRED_DRAIN_RACK_OUT_STEP",
     "RETURN_RACK_OUT_STEP",
     "RETURN_RACK_ROTATE_STEP",
     "SOURCE_RACK_IN_STEP",

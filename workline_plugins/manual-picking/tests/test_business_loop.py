@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 from manual_picking.application.batch_driver import SOURCE_RACK_OUT_STEP
+from manual_picking.application.batch_progress_model import ManualPickingInboundBatch
 from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.application.drain_execution_model import ManualPickingDrainExecution, ManualPickingDrainReturnMember
 from manual_picking.application.drain_repository import DRAIN_RACK_IN_STEP, DRAIN_RACK_OUT_STEP, DrainRepository
@@ -52,6 +53,63 @@ async def test_scan2_deferred_evidence_is_reclaimed_after_old_command_closes(rac
     async with sessions.begin() as db:
         line, task = await seed_line(db, bins=0)
         task.status = PickingTaskStatus.EXECUTING
+        # 本例验证设备等待；SCAN2 的当前有效批次准入仍须成立。
+        operation_id = new_uuid7()
+        batch_evidence = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=f"outbound.bin.inbound_batch@v1:{operation_id}",
+            operation="outbound.bin.inbound_batch@v1",
+            operation_id=operation_id,
+            workline_id=line.id,
+            payload_digest="a" * 64,
+            normalized_payload={
+                "operation_id": operation_id,
+                "code": "DECIDED",
+                "timestamp": 1,
+                "data": {
+                    "result": "READY",
+                    "bins": [
+                        {
+                            "bin_code": "A000000001",
+                            "source_locator": {
+                                "type": "RACK_BIN_SLOT",
+                                "rack_id": "R1",
+                                "rack_face": "90",
+                                "slot_id": "S1",
+                            },
+                        }
+                    ],
+                },
+            },
+            received_at=now,
+            processed_at=now,
+            published_at=now,
+            decision_digest="b" * 64,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        db.add(batch_evidence)
+        await db.flush()
+        db.add_all(
+            [
+                PickingTaskBinSourceRack(
+                    picking_task_id=task.id,
+                    plan_revision=1,
+                    rack_id="R1",
+                    rack_face="90",
+                    source_evidence_id=task.issued_evidence_id,
+                ),
+                ManualPickingInboundBatch(
+                    workline_id=line.id,
+                    picking_task_id=task.id,
+                    task_id=task.task_id,
+                    operation_id=operation_id,
+                    plan_revision=1,
+                    rack_id="R1",
+                    rack_face="90",
+                    response_evidence_id=batch_evidence.id,
+                ),
+            ]
+        )
         line.device_contracts = {
             line.config["device_bindings"]["SCAN2"]: {
                 "device_id": 1,

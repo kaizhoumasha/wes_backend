@@ -184,18 +184,29 @@ async def test_invalid_ack_pair_with_foreign_task_id_remains_delivery_unknown() 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [422])
-async def test_rejected_ack_preserves_a_persistable_reason_code(status_code: int) -> None:
-    access = _ack(
-        status_code,
-        "REJECTED",
-        {"transport_task_id": "transport-1", "reason_code": "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"},
-    )
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "COORDINATED_BIN_EXCHANGE_UNSUPPORTED",
+        "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf",
+    ],
+)
+async def test_rejected_ack_preserves_a_persistable_reason_code(reason_code: str) -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
-    result = await _adapter(FakeClient(access)).submit(**_snapshot())
+    access = _ack(
+        422,
+        "REJECTED",
+        {"transport_task_id": "transport-1", "reason_code": reason_code},
+    )
+    observation = WmsCallObservation(direction="WES_TO_WMS")
+
+    result = await _adapter(FakeClient(access)).submit(**_snapshot(), observation=observation)
 
     assert result.code is TransportSubmitCode.REJECTED
-    assert result.reason_code == "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"
+    assert result.reason_code == reason_code
+    assert observation.response_validated is True
+    assert observation.response_errors == ()
 
 
 @pytest.mark.asyncio

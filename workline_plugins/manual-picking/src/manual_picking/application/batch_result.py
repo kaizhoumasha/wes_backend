@@ -118,6 +118,8 @@ class ManualPickingBatchResultFlow:
             or any(candidate.source_location_code != return_location for candidate in intent.return_candidates)
         ):
             return None
+        if isinstance(outcome.result, BinBatchNoBatch):
+            return "RETURN_NO_BATCH"
         try:
             execution = await self._drain_executions.execution_for_return_batch(
                 db, workline_id=workline_id, operation_id=intent.operation_id
@@ -143,6 +145,13 @@ class ManualPickingBatchResultFlow:
         candidates = intent.return_candidates
         if tuple(row.bin_code for row in rows[: len(candidates)]) != tuple(
             candidate.bin_code for candidate in candidates
+        ):
+            return None
+        if not members and not await self._batches.return_request_in_round(
+            db,
+            workline_id=workline_id,
+            operation_id=intent.operation_id,
+            arrived_at=max(row.created_at for row in rows[: len(candidates)]),
         ):
             return None
         result = outcome.result
@@ -171,8 +180,6 @@ class ManualPickingBatchResultFlow:
                 row.return_state = "RETURN_REQUESTED"
                 row.return_batch_evidence_id = evidence.id
             return "RETURN_READY"
-        if isinstance(result, BinBatchNoBatch):
-            return "RETURN_NO_BATCH"
         return None
 
 

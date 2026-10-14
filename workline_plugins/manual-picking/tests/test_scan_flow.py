@@ -88,12 +88,56 @@ def _drain_rack_recovery(status, *, step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RAC
 @pytest.mark.asyncio
 async def test_completed_drain_preserves_original_departure_retry():
     flow, execution, task, _ = _drain_rack_recovery("COMPLETED")
+    task.created_at = NOW
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "RETURN-RACK-POSITION"},
+            arrival_face="90",
+            source_transport_task_id=task.transport_task_id,
+        )
+    )
     result = await flow.apply_in_session(object(), 10, workline_id=7)
     assert result.disposition is BusinessEvidenceDisposition.APPLIED
     flow._rack_creator.create.assert_awaited_once()
     assert flow._rack_creator.create.return_value.transport_task_id != task.transport_task_id
     assert flow._rack_creator.create.await_args.kwargs["correlation_id"] == "retry:1:TRANSPORT-1"
     assert execution.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE"]
+)
+@pytest.mark.parametrize("pending,returned", [(False, 1), (True, None), (False, None)])
+async def test_cancelled_rack_business_retry_checks_current_face_returns(step, pending, returned):
+    flow, _, task, evidence = _drain_rack_recovery("ACTIVE", step=step)
+    del flow._worklines.line.position_bindings["TRANSFER_RACK"]
+    task.created_at = NOW
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "RETURN-RACK-POSITION"},
+            arrival_face="90",
+            source_transport_task_id=task.transport_task_id,
+        )
+    )
+    flow._batch_progress.has_current_rack_dependency = AsyncMock(return_value=pending)
+    flow._batch_progress.has_unclosed_return_dependency_for_rack = AsyncMock(return_value=False)
+    flow._batch_flow = SimpleNamespace(return_before_motion=AsyncMock(return_value=returned))
+    result = await flow._retry_terminal_rack(object(), evidence, task, 7)
+    if pending or returned is not None:
+        assert result == 1000
+        flow._rack_creator.create.assert_not_awaited()
+        flow._rack_creator.create_rotate.assert_not_awaited()
+    else:
+        assert result == "RETRY_CREATED"
+    if pending:
+        flow._batch_flow.return_before_motion.assert_not_awaited()
+    else:
+        assert flow._batch_flow.return_before_motion.await_args.kwargs["rack_face"] == "90"
 
 
 @pytest.mark.asyncio
@@ -335,6 +379,7 @@ class _Transports:
     async def get_task(self, db, transport_task_id, *, for_update=False):  # type: ignore[no-untyped-def]
         return SimpleNamespace(
             transport_task_id=transport_task_id,
+            created_at=NOW,
             kind="BIN_MOVE" if transport_task_id.startswith("MOVE-A") else "RACK_MOVE",
             status="FAILED" if transport_task_id == self.failed else "SUCCEEDED",
             request_json={
@@ -438,7 +483,28 @@ class _Returns:
 
 
 class _BatchProgress:
+    async def has_newer_rack_action(self, db, **kwargs):
+        return False
+
+    async def has_return_batch_transport(self, db, **kwargs):
+        return False
+
+    async def current_round_started_at(self, db, **kwargs):
+        return NOW
+
+    async def has_current_rack_dependency(self, db, *args):
+        return False
+
+    async def has_unclosed_return_dependency_for_rack(self, db, **kwargs):
+        return False
+
     active_transport = False
+
+    async def current_rack_arrival_at(self, db, **kwargs):
+        return NOW
+
+    async def return_request_in_round(self, db, **kwargs):
+        return True
 
     async def record_scan2(self, db, *, workline_id, picking_task_id, bin_code):
         return bin_code in {"A000000001", "A000000002"}
@@ -555,6 +621,7 @@ def _setup(
         position_reader=_Projections(missing_projection),
         batch_reader=batch_reader,
         batch_result=batch_result,
+        batch_flow=SimpleNamespace(return_before_motion=AsyncMock(return_value=None)),
         drain_executions=unbound_drain_executions(),
     )
     return flow, evidences, passages, commands, admissions
@@ -679,7 +746,7 @@ async def test_return_batch_result_uses_confirmed_source_and_does_not_pass_when_
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
     flow, evidences, _, _, _ = _setup(batch_reader=reader, batch_result=result)
     evidence = _wms(31, InboundEvidenceKind.WMS_RESULT, "batch-2", {})
@@ -712,7 +779,7 @@ async def test_return_batch_result_accepts_a_cancelled_source_member_at_the_rack
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
     flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
     flow._source_racks.has_applied_source_face = AsyncMock(return_value=False)
@@ -727,6 +794,60 @@ async def test_return_batch_result_accepts_a_cancelled_source_member_at_the_rack
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("current_round", [True, False])
+async def test_return_ready_requires_current_rack_fact_without_old_business_owner(current_round):
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="current-return",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    outcome = sdk.BinReturnBatchOutcome(
+        sdk.BinReturnBatchReady((sdk.BinReturnMove(1, "A000000001", sdk.TransportRackBinSlot("RACK-1", "90", "S1")),))
+    )
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, evidences, *_ = _setup(
+        batch_reader=SimpleNamespace(read_return=AsyncMock(return_value=(intent, outcome))), batch_result=result
+    )
+    flow._source_racks.has_source_face = AsyncMock(return_value=False)
+    flow._batch_progress.return_request_in_round = AsyncMock(return_value=current_round)
+    evidence = _wms(35, InboundEvidenceKind.WMS_RESULT, intent.operation_id, {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[35] = evidence
+    applied = await flow.apply_in_session(object(), 35, workline_id=7)
+    assert applied.disposition is (
+        BusinessEvidenceDisposition.APPLIED if current_round else BusinessEvidenceDisposition.RECONCILING
+    )
+    assert result.apply_return_in_session.await_count == int(current_round)
+    flow._source_racks.has_source_face.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_batch_is_consumed_without_current_rack_position_or_new_action():
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="no-allocation",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_NO_BATCH"))
+    flow, evidences, *_ = _setup(
+        batch_reader=SimpleNamespace(
+            read_return=AsyncMock(return_value=(intent, sdk.BinReturnBatchOutcome(sdk.BinBatchNoBatch(1000))))
+        ),
+        batch_result=result,
+        missing_projection=("RACK", "RACK-1"),
+    )
+    evidence = _wms(35, InboundEvidenceKind.WMS_RESULT, intent.operation_id, {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[35] = evidence
+    assert (await flow.apply_in_session(object(), 35, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    result.apply_return_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_return_decision_still_applies_for_original_completed_task() -> None:
     intent = sdk.wms_operations.outbound_bin_return_batch(
         operation_id="batch-after-completion",
@@ -735,7 +856,7 @@ async def test_return_decision_still_applies_for_original_completed_task() -> No
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
     flow, evidences, _, _, _ = _setup(batch_reader=reader, batch_result=result)
     evidence = _wms(32, InboundEvidenceKind.WMS_RESULT, "batch-after-completion", {})
@@ -1321,6 +1442,16 @@ async def test_drain_departure_retry_survives_current_drain_moving_to_a_new_deci
         missing_projection=("RACK", "RACK-1"),
     )
     flow._rack_creator = creator
+    transport_task.created_at = NOW
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "RETURN-RACK-POSITION"},
+            arrival_face="90",
+            source_transport_task_id=transport_task.transport_task_id,
+        )
+    )
     flow._transport_bindings = SimpleNamespace(get_by_client_request_id=AsyncMock(return_value=binding))
     flow._drains = SimpleNamespace(
         executions=unbound_drain_executions(),
@@ -1534,8 +1665,8 @@ async def test_rack_departure_retry_ignored_when_zone_goal_already_satisfied(ste
 
 
 @pytest.mark.asyncio
-async def test_drain_departure_retry_created_when_zone_goal_not_yet_satisfied() -> None:
-    """R5：ZONE 目标货架仍未知/未到位时，退场重试照常创建。"""
+async def test_drain_departure_retry_reconciles_when_current_position_is_unknown() -> None:
+    """目标未满足而当前位置未知时保留原身份对账，不直接重发搬运。"""
     transport_task = SimpleNamespace(
         status="FAILED",
         kind="RACK_MOVE",
@@ -1596,13 +1727,13 @@ async def test_drain_departure_retry_created_when_zone_goal_not_yet_satisfied() 
     evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
     creator.create.return_value = None
     second = await flow.apply_in_session(object(), 10, workline_id=7)
-    assert second.disposition is BusinessEvidenceDisposition.APPLIED
-    creator.create.assert_awaited_once()
+    assert second.disposition is BusinessEvidenceDisposition.RECONCILING
+    creator.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_drain_departure_retry_ignores_an_unrelated_later_transport_to_a_different_target() -> None:
-    """R5：货架最新一次成功搬运若不是去这个 ZONE，不能当作这次退场目标已满足（红队发现）。"""
+async def test_drain_departure_retry_yields_to_new_business_takeover() -> None:
+    """新业务已接管货架，旧离场目标不能驱动本轮重试。"""
     transport_task = SimpleNamespace(
         status="FAILED",
         kind="RACK_MOVE",
@@ -1682,8 +1813,8 @@ async def test_drain_departure_retry_ignores_an_unrelated_later_transport_to_a_d
 
     evidence.decision_next_attempt_at = NOW + timedelta(seconds=1)
     second = await flow.apply_in_session(object(), 10, workline_id=7)
-    assert second.disposition is BusinessEvidenceDisposition.APPLIED
-    creator.create.assert_awaited_once()
+    assert second.disposition is BusinessEvidenceDisposition.IGNORED
+    creator.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2710,7 +2841,7 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
     flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
     if case == "different_position_codes":
@@ -2733,7 +2864,9 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
     flow._drains = SimpleNamespace(
         for_evidence=AsyncMock(return_value=drain),
         current=AsyncMock(return_value=drain),
-        transport=AsyncMock(return_value=None if case == "no_ingress" else object()),
+        transport=AsyncMock(
+            return_value=None if case == "no_ingress" else SimpleNamespace(transport_task_id="MOVE-RACK-1")
+        ),
         arrival_matches=AsyncMock(return_value=case != "wrong_member"),
     )
     flow._source_racks.has_source_face = AsyncMock(return_value=True)
@@ -2750,9 +2883,56 @@ async def test_drain_return_requires_active_ready_chain_and_its_authoritative_in
         case in {"valid", "different_position_codes", "wrong_rack", "pending"}
     )
     if case in {"wrong_rack", "pending"}:
-        flow._source_racks.has_source_face.assert_awaited_once()
+        flow._source_racks.has_source_face.assert_not_awaited()
     else:
         flow._source_racks.has_source_face.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_owner", [False, True])
+async def test_drain_ready_after_rotation_consumes_only_current_face_transport(new_owner):
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="return-270",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="270",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, _, *_ = _setup(batch_reader=reader, batch_result=result)
+    flow._drain_executions.execution_for_return_batch.return_value = SimpleNamespace(
+        status="ACTIVE",
+        decision_evidence_id=9,
+        drain_operation_id="drain-original",
+    )
+    drain = SimpleNamespace(
+        intent=SimpleNamespace(operation_id="drain-original"),
+        result=sdk.ReturnBufferDrainReady((sdk.RackFaceSequence("RACK-1", ("90", "270")),)),
+    )
+    ingress, rotation = SimpleNamespace(transport_task_id="in-90"), SimpleNamespace(transport_task_id="rotate-270")
+    flow._drains = SimpleNamespace(
+        for_evidence=AsyncMock(return_value=drain),
+        transport=AsyncMock(
+            side_effect=lambda _db, _drain, step, *args: ingress if step.endswith("RACK_IN") else rotation
+        ),
+        arrival_matches=AsyncMock(
+            side_effect=lambda _db, action, source, *args: action.transport_task_id == source.source_transport_task_id
+        ),
+    )
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            source_transport_task_id="new-owner" if new_owner else "rotate-270",
+            workline_id=7,
+            position_unknown=False,
+            arrival_face="270",
+            position_json={"kind": "RACK_POSITION", "location_code": "FIVE-RACK-POSITION"},
+        )
+    )
+    assert await flow._apply_batch_result(
+        object(), SimpleNamespace(operation="outbound.bin.return_batch@v1"), flow._worklines.line
+    ) == (None if new_owner else "RETURN_READY")
+    assert result.apply_return_in_session.await_count == (0 if new_owner else 1)
 
 
 @pytest.mark.asyncio
@@ -2764,7 +2944,7 @@ async def test_source_return_no_batch_applies_when_current_drain_reserves_a_diff
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_NO_BATCH"))
     flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result)
     flow._drains = SimpleNamespace(
@@ -2785,7 +2965,7 @@ async def test_source_return_no_batch_applies_when_current_drain_reserves_a_diff
     applied = await flow.apply_in_session(db, 32, workline_id=7)
 
     assert applied.disposition is BusinessEvidenceDisposition.APPLIED
-    flow._source_racks.has_source_face.assert_awaited_once_with(db, 7, "RACK-1", "90")
+    flow._source_racks.has_source_face.assert_not_awaited()
     flow._drains.transport.assert_not_awaited()
     result.apply_return_in_session.assert_awaited_once()
 
@@ -2940,7 +3120,7 @@ async def _assert_retired_drain_batch_consumed(reused):
         rack_face="90",
         return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
     )
-    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, object())))
+    reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=None))))
     result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
     flow, evidences, *_ = _setup(
         batch_reader=reader, batch_result=result, missing_projection=None if reused else ("RACK", "RACK-1")
@@ -3059,3 +3239,74 @@ async def test_scan_command_replay_still_rejects_payload_drift() -> None:
     with pytest.raises(DeviceCommandIdentityConflictError):
         await flow._move(object(), 7, {"SCAN2": "S2"}, "SCAN2", 99, "MOVE_LEFT")
     assert len(commands.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen", [False, True])
+async def test_return_ready_defers_new_moves_to_current_owner_but_preserves_frozen_transport(frozen):
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="current-return",
+        workline_code="LINE-1",
+        rack_id="RACK-1",
+        rack_face="90",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000000001", "OUTLET-POSITION"),),
+    )
+    outcome = sdk.BinReturnBatchOutcome(
+        sdk.BinReturnBatchReady((sdk.BinReturnMove(1, "A000000001", sdk.TransportRackBinSlot("RACK-1", "90", "S1")),))
+    )
+    result = SimpleNamespace(apply_return_in_session=AsyncMock(return_value="RETURN_READY"))
+    flow, evidences, *_ = _setup(
+        batch_reader=SimpleNamespace(read_return=AsyncMock(return_value=(intent, outcome))), batch_result=result
+    )
+    flow._batch_progress.has_newer_rack_action = AsyncMock(return_value=True)
+    flow._batch_progress.has_return_batch_transport = AsyncMock(return_value=frozen)
+    evidence = _wms(35, InboundEvidenceKind.WMS_RESULT, intent.operation_id, {})
+    evidence.operation = "outbound.bin.return_batch@v1"
+    evidences.rows[35] = evidence
+    applied = await flow.apply_in_session(object(), 35, workline_id=7)
+    assert applied.disposition is (
+        BusinessEvidenceDisposition.APPLIED if frozen else BusinessEvidenceDisposition.DEFERRED
+    )
+    assert result.apply_return_in_session.await_count == int(frozen)
+
+
+@pytest.mark.asyncio
+async def test_late_606_departure_success_only_closes_evidence_without_current_position_or_actions():
+    flow, *_ = _setup()
+    flow._positions = SimpleNamespace(get=AsyncMock())
+    flow._rack_creator = SimpleNamespace(
+        create=AsyncMock(), create_rotate=AsyncMock(), create_windowed_inbound=AsyncMock()
+    )
+    flow._transport_reader = SimpleNamespace(
+        get_task=AsyncMock(
+            return_value=SimpleNamespace(
+                transport_task_id="old-606",
+                client_request_id="old-request",
+                request_json={"rack_id": "510021", "target": {"kind": "ZONE", "location_code": "WH01"}},
+            )
+        )
+    )
+    evidence = SimpleNamespace(
+        transport_task_id="old-606",
+        normalized_payload={
+            "transport_task_id": "old-606",
+            "client_request_id": "old-request",
+            "caller": {"workline_id": "7"},
+            "step": "MANUAL_PICKING_SOURCE_RACK_OUT",
+            "rack_id": "510021",
+            "source_evidence_id": 101,
+            "status": "SUCCEEDED",
+            "members": [
+                {
+                    "object_id": "510021",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "WHE0703"},
+                    "arrival_face": None,
+                }
+            ],
+        },
+    )
+    for _ in range(2):
+        assert await flow._apply_transport_result(object(), evidence, 7) == "SUCCEEDED"
+    flow._positions.get.assert_not_awaited()
+    for method in vars(flow._rack_creator).values():
+        method.assert_not_awaited()

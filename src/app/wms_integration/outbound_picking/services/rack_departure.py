@@ -21,6 +21,7 @@ from src.app.wms_adapter.outbound_picking.departure_wire import (
 from src.app.wms_integration.outbound_picking.repositories.rack_departure_repository import RackDepartureRepository
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.transaction_wakeup import defer_wakeup
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -73,6 +74,29 @@ class RackDepartureScheduler:
 class RackDepartureResultReader:
     def __init__(self, repository: RackDepartureRepository | None = None) -> None:
         self._repository = repository or RackDepartureRepository()
+
+    async def by_operation_id(
+        self, db: AsyncSession, *, workline_id: int, operation_id: str, rack_id: str
+    ) -> RackDepartureSnapshot | None:
+        confirmation = await self._repository.by_operation_id(db, operation_id)
+        if confirmation is None:
+            return None
+        if (
+            confirmation.operation != RACK_DEPARTURE_OPERATION
+            or confirmation.operation_id != operation_id
+            or confirmation.workline_id != workline_id
+            or confirmation.picking_task_id is not None
+            or canonical_json_digest(confirmation.request_payload) != confirmation.request_digest
+        ):
+            raise ValueError("departure frozen owner or request identity mismatch")
+        snapshot = await self._snapshot(db, confirmation, rack_id)
+        if snapshot.intent.task_id is not None:
+            raise ValueError("WorkLine departure requires null task_id")
+        if snapshot.status == WmsConfirmationStatus.COMPLETED:
+            evidence = await self._repository.evidence(db, snapshot.evidence_id)
+            if evidence.published_at is None:
+                raise ValueError("departure result evidence is not published")
+        return snapshot
 
     async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> RackDepartureSnapshot | None:
         confirmation = await self._repository.latest(db, picking_task_id, rack_id)

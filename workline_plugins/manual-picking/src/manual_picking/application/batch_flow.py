@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, cast
 
+from wes_plugin_sdk import BinReturnCandidate, wms_operations
+
 from .batch_policy import choose_next_batch
 from .drain_execution_repository import DrainExecutionRepository
 
@@ -19,6 +21,15 @@ if TYPE_CHECKING:
 
 
 class BatchRepository(Protocol):
+    async def return_before_motion_state(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        rack_id: str,
+        rack_face: str,
+        arrived_at: datetime,
+    ) -> str | None: ...
     async def has_unclosed_action_for_face(
         self,
         db: AsyncSession,
@@ -105,6 +116,48 @@ class ManualPickingBatchFlow:
         self._scheduler = scheduler
         self._inbound = inbound
         self._uuid_factory = uuid_factory
+
+    async def return_before_motion(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        workline_code: str,
+        rack_id: str,
+        rack_face: str | None,
+        return_location: str,
+        arrived_at: datetime,
+        now: datetime,
+    ) -> int | None:
+        """None 允许换面/离场；0 等待直接义务；1 创建当前到位面的回架请求。"""
+        rows = await self._passages.ready_prefix_for_update(db, workline_id)
+        rows = await self._drain_executions.eligible_return_prefix(db, workline_id=workline_id, rows=tuple(rows))
+        if not rows:
+            return None
+        if rack_face is None:
+            return None
+        state = await self._repository.return_before_motion_state(
+            db,
+            workline_id=workline_id,
+            rack_id=rack_id,
+            rack_face=rack_face,
+            arrived_at=arrived_at,
+        )
+        if state == "WAIT":
+            return 0
+        if state == "DONE":
+            return None
+        intent = wms_operations.outbound_bin_return_batch(
+            operation_id=self._uuid_factory(),
+            workline_code=workline_code,
+            rack_id=rack_id,
+            rack_face=rack_face,
+            return_candidates=tuple(
+                BinReturnCandidate(i, row.bin_code, return_location) for i, row in enumerate(rows, 1)
+            ),
+        )
+        await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
+        return 1
 
     async def face_progress(
         self,

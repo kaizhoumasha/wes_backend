@@ -11,4 +11,5 @@ def unbound_drain_executions():
         freeze_return_members_in_session=AsyncMock(),
         execution_for_return_batch=AsyncMock(return_value=None),
         members_for_return_batch=AsyncMock(return_value=()),
+        pending_return_for_rack=AsyncMock(return_value=None),
     )

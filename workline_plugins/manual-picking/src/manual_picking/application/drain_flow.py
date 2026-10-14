@@ -6,7 +6,6 @@ from datetime import timedelta
 from typing import Any
 
 from wes_plugin_sdk import (
-    BinBatchNoBatch,
     BinReturnCandidate,
     ReturnBufferDrainReady,
     ReturnBufferDrainWait,
@@ -180,9 +179,7 @@ class ManualPickingDrainFlow:
             return False
         latest = await self._latest_return_for_drain(db, line, decision, rack_id, face)
         if latest is not None:
-            outcome, _ = latest
-            if isinstance(outcome.result, BinBatchNoBatch):
-                return False
+            return False
         rows = await self._passages.ready_prefix_for_update(db, line.id)
         rows = await self._drain_executions.eligible_return_prefix(db, workline_id=line.id, rows=tuple(rows))
         if not rows:
@@ -206,6 +203,12 @@ class ManualPickingDrainFlow:
     async def active_rack_face(self, db: Any, line: Any, decision: Any, rack_id: str) -> tuple[str, str, bool] | None:
         if not isinstance(decision.result, ReturnBufferDrainReady):
             return None
+        execution = await self._drain_executions.for_evidence(db, workline_id=line.id, evidence_id=decision.evidence_id)
+        pending = await self._drain_executions.pending_return_for_rack(
+            db, execution_id=execution.id, workline_id=line.id, rack_id=rack_id
+        )
+        if pending is not None:
+            return rack_id, pending[0].rack_face, False
         rows = await self._passages.ready_prefix_for_update(db, line.id)
         rows = await self._drain_executions.eligible_return_prefix(db, workline_id=line.id, rows=tuple(rows))
         last_exhausted: tuple[str, str] | None = None
@@ -218,11 +221,8 @@ class ManualPickingDrainFlow:
                     if rows:
                         return rack.rack_id, face, False
                     return (*last_exhausted, False) if last_exhausted is not None else (rack.rack_id, face, False)
-                outcome, _ = latest
-                if isinstance(outcome.result, BinBatchNoBatch):
-                    last_exhausted = rack.rack_id, face
-                    continue
-                return rack.rack_id, face, False
+                last_exhausted = rack.rack_id, face
+                continue
             return (*last_exhausted, True) if last_exhausted is not None else None
         raise ValueError("rack is not reserved by drain decision")
 

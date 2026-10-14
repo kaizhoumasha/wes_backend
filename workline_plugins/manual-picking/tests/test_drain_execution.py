@@ -86,6 +86,7 @@ async def test_retired_pending_members_are_not_selected_by_new_batch(status):
     rows = tuple(SimpleNamespace(id=i, bin_code=f"B{i}") for i in (40, 41, 42))
     records = [(SimpleNamespace(return_id=41), status, SimpleNamespace(status="PENDING"), None)]
     db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: records)))
+    db.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: ()))
     assert await DrainExecutionRepository().eligible_return_prefix(db, workline_id=7, rows=rows) == rows[:1]
 
 
@@ -103,6 +104,7 @@ async def test_same_bin_new_return_id_does_not_inherit_old_membership():
             )
         )
     )
+    db.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: ()))
     assert await DrainExecutionRepository().eligible_return_prefix(db, workline_id=7, rows=(row,)) == (row,)
 
 
@@ -133,12 +135,12 @@ async def test_same_batch_replay_rejects_changed_return_ids(ids):
         ("COMPLETED", "PENDING", "NO_BATCH", False),
         ("COMPLETED", "RECONCILING", "NO_BATCH", False),
         ("COMPLETED", "COMPLETED", "READY", False),
-        ("EXCEPTION_RETIRED", "COMPLETED", "NO_BATCH", False),
+        ("EXCEPTION_RETIRED", "COMPLETED", "NO_BATCH", True),
         ("ACTIVE", "RECONCILING", "NO_BATCH", False),
         ("ACTIVE", "COMPLETED", "READY", False),
     ],
 )
-async def test_only_active_determined_no_batch_releases_original_member(status, delivery, result, allowed):
+async def test_determined_no_batch_releases_candidate_without_reopening_drain(status, delivery, result, allowed):
     from manual_picking.application.drain_execution_repository import DrainExecutionRepository
     from wes_plugin_sdk import (
         BinBatchNoBatch,
@@ -169,6 +171,7 @@ async def test_only_active_determined_no_batch_releases_original_member(status, 
     db = SimpleNamespace(
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [(member, status, confirmation, evidence)]))
     )
+    db.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: ()))
     assert await repository.eligible_return_prefix(db, workline_id=7, rows=(row,)) == ((row,) if allowed else ())
 
 

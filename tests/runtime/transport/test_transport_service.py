@@ -969,7 +969,7 @@ async def test_accepted_progress_notifies_hook_and_wakes_owner(service: Transpor
 
 
 @pytest.mark.asyncio
-async def test_rejected_progress_notifies_hook_and_wakes_owner(service: TransportService) -> None:
+async def test_rejected_progress_notifies_hook_and_wakes_owner(service: TransportService, db_engine: object) -> None:
     progress_hook = AsyncMock(return_value=True)
     queue = SimpleNamespace(
         enqueue_transport_submit=Mock(),
@@ -989,6 +989,12 @@ async def test_rejected_progress_notifies_hook_and_wakes_owner(service: Transpor
     progress_hook.assert_awaited_once()
     assert progress_hook.await_args.args[1].client_request_id == handle.client_request_id
     queue.enqueue_picking_task_plans.assert_called_once()
+
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "REJECTED"
+    assert snapshot.outcome_version == 1
+    assert await service.submit_pending_tasks(1) == 0
+    assert service.provider.calls == [handle.transport_task_id]
 
 
 @pytest.mark.asyncio

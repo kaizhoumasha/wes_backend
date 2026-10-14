@@ -57,6 +57,23 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
+async def _seed_gate_windows(db):
+    for workline_id, rack_id in ((7, "R1"), (7, "R2"), (8, "R1"), (7, "510002")):
+        db.add(
+            TransportDecisionBinding(
+                workline_id=workline_id,
+                correlation_id=f"gate:{workline_id}:{rack_id}",
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id=rack_id,
+                client_request_id=f"gate:{workline_id}:{rack_id}",
+                source_evidence_id=31,
+                window_target_location_code=f"POS-{rack_id}",
+                created_at=datetime(2000, 1, 1),
+            )
+        )
+    await db.flush()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["member_first", "transport_first"])
 async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_action(order) -> None:
@@ -188,6 +205,29 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
             window.window_departure_client_request_id = None
             await db.flush()
 
+            other = transport("other-owner", "REJECTED")
+            other.outcome_version = other.published_outcome_version = 1
+            other_binding = TransportDecisionBinding(
+                workline_id=7,
+                picking_task_id=12,
+                correlation_id="other-owner",
+                causal_token=102,
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id="510021",
+                client_request_id="other-owner",
+                source_evidence_id=32,
+                created_at=started,
+            )
+            db.add_all([other, other_binding])
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "retry"
+            other.status = "ACCEPTED"
+            await db.flush()
+            assert await contexts() == []
+            other.status = "REJECTED"
+            await db.flush()
+            assert (await contexts())[0][1].transport_task_id == "retry"
+
             new_member = PickingTaskBinSourceRack(
                 picking_task_id=11,
                 plan_revision=2,
@@ -215,7 +255,7 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
             window.window_released_at = started + timedelta(seconds=1)
             await db.flush()
             assert await contexts() == []
-            assert (await db.scalars(select(TransportTask))).all() == [ingress, retry]
+            assert (await db.scalars(select(TransportTask))).all() == [ingress, retry, other]
     finally:
         await engine.dispose()
 
@@ -506,6 +546,7 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
     now = datetime(2026, 9, 13, 12)
     try:
         async with sessions.begin() as db:
+            await _seed_gate_windows(db)
             repo = module.BatchRepository()
             db.add(
                 WmsConfirmation(
@@ -554,7 +595,7 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
                 )
             )
             await db.flush()
-            assert not await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
             assert await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
             assert not await repo.has_unclosed_action_for_face(db, 7, None, None, "R2", "270")
     finally:
@@ -568,6 +609,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
     now = datetime(2026, 9, 13, 12)
     try:
         async with sessions.begin() as db:
+            await _seed_gate_windows(db)
             repo = module.BatchRepository()
             # 1) PENDING confirmation 同 workline/同 task/同 face 阻塞;不同 workline 不阻塞。
             confirmation = WmsConfirmation(
@@ -654,6 +696,7 @@ async def test_face_gate_waits_for_published_terminal_position() -> None:
     now = datetime(2026, 9, 13, 12)
     try:
         async with sessions.begin() as db:
+            await _seed_gate_windows(db)
             repo = module.BatchRepository()
             task = TransportTask(
                 transport_task_id="transport-1",
@@ -741,6 +784,7 @@ async def test_face_gate_waits_for_published_terminal_position() -> None:
 @pytest.mark.asyncio
 async def test_return_transport_face_gate_compiles_json_position_comparison_for_postgres() -> None:
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    repo.current_round_started_at = AsyncMock(return_value=datetime(2000, 1, 1))
     db = SimpleNamespace(scalar=AsyncMock(return_value=None))
 
     await repo.has_unclosed_return_transport_for_face(db, workline_id=7, rack_id="R1", rack_face="90")
@@ -758,6 +802,7 @@ async def test_face_gate_without_task_scope_tracks_return_confirmation_and_evide
     now = datetime(2026, 9, 13, 12)
     try:
         async with sessions.begin() as db:
+            await _seed_gate_windows(db)
             repo = module.BatchRepository()
             confirmation = WmsConfirmation(
                 operation="outbound.bin.return_batch@v1",
@@ -1406,13 +1451,14 @@ async def test_return_target_conflict_uses_only_active_frozen_targets(status: st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "evidence_state,blocked", [("RECONCILING", False), ("IGNORED", False), ("PENDING", True), ("APPLIED", True)]
+    "evidence_state,blocked", [("RECONCILING", True), ("IGNORED", False), ("PENDING", True), ("APPLIED", True)]
 )
-async def test_mock_bad_case_kt16_old_return_response_does_not_block_next_round(evidence_state, blocked):  # type: ignore[no-untyped-def]
-    """KT16-20260925：上一轮异常回架响应不能冻结再次到位的 510002/270。"""
+async def test_current_return_response_waits_for_application(evidence_state, blocked):  # type: ignore[no-untyped-def]
+    """本轮未闭合回架响应仍是直接依赖；旧轮次由独立用例验证。"""
     engine, sessions = await _new_sessions()
     try:
         async with sessions.begin() as db:
+            await _seed_gate_windows(db)
             for operation_id in (
                 "01a0d943-de51-71b8-ac6f-5a445a01db6e",
                 "01a0d944-2cb6-73c3-b05c-1733c2f32bb0",
@@ -1493,7 +1539,7 @@ async def test_mock_bad_case_ctu03_waits_only_for_current_rack_moves(status, sid
             db.add(member)
             await db.flush()
             assert await repo.has_current_rack_dependency(db, 7, "510027", now) is (
-                status in {"PENDING", "ACCEPTED", "RECONCILING"}
+                status in {"PENDING", "ACCEPTED", "RECONCILING", "FAILED"}
             )
             assert await repo.has_active_bin_transport(db, "A000000341") is (
                 status in {"PENDING", "ACCEPTED", "RECONCILING"}
@@ -1676,8 +1722,9 @@ async def test_mock_bad_case_a087_a000002668_preserves_original_return_dependenc
         ("SUCCEEDED", True, True, 1, False),
     ],
 )
+@pytest.mark.parametrize("retired", [False, True])
 async def test_rack_departure_ignores_old_failed_return_but_preserves_current_round_dependency(
-    status, final_known, final_matches, published, blocked
+    status, final_known, final_matches, published, blocked, retired
 ):
     engine, sessions = await _new_sessions()
     started_at = datetime(2026, 10, 13, 13, 53)
@@ -1695,6 +1742,8 @@ async def test_rack_departure_ignores_old_failed_return_but_preserves_current_ro
                 created_at=started_at,
             )
             db.add(window)
+            if retired:
+                window.window_released_at = started_at + timedelta(minutes=1)
             tasks = []
             members = []
             for identity, created_at in (
@@ -1739,7 +1788,11 @@ async def test_rack_departure_ignores_old_failed_return_but_preserves_current_ro
                 db.add_all([task, member])
             await db.flush()
             repo = import_module("manual_picking.application.batch_repository").BatchRepository()
-            assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002") is blocked
+            scope = {"round_started_at": started_at} if retired else {}
+            assert (
+                await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002", **scope)
+                is blocked
+            )
             # 换面不新建窗口；其他面的本轮在途回架仍然属于整架依赖。
             assert window.created_at == started_at
             assert tasks[0].status == "FAILED" and tasks[0].reason_code == "OPERATOR_CONFIRMED_CANCELLED"
@@ -1747,7 +1800,7 @@ async def test_rack_departure_ignores_old_failed_return_but_preserves_current_ro
             assert len((await db.scalars(select(TransportTask))).all()) == 2
             tasks[1].authority_workline_id = 8
             await db.flush()
-            assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
+            assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002", **scope)
     finally:
         await engine.dispose()
 
@@ -1845,5 +1898,78 @@ async def test_mock_a000002121_cancelled_source_allows_confirmed_inbound_without
             assert await repo.record_scan2(db, **args)
             assert len((await db.scalars(select(ManualPickingInboundBatchScan))).all()) == 1
             assert not await repo.record_scan2(db, **{**args, "bin_code": "OTHER"})
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_status", ["SUCCEEDED", "FAILED", "ACCEPTED", "RECONCILING"])
+async def test_old_606_unpublished_result_does_not_block_new_round_and_current_action_still_blocks(old_status):
+    engine, sessions = await _new_sessions()
+    start = datetime(2026, 10, 13, 22, 55)
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    try:
+        async with sessions.begin() as db:
+            old = TransportTask(
+                transport_task_id="old-606",
+                client_request_id="old-606",
+                kind="RACK_MOVE",
+                authority_workline_id=7,
+                caller_json={"workline_id": "7"},
+                request_json={"rack_id": "510021"},
+                request_digest="a" * 64,
+                submit_operation_id="old-submit",
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status=old_status,
+                outcome_version=1,
+                published_outcome_version=0,
+                created_at=start - timedelta(hours=2),
+                updated_at=start,
+            )
+            old_binding = TransportDecisionBinding(
+                workline_id=7,
+                picking_task_id=31,
+                correlation_id="departure:original",
+                step="MANUAL_PICKING_SOURCE_RACK_OUT",
+                resource_fence_id="510021",
+                source_evidence_id=101,
+                client_request_id="old-606",
+                causal_token=606,
+                created_at=old.created_at,
+            )
+            root = TransportDecisionBinding(
+                workline_id=7,
+                correlation_id="current",
+                step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN",
+                resource_fence_id="510021",
+                source_evidence_id=202,
+                client_request_id="current",
+                causal_token=664,
+                window_target_location_code="KT16",
+                created_at=start,
+            )
+            db.add_all([old, old_binding, root])
+            await db.flush()
+            assert not await repo.has_current_rack_dependency(db, 7, "510021", start)
+            assert not await repo.has_newer_rack_action(db, rack_id="510021", causal_token=664)
+            current = TransportTask(
+                **{
+                    **old.model_dump(exclude={"id"}),
+                    "transport_task_id": "current",
+                    "client_request_id": "current",
+                    "submit_operation_id": "current-submit",
+                    "status": "ACCEPTED",
+                    "created_at": start,
+                    "outcome_version": 0,
+                    "published_outcome_version": 0,
+                }
+            )
+            db.add(current)
+            await db.flush()
+            assert await repo.has_current_rack_dependency(db, 7, "510021", start)
+            assert old.published_outcome_version == 0 and old.status == old_status
+            assert old_binding.source_evidence_id == 101 and old_binding.causal_token == 606
     finally:
         await engine.dispose()
