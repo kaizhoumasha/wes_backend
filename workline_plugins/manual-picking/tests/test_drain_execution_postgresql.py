@@ -705,6 +705,7 @@ async def test_nonempty_downgrade_refuses_and_preserves_frozen_runtime_identity(
     url, sessions = rack_database
     repository = DrainExecutionRepository()
     async with sessions.begin() as db:
+        starting_revision = await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version"))
         line, task = await seed_line(db)
         decision = await seed_ready(db, line)
         execution = await repository.ensure_ready_in_session(db, decision=decision)
@@ -732,7 +733,7 @@ async def test_nonempty_downgrade_refuses_and_preserves_frozen_runtime_identity(
         run_alembic("downgrade", PARENT_REVISION, database_url=url)
     assert "downgrade would lose frozen runtime identity" in failure.value.stderr
     async with sessions() as db:
-        assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == REVISION
+        assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == starting_revision
         preserved = await db.get(ManualPickingDrainExecution, execution.id)
         assert preserved.status == "EXCEPTION_RETIRED"
         assert preserved.drain_operation_id == decision.intent.operation_id
