@@ -1802,7 +1802,9 @@ class TransportService:
             or any(m.last_operation_id == origin and m.object_id != bin_code for m in members)
         ):
             raise TransportContractError("scan arrival differs from frozen transport member")
-        if task.status in {"SUCCEEDED", "FAILED", "REJECTED"} or member.status in {"SUCCEEDED", "FAILED"}:
+        if task.status in {"SUCCEEDED", "FAILED", "REJECTED"} or (
+            member.status in {"SUCCEEDED", "FAILED"} and not member.position_unknown
+        ):
             return
         now = timezone.now_for_db()
         await self._repository.lock_position_result(db, "BIN", bin_code)

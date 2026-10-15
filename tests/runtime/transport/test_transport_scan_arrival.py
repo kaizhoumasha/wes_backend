@@ -273,3 +273,74 @@ async def test_delayed_or_invalid_scan_event_time_does_not_close_new_transport(d
         assert task.status == "ACCEPTED" and task.outcome_version == 0
         assert member.status == "PENDING" and member.last_operation_id is None
         projections.apply_transport_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_refines_failed_member_with_unknown_position_on_original_task(db_engine):
+    service, sessions, _ = await _case(db_engine, count=2)
+    await record_valid_callback(
+        service,
+        operation_id="019f0000-0000-7000-8000-000000000097",
+        transport_task_id="original",
+        operation="transport.task.resulted@v1",
+        timestamp=1,
+        payload={
+            "kind": "BIN_MOVE",
+            "outcome_revision": 1,
+            "results": [
+                {
+                    "container_id": "A000000000",
+                    "status": "FAILED",
+                    "position_unknown": True,
+                    "failure_code": "POSITION_UNKNOWN",
+                },
+                {
+                    "container_id": "A000000001",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "INLET"},
+                },
+            ],
+        },
+    )
+    await service.process_pending_evidence(1)
+    async with sessions.begin() as db:
+        task = await service._repository.get_task(db, "original")
+        member = (await service._repository.list_members(db, "original"))[0]
+        assert task.status == "RECONCILING" and member.status == "FAILED" and member.position_unknown
+        await service.confirm_bin_arrival_in_session(
+            db,
+            transport_task_id="original",
+            bin_code="A000000000",
+            target=HandoffPosition("INLET"),
+            source_evidence_id=SCAN_ID,
+        )
+        assert member.status == "SUCCEEDED" and not member.position_unknown
+        assert member.last_operation_id == f"scan:{SCAN_ID}" and member.failure_code is None
+        assert task.status == "SUCCEEDED" and task.reason_code == "SCAN_TARGET_CONFIRMED"
+        assert task.outcome_version == 2 and task.last_applied_wms_outcome_revision == 1
+        assert task.submit_operation_id == "original-operation" and task.submit_request_body == "frozen-body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member_status", ["SUCCEEDED", "FAILED"])
+async def test_scan_does_not_rewrite_known_terminal_member_of_reconciling_task(db_engine, member_status):
+    service, sessions, projections = await _case(db_engine, count=2)
+    async with sessions.begin() as db:
+        task = await service._repository.get_task(db, "original")
+        task.status = "RECONCILING"
+        member = (await service._repository.list_members(db, "original"))[0]
+        member.status = member_status
+        member.final_position_json = member.target_json if member_status == "SUCCEEDED" else member.source_json
+        member.position_unknown = False
+        member.last_operation_id = "original-terminal-fact"
+        before = member.model_dump()
+        await service.confirm_bin_arrival_in_session(
+            db,
+            transport_task_id="original",
+            bin_code="A000000000",
+            target=HandoffPosition("INLET"),
+            source_evidence_id=SCAN_ID,
+        )
+        assert member.model_dump() == before
+        assert task.status == "RECONCILING" and task.outcome_version == 0
+        projections.apply_transport_result.assert_not_awaited()

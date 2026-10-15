@@ -150,7 +150,10 @@ async def test_scan_completion_commits_with_projection_and_rolls_back_atomically
             await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
 
 
-async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finishes_replay(integration_session_factory):
+@pytest.mark.parametrize("prior_unknown", [False, True])
+async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finishes_replay(
+    integration_session_factory, prior_unknown
+):
     repository = TransportRepository()
     service = TransportService(
         integration_session_factory,
@@ -169,6 +172,29 @@ async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finish
         tuple(BinMove(code, RackBinSlot("scan-rack", "90", str(i)), target) for i, code in enumerate(bins)),
         execution_authority=authority,
     )
+    unknown_operation_id = new_uuid7()
+    if prior_unknown:
+        await record_valid_callback(
+            service,
+            operation_id=unknown_operation_id,
+            transport_task_id=handle.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": code,
+                        "status": "FAILED",
+                        "position_unknown": True,
+                        "failure_code": "POSITION_UNKNOWN",
+                    }
+                    for code in bins
+                ],
+            },
+        )
+        await service.process_pending_evidence(10)
     async with integration_session_factory.begin() as db:
         task = await repository.get_task(db, handle.transport_task_id)
         source = InboundEvidence(
@@ -208,6 +234,10 @@ async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finish
             target=target,
             source_evidence_id=source_id,
         )
+        projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == bins[0]))
+        assert projection.position_unknown is False
+        assert projection.source_operation_id == f"scan:{source_id}"
+        assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "SCAN-INLET"}
     operation_id = new_uuid7()
     try:
         await record_valid_callback(
@@ -218,7 +248,7 @@ async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finish
             timestamp=1,
             payload={
                 "kind": "BIN_MOVE",
-                "outcome_revision": 1,
+                "outcome_revision": 2 if prior_unknown else 1,
                 "results": [
                     {
                         "container_id": code,
@@ -236,7 +266,7 @@ async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finish
             projections = list(
                 (await db.scalars(select(PositionProjection).where(PositionProjection.object_id.in_(bins)))).all()
             )
-            assert task.status == "SUCCEEDED" and task.outcome_version == 1
+            assert task.status == "SUCCEEDED" and task.outcome_version == (2 if prior_unknown else 1)
             assert members[0].last_operation_id == f"scan:{source_id}"
             assert members[1].last_operation_id == operation_id
             assert {row.object_id: row.source_operation_id for row in projections} == {
@@ -265,7 +295,9 @@ async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finish
                 delete(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_id)
             )
             await db.execute(
-                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation_id.in_((operation_id, unknown_operation_id))
+                )
             )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
