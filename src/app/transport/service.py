@@ -1705,6 +1705,10 @@ class TransportService:
         for member in sorted(members, key=lambda item: (item.object_type, item.object_id)):
             await self._repository.lock_position_result(db, member.object_type, member.object_id)
         for member, result, outcome, cancelled in validated_results:
+            if member.last_operation_id is not None and member.last_operation_id.startswith("scan:"):
+                # 一致回执补齐其余成员；已确认扫码事实及投影继续引用原 Evidence。
+                outcomes.append(outcome)
+                continue
             status = "FAILED" if cancelled else result["status"]
             final_position = result.get("final_position")
             position_unknown = result.get("position_unknown") is True
@@ -1782,6 +1786,8 @@ class TransportService:
             or source.apply_status != "APPLIED"
             or source.workline_id != task.authority_workline_id
             or source.received_at < task.created_at
+            or type(source.normalized_payload.get("timestamp")) is not int
+            or source.normalized_payload["timestamp"] < int(timezone.to_utc(task.created_at).timestamp() * 1000)
             or source.normalized_payload.get("event_type") != "SCAN_COMPLETED"
             or source.normalized_payload.get("is_debug") is not False
         ):

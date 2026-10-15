@@ -749,9 +749,9 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 结果携带 `transport_task_id`、`client_request_id`、单调递增的 `outcome_version`、`TransportCaller`、稳定结果码和最终位置。
 只有 `SUCCEEDED` 可以触发依赖动作。
 
-人工线入站 `BIN_MOVE` 增加已批准的本地扫码完成依据：插件将真实 SCAN1、当前冻结 READY 成员、原 Transport 和精确 HANDOFF_POSITION 目标唯一关联，宿主同事务保存该成员成功及原 InboundEvidence 引用（`last_operation_id=scan:<id>`）。全部冻结成员成功且终位与冻结目标一致后，原任务成为 `SUCCEEDED`，`reason_code=SCAN_TARGET_CONFIRMED`，递增一次本地 `outcome_version`，由既有可靠发布扫描接管；成员未齐不发布整笔成功。该事务不构造 TransportEvidence/CallbackReceipt，不增加 WMS operation、WMS outcome_revision、表或状态，不修改原提交身份及请求。扫码成员的本地最终位置只在原因果来源仍有效时应用，不覆盖后继 Transport 的位置。
+人工线入站 `BIN_MOVE` 增加已批准的本地扫码完成依据：插件将真实 SCAN1、当前冻结 READY 成员、原 Transport 和精确 HANDOFF_POSITION 目标唯一关联，宿主同事务保存该成员成功及原 InboundEvidence 引用（`last_operation_id=scan:<id>`）。扫码事件的 ECS `timestamp` 不得早于原 Transport 创建时间（按 UTC Unix 毫秒比较）；WES `received_at` 仅表示接收时间，迟到的旧轮次扫码不能确认新 Transport。全部冻结成员成功且终位与冻结目标一致后，原任务成为 `SUCCEEDED`，`reason_code=SCAN_TARGET_CONFIRMED`，递增一次本地 `outcome_version`，由既有可靠发布扫描接管；成员未齐不发布整笔成功。该事务不构造 TransportEvidence/CallbackReceipt，不增加 WMS operation、WMS outcome_revision、表或状态，不修改原提交身份及请求。扫码成员的本地最终位置只在原因果来源仍有效时应用，不覆盖后继 Transport 的位置。
 
-真实 WMS 结果仍可靠接收：与扫码完成事实一致时应用原始 Evidence 并推进 `last_applied_wms_outcome_revision`，不重复本地成功发布；与已确认扫码成员或整笔终态矛盾时保留 CONFLICT，不改写原事实。此规则不适用于 RACK_MOVE、RACK_ROTATE、BIN_EXCHANGE 或 RACK_BIN_SLOT 目标。它释放的是 WES 依赖门禁，RCS 内部任务与车辆调度仍由 RCS 拥有。
+部分成员已扫码、整笔尚未完成时，一致的 WMS 完整结果只补齐其余成员，已确认扫码成员的 `last_operation_id`、终位及对应投影来源保持原身份；恢复扫描不因回执覆盖扫码身份而反复选中。真实 WMS 结果仍可靠接收：与扫码完成事实一致时应用原始 Evidence 并推进 `last_applied_wms_outcome_revision`，不重复本地成功发布；与已确认扫码成员或整笔终态矛盾时保留 CONFLICT，不改写原事实。此规则不适用于 RACK_MOVE、RACK_ROTATE、BIN_EXCHANGE 或 RACK_BIN_SLOT 目标。它释放的是 WES 依赖门禁，RCS 内部任务与车辆调度仍由 RCS 拥有。
 
 任务首次进入 `ACCEPTED` 时可冻结观察期限 `result_deadline_at`，供等待时长监控。期限到达不产生 `UNKNOWN` 搬运结果，不改变任务的物理结果或位置事实。RCS 保证已接纳任务最终有明确终态，并经可靠 Response 链路送达；WES 保留原任务身份和证据，等待该权威终态；本节扫码已确认整笔交付时按扫码规则闭合本地任务并继续接收迟到结果。真实 `POSITION_UNKNOWN` 或证据冲突仍按其专属事实处理。
 

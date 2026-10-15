@@ -13,6 +13,7 @@ from src.app.transport.contracts import HandoffPosition, TransportContractError
 from src.app.transport.models import TransportCallbackReceipt, TransportEvidence, TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
 
 NOW = datetime(2026, 10, 16)
@@ -76,6 +77,7 @@ async def _case(db_engine, count=1):
                     payload_digest="c" * 64,
                     normalized_payload={
                         "event_type": "SCAN_COMPLETED",
+                        "timestamp": int(timezone.to_utc(NOW).timestamp() * 1000),
                         "is_debug": False,
                         "data": {"bin_code": f"A{index:09}-B"},
                     },
@@ -194,3 +196,80 @@ async def test_late_wms_result_is_preserved_after_scan_completion(db_engine, suc
         assert task.status == "SUCCEEDED" and task.outcome_version == 1
         assert task.last_applied_wms_outcome_revision == (1 if success else 0)
         assert evidence.status == ("APPLIED" if success else "CONFLICT")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wms_result", ["matching", "failed", "wrong_target"])
+async def test_partial_scan_then_wms_result_preserves_scan_fact_identity(db_engine, wms_result):
+    service, sessions, projections = await _case(db_engine, count=2)
+    async with sessions.begin() as db:
+        await service.confirm_bin_arrival_in_session(
+            db,
+            transport_task_id="original",
+            bin_code="A000000000",
+            target=HandoffPosition("INLET"),
+            source_evidence_id=SCAN_ID,
+        )
+        member = (await service._repository.list_members(db, "original"))[0]
+        scan_fact = member.model_dump()
+    operation_id = "019f0000-0000-7000-8000-000000000098"
+    results = [
+        {
+            "container_id": f"A{index:09}",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "HANDOFF_POSITION", "location_code": "INLET"},
+        }
+        for index in range(2)
+    ]
+    if wms_result == "failed":
+        results[0].update(status="FAILED", failure_code="CONTRADICTS_SCAN")
+    if wms_result == "wrong_target":
+        results[0]["final_position"] = {"kind": "HANDOFF_POSITION", "location_code": "ELSEWHERE"}
+    await record_valid_callback(
+        service,
+        operation_id=operation_id,
+        transport_task_id="original",
+        operation="transport.task.resulted@v1",
+        timestamp=1,
+        payload={"kind": "BIN_MOVE", "outcome_revision": 1, "results": results},
+    )
+    await service.process_pending_evidence(1)
+    matching = wms_result == "matching"
+    async with sessions() as db:
+        task = await service._repository.get_task(db, "original")
+        members = await service._repository.list_members(db, "original")
+        assert task.status == ("SUCCEEDED" if matching else "RECONCILING")
+        assert task.outcome_version == 1
+        assert task.last_applied_wms_outcome_revision == int(matching)
+        assert members[0].model_dump() == scan_fact
+        assert members[1].last_operation_id == (operation_id if matching else None)
+        assert projections.apply_transport_result.await_count == (2 if matching else 1)
+        assert (await db.scalar(select(TransportEvidence))).status == ("APPLIED" if matching else "CONFLICT")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_timestamp", ["old", None, True, "1792108800000"])
+async def test_delayed_or_invalid_scan_event_time_does_not_close_new_transport(db_engine, event_timestamp):
+    service, sessions, projections = await _case(db_engine)
+    async with sessions.begin() as db:
+        source = await db.get(InboundEvidence, SCAN_ID)
+        source.received_at = NOW + timedelta(seconds=10)
+        source.normalized_payload = {
+            **source.normalized_payload,
+            "timestamp": int(timezone.to_utc(NOW).timestamp() * 1000) - 1
+            if event_timestamp == "old"
+            else event_timestamp,
+        }
+        with pytest.raises(TransportContractError):
+            await service.confirm_bin_arrival_in_session(
+                db,
+                transport_task_id="original",
+                bin_code="A000000000",
+                target=HandoffPosition("INLET"),
+                source_evidence_id=SCAN_ID,
+            )
+        task = await service._repository.get_task(db, "original")
+        member = (await service._repository.list_members(db, "original"))[0]
+        assert task.status == "ACCEPTED" and task.outcome_version == 0
+        assert member.status == "PENDING" and member.last_operation_id is None
+        projections.apply_transport_result.assert_not_awaited()

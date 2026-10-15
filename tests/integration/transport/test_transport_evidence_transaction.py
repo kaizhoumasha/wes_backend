@@ -5,11 +5,12 @@ import uuid
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, func, select, text
 
-from src.app.execution.models import InboundEvidence, PositionProjection
+from src.app.execution.models import InboundEvidence, PositionProjection, TransportDecisionBinding
 from src.app.execution.services.position_projection_service import (
     PositionProjectionService,
     ProjectionEffectPhase,
@@ -86,7 +87,11 @@ async def test_scan_completion_commits_with_projection_and_rolls_back_atomically
             kind="DEVICE_EVENT",
             source_identity=f"scan:{uuid.uuid4()}",
             payload_digest="a" * 64,
-            normalized_payload={"event_type": "SCAN_COMPLETED", "is_debug": False},
+            normalized_payload={
+                "event_type": "SCAN_COMPLETED",
+                "is_debug": False,
+                "timestamp": int(timezone.now_utc().timestamp() * 1000),
+            },
             received_at=timezone.now_for_db(),
             apply_status="APPLIED",
             workline_id=authority.workline_id,
@@ -138,6 +143,133 @@ async def test_scan_completion_commits_with_projection_and_rolls_back_atomically
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(delete(PositionProjection).where(PositionProjection.object_id == bin_code))
+            await db.execute(
+                delete(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
+
+
+async def test_partial_scan_then_wms_result_keeps_projection_identity_and_finishes_replay(integration_session_factory):
+    repository = TransportRepository()
+    service = TransportService(
+        integration_session_factory,
+        repository,
+        _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
+    )
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
+    bins = [f"partial-scan-{uuid.uuid4().hex}" for _ in range(2)]
+    client_id = new_uuid7()
+    target = HandoffPosition("SCAN-INLET")
+    handle = await service.move_bins(
+        client_id,
+        TransportCaller("INTEGRATION"),
+        tuple(BinMove(code, RackBinSlot("scan-rack", "90", str(i)), target) for i, code in enumerate(bins)),
+        execution_authority=authority,
+    )
+    async with integration_session_factory.begin() as db:
+        task = await repository.get_task(db, handle.transport_task_id)
+        source = InboundEvidence(
+            kind="DEVICE_EVENT",
+            source_identity=f"partial-scan:{uuid.uuid4()}",
+            payload_digest="a" * 64,
+            normalized_payload={
+                "event_type": "SCAN_COMPLETED",
+                "is_debug": False,
+                "timestamp": int(timezone.now_utc().timestamp() * 1000),
+            },
+            received_at=timezone.now_for_db(),
+            apply_status="APPLIED",
+            workline_id=authority.workline_id,
+            device_code="SCAN",
+            contract_key="third_party_integration",
+            contract_version="1.1",
+        )
+        db.add(source)
+        await db.flush()
+        source_id = source.id
+        binding = TransportDecisionBinding(
+            workline_id=authority.workline_id,
+            client_request_id=client_id,
+            correlation_id=f"partial-scan:{client_id}",
+            resource_fence_id=client_id,
+            source_evidence_id=source_id,
+            step="TEST_SCAN",
+            causal_token=task.id,
+        )
+        db.add(binding)
+        await db.flush()
+        await service.confirm_bin_arrival_in_session(
+            db,
+            transport_task_id=handle.transport_task_id,
+            bin_code=bins[0],
+            target=target,
+            source_evidence_id=source_id,
+        )
+    operation_id = new_uuid7()
+    try:
+        await record_valid_callback(
+            service,
+            operation_id=operation_id,
+            transport_task_id=handle.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": code,
+                        "status": "SUCCEEDED",
+                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SCAN-INLET"},
+                    }
+                    for code in bins
+                ],
+            },
+        )
+        await service.process_pending_evidence(10)
+        async with integration_session_factory() as db:
+            task = await repository.get_task(db, handle.transport_task_id)
+            members = await repository.list_members(db, handle.transport_task_id)
+            projections = list(
+                (await db.scalars(select(PositionProjection).where(PositionProjection.object_id.in_(bins)))).all()
+            )
+            assert task.status == "SUCCEEDED" and task.outcome_version == 1
+            assert members[0].last_operation_id == f"scan:{source_id}"
+            assert members[1].last_operation_id == operation_id
+            assert {row.object_id: row.source_operation_id for row in projections} == {
+                bins[0]: f"scan:{source_id}",
+                bins[1]: operation_id,
+            }
+            candidates = await repository.list_final_result_projection_candidates(db, limit=1000)
+            assert not any(row[0] == handle.transport_task_id for row in candidates)
+        await service.replay_final_result_projections(1000)
+        async with integration_session_factory() as db:
+            candidates = await repository.list_final_result_projection_candidates(db, limit=1000)
+            assert not any(row[0] == handle.transport_task_id for row in candidates)
+        publisher = SimpleNamespace(publish=AsyncMock())
+        await service.publish_pending_outcomes(1000, publisher)
+        await service.publish_pending_outcomes(1000, publisher)
+        assert (
+            sum(
+                call.args[0].transport_task_id == handle.transport_task_id for call in publisher.publish.await_args_list
+            )
+            == 1
+        )
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id.in_(bins)))
+            await db.execute(
+                delete(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == client_id)
+            )
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
+            await db.execute(
+                delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
+            )
             await db.execute(
                 delete(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
             )
