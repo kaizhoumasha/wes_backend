@@ -686,7 +686,14 @@ class BatchRepository:
         )
         rows = (
             await db.execute(
-                select(ManualPickingInboundBatch, TransportMember, InboundEvidence, TransportTask, newer_action)
+                select(
+                    ManualPickingInboundBatch,
+                    TransportMember,
+                    InboundEvidence,
+                    TransportTask,
+                    newer_action,
+                    TransportDecisionBinding.causal_token,
+                )
                 .join(
                     TransportDecisionBinding,
                     and_(
@@ -724,9 +731,27 @@ class BatchRepository:
                 )
             )
         ).all()
+        # 已被更新轮次取代的明确未交付历史，不再参与当前扫码归属唯一性判断。
+        latest_token = max((row[5] for row in rows), default=0)
+        rows = [
+            row
+            for row in rows
+            if not (
+                row[5] < latest_token
+                and row[3].outcome_version == row[3].published_outcome_version
+                and (
+                    row[3].status == "REJECTED"
+                    or (
+                        row[3].status == "FAILED"
+                        and not row[1].position_unknown
+                        and row[1].final_position_json is not None
+                    )
+                )
+            )
+        ]
         if len(rows) != 1:
             return None
-        batch, member, evidence, transport, newer_pending = rows[0]
+        batch, member, evidence, transport, newer_pending, _ = rows[0]
         target = {"kind": "HANDOFF_POSITION", "location_code": inlet_location}
         if (
             member.target_json != target

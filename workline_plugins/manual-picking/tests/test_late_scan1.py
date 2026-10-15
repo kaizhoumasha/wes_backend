@@ -136,6 +136,10 @@ async def test_late_scan1_refuses_missing_wrong_line_or_archived_original_owner(
         "new_finished",
         "already_scanned",
         "ambiguous_source",
+        "superseded_rejected",
+        "superseded_failed",
+        "superseded_failed_unknown",
+        "superseded_failed_unpublished",
     ],
 )
 async def test_scan1_source_matches_frozen_member_without_requiring_transport_completion(change):
@@ -260,6 +264,55 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                         }
                     )
                 )
+            if change.startswith("superseded_"):
+                next_intent = sdk.wms_operations.outbound_bin_inbound_batch(
+                    operation_id="019f0000-0000-7000-8000-000000000032",
+                    task_id="OLD-TASK",
+                    plan_revision=2,
+                    rack_id="R1",
+                    rack_face="90",
+                )
+                await _seed_current_inbound(db, next_intent, ready, evidence_id=32)
+                db.add(
+                    TransportTask(
+                        **{
+                            **transport.model_dump(exclude={"id"}),
+                            "transport_task_id": "next-round",
+                            "client_request_id": "next-round",
+                            "status": "ACCEPTED",
+                            "outcome_version": 0,
+                            "published_outcome_version": 0,
+                        }
+                    )
+                )
+                db.add(
+                    TransportMember(
+                        **{
+                            **member.model_dump(exclude={"id"}),
+                            "transport_task_id": "next-round",
+                            "status": "PENDING",
+                            "final_position_json": None,
+                        }
+                    )
+                )
+                db.add(
+                    TransportDecisionBinding(
+                        **{
+                            **binding.model_dump(exclude={"id"}),
+                            "client_request_id": "next-round",
+                            "correlation_id": f"{next_intent.operation_id}:0",
+                            "resource_fence_id": next_intent.operation_id,
+                            "source_evidence_id": 32,
+                            "causal_token": 101,
+                        }
+                    )
+                )
+                transport.status = "REJECTED" if change == "superseded_rejected" else "FAILED"
+                member.status = "FAILED"
+                member.final_position_json = None if change == "superseded_rejected" else member.source_json
+                member.position_unknown = change == "superseded_failed_unknown"
+                if change == "superseded_failed_unpublished":
+                    transport.published_outcome_version = 0
             if change == "unpublished":
                 transport.published_outcome_version = 0
             if change == "unknown":
@@ -380,10 +433,16 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
             )
             if change in {"new_pending", "new_accepted", "new_reconciling", "new_unpublished"}:
                 expected = "WAIT_FOR_RESULT"
+            if change in {"superseded_rejected", "superseded_failed"}:
+                expected = (31, "next-round")
             assert owner == expected
             assert binding.picking_task_id == 31
             assert transport.transport_task_id == "original"
-            assert transport.status == ("ACCEPTED" if change in {"pending", "scan_before_result"} else "SUCCEEDED")
+            if change.startswith("superseded_"):
+                assert transport.status == ("REJECTED" if change == "superseded_rejected" else "FAILED")
+                assert member.status == "FAILED"
+            else:
+                assert transport.status == ("ACCEPTED" if change in {"pending", "scan_before_result"} else "SUCCEEDED")
             if change == "scan_before_result":
                 flow, evidences, passages, commands, admissions = _setup(missing_projection=("BIN", member.object_id))
                 flow._batch_progress = BatchRepository()
