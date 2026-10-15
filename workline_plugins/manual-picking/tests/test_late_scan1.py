@@ -21,7 +21,7 @@ async def test_late_scan1_bypasses_workstation_and_keeps_original_owner(parent_s
     flow._tasks.get_executing_for_workline_for_update = AsyncMock(return_value=current)
     flow._tasks.get_by_id_for_update = AsyncMock(return_value=old)
     flow._tasks.get_by_task_id_for_update = AsyncMock(return_value=old)
-    flow._batch_progress.scan1_task_id = AsyncMock(return_value=31)
+    flow._batch_progress.scan1_source = AsyncMock(return_value=(31, "MOVE-A000000001"))
     flow._source_racks.list_bin_source_racks = AsyncMock(
         return_value=[SimpleNamespace(rack_id="RACK-1", rack_face="90")]
     )
@@ -68,7 +68,7 @@ async def test_late_scan1_waits_automatically_for_current_causal_dependency():
     flow._tasks.get_by_id_for_update = AsyncMock(
         return_value=SimpleNamespace(id=31, task_id="PICK-001", workline_id=7, archived_at=None)
     )
-    flow._batch_progress.scan1_task_id = AsyncMock(side_effect=["WAIT_FOR_RESULT", 31])
+    flow._batch_progress.scan1_source = AsyncMock(side_effect=["WAIT_FOR_RESULT", (31, "MOVE-A000000001")])
     result = await flow.apply_in_session(object(), 1, workline_id=7)
     assert (result.disposition, result.retry_after_ms) == (BusinessEvidenceDisposition.DEFERRED, 1000)
     assert passages.rows == []
@@ -89,7 +89,7 @@ async def test_late_scan1_waits_automatically_for_current_causal_dependency():
 )
 async def test_late_scan1_refuses_missing_wrong_line_or_archived_original_owner(owner):
     flow, _, passages, commands, _ = _setup()
-    flow._batch_progress.scan1_task_id = AsyncMock(return_value=31 if owner is not None else None)
+    flow._batch_progress.scan1_source = AsyncMock(return_value=(31, "MOVE-A000000001") if owner is not None else None)
     flow._tasks.get_by_id_for_update = AsyncMock(return_value=owner)
     result = await flow.apply_in_session(object(), 1, workline_id=7)
     assert result.disposition is BusinessEvidenceDisposition.RECONCILING
@@ -104,6 +104,7 @@ async def test_late_scan1_refuses_missing_wrong_line_or_archived_original_owner(
         "ended",
         "cancelled",
         "pending",
+        "scan_before_result",
         "unpublished",
         "unknown",
         "wrong_final",
@@ -133,13 +134,17 @@ async def test_late_scan1_refuses_missing_wrong_line_or_archived_original_owner(
         "other_bin_pending",
         "old_pending",
         "new_finished",
+        "already_scanned",
+        "ambiguous_source",
     ],
 )
-async def test_original_batch_owner_requires_exact_published_arrival(change):
+async def test_scan1_source_matches_frozen_member_without_requiring_transport_completion(change):
     from datetime import datetime
 
     import wes_plugin_sdk as sdk
+    from manual_picking.application.batch_progress_model import ManualPickingInboundBatchScan
     from manual_picking.application.batch_repository import BatchRepository
+    from sqlalchemy import select
     from test_batch_repository import _new_sessions, _seed_current_inbound
 
     from src.app.execution.models import InboundEvidence, TransportDecisionBinding
@@ -217,6 +222,44 @@ async def test_original_batch_owner_requires_exact_published_arrival(change):
                 old.status = "CANCELLED"
             if change == "pending":
                 transport.status = "ACCEPTED"
+            if change == "scan_before_result":
+                old.status = "EXECUTING"
+                transport.status = "ACCEPTED"
+                transport.outcome_version = transport.published_outcome_version = 0
+                member.status = "PENDING"
+                member.final_position_json = None
+                transport.request_json = {
+                    "moves": [
+                        {"bin_code": member.object_id, "source": member.source_json, "target": member.target_json}
+                    ]
+                }
+            if change == "already_scanned":
+                db.add(
+                    ManualPickingInboundBatchScan(
+                        workline_id=7, operation_id=intent.operation_id, bin_code=member.object_id
+                    )
+                )
+            if change == "ambiguous_source":
+                db.add(
+                    TransportTask(
+                        **{
+                            **transport.model_dump(exclude={"id"}),
+                            "transport_task_id": "duplicate",
+                            "client_request_id": "duplicate",
+                        }
+                    )
+                )
+                db.add(TransportMember(**{**member.model_dump(exclude={"id"}), "transport_task_id": "duplicate"}))
+                db.add(
+                    TransportDecisionBinding(
+                        **{
+                            **binding.model_dump(exclude={"id"}),
+                            "client_request_id": "duplicate",
+                            "correlation_id": f"{intent.operation_id}:1",
+                            "causal_token": 101,
+                        }
+                    )
+                )
             if change == "unpublished":
                 transport.published_outcome_version = 0
             if change == "unknown":
@@ -315,17 +358,78 @@ async def test_original_batch_owner_requires_exact_published_arrival(change):
                     )
                 )
             await db.flush()
-            owner = await BatchRepository().scan1_task_id(
-                db, workline_id=7, transport_task_id="original", bin_code="A000000341", inlet_location="INLET"
+            owner = await BatchRepository().scan1_source(
+                db, workline_id=7, bin_code="A000000341", inlet_location="INLET"
             )
             expected = (
-                31 if change in {"ended", "cancelled", "other_bin_pending", "old_pending", "new_finished"} else None
+                (31, "original")
+                if change
+                in {
+                    "ended",
+                    "cancelled",
+                    "pending",
+                    "scan_before_result",
+                    "unpublished",
+                    "unknown",
+                    "wrong_final",
+                    "other_bin_pending",
+                    "old_pending",
+                    "new_finished",
+                }
+                else None
             )
-            if change in {"unpublished", "new_pending", "new_accepted", "new_reconciling", "new_unpublished"}:
+            if change in {"new_pending", "new_accepted", "new_reconciling", "new_unpublished"}:
                 expected = "WAIT_FOR_RESULT"
             assert owner == expected
             assert binding.picking_task_id == 31
             assert transport.transport_task_id == "original"
-            assert transport.status == ("ACCEPTED" if change == "pending" else "SUCCEEDED")
+            assert transport.status == ("ACCEPTED" if change in {"pending", "scan_before_result"} else "SUCCEEDED")
+            if change == "scan_before_result":
+                flow, evidences, passages, commands, admissions = _setup(missing_projection=("BIN", member.object_id))
+                flow._batch_progress = BatchRepository()
+                flow._tasks.get_executing_for_workline_for_update = AsyncMock(return_value=old)
+                flow._tasks.get_by_id_for_update = AsyncMock(return_value=old)
+                flow._transport_reader.get_task = AsyncMock(return_value=transport)
+                flow._source_racks.list_bin_source_racks = AsyncMock(
+                    return_value=[SimpleNamespace(rack_id="R1", rack_face="90", cancelled_evidence_id=None)]
+                )
+                flow._worklines.line.position_bindings["INLET"]["location_id"] = "INLET"
+                evidences.rows[1] = _scan(1, "S1", f"{member.object_id}-B")
+                applied = await flow.apply_in_session(db, 1, workline_id=7)
+                assert applied.disposition is BusinessEvidenceDisposition.APPLIED
+                assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD"]
+                assert passages.rows[0].task_id == "OLD-TASK"
+                assert admissions.intents == []
+                await db.flush()
+                scan = await db.scalar(select(ManualPickingInboundBatchScan))
+                assert (scan.operation_id, scan.bin_code) == (intent.operation_id, member.object_id)
+                assert transport.status == "ACCEPTED" and member.status == "PENDING"
+                assert transport.outcome_version == transport.published_outcome_version == 0
+                assert member.final_position_json is None
+                assert transport.submit_operation_id == intent.operation_id
+                assert transport.submit_request_body == "{}"
+                await flow.apply_in_session(db, 1, workline_id=7)
+                assert len(commands.requests) == len(passages.rows) == 1
+                assert (
+                    await flow._batch_progress.scan1_source(
+                        db, workline_id=7, bin_code=member.object_id, inlet_location="INLET"
+                    )
+                    is None
+                )
+
+                late_result = SimpleNamespace(
+                    transport_task_id="original",
+                    normalized_payload={
+                        "transport_task_id": "original",
+                        "client_request_id": "original-client",
+                        "caller": {"workline_id": "7"},
+                        "step": "MANUAL_PICKING_INBOUND_BATCH",
+                        "batch_operation_id": intent.operation_id,
+                        "status": "SUCCEEDED",
+                        "members": [{"object_id": member.object_id, "final_position": member.target_json}],
+                    },
+                )
+                assert await flow._apply_transport_result(db, late_result, 7) == "SUCCEEDED"
+                assert len(commands.requests) == len(passages.rows) == 1
     finally:
         await engine.dispose()

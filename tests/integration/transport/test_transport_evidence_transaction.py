@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlalchemy import delete, func, select, text
 
-from src.app.execution.models import PositionProjection
+from src.app.execution.models import InboundEvidence, PositionProjection
 from src.app.execution.services.position_projection_service import (
     PositionProjectionService,
     ProjectionEffectPhase,
@@ -63,6 +63,86 @@ class _UnusedProvider:
         request_body_digest: str,
     ) -> object:
         raise AssertionError("evidence transaction test must not submit")
+
+
+async def test_scan_completion_commits_with_projection_and_rolls_back_atomically(integration_session_factory):
+    service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
+        position_projections=PositionProjectionService(binding_repository=_RuntimeBindingRepository()),
+    )
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
+    bin_code = f"scan-bin-{uuid.uuid4().hex}"
+    handle = await service.move_bins(
+        new_uuid7(),
+        TransportCaller("INTEGRATION"),
+        (BinMove(bin_code, RackBinSlot("scan-rack", "90", "1"), HandoffPosition("SCAN-INLET")),),
+        execution_authority=authority,
+    )
+    async with integration_session_factory.begin() as db:
+        source = InboundEvidence(
+            kind="DEVICE_EVENT",
+            source_identity=f"scan:{uuid.uuid4()}",
+            payload_digest="a" * 64,
+            normalized_payload={"event_type": "SCAN_COMPLETED", "is_debug": False},
+            received_at=timezone.now_for_db(),
+            apply_status="APPLIED",
+            workline_id=authority.workline_id,
+            device_code="SCAN",
+            contract_key="third_party_integration",
+            contract_version="1.1",
+        )
+        db.add(source)
+        await db.flush()
+        source_id = source.id
+    try:
+        with pytest.raises(RuntimeError, match="rollback scan"):
+            async with integration_session_factory.begin() as db:
+                await service.confirm_bin_arrival_in_session(
+                    db,
+                    transport_task_id=handle.transport_task_id,
+                    bin_code=bin_code,
+                    target=HandoffPosition("SCAN-INLET"),
+                    source_evidence_id=source_id,
+                )
+                raise RuntimeError("rollback scan")
+        async with integration_session_factory() as db:
+            task = await service._repository.get_task(db, handle.transport_task_id)
+            assert task.status == "PENDING" and task.outcome_version == 0
+            assert await db.scalar(select(PositionProjection).where(PositionProjection.object_id == bin_code)) is None
+        async with integration_session_factory.begin() as db:
+            await service.confirm_bin_arrival_in_session(
+                db,
+                transport_task_id=handle.transport_task_id,
+                bin_code=bin_code,
+                target=HandoffPosition("SCAN-INLET"),
+                source_evidence_id=source_id,
+            )
+        async with integration_session_factory() as db:
+            task = await service._repository.get_task(db, handle.transport_task_id)
+            projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == bin_code))
+            assert task.status == "SUCCEEDED" and task.outcome_version == 1
+            assert task.last_applied_wms_outcome_revision == 0
+            assert projection.source_operation_id == f"scan:{source_id}"
+            assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "SCAN-INLET"}
+            assert (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(TransportEvidence)
+                    .where(TransportEvidence.transport_task_id == handle.transport_task_id)
+                )
+                == 0
+            )
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id == bin_code))
+            await db.execute(
+                delete(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
 
 
 @pytest.mark.parametrize("milestone", ["POSITION_UNKNOWN", "TARGET_PLACED"])

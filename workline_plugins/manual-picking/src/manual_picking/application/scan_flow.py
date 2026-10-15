@@ -41,6 +41,7 @@ from src.app.execution.services.position_projection_service import (
     PositionProjectionService,
     position_projection_service,
 )
+from src.app.transport.contracts import HandoffPosition
 from src.app.transport.repository import TransportRepository
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
@@ -102,6 +103,7 @@ class ManualPickingScanFlow:
         *,
         commands: Any,
         admissions: Any,
+        transport_service: Any,
         evidences: Any = inbound_evidence_repository,
         worklines: Any = workline_repository,
         tasks: Any = picking_task_repository,
@@ -141,6 +143,7 @@ class ManualPickingScanFlow:
         self._command_reader = command_reader
         self._wms_reader = wms_reader
         self._transport_reader = transport_reader or TransportRepository()
+        self._transport_service = transport_service
         self._source_racks = source_racks or PickingTaskPlanDeltaRepository()
         self._positions = position_reader
         self._position_service = position_service or (
@@ -1126,6 +1129,49 @@ class ManualPickingScanFlow:
             return None
         if identity is not None and await self._returns.current_bin_for_update(db, workline_id, identity) is not None:
             return None
+        decision = self._scan1.decide(
+            ScanFact("SCAN1", cast("int", evidence.id), raw_code, None, task.task_id if task is not None else None)
+        )
+        source_transport_id = None
+        original_batch_member = False
+        if identity is not None:
+            source = await self._batch_progress.scan1_source(
+                db,
+                workline_id=workline_id,
+                bin_code=identity,
+                inlet_location=positions[INLET.slot_key],
+            )
+            if source == _WAIT_FOR_RESULT:
+                return _WAIT_FOR_RESULT
+            if source is not None:
+                owner_id, source_transport_id = source
+                task = await self._tasks.get_by_id_for_update(db, owner_id)
+                original_batch_member = True
+            elif decision.route == "MOVE_FORWARD":
+                return None
+            if task is None or task.workline_id != workline_id or getattr(task, "archived_at", None) is not None:
+                return None
+            if current_task is None or current_task.id != task.id:
+                # 已到入口的旧批次箱旁路，不转移原执行归属或进入人工取料准入。
+                decision = ScanDecision(
+                    "MOVE_RIGHT",
+                    normal_bin_code=decision.normal_bin_code,
+                    ng_reason=decision.ng_reason or "SCAN1_OUTSIDE_CURRENT_BATCH",
+                )
+        if task is None:
+            return None
+        if original_batch_member and decision.ng_reason in {None, "SCAN1_OUTSIDE_CURRENT_BATCH"}:
+            await self._transport_service.confirm_bin_arrival_in_session(
+                db,
+                transport_task_id=source_transport_id,
+                bin_code=identity,
+                target=HandoffPosition(positions[INLET.slot_key]),
+                source_evidence_id=evidence.id,
+            )
+        if current_task is not None and current_task.id == task.id and decision.route == "MOVE_FORWARD":
+            readiness = await self._scan1_source_readiness(db, task, source_transport_id, identity)
+            if readiness != "READY":
+                return readiness
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN1"):
             return _WAIT_FOR_RESULT
         for prior in prior_passages:
@@ -1140,51 +1186,7 @@ class ManualPickingScanFlow:
                     if prior_command is not None and prior_command.status != CommandStatus.FAILED
                     else None
                 )
-        decision = self._scan1.decide(
-            ScanFact("SCAN1", cast("int", evidence.id), raw_code, None, task.task_id if task is not None else None)
-        )
-        projection = await self._positions.get(db, "BIN", identity) if identity is not None else None
-        original_batch_member = False
-        if decision.route == "MOVE_FORWARD" or (
-            projection is not None
-            and _projection_at(projection, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key])
-        ):
-            readiness = await self._position_readiness(
-                db, projection, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key]
-            )
-            if readiness != "READY":
-                return readiness
-            owner_id = await self._batch_progress.scan1_task_id(
-                db,
-                workline_id=workline_id,
-                transport_task_id=projection.source_transport_task_id,
-                bin_code=cast("str", decision.normal_bin_code),
-                inlet_location=positions[INLET.slot_key],
-            )
-            if owner_id == _WAIT_FOR_RESULT:
-                return _WAIT_FOR_RESULT
-            task = await self._tasks.get_by_id_for_update(db, owner_id) if owner_id is not None else None
-            if task is None or task.workline_id != workline_id or getattr(task, "archived_at", None) is not None:
-                return None
-            original_batch_member = True
-            if current_task is None or current_task.id != task.id:
-                # 已到入口的旧批次箱旁路，不转移原执行归属或进入人工取料准入。
-                decision = ScanDecision(
-                    "MOVE_RIGHT",
-                    normal_bin_code=decision.normal_bin_code,
-                    ng_reason=decision.ng_reason or "SCAN1_OUTSIDE_CURRENT_BATCH",
-                )
-            elif decision.route == "MOVE_FORWARD":
-                readiness = await self._scan1_physical_readiness(
-                    db, task, workline_id, positions, cast("str", decision.normal_bin_code)
-                )
-                if readiness != "READY":
-                    return readiness
-        if task is None:
-            return None
         if decision.normal_bin_code is not None:
-            projection = await self._positions.get(db, "BIN", decision.normal_bin_code)
-            source_transport_id = getattr(projection, "source_transport_task_id", None)
             recorded = bool(
                 source_transport_id
                 and await self._batch_progress.record_scan1(
@@ -1213,16 +1215,8 @@ class ManualPickingScanFlow:
         passage.scan1_command_code = await self._move(db, workline_id, bindings, "SCAN1", evidence.id, decision.route)
         return decision.route
 
-    async def _scan1_physical_readiness(
-        self, db: Any, task: Any, workline_id: int, positions: dict[str, str], bin_code: str
-    ) -> str | None:
-        bin_position = await self._positions.get(db, "BIN", bin_code)
-        bin_state = await self._position_readiness(
-            db, bin_position, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key]
-        )
-        if bin_state != "READY":
-            return bin_state
-        transport = await self._transport_reader.get_task(db, bin_position.source_transport_task_id)
+    async def _scan1_source_readiness(self, db: Any, task: Any, source_transport_id: str, bin_code: str) -> str | None:
+        transport = await self._transport_reader.get_task(db, source_transport_id)
         if transport is None or transport.kind != "BIN_MOVE":
             return None
         moves = transport.request_json.get("moves")
@@ -1233,7 +1227,9 @@ class ManualPickingScanFlow:
             return None
         source = sources[0]
         if not any(
-            planned.rack_id == source.get("rack_id") and planned.rack_face == source.get("rack_face")
+            planned.rack_id == source.get("rack_id")
+            and planned.rack_face == source.get("rack_face")
+            and getattr(planned, "cancelled_evidence_id", None) is None
             for planned in await self._source_racks.list_bin_source_racks(db, task.id)
         ):
             return None

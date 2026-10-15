@@ -662,10 +662,10 @@ class BatchRepository:
             )
         )
 
-    async def scan1_task_id(
-        self, db: AsyncSession, *, workline_id: int, transport_task_id: str, bin_code: str, inlet_location: str
-    ) -> int | Literal["WAIT_FOR_RESULT"] | None:
-        """已到入口的原批次承接扫码；父任务结束不改写料箱的执行归属。"""
+    async def scan1_source(
+        self, db: AsyncSession, *, workline_id: int, bin_code: str, inlet_location: str
+    ) -> tuple[int, str] | Literal["WAIT_FOR_RESULT"] | None:
+        """按未入线的冻结成员关联扫码；本点到位不依赖原搬运终态或历史位置。"""
         newer_task = aliased(TransportTask)
         newer_binding = aliased(TransportDecisionBinding)
         newer_member = aliased(TransportMember)
@@ -711,15 +711,16 @@ class BatchRepository:
                 .where(
                     ManualPickingInboundBatch.workline_id == workline_id,
                     TransportDecisionBinding.step == INBOUND_STEP,
-                    TransportTask.transport_task_id == transport_task_id,
                     TransportTask.authority_workline_id == workline_id,
                     TransportTask.kind == "BIN_MOVE",
-                    TransportTask.status == "SUCCEEDED",
-                    TransportTask.outcome_version > 0,
                     TransportMember.object_type == "BIN",
                     TransportMember.object_id == bin_code,
-                    TransportMember.status == "SUCCEEDED",
-                    TransportMember.position_unknown.is_(False),
+                    ~select(ManualPickingInboundBatchScan.id)
+                    .where(
+                        ManualPickingInboundBatchScan.operation_id == ManualPickingInboundBatch.operation_id,
+                        ManualPickingInboundBatchScan.bin_code == bin_code,
+                    )
+                    .exists(),
                 )
             )
         ).all()
@@ -729,7 +730,6 @@ class BatchRepository:
         target = {"kind": "HANDOFF_POSITION", "location_code": inlet_location}
         if (
             member.target_json != target
-            or member.final_position_json != target
             or evidence.kind != InboundEvidenceKind.WMS_RESULT
             or evidence.workline_id != workline_id
             or evidence.operation != BIN_INBOUND_BATCH_OPERATION
@@ -752,9 +752,9 @@ class BatchRepository:
             for item in result.bins
         ):
             return None
-        if transport.outcome_version > transport.published_outcome_version or newer_pending:
+        if newer_pending:
             return "WAIT_FOR_RESULT"
-        return batch.picking_task_id
+        return batch.picking_task_id, transport.transport_task_id
 
     async def record_scan1(
         self, db: AsyncSession, *, workline_id: int, picking_task_id: int, transport_task_id: str, bin_code: str

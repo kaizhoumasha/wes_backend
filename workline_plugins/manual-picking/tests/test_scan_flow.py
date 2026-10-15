@@ -522,8 +522,8 @@ class _BatchProgress:
     def __init__(self) -> None:
         self.scanned = set()
 
-    async def scan1_task_id(self, db, **kwargs):
-        return 31
+    async def scan1_source(self, db, **kwargs):
+        return 31, f"MOVE-{kwargs['bin_code']}"
 
     async def record_scan1(self, db, **kwargs):  # type: ignore[no-untyped-def]
         bin_code = kwargs["bin_code"]
@@ -613,6 +613,7 @@ def _setup(
     commands = _Commands()
     admissions = _Admissions()
     flow = ManualPickingScanFlow(
+        transport_service=SimpleNamespace(confirm_bin_arrival_in_session=AsyncMock()),
         evidences=evidences,
         worklines=_WorkLines(),
         tasks=_Tasks(),
@@ -910,6 +911,7 @@ async def test_return_transport_final_result_does_not_close_fifo_without_source_
     )
     transport_reader = SimpleNamespace(get_task=AsyncMock(return_value=task))
     flow = ManualPickingScanFlow(
+        transport_service=SimpleNamespace(confirm_bin_arrival_in_session=AsyncMock()),
         commands=object(),
         admissions=object(),
         passages=passages,
@@ -1893,35 +1895,61 @@ async def test_rack_switch_result_requires_matching_frozen_transport(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "missing_projection",
-    [("BIN", "A000000001")],
-)
-async def test_scan1_waits_for_verified_bin_position(missing_projection: tuple[str, str]) -> None:
-    flow, _, passages, commands, _ = _setup(missing_projection=missing_projection)
+@pytest.mark.parametrize("transport_status", ["PENDING", "ACCEPTED", "RECONCILING", "FAILED", "SUCCEEDED"])
+async def test_scan1_arrival_releases_without_transport_result_or_position(transport_status) -> None:
+    flow, _, passages, commands, _ = _setup(missing_projection=("BIN", "A000000001"))
+    transport = await flow._transport_reader.get_task(object(), "MOVE-A000000001")
+    transport.status = transport_status
+    transport.submit_operation_id = "original-operation"
+    transport.submit_request_body = "original-body"
+    transport.outcome_version = 0
+    transport.published_outcome_version = 0
+    flow._transport_reader.get_task = AsyncMock(return_value=transport)
 
     result = await flow.apply_in_session(object(), 1, workline_id=7)
 
-    assert result.disposition is BusinessEvidenceDisposition.DEFERRED
-    assert commands.requests == []
-    assert passages.rows == []
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD"]
+    assert len(passages.rows) == 1
+    assert passages.rows[0].scan1_evidence_id == 1
+    arrival = flow._transport_service.confirm_bin_arrival_in_session
+    arrival.assert_awaited_once()
+    assert arrival.await_args.kwargs["transport_task_id"] == "MOVE-A000000001"
+    assert arrival.await_args.kwargs["source_evidence_id"] == 1
+    assert transport.status == transport_status
+    assert transport.submit_operation_id == "original-operation"
+    assert transport.submit_request_body == "original-body"
+    assert transport.outcome_version == transport.published_outcome_version == 0
+    await flow.apply_in_session(object(), 1, workline_id=7)
+    assert len(commands.requests) == len(passages.rows) == 1
 
 
 @pytest.mark.asyncio
-async def test_scan1_does_not_treat_failed_bin_transport_position_as_arrival() -> None:
+async def test_scan1_confirms_transport_arrival_before_waiting_for_previous_roller_command() -> None:
+    flow, _, passages, commands, _ = _setup(missing_projection=("BIN", "A000000001"))
+    commands.has_unclosed_for_device_for_update = AsyncMock(return_value=True)
+    result = await flow.apply_in_session(object(), 1, workline_id=7)
+    assert result.disposition is BusinessEvidenceDisposition.DEFERRED
+    flow._transport_service.confirm_bin_arrival_in_session.assert_awaited_once()
+    assert commands.requests == [] and passages.rows == []
+
+
+@pytest.mark.asyncio
+async def test_scan1_arrival_does_not_rewrite_failed_bin_transport() -> None:
     flow, _, passages, commands, _ = _setup(failed_transport="MOVE-A000000001")
 
     result = await flow.apply_in_session(object(), 1, workline_id=7)
 
-    assert result.disposition is BusinessEvidenceDisposition.RECONCILING
-    assert commands.requests == []
-    assert passages.rows == []
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert [request.task_type for request in commands.requests] == ["MOVE_FORWARD"]
+    assert len(passages.rows) == 1
+    assert (await flow._transport_reader.get_task(object(), "MOVE-A000000001")).status == "FAILED"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("object_key", [("BIN", "A000000001")])
 @pytest.mark.parametrize("transport_status", ["PENDING", "ACCEPTED"])
-async def test_scan1_retries_unknown_position_while_current_transport_is_in_flight(
+async def test_scan1_arrival_releases_with_unknown_position_while_transport_is_in_flight(
     object_key, transport_status
 ) -> None:
     flow, _, passages, commands, _ = _setup()
@@ -1945,12 +1973,14 @@ async def test_scan1_retries_unknown_position_while_current_transport_is_in_flig
     flow._positions.get = get_projection
     flow._transport_reader.get_task = get_transport
     result = await flow.apply_in_session(object(), 1, workline_id=7)
-    assert result.disposition is BusinessEvidenceDisposition.DEFERRED
-    assert commands.requests == [] and passages.rows == []
-    assert (await flow.apply_in_session(object(), 1, workline_id=7)).disposition is BusinessEvidenceDisposition.DEFERRED
+    assert result.disposition is BusinessEvidenceDisposition.APPLIED
+    assert len(commands.requests) == len(passages.rows) == 1
+    assert transport.status == transport_status
+    assert projection.position_unknown
+    await flow.apply_in_session(object(), 1, workline_id=7)
     projection.position_unknown = False
     transport.status = "SUCCEEDED"
-    assert (await flow.apply_in_session(object(), 1, workline_id=7)).disposition is BusinessEvidenceDisposition.APPLIED
+    await flow.apply_in_session(object(), 1, workline_id=7)
     assert len(commands.requests) == 1 and len(passages.rows) == 1
 
 
@@ -2025,11 +2055,16 @@ async def test_scan1_uses_the_bin_transport_even_after_its_source_rack_position_
 
 
 @pytest.mark.asyncio
-async def test_scan1_rejects_bin_from_a_source_rack_outside_the_task() -> None:
+@pytest.mark.parametrize(
+    "planned_source",
+    [
+        SimpleNamespace(rack_id="RACK-2", rack_face="270", cancelled_evidence_id=None),
+        SimpleNamespace(rack_id="RACK-1", rack_face="90", cancelled_evidence_id=100),
+    ],
+)
+async def test_scan1_rejects_bin_without_an_active_plan_source(planned_source) -> None:
     flow, _, passages, commands, _ = _setup()
-    flow._source_racks = SimpleNamespace(
-        list_bin_source_racks=AsyncMock(return_value=[SimpleNamespace(rack_id="RACK-2", rack_face="270")])
-    )
+    flow._source_racks = SimpleNamespace(list_bin_source_racks=AsyncMock(return_value=[planned_source]))
 
     result = await flow.apply_in_session(object(), 1, workline_id=7)
 
