@@ -21,7 +21,13 @@ from wes_plugin_sdk import (
 
 from manual_picking.definition import DEFINITION, FIVE_RACK, INLET, OUTLET
 from manual_picking.handlers import Scan1Handler, Scan2Handler, Scan3Handler, Scan4Handler
-from manual_picking.handlers.scan_types import PassageSnapshot, ScanFact, normal_bin_code, scanned_bin_identity
+from manual_picking.handlers.scan_types import (
+    PassageSnapshot,
+    ScanDecision,
+    ScanFact,
+    normal_bin_code,
+    scanned_bin_identity,
+)
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus
 from src.app.device.repositories.command_repository import device_command_repository
@@ -1113,8 +1119,7 @@ class ManualPickingScanFlow:
         raw_code: str | None,
     ) -> str | None:
         task = await self._tasks.get_executing_for_workline_for_update(db, workline_id)
-        if task is None:
-            return None
+        current_task = task
         identity = scanned_bin_identity(raw_code)
         prior_passages = await self._passages.scan1_unclosed_for_update(db, workline_id)
         if identity is not None and any(prior.bin_code == identity for prior in prior_passages):
@@ -1135,13 +1140,48 @@ class ManualPickingScanFlow:
                     if prior_command is not None and prior_command.status != CommandStatus.FAILED
                     else None
                 )
-        decision = self._scan1.decide(ScanFact("SCAN1", cast("int", evidence.id), raw_code, None, task.task_id))
-        if decision.route == "MOVE_FORWARD":
-            readiness = await self._scan1_physical_readiness(
-                db, task, workline_id, positions, cast("str", decision.normal_bin_code)
+        decision = self._scan1.decide(
+            ScanFact("SCAN1", cast("int", evidence.id), raw_code, None, task.task_id if task is not None else None)
+        )
+        projection = await self._positions.get(db, "BIN", identity) if identity is not None else None
+        original_batch_member = False
+        if decision.route == "MOVE_FORWARD" or (
+            projection is not None
+            and _projection_at(projection, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key])
+        ):
+            readiness = await self._position_readiness(
+                db, projection, workline_id, "HANDOFF_POSITION", positions[INLET.slot_key]
             )
             if readiness != "READY":
                 return readiness
+            owner_id = await self._batch_progress.scan1_task_id(
+                db,
+                workline_id=workline_id,
+                transport_task_id=projection.source_transport_task_id,
+                bin_code=cast("str", decision.normal_bin_code),
+                inlet_location=positions[INLET.slot_key],
+            )
+            if owner_id == _WAIT_FOR_RESULT:
+                return _WAIT_FOR_RESULT
+            task = await self._tasks.get_by_id_for_update(db, owner_id) if owner_id is not None else None
+            if task is None or task.workline_id != workline_id or getattr(task, "archived_at", None) is not None:
+                return None
+            original_batch_member = True
+            if current_task is None or current_task.id != task.id:
+                # 已到入口的旧批次箱旁路，不转移原执行归属或进入人工取料准入。
+                decision = ScanDecision(
+                    "MOVE_RIGHT",
+                    normal_bin_code=decision.normal_bin_code,
+                    ng_reason=decision.ng_reason or "SCAN1_OUTSIDE_CURRENT_BATCH",
+                )
+            elif decision.route == "MOVE_FORWARD":
+                readiness = await self._scan1_physical_readiness(
+                    db, task, workline_id, positions, cast("str", decision.normal_bin_code)
+                )
+                if readiness != "READY":
+                    return readiness
+        if task is None:
+            return None
         if decision.normal_bin_code is not None:
             projection = await self._positions.get(db, "BIN", decision.normal_bin_code)
             source_transport_id = getattr(projection, "source_transport_task_id", None)
@@ -1155,7 +1195,7 @@ class ManualPickingScanFlow:
                     bin_code=decision.normal_bin_code,
                 )
             )
-            if decision.route == "MOVE_FORWARD" and not recorded:
+            if not recorded and (decision.route == "MOVE_FORWARD" or original_batch_member):
                 return None
         passage = await self._passages.add(
             db,
@@ -1167,6 +1207,7 @@ class ManualPickingScanFlow:
                 scan1_evidence_id=evidence.id,
                 scan1_received_at=evidence.received_at,
                 disposition="NG" if decision.ng_reason else "OPEN",
+                reason_code=decision.ng_reason,
             ),
         )
         passage.scan1_command_code = await self._move(db, workline_id, bindings, "SCAN1", evidence.id, decision.route)

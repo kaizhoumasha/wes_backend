@@ -887,6 +887,8 @@ PickingTask 完成后先在同一 WorkLine 锁内原子准备下一任务；已�
 `task_id + plan_revision + rack_id + rack_face` 来源成员**只创建一次逻辑分配**，不等待目标转运货架到位。技术重试保持同一 `operation_id` 和请求内容，
 不得以新身份重新分配同一成员。目标转运货架可以在料箱驶向滚筒线工作位期间并行到位；若料箱到达时目标架仍未就绪，料箱停在工作位等待，
 SCAN1 只校验当前 Bin 必需的入线依据，不依赖目标转运货架到位；保留 Bin 入口位置、原入站 Transport 成功和计划来源校验。
+原 inbound_batch 中已成功到达冻结入口、结果已发布且仍由当前料箱位置所引用的箱，以原入站 Transport 精确恢复原批次及原 task_id。若该原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务），SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 READY 成员、来源储位、终位和 WorkLine 必须一致，原 owner 不能已运维归档；同箱更新的在途/未知/未发布动作仍保留直接依赖，明确等待中的结果自动延迟重试。可识别但方向后缀错误的已到入口箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
+旁路继续沿原 SCAN1 Evidence 冻结 DeviceCommand；重放复用原身份，不重复下发。原 Transport、批次及 Evidence 均保留；SCAN3 按本次实际扫码独立决定方向：有效 `-B` 创建正常 Return 并下发 `MOVE_FORWARD`，条码无效则 `MOVE_LEFT`；不沿用 SCAN1 的旁路原因强制 NG，原 Passage 保留原 task_id，并以同一 SCAN3 Evidence 关联回程。
 目标架与 Bin 的汇合约束属于实际人工拣料的 WMS/PDA 作业准入，不阻止 SCAN1 前进或点2到位上报。
 
 ```json
