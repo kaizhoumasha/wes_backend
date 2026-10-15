@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
@@ -195,7 +196,7 @@ async def _cancel_evidence_id(db, *, task_name: str, operation_id: str) -> int:
 
 
 @pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
-async def test_plan_members_cancel_respects_task_state(
+async def test_plan_members_cancel_preserves_any_parent_task_state(
     integration_session_factory,
     executing_task_with_members,
     task_status: PickingTaskStatus,
@@ -224,9 +225,7 @@ async def test_plan_members_cancel_respects_task_state(
         received_at=NOW,
     )
 
-    assert (result.code, result.reason_code) == (
-        ("RECEIVED", None) if task_status is PickingTaskStatus.EXECUTING else ("CONFLICT", "STATE_CONFLICT")
-    )
+    assert (result.code, result.reason_code) == ("RECEIVED", None)
     async with integration_session_factory() as db:
         rack = await db.scalar(
             select(PickingTaskBinSourceRack).where(
@@ -237,12 +236,85 @@ async def test_plan_members_cancel_respects_task_state(
         )
         evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.operation_id == operation_id))
     assert rack is not None and evidence is not None
-    if task_status is PickingTaskStatus.EXECUTING:
-        assert rack.cancelled_evidence_id == evidence.id
+    assert rack.cancelled_evidence_id == evidence.id
+    assert evidence.apply_status == Status.APPLIED
+    async with integration_session_factory() as db:
+        task = await db.get(PickingTask, task_id)
+        assert task.status == task_status
+        assert task.last_applied_plan_revision == 1
+        assert task.archived_at == (NOW if task_status is PickingTaskStatus.ARCHIVED else None)
+
+
+async def test_replay_state_rejected_member_cancel_preserves_original_evidence_and_conflict(
+    integration_session_factory, executing_task_with_members
+) -> None:
+    task_id, task_name = executing_task_with_members
+    operation_id = new_uuid7()
+    event = PickingTaskCancelEvent.model_validate(
+        {
+            "operation": "outbound.picking_task.cancel@v1",
+            "operation_id": operation_id,
+            "timestamp": 1,
+            "data": {
+                "task_id": task_name,
+                "cancel_scope": "PLAN_MEMBERS",
+                "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+            },
+        }
+    )
+    payload = event.model_dump(mode="json", exclude_none=True)
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, task_id)
+        task.status = PickingTaskStatus.EXECUTION_COMPLETED
+        service = InboundEvidenceService()
+        accepted = await service.accept(
+            db,
+            kind=InboundEvidenceKind.WMS_EVENT,
+            source_identity=f"{event.operation}:{operation_id}",
+            operation=event.operation,
+            operation_id=operation_id,
+            normalized_payload=payload,
+            received_at=NOW,
+            contract_key=event.operation,
+            contract_version="1.0",
+            apply_status=Status.RECONCILING,
+        )
+        evidence_id = accepted.evidence.id
+        original_digest = accepted.evidence.payload_digest
+        accepted.evidence.picking_task_id = task_id
+        conflict = await service.record_conflict(
+            db,
+            first=accepted.evidence,
+            source_identity=accepted.evidence.source_identity,
+            normalized_payload=payload,
+            reason_code="STATE_CONFLICT",
+            received_at=NOW,
+        )
+        conflict_id = conflict.id
+
+    cancel = PickingTaskCancelService(integration_session_factory)
+    results = await asyncio.gather(*(cancel.record(event, received_at=NOW + timedelta(days=1)) for _ in range(2)))
+    assert sorted(result.code for result in results) == ["DUPLICATE", "RECEIVED"]
+    async with integration_session_factory() as db:
+        evidence = await db.get(InboundEvidence, evidence_id)
+        conflict = await db.get(InboundEvidenceConflict, conflict_id)
+        task = await db.get(PickingTask, task_id)
+        members = (
+            await db.scalars(
+                select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task_id)
+            )
+        ).all()
+        assert evidence.operation_id == operation_id
+        assert evidence.normalized_payload == payload
+        assert evidence.payload_digest == original_digest
+        assert evidence.received_at == NOW
         assert evidence.apply_status == Status.APPLIED
-    else:
-        assert rack.cancelled_evidence_id is None
-        assert evidence.apply_status == Status.RECONCILING
+        assert conflict.reason_code == "STATE_CONFLICT"
+        assert conflict.normalized_payload == payload
+        assert conflict.first_evidence_id == evidence_id
+        assert task.status == PickingTaskStatus.EXECUTION_COMPLETED
+        assert task.last_applied_plan_revision == 1
+        assert {m.rack_face: m.cancelled_evidence_id for m in members} == {"90": evidence_id, "270": None}
 
 
 async def test_cancel_members_matches_selectors_and_marks_rows(

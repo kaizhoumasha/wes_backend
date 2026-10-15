@@ -497,6 +497,7 @@ async def test_retirement_and_ready_response_serialize(rack_database):
     transport = SimpleNamespace(create=AsyncMock())
     reader = BinBatchResultReader()
     flow = ManualPickingScanFlow(
+        transport_service=SimpleNamespace(confirm_bin_arrival_in_session=AsyncMock()),
         commands=None,
         admissions=None,
         batch_reader=reader,

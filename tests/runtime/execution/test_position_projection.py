@@ -72,6 +72,7 @@ async def apply(
     object_id="BIN-001",
     authority=TransportExecutionAuthority(workline_id=7),
     causal_token=1,
+    position_unknown=False,
 ):
     return await PositionProjectionService(
         repository=repo, binding_repository=Bindings(causal_token=causal_token)
@@ -80,8 +81,8 @@ async def apply(
         authority=authority,
         object_type="BIN",
         object_id=object_id,
-        position={"kind": "HANDOFF_POSITION", "location_code": "OUTSIDE"},
-        position_unknown=False,
+        position=None if position_unknown else {"kind": "HANDOFF_POSITION", "location_code": "OUTSIDE"},
+        position_unknown=position_unknown,
         arrival_face=None,
         client_request_id="request-1",
         operation_id="operation-1",
@@ -136,7 +137,8 @@ async def test_unordered_other_task_retains_position_and_marks_it_unconfirmed(un
 
 
 @pytest.mark.asyncio
-async def test_same_task_result_can_refine_unknown_position():
+@pytest.mark.parametrize("phase", [ProjectionEffectPhase.ACK_INVALIDATION, ProjectionEffectPhase.FINAL_RESULT])
+async def test_same_task_result_can_refine_unknown_position(phase):
     repo = Repository()
     repo.projection = SimpleNamespace(
         object_type="BIN",
@@ -147,12 +149,18 @@ async def test_same_task_result_can_refine_unknown_position():
         source_transport_task_id="transport-1",
         source_operation_id="operation-0",
         source_causal_token=1,
-        source_effect_phase=ProjectionEffectPhase.ACK_INVALIDATION,
+        source_effect_phase=phase,
     )
     projection = await apply(repo)
     assert projection.workline_id == 7
     assert projection.position_unknown is False
     assert projection.source_effect_phase == ProjectionEffectPhase.FINAL_RESULT
+
+    assert projection.position_json == {"kind": "HANDOFF_POSITION", "location_code": "OUTSIDE"}
+    assert projection.source_operation_id == "operation-1"
+    repo.calls.clear()
+    await apply(repo)
+    assert "flush" not in repo.calls
 
 
 @pytest.mark.asyncio
@@ -481,3 +489,16 @@ async def test_out_of_order_cross_task_replay_keeps_newest_projection(arrival_or
     assert repo.projection.source_transport_task_id == "task-new"
     assert repo.projection.source_causal_token == 20
     assert repo.projection.position_json["location_code"] == "NEW"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incoming_unknown", [False, True])
+async def test_same_source_known_final_position_cannot_be_rewritten(incoming_unknown):
+    repo = Repository()
+    await apply(repo)
+    repo.projection.position_json = {"kind": "HANDOFF_POSITION", "location_code": "CONFIRMED"}
+    repo.calls.clear()
+    await apply(repo, position_unknown=incoming_unknown)
+    assert repo.projection.position_unknown is False
+    assert repo.projection.position_json["location_code"] == "CONFIRMED"
+    assert "flush" not in repo.calls

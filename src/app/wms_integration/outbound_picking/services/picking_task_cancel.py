@@ -95,8 +95,11 @@ class PickingTaskCancelService:
                     reason = await self._cancel.first_rejection(db, cast("int", evidence.id))
                     if reason is None:
                         raise RuntimeError("取消拒绝缺少首次 reason_code")
-                    return self._result(evidence, "CONFLICT", reason)
-                raise RuntimeError("PickingTask 取消 Evidence 处于非法状态")
+                    # 旧父任务状态门禁的成员拒绝，按原身份和 Evidence 重新应用；首次冲突留存。
+                    if envelope.data.cancel_scope != "PLAN_MEMBERS" or reason != "STATE_CONFLICT":
+                        return self._result(evidence, "CONFLICT", reason)
+                else:
+                    raise RuntimeError("PickingTask 取消 Evidence 处于非法状态")
             task = await self._lock_task_authority(db, envelope.data.task_id)
             if task is not None:
                 evidence.picking_task_id = task.id
@@ -114,8 +117,6 @@ class PickingTaskCancelService:
                     task.increment_version()
             elif not isinstance(envelope.data, PickingTaskCancelMembersData):
                 raise RuntimeError("PLAN_MEMBERS 取消缺少成员合同")
-            elif task.status != PickingTaskStatus.EXECUTING:
-                reason = "STATE_CONFLICT"
             else:
                 matched, transport_task_ids = await self._cancel.cancel_members(
                     db,

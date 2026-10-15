@@ -158,20 +158,56 @@ async def test_member_cancel_marks_matches_and_finalizes_each_unsent_transport()
     )
 
 
-@pytest.mark.parametrize(
-    "task_status", [status for status in PickingTaskStatus if status != PickingTaskStatus.EXECUTING]
-)
-async def test_member_cancel_rejects_non_executing_task(task_status: PickingTaskStatus) -> None:
+@pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
+async def test_member_cancel_accepts_any_parent_task_state(task_status: PickingTaskStatus) -> None:
     service, task, evidence, evidences, _, cancellations, transport = setup_service(task_status=task_status)
 
     result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
 
-    assert (result.code, result.reason_code) == ("CONFLICT", "STATE_CONFLICT")
+    assert (result.code, result.reason_code) == ("RECEIVED", None)
+    assert task.status is task_status
+    assert evidence.apply_status is Status.APPLIED
+    evidences.record_conflict.assert_not_awaited()
+    task.increment_version.assert_called_once_with()
+    cancellations.cancel_members.assert_awaited_once()
+    assert cancellations.cancel_members.await_args.kwargs["evidence_id"] == evidence.id
+    transport.finalize_unsent_task_in_session.assert_awaited_once()
+
+
+async def test_member_cancel_replays_original_state_conflict_without_replacing_evidence() -> None:
+    service, task, evidence, evidences, _, cancellations, _ = setup_service(
+        task_status=PickingTaskStatus.EXECUTION_COMPLETED,
+        evidence_status=Status.RECONCILING,
+        duplicate=True,
+    )
+    original = event(scope="PLAN_MEMBERS")
+    evidence.normalized_payload = original.model_dump(mode="json", exclude_none=True)
+
+    result = await service.record(original, received_at=NOW)
+    repeated = await service.record(original, received_at=NOW)
+
+    assert (result.code, repeated.code) == ("RECEIVED", "DUPLICATE")
+    assert task.status is PickingTaskStatus.EXECUTION_COMPLETED
+    assert evidence.id == 10
+    assert evidence.received_at == NOW
+    assert evidence.normalized_payload == original.model_dump(mode="json", exclude_none=True)
+    assert evidence.apply_status is Status.APPLIED
+    assert cancellations.cancel_members.await_args.kwargs["evidence_id"] == 10
+    cancellations.cancel_members.assert_awaited_once()
+    task.increment_version.assert_called_once_with()
+    evidences.record_conflict.assert_not_awaited()
+
+
+async def test_member_cancel_keeps_original_reference_conflict() -> None:
+    service, _, evidence, _, tasks, cancellations, _ = setup_service(evidence_status=Status.RECONCILING, duplicate=True)
+    cancellations.first_rejection.return_value = "REFERENCE_CONFLICT"
+
+    result = await service.record(event(scope="PLAN_MEMBERS"), received_at=NOW)
+
+    assert (result.code, result.reason_code) == ("CONFLICT", "REFERENCE_CONFLICT")
     assert evidence.apply_status is Status.RECONCILING
-    evidences.record_conflict.assert_awaited_once()
-    task.increment_version.assert_not_called()
     cancellations.cancel_members.assert_not_awaited()
-    transport.finalize_unsent_task_in_session.assert_not_awaited()
+    tasks.lock_task_identity.assert_not_awaited()
 
 
 async def test_member_cancel_skips_selectors_that_do_not_match() -> None:

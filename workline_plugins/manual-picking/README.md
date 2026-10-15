@@ -118,11 +118,13 @@ PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
 
-WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或在 `EXECUTING` 中按
-`PLAN_MEMBERS` 撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
+WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或按 `PLAN_MEMBERS` 在任意父任务状态下
+撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
 
-SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
-`SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
+SCAN1 本点有效扫码确认 Bin 实际到位，按尚未入线的冻结批次成员唯一关联原任务和原搬运，并校验当前有效计划来源架面；
+不等待入口位置投影、目标转运架或原下架 Transport 成功。扫码确认冻结目标到位时，宿主以 `scan:<Evidence.id>` 留下成员完成依据；整笔所有成员均到位后沿原 Transport 发布
+`SUCCEEDED / SCAN_TARGET_CONFIRMED`，解除 WES 的 CTU 投料门禁。冻结请求和提交 operation_id 不变，不伪造 WMS 回执或 revision。
+迟到一致 WMS 结果仅补记其 revision，矛盾结果保留冲突；滚筒线命令和 RCS 内部车辆调度仍遵守各自约束。归属缺失/歧义进入对账，同箱更新的未决动作仍保留直接依赖。
 批次调度和扫码流程已有本地实现，但不能把代码测试当作完整出库或真实设备验收。
 
 部署通过 `InstalledWorkLinePlugin.picking_task_prepare_policy` 显式关联该能力。宿主静态注册通用 Celery 任务，只扫描精确版本匹配的
