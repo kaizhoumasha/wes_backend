@@ -303,6 +303,10 @@ class _WorkLines:
 
 
 class _Tasks:
+    async def get_by_id_for_update(self, db, picking_task_id):
+        assert picking_task_id == 31
+        return await self.get_executing_for_workline_for_update(db, 7)
+
     async def get_executing_for_workline_for_update(self, db, workline_id):  # type: ignore[no-untyped-def]
         return SimpleNamespace(
             id=31,
@@ -517,6 +521,9 @@ class _BatchProgress:
 
     def __init__(self) -> None:
         self.scanned = set()
+
+    async def scan1_task_id(self, db, **kwargs):
+        return 31
 
     async def record_scan1(self, db, **kwargs):  # type: ignore[no-untyped-def]
         bin_code = kwargs["bin_code"]

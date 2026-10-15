@@ -213,6 +213,8 @@ flowchart LR
 点1读取 ECS `SCAN_COMPLETED.data.bin_code`，实际值带方向后缀。仅形如 `A00000xxxx-B` 的本点有效箱码创建 `MOVE_FORWARD`；
 不可读、箱码格式错误或后缀不为 `-B` 时记录本次 NG 并创建 `MOVE_RIGHT`，由点1直达点3，不向 WMS 发送猜测的箱码。
 SCAN1 放行不依赖目标货架到位，只校验本箱的任务、当前轮次、计划来源和入站位置/Transport 等必要依据。
+原 inbound_batch 中已成功到达冻结入口、结果已发布且仍由当前料箱位置所引用的箱，以原入站 Transport 精确恢复原批次及原 task_id。若该原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务），SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 READY 成员、来源储位、终位和 WorkLine 必须一致，原 owner 不能已运维归档；同箱更新的在途/未知/未发布动作仍保留直接依赖，明确等待中的结果自动延迟重试。可识别但方向后缀错误的已到入口箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
+旁路继续沿原 SCAN1 Evidence 冻结 DeviceCommand；重放复用原身份，不重复下发。原 Transport、批次及 Evidence 均保留；SCAN3 按本次实际扫码独立决定方向：有效 `-B` 创建正常 Return 并下发 `MOVE_FORWARD`，条码无效则 `MOVE_LEFT`；不沿用 SCAN1 的旁路原因强制 NG，原 Passage 保留原 task_id，并以同一 SCAN3 Evidence 关联回程。
 目标货架与料箱同时就绪由实际人工拣料的 WMS/PDA 作业准入负责，不提前串联到 SCAN1 或点2到位上报。
 `MOVE_FORWARD` 的匹配物理结果只闭合点1动作，不建立点2业务准入队首；不能把命令创建或 ACK 当作到达。
 本线前一个点1方向命令未取得权威成功结果时，不为后一个扫码下发方向命令；同一未闭合料箱重扫也不建立第二次经过。

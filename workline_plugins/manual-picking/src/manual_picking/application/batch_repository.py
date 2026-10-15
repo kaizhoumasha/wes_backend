@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import and_, not_, or_, select, text
+from sqlalchemy.orm import aliased
 from wes_plugin_sdk import (
     BinBatchNoBatch,
     BinInboundBatchIntent,
@@ -29,6 +30,7 @@ from src.app.transport.models import TransportEvidence, TransportMember, Transpo
 from src.app.wms_adapter.outbound_picking.inbound_batch_typed import decode_outcome as decode_inbound
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.wms_integration.outbound_picking.models.plan_members import DirectPickExecution, PickingTaskBinSourceRack
 from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import PickingTaskPlanDeltaRepository
 from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
@@ -659,6 +661,100 @@ class BatchRepository:
                 response_evidence_id=evidence_id,
             )
         )
+
+    async def scan1_task_id(
+        self, db: AsyncSession, *, workline_id: int, transport_task_id: str, bin_code: str, inlet_location: str
+    ) -> int | Literal["WAIT_FOR_RESULT"] | None:
+        """已到入口的原批次承接扫码；父任务结束不改写料箱的执行归属。"""
+        newer_task = aliased(TransportTask)
+        newer_binding = aliased(TransportDecisionBinding)
+        newer_member = aliased(TransportMember)
+        newer_action = (
+            select(newer_task.id)
+            .join(newer_binding, newer_binding.client_request_id == newer_task.client_request_id)
+            .join(newer_member, newer_member.transport_task_id == newer_task.transport_task_id)
+            .where(
+                newer_member.object_type == "BIN",
+                newer_member.object_id == bin_code,
+                newer_binding.causal_token > TransportDecisionBinding.causal_token,
+                or_(
+                    newer_task.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    newer_task.outcome_version > newer_task.published_outcome_version,
+                ),
+            )
+            .exists()
+        )
+        rows = (
+            await db.execute(
+                select(ManualPickingInboundBatch, TransportMember, InboundEvidence, TransportTask, newer_action)
+                .join(
+                    TransportDecisionBinding,
+                    and_(
+                        TransportDecisionBinding.resource_fence_id == ManualPickingInboundBatch.operation_id,
+                        TransportDecisionBinding.source_evidence_id == ManualPickingInboundBatch.response_evidence_id,
+                        TransportDecisionBinding.picking_task_id == ManualPickingInboundBatch.picking_task_id,
+                        TransportDecisionBinding.workline_id == ManualPickingInboundBatch.workline_id,
+                    ),
+                )
+                .join(TransportTask, TransportTask.client_request_id == TransportDecisionBinding.client_request_id)
+                .join(TransportMember, TransportMember.transport_task_id == TransportTask.transport_task_id)
+                .join(InboundEvidence, InboundEvidence.id == ManualPickingInboundBatch.response_evidence_id)
+                .join(
+                    PickingTask,
+                    and_(
+                        PickingTask.id == ManualPickingInboundBatch.picking_task_id,
+                        PickingTask.task_id == ManualPickingInboundBatch.task_id,
+                        PickingTask.workline_id == workline_id,
+                        PickingTask.archived_at.is_(None),
+                    ),
+                )
+                .where(
+                    ManualPickingInboundBatch.workline_id == workline_id,
+                    TransportDecisionBinding.step == INBOUND_STEP,
+                    TransportTask.transport_task_id == transport_task_id,
+                    TransportTask.authority_workline_id == workline_id,
+                    TransportTask.kind == "BIN_MOVE",
+                    TransportTask.status == "SUCCEEDED",
+                    TransportTask.outcome_version > 0,
+                    TransportMember.object_type == "BIN",
+                    TransportMember.object_id == bin_code,
+                    TransportMember.status == "SUCCEEDED",
+                    TransportMember.position_unknown.is_(False),
+                )
+            )
+        ).all()
+        if len(rows) != 1:
+            return None
+        batch, member, evidence, transport, newer_pending = rows[0]
+        target = {"kind": "HANDOFF_POSITION", "location_code": inlet_location}
+        if (
+            member.target_json != target
+            or member.final_position_json != target
+            or evidence.kind != InboundEvidenceKind.WMS_RESULT
+            or evidence.workline_id != workline_id
+            or evidence.operation != BIN_INBOUND_BATCH_OPERATION
+            or evidence.operation_id != batch.operation_id
+            or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+            or evidence.published_at is None
+        ):
+            return None
+        result = decode_inbound(evidence.normalized_payload).result
+        if not isinstance(result, BinInboundBatchReady) or not any(
+            item.bin_code == bin_code
+            and (item.source_locator.rack_id, item.source_locator.rack_face) == (batch.rack_id, batch.rack_face)
+            and member.source_json
+            == {
+                "kind": "RACK_BIN_SLOT",
+                "rack_id": item.source_locator.rack_id,
+                "rack_face": item.source_locator.rack_face,
+                "slot_id": item.source_locator.slot_id,
+            }
+            for item in result.bins
+        ):
+            return None
+        if transport.outcome_version > transport.published_outcome_version or newer_pending:
+            return "WAIT_FOR_RESULT"
+        return batch.picking_task_id
 
     async def record_scan1(
         self, db: AsyncSession, *, workline_id: int, picking_task_id: int, transport_task_id: str, bin_code: str
