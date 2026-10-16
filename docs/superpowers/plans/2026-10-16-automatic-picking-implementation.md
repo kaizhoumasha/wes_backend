@@ -227,6 +227,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **失败闭环与 Review：**首轮宿主 HEAVY 因手动运行遗漏隔离 base 测试库迁移而有 49 项失败/初始化错误，迁移后定向 49 passed；新增 MaterialExecution owner 夹具另补必填设备标识及局部外键清理，完整业务断言保持不变，定向真实 worker 4 passed 后重跑完整 20 文件集合通过。独立 reviewer 核对固定 18 文件、typed 身份、原子关闭/发布、恢复 owner、历史清理、授权推进和测试/HEAVY 所有权，完整 Review 无可证实 finding；其后只变更核心夹具文件，同一 reviewer 定向核对确认能精确还原首轮指纹、无断言弱化或 owner 变化。生产可执行文件保持评审指纹，最终仅补本文证据。HEAD 不变、暂存区为空，保留工作区改动；本轮不提交、不部署、不启用真实派发或真实取盘，任务 7 整体仍未完成。
 
+#### 实施切片 8A：NO_WORK 点2放行与首次 SCAN3 持久交接
+
+**范围：**仅接当前 Work 的确定 NO_WORK，不接逐盘正常结束。`return_flow.py` 通过必填的离线命令 mapper 和精确 SCAN3 reader 使用现有 DeviceCommandService/FactProcessor；生产组合根未注入该 flow，不猜点2设备参数、期限、SCAN3 编码或关联规则，不启用真实派发。
+
+**持久身份与原子性：**Work 仅增加唯一 `exit_command_code`，已有 EXIT_PENDING 保持唯一前置恢复依据。新 NO_WORK 的应用、点2 Command 创建/关联和 Evidence 发布同事务；存量已发布 EXIT_PENDING 由 batch 前置扫描补建，沿 Work/NO_WORK 冻结命令身份。已有命令恢复不重新计算正文或 deadline；明确 FAILED 转既有 RECONCILING，未知/超时沿原 Command 由基础机制履约，不创建替代动作。命令 ACK/成功不代替 SCAN3 到位，精确到位也不伪造命令终态。
+
+**首次交接：**按当前 Work、原点2 Command、工作线、料箱、扫码设备、事件时间及当前 Evidence 核对显式关联。缺精确关联由原 Evidence 延期；错误身份进入既有对账。首次有效 SCAN3 在同一 FactProcessor 应用事务创建 `AutomaticPickingReturn`、关闭 Work 并发布该事实；重复扫码保留首次 Evidence。回程根仅保存工作线、料箱、原 Work 的不可变因果标识、原 Command 和首次 SCAN3 Evidence，不新增授权模型或状态，不引用已闭合 Work 外键。迁移 `bb07c44fb54f` 保留存量 EXIT_PENDING，拒绝丢失已建立的命令/回程身份的降级。
+
+**恢复 owner 与截点：**SCAN3 前当前 Work/EXIT_PENDING 归既有 batch 前置扫描，且不要求父任务仍 EXECUTING；已建命令的派发/结果归基础 Command，未发布扫码事实归 FactProcessor 的领取、租约与延期恢复。交接后 Return 是后续回程的当前持久根，计入原 business blocker/archiver；重启及旧扫码重放不再读取已闭合 Work、WorkPlan Confirmation 或旧 SCAN2/NO_WORK 历史。下一片由既有 batch 接续该根；本片停在等待后续物理事实的离线交接点，不增加空成功消费者或假回架动作。
+
+**测试所有权：**`T/test_bin_release.py` 拥有精确关联输入边界，`T/integration/test_returns_postgresql.py` 拥有 NO_WORK→点2命令→首次 SCAN3 原子交接、存量恢复、并发、双侧崩溃/发布、租约、重放、无 EXECUTING、回调早于 ACK、清理已闭合历史及新轮次隔离。核心只承接显式模型注册/过滤、迁移 selector 和既有 schema/工作线配置 HEAVY，不导入插件业务测试。SCAN4 FIFO、return_batch、drain 与逐盘正常结束入口留在后续切片，G2/G3/G5 继续仅约束各自生产路径。
+
+**验证：**以已提交 7C `54b7ba6e` 为基线，8A PostgreSQL 33 passed、既有插件 PostgreSQL/真实本地 worker 回归 197 passed、插件 FAST 98 passed，合计 328 项通过且零 skipped。核心聚焦 255 passed，selector 仅选中 schema baseline 与工作线配置两个文件，HEAVY 18 passed、零 skipped；最终 QUALITY 通过（核心 FAST 4315 passed、5 项既有 skipped，不计作通过证据）。独占临时 PostgreSQL 完成干净迁移链、存量 EXIT_PENDING 升级、空引用降级/再升级及已建立命令/回程时的有损降级保护；Work/Return metadata 对比无差异。初次失败属于夹具终态/投料前提、漏载 metadata 及 FactProcessor 处理计数误用，修正后保留完整身份、状态、发布与回滚断言，最终 33 项统一重跑通过。
+
+**闭环 Review：**独立 reviewer 核对固定 15 文件及 SHA256，完整检查精确身份、事务/锁序、原命令 owner、无 EXECUTING 的 batch 前置恢复、闭合历史清理、新轮次隔离、安装/迁移及测试所有权，无可确认 P1/P2 finding。后续仅补本文验证记录，可执行快照未变化。HEAD、暂存区、Git 配置与 worktree 判定未漂移，未提交、未部署、不启用真实派发或真实取盘；任务 8 整体及后续回程入口仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

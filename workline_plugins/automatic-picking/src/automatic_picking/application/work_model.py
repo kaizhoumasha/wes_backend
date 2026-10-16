@@ -55,5 +55,8 @@ class AutomaticPickingWork(EnterpriseMixin, DataTableMixin, table=True):
     top_removed_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
+    exit_command_code: str | None = Field(
+        default=None, foreign_key="wes_biz.device_commands.command_code", max_length=80, unique=True
+    )
     retry_at: datetime | None = None
     archived_at: datetime | None = None

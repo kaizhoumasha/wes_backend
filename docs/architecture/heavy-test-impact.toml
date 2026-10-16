@@ -3273,3 +3273,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0403_55adfc1a25a7_add_automatic_placement_result_.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# NO_WORK/SCAN3 交接业务归插件；核心只承接 schema 与部署配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0526_bb07c44fb54f_add_automatic_no_work_exit_and_scan3_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

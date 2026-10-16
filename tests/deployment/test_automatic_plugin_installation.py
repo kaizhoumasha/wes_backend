@@ -6,7 +6,13 @@ from deployment.plugin_models import include_plugin_table
 
 @pytest.mark.parametrize(
     "name",
-    ["automatic_picking_works", "automatic_picking_feeds", "automatic_picking_feed_scans", "automatic_picking_pickups"],
+    [
+        "automatic_picking_works",
+        "automatic_picking_feeds",
+        "automatic_picking_feed_scans",
+        "automatic_picking_pickups",
+        "automatic_picking_returns",
+    ],
 )
 def test_automatic_tables_belong_only_to_explicit_installation(name):
     assert not include_plugin_table(name, ())

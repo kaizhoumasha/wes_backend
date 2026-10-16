@@ -22,8 +22,11 @@ def normal_bin_code(raw, role):
 
 
 class AutomaticPickingScanFlow:
-    def __init__(self, works, feeds, work_flow, commands, *, batch_driver=None, tasks=None, worklines=None):
+    def __init__(
+        self, works, feeds, work_flow, commands, *, batch_driver=None, tasks=None, worklines=None, exit_flow=None
+    ):
         self.works, self.feeds, self.work_flow, self.commands = works, feeds, work_flow, commands
+        self.exit_flow = exit_flow
         self.batch_driver = batch_driver
         self.tasks = tasks or PickingTaskRepository()
         self.worklines = worklines or workline_repository
@@ -62,7 +65,7 @@ class AutomaticPickingScanFlow:
                 )
         else:
             result = "IGNORED"
-        if result == "WAIT_FOR_FEED":
+        if result in {"WAIT_FOR_FEED", "WAIT_FOR_EXIT"}:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
         if result == "IGNORED":
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.IGNORED)
@@ -101,9 +104,17 @@ class AutomaticPickingScanFlow:
         if snapshot is None or snapshot.status != "COMPLETED" or snapshot.evidence_id != evidence.id:
             return "RECONCILING"
         await self.work_flow.advance_in_session(db, task=task, work=work, now=timezone.now_for_db())
+        if self.exit_flow is not None:
+            await self.exit_flow.advance_in_session(db, line=line, work=work, task=task)
         return work.phase
 
     async def apply_scan_in_session(self, db, *, line, evidence, role, raw, timestamp, now):
+        if role == "SCAN3":
+            return (
+                await self.exit_flow.scan3_in_session(db, line=line, evidence=evidence, timestamp=timestamp)
+                if self.exit_flow is not None
+                else "WAIT_FOR_EXIT"
+            )
         code = normal_bin_code(raw, role)
         if code is None:
             return "IGNORED"

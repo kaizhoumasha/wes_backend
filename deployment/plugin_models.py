@@ -8,6 +8,7 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
             AutomaticPickingFeedScan,
         )
         from automatic_picking.application.pickup_model import AutomaticPickingPickup  # noqa: F401
+        from automatic_picking.application.return_model import AutomaticPickingReturn  # noqa: F401
         from automatic_picking.application.work_model import AutomaticPickingWork  # noqa: F401
 
     if "manual-picking" in enabled_plugin_keys:
@@ -29,6 +30,7 @@ def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) 
         "automatic_picking_feeds",
         "automatic_picking_feed_scans",
         "automatic_picking_pickups",
+        "automatic_picking_returns",
     }:
         return "automatic-picking" in enabled_plugin_keys
     return (

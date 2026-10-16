@@ -7,6 +7,7 @@ from src.app.execution.models import InboundEvidence
 
 from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
+from .return_model import AutomaticPickingReturn
 from .work_model import AutomaticPickingWork
 
 
@@ -55,12 +56,20 @@ class WorkRepository:
                 col(AutomaticPickingWork.phase) != "CLOSED",
             )
         )
-        count = work_count + len(await FeedRepository().list_admission_pending(db, workline_id))
-        return {"count": count, "sample": "automatic-picking current Work/feed" if count else None}
+        return_count = await db.scalar(
+            select(func.count())
+            .select_from(AutomaticPickingReturn)
+            .where(
+                col(AutomaticPickingReturn.workline_id) == workline_id,
+                col(AutomaticPickingReturn.archived_at).is_(None),
+            )
+        )
+        count = work_count + return_count + len(await FeedRepository().list_admission_pending(db, workline_id))
+        return {"count": count, "sample": "automatic-picking current Work/feed/Return" if count else None}
 
     async def archive_open_work(self, db, *, workline_id, archived_at):
         count = 0
-        for model in (AutomaticPickingWork, AutomaticPickingFeed):
+        for model in (AutomaticPickingWork, AutomaticPickingFeed, AutomaticPickingReturn):
             rows = (
                 await db.scalars(
                     select(model)

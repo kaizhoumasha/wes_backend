@@ -20,6 +20,7 @@ class AutomaticPickingBatchDriver:
         source_flow=None,
         material_flow=None,
         target_flow=None,
+        exit_flow=None,
         uuid_factory=new_uuid7,
         clock=timezone.now_for_db,
     ):
@@ -30,6 +31,7 @@ class AutomaticPickingBatchDriver:
         self.source_flow = source_flow
         self.material_flow = material_flow
         self.target_flow = target_flow
+        self.exit_flow = exit_flow
         self.uuid_factory, self.clock = uuid_factory, clock
 
     async def advance_completed_in_session(self, db, line):
@@ -56,6 +58,8 @@ class AutomaticPickingBatchDriver:
                     count += await self.work_flow.advance_in_session(db, task=task, work=work, now=now)
             else:
                 count += await self.work_flow.advance_in_session(db, task=task, work=work, now=now)
+            if self.exit_flow is not None:
+                count += await self.exit_flow.advance_in_session(db, line=line, work=work, task=task)
             if self.source_flow is not None and work.phase == "READY":
                 count += await self.source_flow.advance_in_session(db, work_id=work.id)
         return count
