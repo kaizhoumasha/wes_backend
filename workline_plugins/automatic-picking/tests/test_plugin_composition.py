@@ -23,3 +23,17 @@ def test_automatic_installation_preserves_static_identity_and_runtime_ports(keys
         "outbound.bin.inbound_batch@v1",
         "outbound.bin.work_plan@v1",
     )
+    assert automatic.runtime_binding.handlers == ()
+    assert automatic.runtime_binding.fact_factory is None
+    assert automatic.runtime_binding.decision_application is None
+
+
+def test_material_runtime_requires_explicit_injection():
+    from automatic_picking.application.plugin import build_plugin
+    from automatic_picking.handlers.material_flow import material_decided, material_scanned
+
+    material = object()
+    plugin = build_plugin(scan_flow=object(), batch_driver=object(), works=object(), material_flow=material)
+    assert plugin.runtime_binding.handlers == (material_scanned, material_decided)
+    assert plugin.runtime_binding.fact_factory is material
+    assert plugin.runtime_binding.decision_application is material

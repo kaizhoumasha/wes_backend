@@ -323,6 +323,39 @@ class _TaskQueue:
             raise self.error
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_plugin_application_uses_applier_transaction_before_publication(fails):
+    evidence = _evidence()
+    processor, _, applier = _processor(evidence)
+    calls = []
+
+    class Application:
+        async def apply_in_session(self, db, *, fact):
+            assert evidence.published_at is None
+            assert len(applier.calls) == 1
+            assert fact.evidence_id == str(evidence.id)
+            calls.append(db)
+            if fails:
+                raise RuntimeError("plugin transaction failed")
+
+    processor._plugins = StaticPluginBinding(
+        (
+            PluginRuntimeBinding(
+                plugin_key="sample_plugin",
+                plugin_version="1.0.0",
+                handlers=(_handle_initial,),
+                fact_factory=_IdentityFactFactory(),
+                initial_execution_correlator=_Correlator(),
+                decision_application=Application(),
+            ),
+        )
+    )
+    assert await processor.process_batch() == (0 if fails else 1)
+    assert calls == [processor._sessions.databases[-1 if not fails else -2]]
+    assert (evidence.published_at is None) is fails
+
+
 @handler(fact_type=DeviceResultReadyFact, name="device_result", supported_versions=("1.0",))
 def _handle_device_result(fact: DeviceResultReadyFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "NEXT_DEVICE"),)

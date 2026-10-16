@@ -34,6 +34,27 @@ def request(source="BIN_CELL"):
     }
 
 
+@pytest.mark.parametrize("source", ["BIN_CELL", "RACK_SLOT"])
+def test_persisted_request_decodes_to_typed_intent_without_losing_contract_fields(source):
+    from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request, encode_request
+
+    body = request(source)
+    intent = decode_request(body)
+    assert type(intent) is sdk.PickingMaterialIntent
+    assert intent.material_execution_id is None and intent.fact_id is None
+    assert intent.barcode == body["data"]["barcode"]
+    assert encode_request(intent, timestamp=body["timestamp"]) == body
+
+
+def test_persisted_request_decode_rejects_invalid_wire_value():
+    from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request
+
+    body = request()
+    body["data"]["scanned_at"] = True
+    with pytest.raises(ValueError):
+        decode_request(body)
+
+
 def response(data, code="DECIDED"):
     return {"operation_id": OPERATION_ID, "code": code, "timestamp": 0, "data": data}
 

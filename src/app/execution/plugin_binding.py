@@ -32,6 +32,12 @@ class PluginFactFactory(Protocol):
     async def build(self, db: object, fact: FactReference) -> FactReference: ...
 
 
+class PluginDecisionApplication(Protocol):
+    """纯 Decision 成功应用后，在发布 Evidence 的同一事务内更新插件业务引用。"""
+
+    async def apply_in_session(self, db: object, *, fact: FactReference) -> None: ...
+
+
 class BusinessEvidenceDisposition(str, Enum):
     APPLIED = "APPLIED"
     IGNORED = "IGNORED"
@@ -72,6 +78,7 @@ class PluginRuntimeBinding:
     initial_execution_correlator: InitialExecutionCorrelator | None = None
     business_evidence_consumer: BusinessEvidenceConsumer | None = None
     business_wms_operations: tuple[str, ...] = ()
+    decision_application: PluginDecisionApplication | None = None
 
     def __post_init__(self) -> None:
         _ = _required(self.plugin_key, "plugin_key")
@@ -159,6 +166,13 @@ class StaticPluginBinding:
         except KeyError as exc:
             raise LookupError(f"no handler for route: {route}") from exc
 
+    def resolve_decision_application(self, plugin_key: str, plugin_version: str) -> PluginDecisionApplication | None:
+        identity = (plugin_key, plugin_version)
+        try:
+            return self._bindings[identity].decision_application
+        except KeyError as exc:
+            raise LookupError(f"no plugin binding: {identity}") from exc
+
     def resolve_initial_execution_correlator(
         self,
         plugin_key: str,
@@ -190,6 +204,7 @@ __all__ = [
     "BusinessEvidenceDisposition",
     "InitialExecutionCorrelator",
     "InitialExecutionDescriptor",
+    "PluginDecisionApplication",
     "PluginFactFactory",
     "PluginRuntimeBinding",
     "StaticPluginBinding",

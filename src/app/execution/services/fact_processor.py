@@ -241,6 +241,9 @@ class FactProcessor:
                 return False
             for item, group in zip(prepared, current_groups, strict=True):
                 _ = await self._applier.apply(db, evidence, item.execution, item.fact, group)
+                application = self._plugins.resolve_decision_application(item.plugin_key, item.plugin_version)
+                if application is not None:
+                    await application.apply_in_session(db, fact=item.fact)
             evidence.published_at = now
             evidence.decision_claim_token = None
             evidence.decision_claim_expires_at = None

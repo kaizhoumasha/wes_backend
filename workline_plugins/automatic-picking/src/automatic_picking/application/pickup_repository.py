@@ -3,13 +3,16 @@
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from wes_plugin_sdk import BinWorkPlanReady, PickingCellSource, PickingMaterialAccept
+from wes_plugin_sdk import BinWorkPlanReady, PickingBinCell, PickingCellSource, PickingMaterialAccept
 
 from automatic_picking.handlers.source_authorization import WorkSourceFact
-from src.app.execution.models import InboundEvidence
+from src.app.device.models.command import DeviceCommand
+from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
+from src.app.execution.repositories import inbound_evidence_repository
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material
+from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request
 from src.app.wms_adapter.outbound_picking.work_plan_typed import decode_outcome as decode_plan
-from src.app.wms_integration.outbound_picking.models import PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
 from src.utils.canonical_json import canonical_json_digest
 
@@ -29,6 +32,83 @@ class SourceObservation:
 class PickupRepository:
     def __init__(self, physical_reader):
         self.physical_reader = physical_reader
+
+    async def material_context_for_update(self, db, pickup_id):
+        work_id = await db.scalar(
+            select(AutomaticPickingPickup.work_id).where(AutomaticPickingPickup.pickup_id == pickup_id)
+        )
+        if work_id is None:
+            raise ValueError("scan Pickup identity is missing")
+        work = await self._work_for_update(db, work_id)
+        pickup = await self.pickup_for_update(db, pickup_id)
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
+        if command is None or command.workline_id != work.workline_id or command.execution_ref_id != pickup_id:
+            raise ValueError("scan source Command identity differs from Pickup")
+        return work, pickup, command
+
+    async def scan_evidence_for_update(self, db, evidence_id):
+        return await inbound_evidence_repository.get_by_id_for_update(db, evidence_id)
+
+    async def material_evidence(self, db, evidence_id):
+        return await db.get(InboundEvidence, evidence_id, populate_existing=True)
+
+    async def material_execution(self, db, material_id):
+        return await db.get(MaterialExecution, material_id) if material_id is not None else None
+
+    async def material_source(self, db, work, pickup):
+        """本盘仍未闭合时沿原授权引用读取，不使用 Work 的后继授权解释前盘。"""
+        evidence = await self._evidence(db, pickup.authorization_evidence_id, work)
+        if evidence.normalized_payload.get("operation_id") != evidence.operation_id:
+            raise ValueError("source authorization operation identity differs")
+        if evidence.id == work.response_evidence_id:
+            if (
+                evidence.operation != "outbound.bin.work_plan@v1"
+                or evidence.operation_id != work.operation_id
+                or evidence.picking_task_id != work.picking_task_id
+                or evidence.material_execution_id is not None
+            ):
+                raise ValueError("initial material source identity differs")
+            result = decode_plan(evidence.normalized_payload).result
+            cell_id = result.cell_id if type(result) is BinWorkPlanReady else None
+        else:
+            if evidence.operation != "outbound.material.decide@v1":
+                raise ValueError("successor material source identity differs")
+            result = decode_material(evidence.normalized_payload).result
+            cell_id = (
+                result.next_source_action.cell_id
+                if type(result) is PickingMaterialAccept and result.next_source_action
+                else None
+            )
+        feed = await db.get(AutomaticPickingFeed, work.feed_id)
+        member = await db.get(PickingTaskBinSourceRack, feed.source_member_id) if feed is not None else None
+        task = await db.get(PickingTask, work.picking_task_id)
+        if (
+            cell_id is None
+            or feed is None
+            or member is None
+            or task is None
+            or feed.workline_id != work.workline_id
+            or feed.picking_task_id != task.id
+            or member.picking_task_id != task.id
+        ):
+            raise ValueError("material source lost its frozen Work/Requirement identity")
+        return task.task_id, PickingBinCell(member.rack_id, member.rack_face, work.bin_code, cell_id)
+
+    async def material_confirmation(self, db, *, operation_id):
+        row = await db.scalar(
+            select(WmsConfirmation).where(
+                WmsConfirmation.operation == "outbound.material.decide@v1",
+                WmsConfirmation.operation_id == operation_id,
+            )
+        )
+        if row is None:
+            return None, None
+        if canonical_json_digest(row.request_payload) != row.request_digest:
+            raise ValueError("material request digest differs")
+        request = decode_request(row.request_payload)
+        if request.operation_id != row.operation_id:
+            raise ValueError("material request operation identity differs")
+        return row, request
 
     async def _work_for_update(self, db, work_id):
         line_id = await db.scalar(select(AutomaticPickingWork.workline_id).where(AutomaticPickingWork.id == work_id))

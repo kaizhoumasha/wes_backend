@@ -8,6 +8,24 @@ import wes_plugin_sdk as sdk
 from . import material_decide_wire as wire
 
 
+def decode_request(payload: object) -> sdk.PickingMaterialIntent:
+    request = wire.parse_material_decide_request(payload)
+    source = request.data.source_locator
+    locator = (
+        sdk.PickingBinCell(source.rack_id, source.rack_face, source.bin_code, source.cell_id)
+        if isinstance(source, wire.PickingBinCell)
+        else sdk.PickingRackSlot(source.rack_id, source.rack_face, source.slot_id)
+    )
+    return sdk.PickingMaterialIntent(
+        operation_id=request.operation_id,
+        task_id=request.data.task_id,
+        source_locator=locator,
+        barcode=request.data.barcode,
+        scanned_at=request.data.scanned_at,
+        plan_revision=request.data.plan_revision,
+    )
+
+
 def encode_request(intent: sdk.PickingMaterialIntent, *, timestamp: int) -> dict[str, Any]:
     if type(intent) is not sdk.PickingMaterialIntent:
         raise TypeError("material decide requires PickingMaterialIntent")

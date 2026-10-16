@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 2026-10-17，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4、任务 5 已确认路径及五项 Review 修订提交为 `2da3990c`；任务 5A 验收及计划更新已在 `codex/automatic-picking-workflow` 提交为 `26deca33`。本轮推进任务 6A 的纯规则和离线事务验收，不提交、不部署、不推进真实取盘；G6 首批确认及任务 6 的生产持久化、设备/扫码接线仍未实施，不改变外部合同状态。
+**状态与基线:** 2026-10-17，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4、任务 5 已确认路径及五项 Review 修订提交为 `2da3990c`；任务 5A 验收及计划更新已在 `codex/automatic-picking-workflow` 提交为 `26deca33`。任务 6A 已提交为 `97c99c9`，6B 持久化与离线恢复验收已提交为 `197c568d`。本轮实施 6C：精确关联已给定前提下的单盘绑定、typed Fact/Handler、首次 decide 与 ACCEPT 离线接线；不提交、不部署、不推进真实取盘。确定 WAIT 的持久到期续问留给 6D，G2/G3/G5 的生产门槛及 G6 首批期限保持未决。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -71,7 +71,7 @@
 
 ### 当前任务 5–6 剩余项与继续条件
 
-以下按已提交基线及后续 5A/6A/6B 的明确验收范围核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
+以下按已提交基线及后续 5A/6A/6B/6C 的明确验收范围核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
 
 | 路径 | 当前事实与归属 | 继续条件 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@
 | 任务 5 跨 revision 来源接续 | 切片 5A 的 6 项 PostgreSQL 验收已通过：当前进场复用原 Transport，各 revision 成员独立申请，重启/并发扫描防重、事务回滚、取消及闭合历史清理均已覆盖；未改生产代码 | 本项已闭合，不依赖首批期限或机械臂参数；首批确认和任务 6 按各自条件继续 |
 | 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
 | 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
-| 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；真实事实 reader、设备映射、扫码汇合和单盘业务应用仍待后续切片，不能以持久适配代表生产取盘闭环 |
+| 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；6C 补齐明确关联输入后的单盘应用；真实事实 reader、设备映射与生产扫码汇合仍未启用，不能以持久适配或离线接线代表生产取盘闭环 |
 | 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
 | 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 除来源映射/关联外，还须闭合 G3 的目标映射及 G5 权威 PkgID 来源；不能先取盘再补猜报告身份 |
 
@@ -136,11 +136,30 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验收范围：**真实 PostgreSQL 及真实 `DeviceCommandService.create_command_in_session`；覆盖各写入阶段回滚、行锁等待、并发消费/ACCEPT 重放、同 Cell 和跨 Cell 后继、明确无后继、未知栈顶补证、成员取消、旧 READY/ACCEPT 重放、清理旧 Pickup/Command 后恢复、存量 Work 升级与有数据降级拒绝。模型/迁移差异、核心测试所有权及 selector 单独验证，插件事务测试唯一 owner 为 `T/integration/test_pickup_identity_postgresql.py`，不进入核心 HEAVY。
 
-**未启用边界：**设备事实 reader 和请求映射器均为必填注入项，没有生产默认实现；测试明确提供设备参数、扫码/MaterialExecution 关联与可靠取出语义。生产组合根不注入来源流程，设备命令不派发；任务 6 的生产扫码汇合、单盘业务应用/FactProcessor handler 及任务 7 仍未实现。G2/G3/G5 继续仅限制对应生产路径，G4/G6/G7 不扩大阻塞本片。未提交、未部署、不推进真实取盘。
+**未启用边界：**设备事实 reader 和请求映射器均为必填注入项，没有生产默认实现；测试明确提供设备参数、扫码/MaterialExecution 关联与可靠取出语义。生产组合根不注入来源流程，设备命令不派发；6B 结束时尚无单盘业务应用/FactProcessor handler，后续范围见 6C；生产扫码汇合及任务 7 仍未实现。G2/G3/G5 继续仅限制对应生产路径，G4/G6/G7 不扩大阻塞本片。未提交、未部署、不推进真实取盘。
 
 **验证与 Review：**插件合计 128 passed（78 FAST、31 项本片 PostgreSQL、19 项既有 PostgreSQL/真实 worker），无跳过；核心安装/拓扑/selector 聚焦 252 passed。完整 QUALITY 通过（脚本 428 passed，默认 FAST 4280 passed/5 既有 skipped），核心 selector 仅选 2 文件，固定 PostgreSQL 17.10/TimescaleDB 2.27.1 上 HEAVY 18 passed。模型/迁移 diff 为零；全量核心 metadata 比对有既有 inbound_evidences/picking_tasks 环引用 SAWarning，不属于本片模型差异。
 
 独立首轮 Review 发现 1 项：调用方预载取消前成员时，WorkLine 锁不会刷新 ORM identity map，可能让已取消 Requirement 创建 Command。真实 CancelService 交错回归 RED→GREEN，锁后显式刷新直接成员，未加状态或锁模型；最终受影响插件集合 109 passed。此前本片验收发现的“重复当前取出事实仍要求旧 Pickup 存在”也已由 RED→GREEN 修正。同一 Reviewer 在一轮中完成意见闭环及 fresh full Review，无未关闭 finding。后续修正只触及插件 Repository/测试，未失效的核心 QUALITY/HEAVY 与既有 worker 证据不重复执行。证据绑定当前可执行文件指纹及隔离环境，不代表生产来源流程启用或真实设备验收。
+
+#### 实施切片 6C：精确关联输入后的单盘离线接线
+
+**范围：**`P/application/material_flow.py` 实现必填 typed `MatchedMaterialScan` reader 边界、原扫描 Evidence 的单盘绑定和 Fact 增强；`P/handlers/material_flow.py` 只依赖 SDK，纯 handler 创建首次 `PickingMaterialIntent` 或确定 ACCEPT/WAIT 的 `Wait` Decision。扫描必须精确给出 WorkLine、Pickup、来源 Command、原始 barcode 和扫码时间；测试专用报文不是设备合同，不推断最近命令、设备位置或 PkgID。
+
+- [x] 原扫码 Evidence、Pickup→MaterialExecution 关联同事务保存；重复、并发及重启沿原 admission Evidence 复用一个单盘。Pickup UUID 仅用作 WES 本地 trace/执行/首次 decide identity，不能作为 WMS PkgID；原 prescan Command 的 execution_ref 和空 material_execution_id 不改绑。
+- [x] FactFactory 核对原 Work/成员/授权来源、当前单盘与扫码、typed 原请求、结果 operation/response Evidence 及摘要；纯 handler 保留 barcode 原文和 scanned_at，不在基础层解释 Cell、目标或后继业务。
+- [x] 宿主只增加可选 `PluginDecisionApplication`：精确 frozen plugin binding 解析后，在 Decision 应用与 Evidence 发布之间调用，复用 FactProcessor 原事务、claim、失败退避与持久扫描；宿主既有 `material_decide_typed` 补持久请求到 SDK intent 的解码，Repository 校验持久摘要/请求身份，业务应用不读取 wire 信封；插件回调复用 6B `handoff_in_session`，目标结果引用与 Work 后继/明确无后继和 Evidence 发布同事务。未安装回调的插件行为不变。
+- [x] 明确 WAIT 是已确定结果，原 Confirmation 完成、MaterialExecution HOLD、原授权仍已消费，不创建后继或新请求；交付未知尚无业务结果，基础 Confirmation 以 PENDING/retry_eligible/next_attempt_at 保留原 identity/body 技术重试。技术派发窗口不解释为业务重问期限。
+- [x] 离线验证 ACCEPT 不等于可靠取出；得到匹配的栈顶取出 Evidence 后，M1 仍 HOLD 时 M2 可独立绑定/decide，不增加全线 FIFO、平台占槽或另一臂的报告依赖。
+- [ ] 6D：保存确定 WAIT 的到期进度并由已有插件 owner 到期创建唯一新 operation_id；本片不接持久续问，不将 WAIT 原请求重发当作业务重问。
+
+**恢复 owner：**来源授权继续归当前 Work/batch；设备 Command 技术恢复仍归基础服务；精确扫码关联成功后的未发布 MaterialExecution Evidence 唯一归 FactProcessor 与冻结插件。ACCEPT 事务中断会回滚 Decision、Pickup 目标引用、Work 授权与发布标记，持久 claim/退避恢复原 Evidence。绑定及 FactProcessor 均按 Evidence→WorkLine→Work→Pickup 排序；来源 batch/Work 继续使用 6B 的 WorkLine→Work→Pickup，不反向锁扫码 Evidence。扫码与来源 Command 的生产汇合仍须 G2；没有新 worker、授权模型或业务状态。
+
+**装配边界：**`build_plugin` 只有显式注入 material flow 时安装两个 handler/factory/事务回调，离线测试使用真实 FactProcessor、DecisionApplier、Confirmation/Command Service；生产 deployment 仍不注入来源或 material flow。G2 精确扫码生产合同、G3 设备映射/可靠事实读口、G5 权威 PkgID 不猜，任务 7 动作/报告尚未启动；G4/G6/G7 只限制各自分支。
+
+**验证：**最终插件 FAST 84 passed；修正后的受影响 PostgreSQL 53 passed（6C 22 项、6B 31 项），无跳过。首轮完整 PostgreSQL/真实 worker 71 passed；其中未受修正影响的原 19 项 Feed/Work/revision/worker 证据复用，不将其描述为修正后重新全量执行。核心域合同与执行聚焦 949 passed；最终 QUALITY 通过（脚本 428 passed、默认 FAST 4286 passed/5 既有 skipped）。现行 selector 因触及 `outbound_picking/**` 扩为 19 文件，固定 PostgreSQL 17.10/TimescaleDB 2.27.1 与独占 Redis 上 113 passed、无跳过。插件测试不进入核心 selector。已有 metadata 环引用及 plan_delta 测试数据的 Pydantic 序列化 warning 不属于本片新增模型/合同变化。Ruff、格式、计划引用和 diff 检查通过；无 schema 或迁移变化。
+
+**闭环 Review：**首轮发现 2 项 P2：绑定重放与 FactProcessor 的 Evidence↔WorkLine 反序死锁；插件应用层解释持久 wire 信封。先以真实 PostgreSQL 受控交错复现死锁，再统一锁序；宿主 converter 补严格字段类型的 `decode_request`，Repository 回传 typed intent，应用层退出信封解读。同一独立 reviewer 在一轮内完成旧意见闭环及当前完整 14 文件的 fresh full Review，逐文件指纹一致，无未关闭 finding。后续仅补本文证据，不失效当前可执行快照。未暂存、未提交、未部署，生产入口仍未启用，不把离线成功视为真实取盘或双臂物理验收。
 
 ## 变更面与文件归属
 
