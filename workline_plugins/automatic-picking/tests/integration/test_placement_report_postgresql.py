@@ -362,45 +362,6 @@ async def test_m2_authorization_progresses_independently_of_m1_report(placed):
         assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 3
 
 
-@pytest.mark.parametrize("code", ["RECORDED", "DUPLICATE"])
-async def test_report_response_remains_unpublished_until_closure_slice(placed, code):
-    p = placed
-    await processor(p).process_batch()
-    async with p.sessions.begin() as db:
-        pickup = await current_pickup(p, db)
-        report = await db.get(WmsConfirmation, pickup.movement_confirmation_id)
-        payload = {"operation_id": report.operation_id, "timestamp": 1, "code": code, "data": {}}
-        evidence = InboundEvidence(
-            kind="WMS_RESULT",
-            source_identity="fixture-report7b:" + new_uuid7(),
-            operation=report.operation,
-            operation_id=report.operation_id,
-            normalized_payload=payload,
-            payload_digest=canonical_json_digest(payload),
-            workline_id=p.line.id,
-            material_execution_id=p.material_id,
-            received_at=p.now,
-            processed_at=p.now,
-            apply_status="APPLIED",
-            contract_version="1.0",
-        )
-        db.add(evidence)
-        await db.flush()
-        report.status, report.response_evidence_id, report.response_result, report.completed_at = (
-            "COMPLETED",
-            evidence.id,
-            code,
-            p.now,
-        )
-        result_id = evidence.id
-    assert await processor(p).process_batch() == 1
-    async with p.sessions() as db:
-        evidence = await db.get(InboundEvidence, result_id)
-        assert evidence.published_at is None and evidence.decision_digest is None
-        assert evidence.decision_next_attempt_at is not None
-        assert (await db.get(MaterialExecution, p.material_id)).status == "HOLD"
-
-
 async def test_existing_7a_put_survives_upgrade_and_populated_downgrade_is_refused(placed, database):
     import subprocess
 

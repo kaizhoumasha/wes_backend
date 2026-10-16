@@ -40,3 +40,18 @@ def test_unknown_placement_defers_without_report_or_close():
         reason_code="PUT_FACT_PENDING",
     )
     assert placement_pending(fact) == (DeferExecution("pickup-7b", "evidence:7", "PUT_FACT_PENDING"),)
+
+
+@pytest.mark.parametrize("removed", [None, 42])
+def test_recorded_fact_only_closes_its_own_material(removed):
+    from automatic_picking.handlers.placement import MaterialReportedFact, material_reported
+    from wes_plugin_sdk import CompleteExecution
+
+    fact = MaterialReportedFact(
+        fact_id="evidence:9",
+        evidence_id="9",
+        fact_version="1.0",
+        material_execution_id="pickup-7c",
+        removed_evidence_id=removed,
+    )
+    assert material_reported(fact) == (CompleteExecution("pickup-7c", "evidence:9", "MOVEMENT_RECORDED"),)

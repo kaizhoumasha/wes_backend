@@ -1634,6 +1634,7 @@ def test_source_empty_paths_select_production_wiring(changed_path: str) -> None:
         "src/app/wms_adapter/outbound_picking/movement_report_wire.py",
         "src/app/wms_adapter/outbound_picking/movement_report_typed.py",
         "src/app/wms_adapter/outbound_picking/movement_report_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/material_movement_report.py",
         "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
         "src/app/wms_adapter/confirmation_adapter.py",
         "src/wes_plugin_sdk/src/wes_plugin_sdk/wms_types.py",

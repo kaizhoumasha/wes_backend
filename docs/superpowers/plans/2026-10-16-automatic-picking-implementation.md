@@ -211,6 +211,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **闭环 Review：**独立 reviewer 核对固定 13 文件及指纹、合同、精确身份、原子事务、恢复 owner、取消后事实、并发和测试/HEAVY 所有权，完整 Review 无可确认 finding。后续仅补本文验证记录，可执行文件保持评审指纹。HEAD、index 与共享 Git config 未漂移，无暂存；G2/G3/G5 仍只约束对应生产路径，fixture 的成功事实和权威 PkgID 不构成合同确认。未提交、未部署，不推进真实取盘，任务 7 整体和单盘关闭仍未完成。
 
+#### 实施切片 7C：报告确认后的单盘关闭与 Work 当前事实续接
+
+**范围：**只消费 7B 已冻结的 BIN_CELL→普通 RACK_SLOT 报告。宿主固定 `MaterialMovementReportResultReader` 按当前 Confirmation ID 校验 owner、operation/operation_id、请求摘要、响应 Evidence 的身份/摘要及 `COMPLETED + RECORDED/DUPLICATE`，返回纯 typed intent/outcome；不读取插件业务表、不决定关闭资格。插件 `MaterialReportedFact` / handler 使用现有 CompleteExecution，不改 wire/SDK，不新增模型、业务状态或迁移。
+
+**关闭与原子性：**插件核对本盘当前报告、已发布 ACCEPT、已发布的精确成功 PUT 位置引用，以及报告冻结的原来源/普通目标。报告结果 Fact 的 operation_id、Evidence、typed outcome 必须对应同一当前义务。ACCEPT 已在 6B/6C 原事务交接下一来源或明确无下一来源，关闭时不再次交接；M2 无需已存在。若 Work 仍持有本盘 ACCEPT 且尚未消费，插件从既有可靠取出读口核对原来源 Command 的取出 Evidence，与 CLOSED、报告结果摘要和发布同一 FactProcessor 应用事务保存到 Work.top_removed_evidence_id；读口在准备阶段只读，不能提前提交该事实。缺可靠取出则由原 Evidence 延期恢复。若授权已消费或已推进，保留当前 Work 的游标与取出事实，不要求 M2 的取出/目标就绪，不回写前盘事实。直接成员取消或下一来源暂不可用不丢弃本盘已经确定的位置和报告事实；新来源仍遵守原准入。
+
+**恢复 owner 与历史边界：**未完成报告义务归原 Confirmation；已保存未发布结果归原 FactProcessor 领取/租约/延期扫描。关闭前尚未移交的取出依赖归仍未闭合的 M1，关闭提交后归当前 Work；现有 batch 的 Work 扫描负责发现下一来源，不增加 worker/队列或关闭 Work。清理已闭合 M1 的 Pickup、原来源/PUT Command、已履约 Confirmation 及无当前引用的 PUT 历史后，Work 依靠仍被引用的当前 ACCEPT 和取出 Evidence 独立续接；这些当前事实及必要 owner 不是可清理历史。无下一来源由当前 ACCEPT 的省略字段明确表达，不以空查询推定完成。关闭 M1 不等同于 Work、Bin 或 PickingTask 完成。
+
+**验收与所有权：**`T/integration/test_material_close_postgresql.py` 是报告确认→单盘关闭、Work 原子保存和跨历史恢复的主要 PostgreSQL owner，承接 7B 原延期关闭的两项测试；7B 文件继续拥有 PUT→报告创建。纯决定复用 `T/test_placement_report.py`，组合测试核对静态 handler。核心 FAST 拥有 typed decoder / reader 严格合同，核心 movement_report production wiring 验证无插件时 MaterialExecution owner 的可靠履约与 typed 读取；不复制插件业务矩阵。新读口由现有出库域 HEAVY mapping 覆盖，selector 合同新增该路径断言。
+
+**启用与未决范围：**生产组合根仍不注入 material/来源/目标流程，不启用真实派发、不推进真实取盘。7C 读取已冻结的 7B 报告，不重新索取设备映射、扫码关联或 PkgID；G2/G3/G5 仍分别限制对应生产入口/事实读口和新报告身份的权威来源。普通目标以外的准备、RACK_SLOT/NG 分支及任务 7 其余路径仍未完成，未决值不猜，不做 bin-line-common 抽取。
+
+**验证：**基线为已提交 7B `c1394d0a`。新增关闭 PostgreSQL 33 passed，既有插件 PostgreSQL/真实 worker 164 passed，插件 FAST 90 passed，合计 287 项通过、零 skipped；核心聚焦 305 passed。最终 selected HEAVY 为现有 mapping 选中的 20 个宿主文件，102 passed、零 skipped；最终 QUALITY 通过（核心 FAST 4314 passed、5 项既有 skipped，不计作通过证据）。7C 无新迁移；插件既有 schema/迁移回归和独占临时库的现有 head 升级均通过。
+
+**失败闭环与 Review：**首轮宿主 HEAVY 因手动运行遗漏隔离 base 测试库迁移而有 49 项失败/初始化错误，迁移后定向 49 passed；新增 MaterialExecution owner 夹具另补必填设备标识及局部外键清理，完整业务断言保持不变，定向真实 worker 4 passed 后重跑完整 20 文件集合通过。独立 reviewer 核对固定 18 文件、typed 身份、原子关闭/发布、恢复 owner、历史清理、授权推进和测试/HEAVY 所有权，完整 Review 无可证实 finding；其后只变更核心夹具文件，同一 reviewer 定向核对确认能精确还原首轮指纹、无断言弱化或 owner 变化。生产可执行文件保持评审指纹，最终仅补本文证据。HEAD 不变、暂存区为空，保留工作区改动；本轮不提交、不部署、不启用真实派发或真实取盘，任务 7 整体仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
@@ -353,8 +369,10 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 ### 任务 7：目标准备、PUT、位置报告与双臂并发
 
 **依赖：**任务 6；完整生产闭环受 G3/G5 约束。**新增：**`P/application/target_preparation.py`；扩展本插件 Pickup、flow、material handler 和 composition。
-**测试：**新增 `T/{test_target_preparation,test_placement_report,test_arm_concurrency}.py`、`T/integration/test_material_closure_postgresql.py`。
+**测试：**新增 `T/{test_target_preparation,test_placement_report,test_arm_concurrency}.py`、`T/integration/test_material_close_postgresql.py`。
 **接口：**消费任务 2 的 ACCEPT typed outcome，经现有 ReliableRackTransportCreator、DeviceCommandService、WmsConfirmationService 创建对象，不新增外部 operation。
+
+**当前离线进度：**7A 普通目标已就绪后的 PUT 创建、7B 确定位置/报告义务、7C 报告确认后的关闭与 Work 续接已分别验收。以下复选框仍代表完整任务（含其余目标准备/来源分支与生产合同准入），不把本轮离线通过视为任务 7 整体完成。实际关闭验收 owner 为 `T/integration/test_material_close_postgresql.py`。
 
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。

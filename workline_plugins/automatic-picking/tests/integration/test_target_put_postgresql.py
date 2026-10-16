@@ -34,7 +34,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 async def accepted(prepared, request):
     p = prepared
     p.pickup_id, p.scan_id, p.material_id, p.decide = await initial(p)
-    p.accept_id = await result(p, p.decide)
+    data = None
+    if getattr(request, "param", True) == "no_next_source":
+        data = {"result": "ACCEPT", "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)}}
+    p.accept_id = await result(p, p.decide, data=data)
     assert await processor(p).process_batch() == 1
     async with p.sessions.begin() as db:
         target = Device(device_code="OFFLINE-TARGET", device_name="7A 离线目标", work_line_id=p.line.id)

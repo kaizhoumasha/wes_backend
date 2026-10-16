@@ -55,6 +55,27 @@ class PickupRepository:
     async def material_execution(self, db, material_id):
         return await db.get(MaterialExecution, material_id, populate_existing=True) if material_id is not None else None
 
+    async def removed_for_close(self, db, *, work, pickup, source):
+        removed_id = work.top_removed_evidence_id
+        if removed_id is None:
+            observed = await self.physical_reader.read_in_session(db, work=work, source=source, pickup=pickup)
+            if type(observed) is not SourceObservation:
+                raise TypeError("source observation requires typed current facts")
+            removed_id = observed.removed_evidence_id
+        if removed_id is None:
+            return None
+        removed = await self.material_evidence(db, removed_id)
+        if (
+            removed is None
+            or removed.kind != "DEVICE_RESULT"
+            or removed.workline_id != work.workline_id
+            or removed.command_code != pickup.command_code
+            or removed.apply_status != "APPLIED"
+            or canonical_json_digest(removed.normalized_payload) != removed.payload_digest
+        ):
+            raise ValueError("closure removed fact differs from original source Command")
+        return removed.id
+
     async def material_pending(self, db, line_id):
         return list(
             (

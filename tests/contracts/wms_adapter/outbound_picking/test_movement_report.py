@@ -243,3 +243,22 @@ def test_direct_pick_report_and_error_outcomes():
         sdk.MaterialMovementReportOutcome(sdk.OperationConflict("POSITION_CONFLICT"))
     with pytest.raises(ValueError):
         sdk.PickingNgZone("invalid zone")
+
+
+@pytest.mark.parametrize("ng", [False, True])
+@pytest.mark.parametrize("bin_source", [False, True])
+def test_current_report_request_decodes_all_approved_locators(ng, bin_source):
+    from src.app.wms_adapter.outbound_picking.movement_report_typed import decode_request, encode_request
+
+    payload = request(ng)
+    if not bin_source:
+        payload["data"]["source_locator"] = {
+            "type": "RACK_SLOT",
+            "rack_id": "SOURCE",
+            "rack_face": "A",
+            "slot_id": "S1",
+        }
+        payload["data"]["plan_revision"] = 7
+    intent = decode_request(payload)
+    assert encode_request(intent, timestamp=0) == payload
+    assert intent.pkg_id == " 原始扫码 " and intent.occurred_at == 123

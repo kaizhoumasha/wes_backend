@@ -15,7 +15,7 @@ from wes_plugin_sdk import (
 )
 
 from automatic_picking.handlers.material_flow import MaterialDecidedFact, MaterialScannedFact, material_scanned
-from automatic_picking.handlers.placement import MaterialPutFact
+from automatic_picking.handlers.placement import MaterialPutFact, MaterialReportedFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -279,7 +279,7 @@ class AutomaticPickingMaterialFlow:
         )
 
     async def apply_in_session(self, db, *, fact):
-        if type(fact) is MaterialPutFact:
+        if type(fact) in (MaterialPutFact, MaterialReportedFact):
             await self.put_flow.apply_in_session(db, fact=fact)
             return
         _, pickup, _ = await self.repository.material_context_for_update(db, fact.material_execution_id)

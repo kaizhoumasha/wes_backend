@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from wes_plugin_sdk import (
+    CompleteExecution,
     DeferExecution,
     FactReference,
     MaterialMovementReportIntent,
@@ -26,6 +27,16 @@ class MaterialPutFact(FactReference):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaterialPlacementPendingFact(FactReference):
     reason_code: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MaterialReportedFact(FactReference):
+    removed_evidence_id: int | None
+
+
+@handler(fact_type=MaterialReportedFact, name="automatic_material_reported", supported_versions=("1.0",))
+def material_reported(fact: MaterialReportedFact) -> tuple[CompleteExecution, ...]:
+    return (CompleteExecution(fact.material_execution_id, fact.fact_id, "MOVEMENT_RECORDED"),)
 
 
 @handler(fact_type=MaterialPutFact, name="automatic_material_put", supported_versions=("1.0",))

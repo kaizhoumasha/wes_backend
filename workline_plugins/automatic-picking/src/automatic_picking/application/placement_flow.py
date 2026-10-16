@@ -4,14 +4,17 @@ from dataclasses import dataclass
 
 from wes_plugin_sdk import (
     DeviceResultReadyFact,
+    FactRecorded,
     PickingBinCell,
     PickingMaterialAccept,
+    PickingRackSlot,
     PickingTargetRackSlot,
     WmsResultReadyFact,
 )
 
-from automatic_picking.handlers.placement import MaterialPlacementPendingFact, MaterialPutFact
+from automatic_picking.handlers.placement import MaterialPlacementPendingFact, MaterialPutFact, MaterialReportedFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
+from src.app.wms_integration.outbound_picking.services import MaterialMovementReportResultReader
 from src.utils.canonical_json import canonical_json_digest
 
 
@@ -41,6 +44,7 @@ class MatchedPutResult:
 class AutomaticPickingPlacementFlow:
     def __init__(self, repository, material_reader, put_reader):
         self.repository, self.material_reader, self.put_reader = repository, material_reader, put_reader
+        self.report_reader = MaterialMovementReportResultReader()
 
     async def _context(self, db, execution_code):
         work, pickup, _ = await self.repository.material_context_for_update(db, execution_code)
@@ -74,16 +78,7 @@ class AutomaticPickingPlacementFlow:
         work, pickup, execution, command = await self._context(db, fact.material_execution_id)
         common = self._common(fact)
         if type(fact) is WmsResultReadyFact:
-            report = await self.repository.movement_confirmation(db, execution.id, execution.execution_code)
-            if (
-                report is None
-                or report.id != pickup.movement_confirmation_id
-                or report.operation_id != fact.operation_id
-                or report.response_evidence_id != int(fact.evidence_id)
-            ):
-                raise ValueError("report result differs from current placement obligation")
-            # 本片不消费报告结果或关闭单盘；原 Evidence 仍由 FactProcessor 持久重领。
-            return MaterialPlacementPendingFact(**common, reason_code="MOVEMENT_RESULT_NEXT_SLICE")
+            return await self._reported(db, fact, work, pickup, execution, command)
         evidence = await self.repository.material_evidence(db, int(fact.evidence_id))
         if (
             type(fact) is not DeviceResultReadyFact
@@ -115,6 +110,21 @@ class AutomaticPickingPlacementFlow:
             or observed.device_code != command.device_code
         ):
             raise ValueError("successful PUT fact differs from bound material identity")
+        accepted, task_id, source = await self._accepted(db, work, pickup, execution)
+        if accepted.outcome.result.target_locator != observed.target:
+            raise ValueError("successful PUT target differs from published ACCEPT")
+        if pickup.put_result_evidence_id is not None and pickup.put_result_evidence_id != evidence.id:
+            raise ValueError("placement already refers to another successful result")
+        return MaterialPutFact(
+            **common,
+            task_id=task_id,
+            source=source,
+            target=observed.target,
+            pkg_id=observed.pkg_id,
+            occurred_at=observed.occurred_at,
+        )
+
+    async def _accepted(self, db, work, pickup, execution):
         if pickup.material_confirmation_id is None:
             accepted = await self.material_reader.by_operation_id(
                 db,
@@ -138,22 +148,69 @@ class AutomaticPickingPlacementFlow:
             or type(accepted.intent.source_locator) is not PickingBinCell
             or accepted.intent.source_locator != source
             or accepted.outcome.result.target_preparation is not None
-            or accepted.outcome.result.target_locator != observed.target
         ):
             raise ValueError("successful PUT target/source differs from current published ACCEPT")
-        if pickup.put_result_evidence_id is not None and pickup.put_result_evidence_id != evidence.id:
-            raise ValueError("placement already refers to another successful result")
-        return MaterialPutFact(
-            **common,
-            task_id=task_id,
-            source=source,
-            target=observed.target,
-            pkg_id=observed.pkg_id,
-            occurred_at=observed.occurred_at,
+        return accepted, task_id, source
+
+    async def _reported(self, db, fact, work, pickup, execution, command):
+        common = self._common(fact)
+        if pickup.movement_confirmation_id is None:
+            raise ValueError("report requires frozen placement obligation")
+        report = await self.report_reader.by_id(
+            db, material_execution_id=execution.id, confirmation_id=pickup.movement_confirmation_id
         )
+        if (
+            report is None
+            or report.intent.operation_id != execution.execution_code
+            or fact.operation_id != report.intent.operation_id
+            or report.evidence_id != int(fact.evidence_id)
+        ):
+            raise ValueError("report result differs from current placement obligation")
+        if report.status != "COMPLETED":
+            return MaterialPlacementPendingFact(**common, reason_code="MOVEMENT_RESULT_PENDING")
+        if report.outcome != fact.outcome or type(report.outcome.result) is not FactRecorded:
+            raise ValueError("closure requires exact typed RECORDED/DUPLICATE")
+        accepted, task_id, source = await self._accepted(db, work, pickup, execution)
+        target = accepted.outcome.result.target_locator
+        position = await self.repository.material_evidence(db, pickup.put_result_evidence_id)
+        if (
+            position is None
+            or position.kind != "DEVICE_RESULT"
+            or position.apply_status != "APPLIED"
+            or position.workline_id != work.workline_id
+            or position.material_execution_id != execution.id
+            or position.command_code != command.command_code
+            or position.device_code != command.device_code
+            or canonical_json_digest(position.normalized_payload) != position.payload_digest
+            or position.published_at is None
+            or position.decision_digest is None
+            or command.status != "SUCCEEDED"
+            or command.result_evidence_id != position.id
+            or report.intent.task_id != task_id
+            or report.intent.source_locator != source
+            or report.intent.to_locator != PickingRackSlot(target.rack_id, target.rack_face, target.slot_id)
+            or work.authorization_evidence_id == pickup.authorization_evidence_id
+        ):
+            raise ValueError("closure lost confirmed placement or ACCEPT handoff")
+        removed_id = None
+        if work.authorization_evidence_id == pickup.accept_evidence_id and work.consumed_pickup_id is None:
+            removed_id = await self.repository.removed_for_close(
+                db, work=work, pickup=pickup, source=accepted.outcome.result.next_source_action
+            )
+            if removed_id is None:
+                return MaterialPlacementPendingFact(**common, reason_code="SOURCE_REMOVAL_PENDING")
+        return MaterialReportedFact(**common, removed_evidence_id=removed_id)
 
     async def apply_in_session(self, db, *, fact):
-        _, pickup, execution, _ = await self._context(db, fact.material_execution_id)
+        work, pickup, execution, _ = await self._context(db, fact.material_execution_id)
+        if type(fact) is MaterialReportedFact:
+            if work.authorization_evidence_id == pickup.accept_evidence_id and work.consumed_pickup_id is None:
+                if fact.removed_evidence_id is None:
+                    raise ValueError("closure requires current Work removal fact")
+                # 与 CLOSED、报告 Evidence 发布同事务；已推进的来源游标不回写。
+                work.top_removed_evidence_id = fact.removed_evidence_id
+            await db.flush()
+            return
         report = await self.repository.movement_confirmation(db, execution.id, execution.execution_code)
         if report is None:
             raise ValueError("placement requires the same-transaction report obligation")
