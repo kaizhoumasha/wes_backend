@@ -21,6 +21,10 @@ class AutomaticPickingReturn(EnterpriseMixin, DataTableMixin, table=True):
             "(scan4_evidence_id IS NOT NULL AND scan4_event_time IS NOT NULL AND scan4_event_time > 0)",
             name="automatic_return_scan4_pair",
         ),
+        CheckConstraint(
+            "ready_evidence_id IS NULL OR (scan4_evidence_id IS NOT NULL AND scan4_command_code IS NOT NULL)",
+            name="automatic_return_ready_basis",
+        ),
         Index(
             "ix_automatic_return_current_fifo",
             "workline_id",
@@ -39,4 +43,13 @@ class AutomaticPickingReturn(EnterpriseMixin, DataTableMixin, table=True):
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT, unique=True
     )
     scan4_event_time: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
+    scan3_command_code: str | None = Field(
+        default=None, foreign_key="wes_biz.device_commands.command_code", max_length=80, unique=True
+    )
+    scan4_command_code: str | None = Field(
+        default=None, foreign_key="wes_biz.device_commands.command_code", max_length=80, unique=True
+    )
+    ready_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT, unique=True
+    )
     archived_at: datetime | None = None

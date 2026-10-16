@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from wes_plugin_sdk import BinWorkPlanNoWork
 
 from automatic_picking.definition import DEFINITION
-from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
+from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.utils.canonical_json import canonical_json_digest
 
@@ -49,11 +50,47 @@ class MatchedScan4:
                 raise ValueError("SCAN4 identity text is required")
 
 
+@dataclass(frozen=True, slots=True)
+class MatchedReturnDirection:
+    """获批读口解释的精确结果及后置条件；不定义供应商私有 data。"""
+
+    evidence_id: int
+    return_id: int
+    workline_id: int
+    bin_code: str
+    role: str
+    command_code: str
+    device_code: str
+    at_outlet: bool
+
+    def __post_init__(self):
+        for value in (self.evidence_id, self.return_id, self.workline_id):
+            if type(value) is not int or not 0 < value <= 2**63 - 1:
+                raise ValueError("direction identity must be a positive bigint")
+        if self.role not in {"SCAN3", "SCAN4"} or type(self.at_outlet) is not bool:
+            raise ValueError("direction role/postcondition is invalid")
+        for value in (self.bin_code, self.command_code, self.device_code):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("direction identity text is required")
+
+
 class AutomaticPickingReturnFlow:
-    def __init__(self, repository, commands, work_reader, request_mapper, scan3_reader, *, scan4_reader=None):
+    def __init__(
+        self,
+        repository,
+        commands,
+        work_reader,
+        request_mapper,
+        scan3_reader,
+        *,
+        scan4_reader=None,
+        direction_mapper=None,
+        direction_reader=None,
+    ):
         self.repository, self.commands, self.work_reader = repository, commands, work_reader
         self.request_mapper, self.scan3_reader = request_mapper, scan3_reader
         self.scan4_reader = scan4_reader
+        self.direction_mapper, self.direction_reader = direction_mapper, direction_reader
 
     @staticmethod
     def _ref(work):
@@ -193,3 +230,126 @@ class AutomaticPickingReturnFlow:
         if await self.repository.time_conflict(db, current):
             return "RECONCILING"
         return "SCAN4_OBSERVED"
+
+    @staticmethod
+    def direction_ref(current, role):
+        evidence_id = current.scan3_evidence_id if role == "SCAN3" else current.scan4_evidence_id
+        return f"automatic-picking:return:{current.id}:{role}:{evidence_id}:FORWARD"
+
+    async def _arrival(self, db, line, current, role):
+        evidence_id = current.scan3_evidence_id if role == "SCAN3" else current.scan4_evidence_id
+        evidence = await self.repository.evidence(db, evidence_id) if evidence_id is not None else None
+        if evidence is None or evidence.apply_status != "APPLIED" or evidence.published_at is None:
+            return None
+        event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
+        if (
+            evidence.workline_id != line.id
+            or evidence.kind != "DEVICE_EVENT"
+            or evidence.device_code != event.device_code
+            or evidence.contract_key != event.contract_key
+            or evidence.contract_version != event.contract_version
+            or event.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get(role)
+            or event.event_type != "SCAN_COMPLETED"
+            or event.is_debug
+            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or (role == "SCAN4" and event.timestamp != current.scan4_event_time)
+        ):
+            raise ValueError("direction arrival differs from current Return")
+        return evidence
+
+    async def advance_returns_in_session(self, db, *, line, current_returns):
+        if self.direction_mapper is None or not line.is_active:
+            return 0
+        count = 0
+        for current in current_returns:
+            # 后点真实到位已满足前段目标；保留已建命令责任，不补发前段动作。
+            role = "SCAN3" if current.scan4_evidence_id is None else "SCAN4"
+            code = current.scan3_command_code if role == "SCAN3" else current.scan4_command_code
+            if code is not None or current.ready_evidence_id is not None:
+                continue
+            arrival = await self._arrival(db, line, current, role)
+            if arrival is None:
+                continue
+            ref = self.direction_ref(current, role)
+            request = self.direction_mapper(current=current, role=role, execution_ref_id=ref)
+            if (
+                type(request) is not DeviceCommandRequest
+                or request.workline_id != line.id
+                or current.workline_id != line.id
+                or request.device_code != arrival.device_code
+                or request.contract_key != arrival.contract_key
+                or request.contract_version != arrival.contract_version
+                or request.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+                or request.execution_ref_id != ref
+                or request.material_execution_id is not None
+                or request.task_type != "MOVE_FORWARD"
+            ):
+                raise ValueError("direction request differs from current Return/arrival")
+            handle = await self.commands.create_command_in_session(db, request)
+            await self.repository.bind_direction(db, current, role=role, command_code=handle.command_code)
+            count += 1
+        return count
+
+    async def direction_result_in_session(self, db, *, line, evidence):
+        current = await self.repository.by_direction_command(db, evidence.command_code)
+        if current is None:
+            return "IGNORED"
+        command = await self.repository.command(db, evidence.command_code)
+        role = "SCAN3" if current.scan3_command_code == evidence.command_code else "SCAN4"
+        try:
+            result = EcsCommandResult.model_validate(evidence.normalized_payload)
+        except ValueError:
+            return "RECONCILING"
+        if (
+            command is None
+            or current.workline_id != line.id
+            or result.result != "SUCCESS"
+            or command.status != "SUCCEEDED"
+            or command.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get(role)
+            or command.result_evidence_id != evidence.id
+            or evidence.kind != "DEVICE_RESULT"
+            or evidence.material_execution_id is not None
+            or evidence.workline_id != line.id
+            or evidence.device_code != command.device_code
+            or evidence.contract_key != command.contract_key
+            or evidence.contract_version != command.contract_version
+            or result.command_code != command.command_code
+            or result.device_code != command.device_code
+            or result.contract_key != command.contract_key
+            or result.contract_version != command.contract_version
+            or command.workline_id != line.id
+            or command.material_execution_id is not None
+            or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            or command.execution_ref_id != self.direction_ref(current, role)
+            or command.task_type != "MOVE_FORWARD"
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
+        ):
+            return "RECONCILING"
+        matched = (
+            await self.direction_reader.read_in_session(db, evidence_id=evidence.id)
+            if self.direction_reader is not None
+            else None
+        )
+        if matched is None:
+            return "WAIT_FOR_EXIT"
+        if (
+            type(matched) is not MatchedReturnDirection
+            or matched.evidence_id != evidence.id
+            or matched.return_id != current.id
+            or matched.workline_id != line.id
+            or matched.bin_code != current.bin_code
+            or matched.role != role
+            or matched.command_code != command.command_code
+            or matched.device_code != command.device_code
+            or (role == "SCAN4" and (not matched.at_outlet or current.ready_evidence_id not in (None, evidence.id)))
+        ):
+            return "RECONCILING"
+        if current.archived_at is not None:
+            return "DIRECTION_CLOSED"
+        arrival = await self._arrival(db, line, current, role)
+        if arrival is None:
+            return "WAIT_FOR_EXIT"
+        if role == "SCAN4":
+            await self.repository.qualify(db, current, evidence.id)
+        return "RETURN_QUALIFIED" if role == "SCAN4" else "SCAN3_FORWARDED"

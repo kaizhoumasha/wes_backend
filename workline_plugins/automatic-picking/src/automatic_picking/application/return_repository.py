@@ -122,3 +122,31 @@ class ReturnRepository:
         return await db.scalar(
             select(AutomaticPickingReturn.id).where(AutomaticPickingReturn.scan4_evidence_id == evidence_id)
         )
+
+    async def by_direction_command(self, db, command_code):
+        from sqlalchemy import or_
+
+        return await db.scalar(
+            select(AutomaticPickingReturn)
+            .where(
+                or_(
+                    AutomaticPickingReturn.scan3_command_code == command_code,
+                    AutomaticPickingReturn.scan4_command_code == command_code,
+                )
+            )
+            .with_for_update()
+        )
+
+    async def evidence(self, db, evidence_id):
+        return await db.get(InboundEvidence, evidence_id)
+
+    async def bind_direction(self, db, current, *, role, command_code):
+        if role == "SCAN3":
+            current.scan3_command_code = command_code
+        else:
+            current.scan4_command_code = command_code
+        await db.flush()
+
+    async def qualify(self, db, current, evidence_id):
+        current.ready_evidence_id = evidence_id
+        await db.flush()

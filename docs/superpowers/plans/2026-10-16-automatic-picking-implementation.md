@@ -259,6 +259,23 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 独立只读 full Review 已核对 11 文件冻结清单、直接/间接测试所有权和恢复调用链，未发现需要修复的 P1/P2 问题。当前 Return 发现已接入无 EXECUTING 任务也可到达的 batch 前置入口，但查询结果尚不用于后继业务推进；生产精确关联 reader 与组合根装配、方向命令、READY、FIFO 消费、`return_batch` 和 drain 仍留待后续切片。本轮不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成。
 
+
+#### 实施切片 8C：方向命令、成功结果与回架候选资格
+
+**范围与前提：**在 8B 当前 Return 上，精确关联、完整方向请求和权威后置条件由离线 reader/mapper 显式给定；不定义 SCAN3/SCAN4 生产条码/设备参数规则。正常方向采用既有 `MOVE_FORWARD` Command，源位置、参数和期限均由给定映射完整提供，并由现有 DeviceCommandService 校验冻结 binding。生产组合根仍不注入回程流程，不接 `return_batch`、FIFO 消费或 drain。
+
+**最小持久化与原子性：**当前 Return 仅增加 SCAN3/SCAN4 Command 引用和 `ready_evidence_id`，不新增队列表或业务状态；迁移 `71246b611dbf` 保留存量 8B 的事实与空方向引用，已有方向义务或资格事实时拒绝有损降级。batch 同锁创建必要方向命令并关联 Return；SCAN4 首次事实已给定时不补发已失去必要性的 SCAN3 动作，已有前段命令仍沿原身份履约。设备失败或未知不自动创建新命令身份。
+
+**资格与顺序：**首次 SCAN4 仍只冻结物理入队顺序。精确匹配本 Return、本点原 Command 的权威 `SUCCESS`、宿主已应用终态和显式 OUTLET 后置条件后，资格依据与 Evidence 发布由 FactProcessor 同事务落地。SCAN3 成功不授予回架资格，ACK 不替代成功；重扫、重放不改首次时间。此处候选资格不等于 WMS `return_batch READY` 的精确分配。原始结果摘要复用宿主 `UNIFORM_WIRE` 规范化，不复制可靠接收/派发机制。
+
+**恢复 owner：**现有 batch 前置钩子独立发现当前 Return 并创建缺失的必要方向动作，不依赖 EXECUTING、已闭合 Work 或一次性通知；停用线保留当前根，不新建方向动作。已建 Command 的交付、技术重试、回调接收与终态归设备基础服务。未发布结果唯一归 FactProcessor 的持久 claim/租约/延期扫描；缺 reader 延期，确定错配/失败留证对账，不授予资格。当前 Return、必要首次事实与原 Command 引用保留；可清理前段历史不参与恢复。
+
+**测试所有权与截点：**插件 `T/test_return_directions.py` 拥有 typed 关联输入边界，`T/integration/test_return_directions_postgresql.py` 拥有方向创建/关联与资格/发布原子性、并发、崩溃、重放、回调早于 ACK、无 EXECUTING、存量 8B 及历史清理后的恢复；8A/8B 的测试继续拥有其原行为。核心仅增加精确迁移 selector fixture/mapping 并验收 schema。生产精确关联、方向映射和成功后置条件仍须其实际合同闭合；G2/G3/G5 的取盘/报告未决项不扩大阻塞正常 NO_WORK 离线回程。
+
+**验证与闭环 Review：**本片实现与验证完成。新增方向 PostgreSQL 32 passed、8A/8B 回归 55 passed、插件 FAST 115 passed；核心 selector/测试所有权 249 passed、选中宿主 HEAVY 8 passed。QUALITY 通过（4315 passed、5 个既有 skipped，跳过项不计通过）。迁移验收覆盖存量 8B 事实保持、空引用降级后重升、已有方向义务时拒绝有损降级及模型/schema 一致性；插件与选中 HEAVY 无跳过项。独立只读 full Review 核对 11 文件冻结 SHA、实际恢复调用链和测试所有权，未发现确认的 P1/P2/P3 问题。最终可执行快照保持评审指纹，后续仅补本文验证记录。
+
+下一片再接 FIFO 合格连续前缀、冻结 `return_batch` 请求/决定和 BIN_MOVE 交接，不能把本片候选资格当作 WMS 精确目标分配；同架面下一轮分配及运动前门禁仍按主合同另行验收。任务 8 整体仍未完成；生产 reader/mapper 未启用，本轮不提交、不部署、不启用真实派发或真实取盘。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

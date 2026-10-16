@@ -44,6 +44,8 @@ class AutomaticPickingScanFlow:
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
         if evidence.kind == "WMS_RESULT":
             result = await self._result(db, line, evidence)
+        elif evidence.kind == "DEVICE_RESULT" and self.exit_flow is not None:
+            result = await self.exit_flow.direction_result_in_session(db, line=line, evidence=evidence)
         elif evidence.kind == "DEVICE_EVENT" and line.is_active:
             try:
                 event = EcsDeviceEvent.model_validate(evidence.normalized_payload)

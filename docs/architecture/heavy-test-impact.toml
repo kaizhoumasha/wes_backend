@@ -3283,3 +3283,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0606_d028d7c65eb7_add_automatic_first_scan4_fifo_facts.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动回程方向/资格由插件验收；核心仅承接新增引用 schema。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0708_71246b611dbf_add_automatic_return_direction_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
