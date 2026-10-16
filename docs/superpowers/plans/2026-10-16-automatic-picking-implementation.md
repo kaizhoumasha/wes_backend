@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 2026-10-16，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4、任务 5 已确认路径及五项 Review 修订已在 `codex/automatic-picking-workflow` 提交为 `2da3990c`。任务 5 的 G6 首批确认路径、任务 6 尚未实现。本轮实施任务 5A 的插件 PostgreSQL 验收，未改生产代码，不提交、不部署、不推进真实取盘；不改变外部合同状态。
+**状态与基线:** 2026-10-17，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4、任务 5 已确认路径及五项 Review 修订提交为 `2da3990c`；任务 5A 验收及计划更新已在 `codex/automatic-picking-workflow` 提交为 `26deca33`。本轮推进任务 6A 的纯规则和离线事务验收，不提交、不部署、不推进真实取盘；G6 首批确认及任务 6 的生产持久化、设备/扫码接线仍未实施，不改变外部合同状态。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -71,7 +71,7 @@
 
 ### 当前任务 5–6 剩余项与继续条件
 
-以下按 `2da3990c` 的代码和测试核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
+以下按已提交基线及后续 5A/6A 的明确验收范围核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
 
 | 路径 | 当前事实与归属 | 继续条件 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@
 | 任务 5 跨 revision 来源接续 | 切片 5A 的 6 项 PostgreSQL 验收已通过：当前进场复用原 Transport，各 revision 成员独立申请，重启/并发扫描防重、事务回滚、取消及闭合历史清理均已覆盖；未改生产代码 | 本项已闭合，不依赖首批期限或机械臂参数；首批确认和任务 6 按各自条件继续 |
 | 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
 | 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
-| 任务 6 已确认纯业务规则 | READY 的初始来源与 material.decide.ACCEPT.next_source_action 已 typed；Work 目前仅保存初始 authorization_evidence_id，没有 Pickup 或授权消费/无后继交接实现 | 可先验证 LIFO、原身份、授权归 Work、旧 Evidence 不覆盖新授权及双臂独立条件；已确定端口的离线事务测试可用中性 typed fake 证明原子性/至多一次，不代表设备生产接线已验收 |
+| 任务 6 已确认纯业务规则 | 6A 已实现来源规则与显式注入端口的事务协调器，并完成离线验收；生产 Work 仍仅保存初始 authorization_evidence_id，未新增生产 Pickup 表或消费/交接持久端口 | LIFO、原身份、授权归 Work、旧 Evidence 防覆盖及双臂独立条件已验证；中性 typed fake 与 SQLite 证明协调器的原子性/至多一次，不代表 PostgreSQL 行锁、持久适配或设备生产接线已验收 |
 | 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
 | 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 除来源映射/关联外，还须闭合 G3 的目标映射及 G5 权威 PkgID 来源；不能先取盘再补猜报告身份 |
 
@@ -106,7 +106,25 @@ G1 的 WMS 字段类型和已确认枚举不重新列为阻塞：`cell_index=1..
 
 **验收：**当前生命周期复用和成员业务身份独立同时成立；每个未闭合 Feed 的 owner 仍是既有 batch driver，Confirmation/Transport 各沿原身份恢复；不读取已闭合历史决定新业务，无新机械臂 Command。验收后仅勾选任务 5 的来源跨 revision 项，首批超期与任务确认项、任务 6 仍不得整体勾选。
 
-G6 获批后再做任务 5 的首批确认小片；任务 6 可先开展纯规则及已确定端口的离线事务验证，fixture 中设备参数必须标明测试输入/非合同，不生成生产默认值、fallback 或成功占位消费者；模型仅随能够独立验证的原子业务片落地。生产 Pickup/Command 与扫码接线待对应合同闭合后整体接通。若转做任务 8 的明确 NO_WORK 出口，可按其原有独立依赖另开切片，不以任务 6/G5 为阻塞，但不混入本次 5A。
+G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来源事务协调器已由下述 6A 完成离线验收，fixture 中设备参数仅为测试输入/非合同，不生成生产默认值、fallback 或成功占位消费者；模型仅随能够独立验证的生产原子业务片落地。生产 Pickup/Command 与扫码接线待对应合同闭合后整体接通。若转做任务 8 的明确 NO_WORK 出口，可按其原有独立依赖另开切片，不以任务 6/G5 为阻塞，也不混入本次 6A。
+
+#### 实施切片 6A：来源规则与离线事务验收
+
+**范围：**插件新增 `P/handlers/source_authorization.py` 和 `P/application/source_flow.py`；分别由 `T/test_source_authorization.py`、`T/test_pickup_flow.py` 拥有验收。`WorkSourceFact` 只是当前 Work、直接 Requirement 和当前物理事实的不可变输入快照，不是生产授权表、Cell 库存或新业务状态。
+
+- [x] READY/后继授权归当前 Work；按 Work 和原授权 Evidence 消费。同 Cell 可连续取多盘，不以 `(work, cell)` 去重；跨 Cell 只跟随 WMS 后继，不按 Cell 编号排序。
+- [x] 消费授权、创建 Command/Pickup、记录消费关联共用调用方事务；ACCEPT 目标与后继授权/明确无后继也共用事务。中断、并发扫描、重启和旧结果重放只恢复当前身份。
+- [x] 当前栈顶未取得可靠取出事实时不越过；后继授权有效且栈顶可靠取出后，不等 M1 的目标准备、PUT 或报告。实际双臂交接许可仍归 ECS/PLC。
+- [x] M1 已交接的当前事实保留在 Work 输入中，注入 M1 已闭合的前提并清理旧 Pickup/Command 测试历史后仍可创建 M2；旧 READY/ACCEPT 不覆盖新授权。新 Work 轮次独立消费，实际同箱 SCAN2 准入仍由任务 5 的既有 owner 验证。
+- [ ] 新增生产持久模型/Repository、真实权威事实 reader、完整的单盘 MaterialExecution/fact_factory、扫码汇合及 runtime composition；这些仍属于任务 6 的后续切片，不由离线 fake 承接。
+
+**端口与恢复边界：**协调器要求 `source_for_update` 在调用方事务内按 WorkLine→Work 顺序锁定，ACCEPT 再锁定当前 Pickup；不提交事务、不执行网络 I/O、不等待其他机械臂或设备结果。待消费授权与消费关联由当前 Work 承接；Command 可靠恢复复用基础服务。请求映射器为必填注入项，仅返回现有 `DeviceCommandRequest`，保留 WorkLine 与扫码前 Pickup execution_ref，不能追改为稍后识别的 MaterialExecution；没有生产默认映射或 fallback。当前没有生产持久适配和装配，因此运行时尚不能创建或恢复此片的 Pickup；未来接通时由已有 batch/Work owner 恢复，不能另建自动 worker。
+
+**离线证据：**新增 36 项（纯规则 12、事务 24），插件 FAST 合计 78 passed；核心测试拓扑/插件所有权 14 passed。事务端口仅在测试内实现，使用本地 SQLite 真实回滚与并发写事务；其写事务串行化是测试 harness，不是生产平台锁，也不证明 PostgreSQL 行锁实现。双臂验收只覆盖下一来源不等待前盘目标阶段，真实 PUT/双臂派发与互锁属于任务 7 及设备合同。Command 参数、可靠取出事实、M1 闭合前提和 MaterialExecution 关联均为明确的测试输入；不解析设备回调、不构造扫码关联、没有 PkgID，也不派发设备命令。19 项原有 PostgreSQL/worker 测试本轮未执行，生产入口未变，不以旧结果替代本片证据。
+
+**后续准入：**G2/G3/G5 继续只约束对应的生产取盘、设备/扫码关联和逐盘闭环；G6/G4/G7 不扩大阻塞本片。任务 6 的完整验收项继续保持未勾选，不将 6A 当作可部署的取盘闭环。
+
+**6A 闭环 Review：**已核对规则输入、Work 授权消费/交接、Command 原身份、测试所有权及当前运行时调用面，无未关闭问题。明确 WorkLine→Work→Pickup 锁顺序，补强连续取盘使用不同 MaterialExecution 的测试身份，保留真实 PostgreSQL 适配的验收门槛；纯规则仅导入 SDK，安装包可导入新增模块，核心 HEAVY selector 为 NONE。未新增生产持久模型、业务状态、配置或基础层业务逻辑，未接 composition，未提交、未部署。
 
 ## 变更面与文件归属
 
