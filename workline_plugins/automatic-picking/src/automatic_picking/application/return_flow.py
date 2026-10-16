@@ -31,10 +31,29 @@ class MatchedScan3:
                 raise ValueError("SCAN3 identity text is required")
 
 
+@dataclass(frozen=True, slots=True)
+class MatchedScan4:
+    evidence_id: int
+    return_id: int
+    workline_id: int
+    bin_code: str
+    device_code: str
+    timestamp: int
+
+    def __post_init__(self):
+        for value in (self.evidence_id, self.return_id, self.workline_id, self.timestamp):
+            if type(value) is not int or not 0 < value <= 2**63 - 1:
+                raise ValueError("SCAN4 identity/time must be a positive bigint")
+        for value in (self.bin_code, self.device_code):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("SCAN4 identity text is required")
+
+
 class AutomaticPickingReturnFlow:
-    def __init__(self, repository, commands, work_reader, request_mapper, scan3_reader):
+    def __init__(self, repository, commands, work_reader, request_mapper, scan3_reader, *, scan4_reader=None):
         self.repository, self.commands, self.work_reader = repository, commands, work_reader
         self.request_mapper, self.scan3_reader = request_mapper, scan3_reader
+        self.scan4_reader = scan4_reader
 
     @staticmethod
     def _ref(work):
@@ -135,3 +154,42 @@ class AutomaticPickingReturnFlow:
             return "RECONCILING"
         await self.repository.add_handoff(db, work=work, evidence_id=evidence.id)
         return "EXIT_HANDED_OFF"
+
+    async def scan4_in_session(self, db, *, line, evidence, timestamp):
+        if self.scan4_reader is None:
+            return "WAIT_FOR_EXIT"
+        matched = await self.scan4_reader.read_in_session(db, evidence_id=evidence.id)
+        if matched is None:
+            return "WAIT_FOR_EXIT"
+        if (
+            type(matched) is not MatchedScan4
+            or matched.evidence_id != evidence.id
+            or matched.workline_id != line.id
+            or evidence.workline_id != line.id
+            or matched.device_code != evidence.device_code
+            or matched.timestamp != timestamp
+            or matched.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get("SCAN4")
+            or any(
+                evidence.normalized_payload[key] != getattr(evidence, key)
+                for key in ("contract_key", "contract_version")
+            )
+            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+        ):
+            return "RECONCILING"
+        current = await self.repository.by_id_for_update(db, matched.return_id)
+        if (
+            current is None
+            or current.archived_at is not None
+            or current.workline_id != line.id
+            or current.bin_code != matched.bin_code
+        ):
+            return "RECONCILING"
+        owner = await self.repository.scan4_owner(db, evidence.id)
+        if owner is not None and owner != current.id:
+            return "RECONCILING"
+        if current.scan4_evidence_id is None:
+            await self.repository.record_scan4(db, current, evidence_id=evidence.id, event_time=matched.timestamp)
+        # 首次事实先保存；相同毫秒冲突不能用接收时间或 ID 猜测队列先后。
+        if await self.repository.time_conflict(db, current):
+            return "RECONCILING"
+        return "SCAN4_OBSERVED"

@@ -36,6 +36,8 @@ class AutomaticPickingBatchDriver:
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
+        # 当前回程独立发现；8B 不把查询计作推进或创建尚未接入的后继动作。
+        await self.discover_returns_in_session(db, line)
         count = await self.material_flow.advance_in_session(db, line_id=line.id, now=now) if self.material_flow else 0
         if self.target_flow is not None:
             count += await self.target_flow.advance_in_session(db, line_id=line.id, now=now)
@@ -108,3 +110,8 @@ class AutomaticPickingBatchDriver:
             )
             count += 1
         return count
+
+    async def discover_returns_in_session(self, db, line):
+        if self.exit_flow is None:
+            return []
+        return await self.exit_flow.repository.list_current(db, line.id)

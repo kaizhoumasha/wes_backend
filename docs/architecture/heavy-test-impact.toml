@@ -3278,3 +3278,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0526_bb07c44fb54f_add_automatic_no_work_exit_and_scan3_.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动 SCAN4/FIFO 原子业务由插件验收；核心只承接 schema 与工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0606_d028d7c65eb7_add_automatic_first_scan4_fifo_facts.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

@@ -109,12 +109,13 @@ class AutomaticPickingScanFlow:
         return work.phase
 
     async def apply_scan_in_session(self, db, *, line, evidence, role, raw, timestamp, now):
-        if role == "SCAN3":
-            return (
-                await self.exit_flow.scan3_in_session(db, line=line, evidence=evidence, timestamp=timestamp)
+        if role in {"SCAN3", "SCAN4"}:
+            apply = (
+                (self.exit_flow.scan3_in_session if role == "SCAN3" else self.exit_flow.scan4_in_session)
                 if self.exit_flow is not None
-                else "WAIT_FOR_EXIT"
+                else None
             )
+            return await apply(db, line=line, evidence=evidence, timestamp=timestamp) if apply else "WAIT_FOR_EXIT"
         code = normal_bin_code(raw, role)
         if code is None:
             return "IGNORED"

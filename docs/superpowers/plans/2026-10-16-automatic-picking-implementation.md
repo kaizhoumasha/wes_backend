@@ -243,6 +243,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **闭环 Review：**独立 reviewer 核对固定 15 文件及 SHA256，完整检查精确身份、事务/锁序、原命令 owner、无 EXECUTING 的 batch 前置恢复、闭合历史清理、新轮次隔离、安装/迁移及测试所有权，无可确认 P1/P2 finding。后续仅补本文验证记录，可执行快照未变化。HEAD、暂存区、Git 配置与 worktree 判定未漂移，未提交、未部署、不启用真实派发或真实取盘；任务 8 整体及后续回程入口仍未完成。
 
+#### 实施切片 8B：首次 SCAN4 事实、FIFO 投影与当前 Return 发现
+
+**范围：**仅在精确关联显式给定的离线前提下接续 8A。SCAN4 reader 返回既有 Return 的本地身份、工作线、箱码、事件设备与时间；不新增设备 wire 字段，不猜扫码格式或沿用人工线/SCAN1–2 后缀。生产组合根未注入该 reader。业务仍在独立插件，不改 SDK、WMS DTO、基础 FactProcessor/Command 机制或抽取 bin-line-common。
+
+**最小持久化与原子性：**现有 Return 只增加成对的 `scan4_evidence_id` 和 `scan4_event_time`，以唯一 Evidence 引用、完整配对约束及当前工作线/事件时间索引承接首次事实和 FIFO 运行投影；迁移 `d028d7c65eb7` 保留存量 8A 的空引用，不从 SCAN3、接收时间或历史命令回填。首次关联、时间投影与 Evidence 发布共用 FactProcessor 应用事务；并发只冻结一次，重扫及旧结果重放保留首次值。同一 Evidence 已归属另一 Return 时明确对账，不靠数据库唯一冲突重试。已有 SCAN4 事实时拒绝有损降级。
+
+**FIFO 与资格分离：**使用获批的 SCAN4 同源事件时间，按当前已绑定的实际回程通道跨任务读取；不假定 SCAN3 与 SCAN4 设备时钟可比较，不使用 received_at、Return ID、条码或 source_event_id 作为物理排序键。仅已有 SCAN4 的当前 Return 进入观察队列；重扫不重排。不同 Return 的相同事件时间保留双方首次事实并沿既有 Evidence 对账，不能编造平局顺序。FIFO 查询对顺序冲突、首次事实未发布或身份/摘要/时间投影不一致返回不可判定；空列表仅表示无已观察入队记录，不表示物理 EMPTY 或 NO_BATCH。
+
+**恢复 owner 与截点：**未发布 SCAN4 Evidence 归原 FactProcessor 领取、租约与延期扫描；缺精确读口延期保留原 Evidence，确定身份错误按既有对账边界留证。既有 batch 前置钩子直接发现当前 Return，独立于 Feed/未闭合 Work 和 EXECUTING 任务；发现是只读查询，不计作业务推进。当前根、FIFO 事实和原命令均保留给下一片，既有 business blocker/archiver 继续有效；清理可清理的前段 Work、Feed、已履约请求及旧 Evidence 后仍可发现、入队和重放。当前引用的必要事实及未闭合 Command 不是可清理历史。回程后继归 batch，既有命令仍归基础 owner；本片不创建方向命令、不赋予回架 READY、不消费 FIFO、不接 return_batch 或 drain，不增加队列表、业务状态、定时器或成功占位消费者。
+
+**验收与所有权：**插件 `T/test_return_fifo.py` 拥有精确输入类型边界；`T/integration/test_return_fifo_postgresql.py` 拥有首次事实/投影/发布、并发、重放、前置 batch 接线、无 EXECUTING、存量升级与历史清理的 PostgreSQL 验收。8A 的原 `test_returns_postgresql.py` 继续拥有前段交接；核心只承接精确迁移 selector、模型/schema 和测试所有权边界。G2/G3/G5 继续限制对应逐盘生产路径，点3/4命令及生产扫码关联另按其实际合同闭合，不扩大阻塞本片离线事实与排序。
+
+**验证与闭环 Review：**本片实现与验证完成。新增 PostgreSQL 验收 22 passed、8A 回归 33 passed、插件 FAST 107 passed；核心 selector/测试所有权 249 passed、选中宿主 HEAVY 8 passed。QUALITY 通过（4315 passed、5 个既有 skipped，跳过项不计通过）。迁移验证覆盖存量 8A 空配对升级、空事实降级后重升、已有 SCAN4 事实时拒绝有损降级，以及模型/数据库一致性；以上证据绑定本轮最终可执行快照。
+
+独立只读 full Review 已核对 11 文件冻结清单、直接/间接测试所有权和恢复调用链，未发现需要修复的 P1/P2 问题。当前 Return 发现已接入无 EXECUTING 任务也可到达的 batch 前置入口，但查询结果尚不用于后继业务推进；生产精确关联 reader 与组合根装配、方向命令、READY、FIFO 消费、`return_batch` 和 drain 仍留待后续切片。本轮不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
