@@ -18,6 +18,7 @@ class AutomaticPickingBatchDriver:
         *,
         tasks=None,
         source_flow=None,
+        material_flow=None,
         uuid_factory=new_uuid7,
         clock=timezone.now_for_db,
     ):
@@ -26,11 +27,12 @@ class AutomaticPickingBatchDriver:
         self.batch_scheduler = batch_scheduler
         self.tasks = tasks or PickingTaskRepository()
         self.source_flow = source_flow
+        self.material_flow = material_flow
         self.uuid_factory, self.clock = uuid_factory, clock
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
-        count = 0
+        count = await self.material_flow.advance_in_session(db, line_id=line.id, now=now) if self.material_flow else 0
         for feed in await self.feeds.list_recoverable(db, line.id):
             snapshot = await self.feeds.inbound(db, feed)
             if snapshot is None:

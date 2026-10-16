@@ -1,5 +1,6 @@
 """扫码前的取盘身份；来源与 ACCEPT 内容只保存在原 Evidence。"""
 
+from datetime import datetime
 from typing import ClassVar
 
 from sqlalchemy import UniqueConstraint
@@ -27,3 +28,7 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
     accept_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT, unique=True
     )
+    material_confirmation_id: int | None = Field(
+        default=None, foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    material_retry_at: datetime | None = None

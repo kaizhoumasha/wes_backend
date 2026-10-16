@@ -3258,3 +3258,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# WAIT 业务到期/游标由插件 PostgreSQL owner 验收；核心承接通用迁移及固定 operation 可靠接线。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0230_548db61057e6_add_automatic_material_wait_cursor.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

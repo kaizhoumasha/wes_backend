@@ -1423,6 +1423,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261013_0000_c47a2b9d610e_允许料箱直达SCAN2.py",
         "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py",
         "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py",
+        "migrations/versions/20261017_0230_548db61057e6_add_automatic_material_wait_cursor.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[
@@ -1588,6 +1589,7 @@ def test_queue_changed_paths_include_queue_transaction_owner(path: str) -> None:
         "src/app/wms_adapter/outbound_picking/material_decide_wire.py",
         "src/app/wms_adapter/outbound_picking/material_decide_typed.py",
         "src/app/wms_adapter/outbound_picking/material_decide_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/material_decide.py",
         "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
         "src/app/wms_adapter/confirmation_adapter.py",
     ],

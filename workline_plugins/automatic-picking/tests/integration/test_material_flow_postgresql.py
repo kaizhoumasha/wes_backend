@@ -27,6 +27,7 @@ from src.app.execution.services import DecisionApplier, FactProcessor, MaterialE
 from src.app.wms_adapter.client import WmsAccessResult
 from src.app.wms_adapter.dispatch import WmsDispatchCode
 from src.app.wms_adapter.outbound_picking.material_decide_adapter import PickingMaterialDecideAdapter
+from src.app.wms_integration.outbound_picking.services import MaterialDecideResultReader, MaterialDecideScheduler
 from src.core.outbound_http import OutboundHttpDeliveryState
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -45,7 +46,14 @@ class FixtureScanReader:
 
 def flow(p, *, repository=None):
     repo, _, source = components(p)
-    return AutomaticPickingMaterialFlow(repository or repo, source, FixtureScanReader(), MaterialExecutionService())
+    return AutomaticPickingMaterialFlow(
+        repository or repo,
+        source,
+        FixtureScanReader(),
+        MaterialExecutionService(),
+        scheduler=MaterialDecideScheduler(),
+        reader=MaterialDecideResultReader(),
+    )
 
 
 def processor(p, *, application=None):
@@ -124,7 +132,7 @@ async def initial(p):
         return pickup_id, evidence_id, material_id, confirmation
 
 
-async def result(p, confirmation, *, data=None, operation_id=None):
+async def result(p, confirmation, *, data=None, operation_id=None, received_at=None):
     data = data or {
         "result": "ACCEPT",
         "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)},
@@ -146,8 +154,8 @@ async def result(p, confirmation, *, data=None, operation_id=None):
             payload_digest=canonical_json_digest(payload),
             workline_id=p.line.id,
             material_execution_id=confirmation.material_execution_id,
-            received_at=p.now,
-            processed_at=p.now,
+            received_at=received_at or p.now,
+            processed_at=received_at or p.now,
             apply_status="APPLIED",
             contract_version="1.0",
         )
@@ -155,6 +163,7 @@ async def result(p, confirmation, *, data=None, operation_id=None):
         await db.flush()
         live = await db.get(WmsConfirmation, confirmation.id)
         live.status, live.response_evidence_id, live.response_result = "COMPLETED", row.id, data["result"]
+        live.completed_at = received_at or p.now
         return row.id
 
 

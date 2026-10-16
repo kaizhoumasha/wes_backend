@@ -7,10 +7,9 @@ from wes_plugin_sdk import BinWorkPlanReady, PickingBinCell, PickingCellSource, 
 
 from automatic_picking.handlers.source_authorization import WorkSourceFact
 from src.app.device.models.command import DeviceCommand
-from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
+from src.app.execution.models import InboundEvidence, MaterialExecution
 from src.app.execution.repositories import inbound_evidence_repository
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material
-from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request
 from src.app.wms_adapter.outbound_picking.work_plan_typed import decode_outcome as decode_plan
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
@@ -53,7 +52,37 @@ class PickupRepository:
         return await db.get(InboundEvidence, evidence_id, populate_existing=True)
 
     async def material_execution(self, db, material_id):
-        return await db.get(MaterialExecution, material_id) if material_id is not None else None
+        return await db.get(MaterialExecution, material_id, populate_existing=True) if material_id is not None else None
+
+    async def material_pending(self, db, line_id):
+        return list(
+            (
+                await db.scalars(
+                    select(AutomaticPickingPickup.pickup_id)
+                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                    .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
+                    .where(
+                        AutomaticPickingWork.workline_id == line_id,
+                        MaterialExecution.status != "CLOSED",
+                        AutomaticPickingPickup.accept_evidence_id.is_(None),
+                    )
+                    .order_by(AutomaticPickingPickup.id)
+                )
+            ).all()
+        )
+
+    async def material_retry_allowed(self, db, work, pickup):
+        feed = await db.get(AutomaticPickingFeed, work.feed_id)
+        member = await db.get(PickingTaskBinSourceRack, feed.source_member_id, populate_existing=True) if feed else None
+        return (
+            work.phase == "READY"
+            and work.archived_at is None
+            and member is not None
+            and member.picking_task_id == work.picking_task_id
+            and member.cancelled_evidence_id is None
+            and work.consumed_pickup_id == pickup.pickup_id
+            and work.authorization_evidence_id == pickup.authorization_evidence_id
+        )
 
     async def material_source(self, db, work, pickup):
         """本盘仍未闭合时沿原授权引用读取，不使用 Work 的后继授权解释前盘。"""
@@ -93,22 +122,6 @@ class PickupRepository:
         ):
             raise ValueError("material source lost its frozen Work/Requirement identity")
         return task.task_id, PickingBinCell(member.rack_id, member.rack_face, work.bin_code, cell_id)
-
-    async def material_confirmation(self, db, *, operation_id):
-        row = await db.scalar(
-            select(WmsConfirmation).where(
-                WmsConfirmation.operation == "outbound.material.decide@v1",
-                WmsConfirmation.operation_id == operation_id,
-            )
-        )
-        if row is None:
-            return None, None
-        if canonical_json_digest(row.request_payload) != row.request_digest:
-            raise ValueError("material request digest differs")
-        request = decode_request(row.request_payload)
-        if request.operation_id != row.operation_id:
-            raise ValueError("material request operation identity differs")
-        return row, request
 
     async def _work_for_update(self, db, work_id):
         line_id = await db.scalar(select(AutomaticPickingWork.workline_id).where(AutomaticPickingWork.id == work_id))

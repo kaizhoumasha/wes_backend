@@ -151,7 +151,7 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 - [x] 宿主只增加可选 `PluginDecisionApplication`：精确 frozen plugin binding 解析后，在 Decision 应用与 Evidence 发布之间调用，复用 FactProcessor 原事务、claim、失败退避与持久扫描；宿主既有 `material_decide_typed` 补持久请求到 SDK intent 的解码，Repository 校验持久摘要/请求身份，业务应用不读取 wire 信封；插件回调复用 6B `handoff_in_session`，目标结果引用与 Work 后继/明确无后继和 Evidence 发布同事务。未安装回调的插件行为不变。
 - [x] 明确 WAIT 是已确定结果，原 Confirmation 完成、MaterialExecution HOLD、原授权仍已消费，不创建后继或新请求；交付未知尚无业务结果，基础 Confirmation 以 PENDING/retry_eligible/next_attempt_at 保留原 identity/body 技术重试。技术派发窗口不解释为业务重问期限。
 - [x] 离线验证 ACCEPT 不等于可靠取出；得到匹配的栈顶取出 Evidence 后，M1 仍 HOLD 时 M2 可独立绑定/decide，不增加全线 FIFO、平台占槽或另一臂的报告依赖。
-- [ ] 6D：保存确定 WAIT 的到期进度并由已有插件 owner 到期创建唯一新 operation_id；本片不接持久续问，不将 WAIT 原请求重发当作业务重问。
+- [x] 6D：保存确定 WAIT 的到期进度并由已有插件 owner 到期创建唯一新 operation_id；实现与独立验收见下节，不将 WAIT 原请求重发当作业务重问。
 
 **恢复 owner：**来源授权继续归当前 Work/batch；设备 Command 技术恢复仍归基础服务；精确扫码关联成功后的未发布 MaterialExecution Evidence 唯一归 FactProcessor 与冻结插件。ACCEPT 事务中断会回滚 Decision、Pickup 目标引用、Work 授权与发布标记，持久 claim/退避恢复原 Evidence。绑定及 FactProcessor 均按 Evidence→WorkLine→Work→Pickup 排序；来源 batch/Work 继续使用 6B 的 WorkLine→Work→Pickup，不反向锁扫码 Evidence。扫码与来源 Command 的生产汇合仍须 G2；没有新 worker、授权模型或业务状态。
 
@@ -160,6 +160,24 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 **验证：**最终插件 FAST 84 passed；修正后的受影响 PostgreSQL 53 passed（6C 22 项、6B 31 项），无跳过。首轮完整 PostgreSQL/真实 worker 71 passed；其中未受修正影响的原 19 项 Feed/Work/revision/worker 证据复用，不将其描述为修正后重新全量执行。核心域合同与执行聚焦 949 passed；最终 QUALITY 通过（脚本 428 passed、默认 FAST 4286 passed/5 既有 skipped）。现行 selector 因触及 `outbound_picking/**` 扩为 19 文件，固定 PostgreSQL 17.10/TimescaleDB 2.27.1 与独占 Redis 上 113 passed、无跳过。插件测试不进入核心 selector。已有 metadata 环引用及 plan_delta 测试数据的 Pydantic 序列化 warning 不属于本片新增模型/合同变化。Ruff、格式、计划引用和 diff 检查通过；无 schema 或迁移变化。
 
 **闭环 Review：**首轮发现 2 项 P2：绑定重放与 FactProcessor 的 Evidence↔WorkLine 反序死锁；插件应用层解释持久 wire 信封。先以真实 PostgreSQL 受控交错复现死锁，再统一锁序；宿主 converter 补严格字段类型的 `decode_request`，Repository 回传 typed intent，应用层退出信封解读。同一独立 reviewer 在一轮内完成旧意见闭环及当前完整 14 文件的 fresh full Review，逐文件指纹一致，无未关闭 finding。后续仅补本文证据，不失效当前可执行快照。未暂存、未提交、未部署，生产入口仍未启用，不把离线成功视为真实取盘或双臂物理验收。
+
+#### 实施切片 6D：确定 WAIT 的持久到期续问
+
+**最小持久进度：**Pickup 只增加 `material_confirmation_id`（当前可靠请求）和 `material_retry_at`（当前 WAIT 的 `Confirmation.completed_at + retry_after_ms`）。不复制 WMS 响应或来源授权，不新增模型、业务状态、定时 Evidence、worker 或配置。首次 decide 与游标登记、WAIT 到期与结果发布、新 Confirmation 与游标切换、ACCEPT 与 Work 授权交接分别复用原事务。纯 handler 仍只输出 typed Decision。
+
+**恢复 owner：**已有关联且未 ACCEPT/未 CLOSED 的单盘由插件 material flow 扫描；已有 batch 的 `advance_completed_in_session` 在检查新任务状态和当前 Work 列表前委托，不依赖一次性通知。只有确定结果已由 FactProcessor 发布、到期且原直接成员未取消、原 Work 仍持有本盘消费时，才创建新 operation_id。未发布结果继续归 FactProcessor；当前请求交付未知或待对账继续归原 Confirmation，超时不转为新业务请求。已持久义务不因父任务状态变化丢弃；直接成员取消只停止新业务续问，不虚构持有物料的退出事实。
+
+**身份边界：**续问沿同一 Pickup/MaterialExecution、扫码 Evidence、来源 Command、task/source locator、barcode 原文及 scanned_at，仅更换 operation_id 与新请求信封 timestamp。宿主同域 `MaterialDecideScheduler/ResultReader` 只复用基础可靠创建并严格读取 typed 原请求/结果，核对 owner、operation、Evidence、摘要及封闭响应；插件核对当前游标与原业务事实。旧结果不能回退游标或覆盖 ACCEPT；后续恢复不寻找“最近请求”，不依赖完整历史请求链。当前 MaterialExecution 仍引用的 HOLD 事实属于当前依据，不能当作可清理历史删除。
+
+**存量与迁移：**迁移 `548db61057e6` 仅添加上述两个可空字段及当前请求外键。空游标统一按首次 operation_id=Pickup UUID 初始化，承接首次结果前及存量 6C WAIT；已发布 WAIT 从原 completed_at 恢复到期时间，不重投原 Evidence、不从重启时间重新计时。未发布结果仍留给 FactProcessor，丢失或漂移的精确请求 fail closed。有游标/到期数据时拒绝有损降级，不猜测转换或删除运行进度。
+
+**测试所有权：**`T/integration/test_material_wait_postgresql.py` 是 WAIT 续问业务的唯一主 owner，覆盖并发、各事务崩溃恢复、WAIT→WAIT→ACCEPT、技术未知、旧结果重放、身份漂移、直接成员取消/父任务完成、可清理历史删除及存量 6C 升级；6C helper 补齐真实 Confirmation 完成时间。插件 FAST 只验证已有 batch 委托；核心 FAST 仅验证固定 typed 端口差异，核心 HEAVY 沿域映射及新增迁移映射运行，不接收插件业务测试。
+
+**启用与未决范围：**生产组合根仍不注入来源或 material flow，无生产扫码关联、设备取盘/PUT 或 movement report。G2/G3/G5 分别约束设备扫码关联、映射与可靠事实、权威 PkgID；G6 首批期限不阻塞本片，使用已确认 retry_after_ms；G4/G7 仅约束各自分支。任务 6 完整闭环和任务 7 仍未完成，不做 bin-line-common 抽取。
+
+**验证：**6D 新增 PostgreSQL 22 passed，既有插件事务/真实 worker 回归 72 passed，插件 FAST 85 passed，合计 179 passed、无跳过；含空库升降级、存量 6C WAIT 升级恢复、有进度拒绝降级及模型/迁移零差异。核心 typed 端口/selector/拓扑聚焦 254 passed；完整 QUALITY 通过（脚本 429 passed，默认 FAST 4292 passed/5 既有 skipped）。现行 selector 为 21 文件，固定 PostgreSQL 17.10/TimescaleDB 2.27.1 与独占 Redis 上最终 HEAVY 108 passed、无跳过。首轮 HEAVY 的 49 项 setup error 来自旧 integration fixture 拒绝 postgres 管理库命名；同实例预迁移 test_auto6d 后完整重跑同一 manifest 通过，没有为环境错误修改生产代码或放宽护栏。现有 metadata 环引用、Redis close 弃用及 plan_delta fixture 序列化 warning 保留，不扩面修正。
+
+**闭环 Review：**独立 reviewer 核对固定 14 文件及 SHA-256、合同、事务/游标/恢复 owner、取消锁序、历史边界、测试/helper 与 HEAVY 所有权，无可证实 finding。所有可执行文件保持评审指纹；后续仅补本文验证记录，Ruff/格式及 diff 检查通过。Git HEAD、index 与共享 config 未漂移，无暂存；未提交、未部署，不推进真实取盘。离线成功不代表 G2/G3/G5 或任务 7 已具备生产准入。
 
 ## 变更面与文件归属
 
