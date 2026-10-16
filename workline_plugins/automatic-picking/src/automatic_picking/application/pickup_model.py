@@ -32,3 +32,6 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
         default=None, foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT
     )
     material_retry_at: datetime | None = None
+    put_command_code: str | None = Field(
+        default=None, max_length=80, foreign_key="wes_biz.device_commands.command_code", unique=True
+    )

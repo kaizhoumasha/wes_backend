@@ -84,6 +84,36 @@ class PickupRepository:
             and work.authorization_evidence_id == pickup.authorization_evidence_id
         )
 
+    async def target_pending(self, db, line_id):
+        return list(
+            (
+                await db.scalars(
+                    select(AutomaticPickingPickup.pickup_id)
+                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                    .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
+                    .where(
+                        AutomaticPickingWork.workline_id == line_id,
+                        MaterialExecution.status != "CLOSED",
+                        AutomaticPickingPickup.accept_evidence_id.is_not(None),
+                    )
+                    .order_by(AutomaticPickingPickup.id)
+                )
+            ).all()
+        )
+
+    async def target_allowed(self, db, work):
+        feed = await db.get(AutomaticPickingFeed, work.feed_id)
+        member = await db.get(PickingTaskBinSourceRack, feed.source_member_id, populate_existing=True) if feed else None
+        return (
+            work.archived_at is None
+            and member is not None
+            and member.picking_task_id == work.picking_task_id
+            and member.cancelled_evidence_id is None
+        )
+
+    async def put_command(self, db, command_code):
+        return await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
+
     async def material_source(self, db, work, pickup):
         """本盘仍未闭合时沿原授权引用读取，不使用 Work 的后继授权解释前盘。"""
         evidence = await self._evidence(db, pickup.authorization_evidence_id, work)

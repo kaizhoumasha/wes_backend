@@ -9,6 +9,22 @@ NOW = datetime(2026, 10, 16)
 
 
 @pytest.mark.asyncio
+async def test_target_recovery_precedes_current_work_filter_without_task_activation():
+    target = N(advance_in_session=AsyncMock(return_value=1))
+    driver = AutomaticPickingBatchDriver(
+        N(list_current=AsyncMock(return_value=[])),
+        N(list_recoverable=AsyncMock(return_value=[])),
+        None,
+        None,
+        None,
+        target_flow=target,
+        clock=lambda: NOW,
+    )
+    assert await driver.advance_completed_in_session(None, N(id=7)) == 1
+    target.advance_in_session.assert_awaited_once_with(None, line_id=7, now=NOW)
+
+
+@pytest.mark.asyncio
 async def test_material_recovery_runs_without_current_works_or_new_task_activation():
     material = N(advance_in_session=AsyncMock(return_value=1))
     driver = AutomaticPickingBatchDriver(

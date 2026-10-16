@@ -3263,3 +3263,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0230_548db61057e6_add_automatic_material_wait_cursor.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# PUT 创建/关联业务由插件 PostgreSQL owner 显式验收；核心只承接 schema 与工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0328_4e30101440d2_add_automatic_pickup_put_command_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

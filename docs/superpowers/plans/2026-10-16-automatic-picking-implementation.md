@@ -179,6 +179,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **闭环 Review：**独立 reviewer 核对固定 14 文件及 SHA-256、合同、事务/游标/恢复 owner、取消锁序、历史边界、测试/helper 与 HEAVY 所有权，无可证实 finding。所有可执行文件保持评审指纹；后续仅补本文验证记录，Ruff/格式及 diff 检查通过。Git HEAD、index 与共享 config 未漂移，无暂存；未提交、未部署，不推进真实取盘。离线成功不代表 G2/G3/G5 或任务 7 已具备生产准入。
 
+#### 实施切片 7A：普通目标已就绪后的 PUT 创建离线事务
+
+**范围：**仅 BIN_CELL 来源、最终 ACCEPT 的普通 RACK_SLOT 目标，且明确的 typed reader 已确认当前盘目标架/面/工作位及直接准备依赖就绪。`P/application/target_preparation.py` 通过现有 `DeviceCommandService` 创建 PUT；reader 和请求映射器均必填，没有生产默认实现。测试的设备、时限和报文只为离线输入，不构成 G2/G3 合同；不应用 PUT 成功为位置，不创建 movement_report、不关闭单盘，ROTATE/REPLACE 留给后续切片。
+
+**最小持久关联：**Pickup 仅新增可空唯一 `put_command_code` 外键，命令正文和技术生命周期只保存在原 DeviceCommand。新命令与引用在 WorkLine→Work→Pickup 锁事务中同时提交/回滚；内部 `WORKLINE_BUSINESS / put:<pickup UUID>` 表示本盘 PUT 步骤，关联已存在的 MaterialExecution，不改变扫码前来源 Command。该内部身份不定义设备附录 O6 的 business_key，也不是 PkgID。迁移 `4e30101440d2` 增列、唯一约束及外键，有 PUT 引用时拒绝有损降级；无授权模型或新业务状态。
+
+**业务与恢复 owner：**已有 batch 的 `advance_completed_in_session` 可选注入 target flow，在当前 Work/任务激活过滤前扫描当前未 CLOSED 的 ACCEPT Pickup；已发布 ACCEPT 是当前待创建目标动作的依据，不重投该 Evidence、不新问 material.decide。创建前核对当前请求、ACCEPT Evidence、WorkLine/单盘/来源及直接成员取消事实；复用现有 physical reader 按本盘冻结来源与原来源 Command 核对可靠取出 Evidence，未知则等待，不借 Work 当前栈顶解释旧盘；父任务终态不代替直接取消。已建 PUT 只按精确引用恢复，不重算目标、映射或 deadline，不因取消、超时或未知状态换身份；技术履约归原 Command 基础服务。本片不消费成功结果，也不借命令状态宣布物理完成或单盘收口。
+
+**并发边界与所有权：**M1 PUT/报告不作为 M2 来源创建的统一门槛；M2 仍由当前 Work 授权及可靠栈顶取出事实准入，未知栈顶不得越过。`T/integration/test_target_put_postgresql.py` 唯一拥有 PUT 创建业务的 PostgreSQL 验收，复用 6B/6C 输入并实际使用 batch 入口、typed material reader 和 DeviceCommandService；不复制基础派发/ACK/技术重试矩阵。核心仅承接迁移/selector/拓扑测试，插件业务测试不进入核心 HEAVY。
+
+**启用边界：**production composition 仍不注入来源、material 或 target flow；G2/G3/G5 继续约束对应生产路径，不猜设备映射、扫码关联或 PkgID。G4/G6/G7 不扩大为本片阻塞；后续成功 PUT 与位置/报告义务的原子联动必须单独完整实施，不以 fixture 将单盘直接标为 CLOSED。
+
+**验证：**最终 PUT PostgreSQL 36 passed，插件既有 PostgreSQL/真实 worker 回归 94 passed，插件 FAST 86 passed，共 216 项通过且无 skipped；核心聚焦 248 passed。最终 QUALITY 通过（核心 FAST 4292 passed / 5 项既有 skipped，不将 skipped 作为通过证据）；selector 仅选中核心工作线配置 PostgreSQL 文件，8 passed。已覆盖命令/引用双侧故障回滚、并发重复创建、重启沿用原引用、旧 ACCEPT 重放、取消与身份漂移、未知取出等待、外来/未应用取出事实拒绝、M2 接续后仍按 M1 精确来源创建、空库/存量迁移、metadata 无差异及有损降级保护。
+
+**闭环 Review：**独立 reviewer 首轮发现创建 PUT 缺少本盘可靠取出事实门禁；先以回归复现后修正，再由同一 reviewer 完成旧意见闭环与当前 10 文件完整复审，无新增 finding。跨工作线测试夹具另修为真实存在的 WorkLine，定向核对确认断言语义及 owner 不变，最终 36 项与 QUALITY 已重新通过。准确 RED 为 4 项真实门禁失败和 1 项无效 FK 夹具失败，后者不计业务失败证据。最终仅补本文验证记录，可执行文件保持评审指纹；未暂存、未提交、未部署，不推进真实取盘。任务 7 整体及 G2/G3/G5 生产准入仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
