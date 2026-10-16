@@ -1,4 +1,4 @@
-"""来源授权的事务协调；设备映射和生产持久端口未确认前不进入运行时装配。"""
+"""来源授权的事务协调；设备事实与映射未确认前不进入生产装配。"""
 
 from wes_plugin_sdk import PickingMaterialAccept
 
@@ -55,6 +55,15 @@ class AutomaticPickingSourceFlow:
             db, work_id=work.work_id, authorization_evidence_id=work.authorization_evidence_id, pickup_id=pickup_id
         )
         return pickup_id
+
+    async def advance_in_session(self, db, *, work_id):
+        work = await self._work(db, work_id)
+        if not source_pickup_allowed(work):
+            return 0
+        pickup_id = await self.consume_in_session(
+            db, work_id=work_id, authorization_evidence_id=work.authorization_evidence_id
+        )
+        return int(pickup_id is not None)
 
     async def handoff_in_session(self, db, *, work_id, pickup_id, material_execution_id, evidence_id, outcome):
         if type(outcome) is not PickingMaterialAccept:

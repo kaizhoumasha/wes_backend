@@ -3253,3 +3253,8 @@ heavy_tests = []
 [[mapping]]
 source_glob = "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 来源授权事务由插件 PostgreSQL owner 显式运行；核心只承接通用迁移/工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

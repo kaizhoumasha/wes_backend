@@ -71,7 +71,7 @@
 
 ### 当前任务 5–6 剩余项与继续条件
 
-以下按已提交基线及后续 5A/6A 的明确验收范围核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
+以下按已提交基线及后续 5A/6A/6B 的明确验收范围核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
 
 | 路径 | 当前事实与归属 | 继续条件 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@
 | 任务 5 跨 revision 来源接续 | 切片 5A 的 6 项 PostgreSQL 验收已通过：当前进场复用原 Transport，各 revision 成员独立申请，重启/并发扫描防重、事务回滚、取消及闭合历史清理均已覆盖；未改生产代码 | 本项已闭合，不依赖首批期限或机械臂参数；首批确认和任务 6 按各自条件继续 |
 | 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
 | 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
-| 任务 6 已确认纯业务规则 | 6A 已实现来源规则与显式注入端口的事务协调器，并完成离线验收；生产 Work 仍仅保存初始 authorization_evidence_id，未新增生产 Pickup 表或消费/交接持久端口 | LIFO、原身份、授权归 Work、旧 Evidence 防覆盖及双臂独立条件已验证；中性 typed fake 与 SQLite 证明协调器的原子性/至多一次，不代表 PostgreSQL 行锁、持久适配或设备生产接线已验收 |
+| 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；真实事实 reader、设备映射、扫码汇合和单盘业务应用仍待后续切片，不能以持久适配代表生产取盘闭环 |
 | 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
 | 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 除来源映射/关联外，还须闭合 G3 的目标映射及 G5 权威 PkgID 来源；不能先取盘再补猜报告身份 |
 
@@ -110,6 +110,8 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 #### 实施切片 6A：来源规则与离线事务验收
 
+以下记录 6A 结束时的范围；后续持久适配以 6B 的记录为准。
+
 **范围：**插件新增 `P/handlers/source_authorization.py` 和 `P/application/source_flow.py`；分别由 `T/test_source_authorization.py`、`T/test_pickup_flow.py` 拥有验收。`WorkSourceFact` 只是当前 Work、直接 Requirement 和当前物理事实的不可变输入快照，不是生产授权表、Cell 库存或新业务状态。
 
 - [x] READY/后继授权归当前 Work；按 Work 和原授权 Evidence 消费。同 Cell 可连续取多盘，不以 `(work, cell)` 去重；跨 Cell 只跟随 WMS 后继，不按 Cell 编号排序。
@@ -125,6 +127,20 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 **后续准入：**G2/G3/G5 继续只约束对应的生产取盘、设备/扫码关联和逐盘闭环；G6/G4/G7 不扩大阻塞本片。任务 6 的完整验收项继续保持未勾选，不将 6A 当作可部署的取盘闭环。
 
 **6A 闭环 Review：**已核对规则输入、Work 授权消费/交接、Command 原身份、测试所有权及当前运行时调用面，无未关闭问题。明确 WorkLine→Work→Pickup 锁顺序，补强连续取盘使用不同 MaterialExecution 的测试身份，保留真实 PostgreSQL 适配的验收门槛；纯规则仅导入 SDK，安装包可导入新增模块，核心 HEAVY selector 为 NONE。未新增生产持久模型、业务状态、配置或基础层业务逻辑，未接 composition，未提交、未部署。
+
+#### 实施切片 6B：PostgreSQL 来源授权持久化与离线恢复
+
+**范围：**复用 6A 的 `AutomaticPickingSourceFlow`，增加插件私有 Pickup 与 Repository。Work 只补 `consumed_pickup_id` 和 `top_removed_evidence_id`：前者用于恢复同一消费结果，后者将当前可靠取出事实保留给后继，不依赖已闭合前盘。来源 locator、本盘目标、ROTATE/REPLACE 及后继/明确无后继内容均引用原 Evidence，不复制响应、不新增授权表或业务状态。
+
+**恢复 owner：**已有 batch/Work driver 显式注入来源协调器后扫描当前 Work；未消费授权归 Work，已创建 Command 的技术恢复归设备基础服务。取出尚未知时前盘仍是当前未闭合依赖；匹配事实转入 Work 后不查询其可清理 Pickup/Command。锁顺序 WorkLine→Work→Pickup，短事务内不执行外部 I/O。没有新 worker、平台锁、全线 FIFO 或跨臂等待。
+
+**验收范围：**真实 PostgreSQL 及真实 `DeviceCommandService.create_command_in_session`；覆盖各写入阶段回滚、行锁等待、并发消费/ACCEPT 重放、同 Cell 和跨 Cell 后继、明确无后继、未知栈顶补证、成员取消、旧 READY/ACCEPT 重放、清理旧 Pickup/Command 后恢复、存量 Work 升级与有数据降级拒绝。模型/迁移差异、核心测试所有权及 selector 单独验证，插件事务测试唯一 owner 为 `T/integration/test_pickup_identity_postgresql.py`，不进入核心 HEAVY。
+
+**未启用边界：**设备事实 reader 和请求映射器均为必填注入项，没有生产默认实现；测试明确提供设备参数、扫码/MaterialExecution 关联与可靠取出语义。生产组合根不注入来源流程，设备命令不派发；任务 6 的生产扫码汇合、单盘业务应用/FactProcessor handler 及任务 7 仍未实现。G2/G3/G5 继续仅限制对应生产路径，G4/G6/G7 不扩大阻塞本片。未提交、未部署、不推进真实取盘。
+
+**验证与 Review：**插件合计 128 passed（78 FAST、31 项本片 PostgreSQL、19 项既有 PostgreSQL/真实 worker），无跳过；核心安装/拓扑/selector 聚焦 252 passed。完整 QUALITY 通过（脚本 428 passed，默认 FAST 4280 passed/5 既有 skipped），核心 selector 仅选 2 文件，固定 PostgreSQL 17.10/TimescaleDB 2.27.1 上 HEAVY 18 passed。模型/迁移 diff 为零；全量核心 metadata 比对有既有 inbound_evidences/picking_tasks 环引用 SAWarning，不属于本片模型差异。
+
+独立首轮 Review 发现 1 项：调用方预载取消前成员时，WorkLine 锁不会刷新 ORM identity map，可能让已取消 Requirement 创建 Command。真实 CancelService 交错回归 RED→GREEN，锁后显式刷新直接成员，未加状态或锁模型；最终受影响插件集合 109 passed。此前本片验收发现的“重复当前取出事实仍要求旧 Pickup 存在”也已由 RED→GREEN 修正。同一 Reviewer 在一轮中完成意见闭环及 fresh full Review，无未关闭 finding。后续修正只触及插件 Repository/测试，未失效的核心 QUALITY/HEAVY 与既有 worker 证据不重复执行。证据绑定当前可执行文件指纹及隔离环境，不代表生产来源流程启用或真实设备验收。
 
 ## 变更面与文件归属
 

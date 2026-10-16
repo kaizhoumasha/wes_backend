@@ -1422,6 +1422,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261011_0000_9d4e6b7a120c_新增人工拣料排空执行.py",
         "migrations/versions/20261013_0000_c47a2b9d610e_允许料箱直达SCAN2.py",
         "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py",
+        "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[

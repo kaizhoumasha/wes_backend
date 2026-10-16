@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, Index, text
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, text
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -15,6 +15,12 @@ class AutomaticPickingWork(EnterpriseMixin, DataTableMixin, table=True):
     __tablename__: ClassVar[str] = "automatic_picking_works"
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["consumed_pickup_id"],
+            ["wes_biz.automatic_picking_pickups.pickup_id"],
+            name="fk_automatic_work_consumed_pickup",
+            use_alter=True,
+        ),
         CheckConstraint(
             "phase IN ('PLAN_PENDING','WAIT','READY','EXIT_PENDING','CLOSED','RECONCILING')",
             name="automatic_work_phase",
@@ -42,6 +48,11 @@ class AutomaticPickingWork(EnterpriseMixin, DataTableMixin, table=True):
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
     authorization_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    consumed_pickup_id: str | None = Field(default=None, max_length=36)
+    # 当前栈顶的可靠事实随 Work 保留，后继恢复不查询已闭合 Pickup/Command。
+    top_removed_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
     retry_at: datetime | None = None
