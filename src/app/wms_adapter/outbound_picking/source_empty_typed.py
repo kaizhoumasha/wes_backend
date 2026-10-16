@@ -18,6 +18,7 @@ def encode_request(intent: sdk.SourceEmptyIntent, *, timestamp: int) -> dict[str
             "timestamp": timestamp,
             "data": {
                 "task_id": intent.task_id,
+                **({"plan_revision": intent.plan_revision} if intent.plan_revision is not None else {}),
                 "source_locator": {
                     "type": "RACK_SLOT" if type(intent.source_locator) is sdk.PickingRackSlot else "BIN_CELL",
                     **asdict(intent.source_locator),

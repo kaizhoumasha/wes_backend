@@ -78,7 +78,15 @@ def test_request_rejects_invalid_business_fields(field, value):
 @pytest.mark.parametrize(
     "data",
     [
-        {"result": "READY", "cell_ids": ["CELL-2", "CELL-1"]},
+        {
+            "result": "READY",
+            "cell_id": "CELL-2",
+            "cell_index": 2,
+            "bin_type": 3,
+            "reel_layer": 1,
+            "reel_thickness": 0.5,
+            "reel_diameter": 15.0,
+        },
         {"result": "NO_WORK"},
         {"result": "WAIT", "retry_after_ms": 60000},
     ],
@@ -115,7 +123,8 @@ async def test_work_plan_decisions_complete_obligation_without_automatic_followu
     outcome = decode_outcome(result.normalized_response)
     assert type(outcome) is sdk.BinWorkPlanOutcome
     if data["result"] == "READY":
-        assert outcome.result.cell_ids == ("CELL-2", "CELL-1")
+        assert outcome.result.cell_id == "CELL-2"
+        assert outcome.result.cell_index == 2
     elif data["result"] == "WAIT":
         assert outcome.result.retry_after_ms == 60000
     else:
@@ -149,13 +158,10 @@ def test_response_is_closed_and_cells_unique(data):
         decode_outcome(response(data))
 
 
-def test_sdk_ready_requires_immutable_nonempty_unique_cells():
-    for cells in ([], (), ["C"], ("C", "C"), ("bad cell",), (1,)):
-        with pytest.raises((TypeError, ValueError)):
-            sdk.BinWorkPlanReady(cells)
-    ready = sdk.BinWorkPlanReady(("C",))
+def test_sdk_ready_is_immutable_single_cell():
+    ready = sdk.BinWorkPlanReady("C", 1, 2, 1, 0.5, 15.0)
     with pytest.raises(FrozenInstanceError):
-        ready.cell_ids = ("D",)
+        ready.cell_id = "D"
 
 
 def test_work_plan_requires_matching_response_identity_and_strict_envelopes():
@@ -238,7 +244,16 @@ async def test_error_mapping(status, code, data, expected):
 @pytest.mark.parametrize(
     "data",
     [
-        {"result": "READY", "cell_ids": ["C"], "retry_after_ms": 1},
+        {
+            "result": "READY",
+            "cell_id": "CELL-2",
+            "cell_index": 2,
+            "bin_type": 3,
+            "reel_layer": 1,
+            "reel_thickness": 0.5,
+            "reel_diameter": 15.0,
+            "retry_after_ms": 1,
+        },
         {"result": "NO_WORK", "cell_ids": None},
         {"result": "WAIT", "retry_after_ms": 1, "cell_ids": ["C"]},
     ],

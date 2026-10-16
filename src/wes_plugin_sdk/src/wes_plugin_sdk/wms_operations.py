@@ -19,7 +19,6 @@ from .wms_types import (
     PickingMaterialIntent,
     PickingNgZone,
     PickingRackSlot,
-    PickingSixInOne,
     PickingTaskPrepareIntent,
     PlacementIntent,
     RackDepartureIntent,
@@ -248,15 +247,21 @@ def outbound_material_decide(
     operation_id: str,
     task_id: str,
     source_locator: PickingRackSlot | PickingBinCell,
-    six_in_one: PickingSixInOne,
+    barcode: str,
     scanned_at: int,
+    plan_revision: int | None = None,
+    material_execution_id: str | None = None,
+    fact_id: str | None = None,
 ) -> PickingMaterialIntent:
     return PickingMaterialIntent(
         operation_id=operation_id,
         task_id=task_id,
         source_locator=source_locator,
-        six_in_one=six_in_one,
+        barcode=barcode,
         scanned_at=scanned_at,
+        plan_revision=plan_revision,
+        material_execution_id=material_execution_id,
+        fact_id=fact_id,
     )
 
 
@@ -266,12 +271,14 @@ def outbound_source_empty_decide(
     task_id: str,
     source_locator: PickingRackSlot | PickingBinCell,
     observed_at: int,
+    plan_revision: int | None = None,
 ) -> SourceEmptyIntent:
     return SourceEmptyIntent(
         operation_id=operation_id,
         task_id=task_id,
         source_locator=source_locator,
         observed_at=observed_at,
+        plan_revision=plan_revision,
     )
 
 
@@ -283,6 +290,9 @@ def outbound_material_movement_report(
     pkg_id: str,
     to_locator: PickingRackSlot | PickingNgZone,
     occurred_at: int,
+    plan_revision: int | None = None,
+    material_execution_id: str | None = None,
+    fact_id: str | None = None,
 ) -> MaterialMovementReportIntent:
     return MaterialMovementReportIntent(
         operation_id=operation_id,
@@ -291,6 +301,9 @@ def outbound_material_movement_report(
         pkg_id=pkg_id,
         to_locator=to_locator,
         occurred_at=occurred_at,
+        plan_revision=plan_revision,
+        material_execution_id=material_execution_id,
+        fact_id=fact_id,
     )
 
 

@@ -444,7 +444,22 @@ PICKING_TASK_EVENT_EXAMPLES = {
 }
 
 # 仅用于 Swagger 展示；不是运行时 operation 分派表。
-_PICKING_TARGET = {"type": "RACK_SLOT", "rack_id": "TARGET-RACK-01", "rack_face": "A", "slot_id": "A-05"}
+_PICKING_TARGET = {
+    "type": "RACK_SLOT",
+    "rack_id": "TARGET-RACK-01",
+    "rack_face": "A",
+    "slot_id": "A-05",
+    "rack_layer": 1,
+    "rack_column": 1,
+}
+_PICKING_CELL = {
+    "cell_id": "BIN-0013",
+    "cell_index": 3,
+    "bin_type": 3,
+    "reel_layer": 1,
+    "reel_thickness": 20.0,
+    "reel_diameter": 15.0,
+}
 PICKING_TASK_WMS_RESPONSE_DATA = {
     "outbound.picking_task.completion_confirm@v1": [
         (200, "DECIDED", {"result": "COMPLETED"}),
@@ -480,20 +495,20 @@ PICKING_TASK_WMS_RESPONSE_DATA = {
         (200, "DECIDED", {"result": "RACK_FACE_DONE"}),
     ],
     "outbound.bin.work_plan@v1": [
-        (200, "DECIDED", {"result": "READY", "cell_ids": ["CELL-03", "CELL-04"]}),
+        (200, "DECIDED", {"result": "READY", **_PICKING_CELL}),
         (200, "DECIDED", {"result": "NO_WORK"}),
         (200, "DECIDED", {"result": "WAIT", "retry_after_ms": 1000}),
     ],
     "outbound.material.decide@v1": [
-        (200, "DECIDED", {"result": "ACCEPT", "target_locator": _PICKING_TARGET, "next_source_action": "CONTINUE"}),
-        (200, "DECIDED", {"result": "ACCEPT", "target_locator": _PICKING_TARGET, "next_source_action": "SOURCE_DONE"}),
+        (200, "DECIDED", {"result": "ACCEPT", "target_locator": _PICKING_TARGET, "next_source_action": _PICKING_CELL}),
+        (200, "DECIDED", {"result": "ACCEPT", "target_locator": _PICKING_TARGET}),
         (
             200,
             "DECIDED",
             {
                 "result": "ACCEPT",
                 "target_locator": _PICKING_TARGET,
-                "next_source_action": "CONTINUE",
+                "next_source_action": _PICKING_CELL,
                 "target_preparation": {"mode": "ROTATE"},
             },
         ),
@@ -503,7 +518,7 @@ PICKING_TASK_WMS_RESPONSE_DATA = {
             {
                 "result": "ACCEPT",
                 "target_locator": _PICKING_TARGET,
-                "next_source_action": "CONTINUE",
+                "next_source_action": _PICKING_CELL,
                 "target_preparation": {"mode": "REPLACE"},
             },
         ),
@@ -608,6 +623,34 @@ PICKING_TASK_WMS_RESPONSE_EXAMPLES = {
         "通用错误响应（适用于上述 Operation）": _PICKING_ERROR_RESPONSE_DATA,
     }.items()
 }
+PICKING_TASK_WMS_REQUEST_EXAMPLES = {
+    operation: {
+        "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804de",
+        "operation": operation,
+        "timestamp": 1786060800000,
+        "data": {
+            "task_id": "PICK-20260811-001",
+            "plan_revision": 2,
+            "source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE-1", "rack_face": "A", "slot_id": "A-01"},
+            **data,
+        },
+    }
+    for operation, data in {
+        "outbound.material.decide@v1": {"barcode": "原始,扫码,条码", "scanned_at": 1786060799900},
+        "outbound.source.empty_decide@v1": {"observed_at": 1786060799900},
+        "outbound.material.movement_report@v1": {
+            "PkgID": "PKG-001",
+            "to_locator": {"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "B-01"},
+            "occurred_at": 1786060799900,
+        },
+    }.items()
+}
+PICKING_TASK_TEST_GUIDE += "\n### DirectPick 成员 revision 请求示例\n"
+for _operation, _request in PICKING_TASK_WMS_REQUEST_EXAMPLES.items():
+    PICKING_TASK_TEST_GUIDE += (
+        f"\n#### {_operation} 请求\n\n```json\n{json.dumps(_request, ensure_ascii=False, indent=2)}\n```\n"
+    )
+
 PICKING_TASK_TEST_GUIDE += """
 ### WMS 正常业务响应（WES → WMS 请求的返回值）
 
@@ -619,9 +662,12 @@ PICKING_TASK_TEST_GUIDE += """
   facts 首次 RECORDED、重放 DUPLICATE；prepare 的 PREPARE_ACCEPTED 和 facts 的 data 按合同为空。
 - inbound_batch 在货架面到位后一次冻结该面完整且最终的唯一 Bin 与来源槽位清单；rack_id/rack_face 必须匹配请求，空面返回 RACK_FACE_DONE。
   return_batch 的 READY 返回请求候选的 FIFO 前缀，sequence_no 从 1 连续，目标架面匹配请求且槽位唯一。
-- work_plan 的 cell_ids 非空且不重复。departure 的目的地必须不同于当前货架位置。
-- material ACCEPT 无准备动作时省略 target_preparation；ROTATE 使用目标架面，REPLACE 另带旧架离场目的地。
-  Cell 来源可 CONTINUE 或 SOURCE_DONE；DirectPick 只能 SOURCE_DONE。
+- work_plan READY 返回单个 Cell：cell_id、cell_index、bin_type、reel_layer、reel_thickness、reel_diameter。
+  cell_index 为 1..7 的整数，bin_type 为 2/3/6；层数和目标层列为整数，厚度/直径为有限数值，不推定未确认的物理范围。
+  material.decide 的 barcode 为最多 1000 字符的原始字符串，不裁剪或拆分；RACK_SLOT 的 decide/empty/movement 请求必带原成员 plan_revision，BIN_CELL 省略。
+  departure 的目的地必须不同于当前货架位置。
+- material ACCEPT 的目标包含整数 rack_layer/rack_column；无准备动作时省略 target_preparation，ROTATE/REPLACE 只指定 mode，旧架离场去向另由 departure_decide 给出。
+  有后继时 next_source_action 为上述单 Cell 参数对象；无后继及 DirectPick 来源时省略，不传 null。
 - empty_decide 的 RETRY 是重新尝试原来源空取；SOURCE_DONE 表示来源处理结束。
 - completion_confirm 的 COMPLETED 表示 WMS 确认当前任务业务完成；本地触发条件和任务状态推进仍由插件负责。
 """

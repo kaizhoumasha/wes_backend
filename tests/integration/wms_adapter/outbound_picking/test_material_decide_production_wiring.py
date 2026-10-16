@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import func, select
-from wes_plugin_sdk import PickingBinCell, PickingSixInOne, wms_operations
+from wes_plugin_sdk import PickingBinCell, wms_operations
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceKind, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import WmsConfirmationService
@@ -27,8 +27,22 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
     [
         {
             "result": "ACCEPT",
-            "target_locator": {"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "S-1"},
-            "next_source_action": "CONTINUE",
+            "target_locator": {
+                "type": "RACK_SLOT",
+                "rack_id": "TARGET-1",
+                "rack_face": "B",
+                "slot_id": "S-1",
+                "rack_layer": 1,
+                "rack_column": 2,
+            },
+            "next_source_action": {
+                "cell_id": "CELL-2",
+                "cell_index": 2,
+                "bin_type": 3,
+                "reel_layer": 1,
+                "reel_thickness": 0.5,
+                "reel_diameter": 15.0,
+            },
             "target_preparation": {
                 "mode": "REPLACE",
             },
@@ -62,7 +76,7 @@ async def test_material_decision_persists_without_automatic_transport_or_followu
                 operation_id=operation_id,
                 task_id=task.task_id,
                 source_locator=PickingBinCell("RACK-1", "面 A", "BIN-1", "CELL-1"),
-                six_in_one=PickingSixInOne("HHPN-1", "MFR-1", "000100", "2610", "L-1", "PKG-1"),
+                barcode="HHPN-1,MFR-1,000100,2610,L-1,PKG-1",
                 scanned_at=123,
             ),
             timestamp=int(timezone.to_utc(now).timestamp() * 1000),

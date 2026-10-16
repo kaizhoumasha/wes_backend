@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
 from wes_plugin_sdk import DeferExecution, FactReference
-from wes_plugin_sdk.wms_types import InboundWmsIntent
+from wes_plugin_sdk.wms_types import MaterialWmsIntent
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -246,7 +246,7 @@ class FactProcessor:
             evidence.decision_claim_expires_at = None
             evidence.decision_next_attempt_at = None
             await self._evidences.flush(db)
-            return any(isinstance(decision, InboundWmsIntent) for decision in current_decisions)
+            return any(isinstance(decision, MaterialWmsIntent) for decision in current_decisions)
 
     async def _business_consumer_identity(
         self, db: AsyncSession, evidence: InboundEvidence

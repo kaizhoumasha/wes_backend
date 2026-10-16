@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, TypeAdapter, model_validator
+from pydantic import Field, FiniteFloat, StrictInt, StringConstraints, TypeAdapter, field_validator
 
 from src.app.wms_adapter.outbound_picking.response_wire import (
     ConflictResponse,
@@ -32,15 +32,24 @@ class BinWorkPlanRequest(StrictWireModel):
     data: BinWorkPlanData
 
 
-class BinWorkPlanReady(StrictWireModel):
-    result: Literal["READY"]
-    cell_ids: Annotated[list[Identifier], Field(min_length=1)]
+class PickingCellSource(StrictWireModel):
+    cell_id: Identifier
+    cell_index: Annotated[int, Field(strict=True, ge=1, le=7)]
+    bin_type: Literal[2, 3, 6]
+    reel_layer: StrictInt
+    reel_thickness: Annotated[FiniteFloat, Field(strict=True)]
+    reel_diameter: Annotated[FiniteFloat, Field(strict=True)]
 
-    @model_validator(mode="after")
-    def validate_unique_cells(self) -> BinWorkPlanReady:
-        if len(set(self.cell_ids)) != len(self.cell_ids):
-            raise ValueError("cell_ids 不得重复")
-        return self
+    @field_validator("bin_type", mode="before")
+    @classmethod
+    def validate_bin_type(cls, value: object) -> int:
+        if type(value) is not int or value not in (2, 3, 6):
+            raise ValueError("bin_type 必须是 2、3 或 6")
+        return value
+
+
+class BinWorkPlanReady(PickingCellSource):
+    result: Literal["READY"]
 
 
 class BinWorkPlanNoWork(StrictWireModel):

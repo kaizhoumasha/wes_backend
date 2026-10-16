@@ -7,7 +7,7 @@ from typing import Literal
 from .validation import validate_opaque_face, validate_persistable_text
 from .validation import validate_required_refs as _required_refs
 from .validation import validate_required_text as _required
-from .wms_types import InboundWmsIntent
+from .wms_types import MaterialWmsIntent
 
 
 class TransportTaskType(StrEnum):
@@ -198,7 +198,7 @@ Decision = (
     Wait
     | DeferExecution
     | CreateDeviceCommand
-    | InboundWmsIntent
+    | MaterialWmsIntent
     | CreateTransportTask
     | PauseForReconciliation
     | CompleteExecution

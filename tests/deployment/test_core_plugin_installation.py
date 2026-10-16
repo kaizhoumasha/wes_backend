@@ -30,6 +30,10 @@ def test_empty_composition_builds_core_without_a_business_handler() -> None:
         transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
         device_command_service=object(),
     )
+    from src.app.wms_integration.outbound_picking.services import BinWorkPlanResultReader, BinWorkPlanScheduler
+
+    assert isinstance(runtime.bin_work_plan_scheduler, BinWorkPlanScheduler)
+    assert isinstance(runtime.bin_work_plan_result_reader, BinWorkPlanResultReader)
     assert runtime.plugins == ()
     assert runtime.wms_recovery_event_handler is None
     assert runtime.execution.fact_processor is not None

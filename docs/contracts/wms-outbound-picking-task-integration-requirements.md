@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-09-23
+updated_at: 2026-10-16
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -201,7 +201,7 @@ WMS 不创建 TransportTask，也不向设备发送 DeviceCommand。
 - `operation_id` 使用 RFC 9562 UUIDv7 字符串。其他 ID、业务编码和位置编码必须匹配
   `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`；接收方按精确字符串比较，不根据前缀猜测类型。
 - `rack_face`、`target_face`、`arrival_face` 及同义面向字段一旦提供，长度为 `1..10` 个 Unicode code point，不含 NUL；原样保存，不 trim、不做大小写或数值转换，独立数据库列使用 `VARCHAR(10)`，超长值拒绝而非截断。
-- `barcode` 是非空 UTF-8 扫码原文，长度受 HTTP Body 上限约束；其他明确标注“扫码设备原文”的字段使用其字段表长度。所有
+- `barcode` 是非空 UTF-8 扫码原文，最多 1000 字符且受 HTTP Body 上限约束；其他明确标注“扫码设备原文”的字段使用其字段表长度。所有
   UTF-8 字符串长度均按 Unicode code point 计数；WES 按设备规范化结果原样传递，不做数值、日期或主数据转换。
 - 时间字段均为 `0..9223372036854775807` 的 UTC Unix 毫秒整数，C# 使用 `long`。revision、sequence 和 outcome version 均为
   `1..9223372036854775807` 的整数；仅任务状态确认中的 `last_applied_plan_revision` 和 `current_plan_revision` 允许为 `0`，表示
@@ -1167,11 +1167,11 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
   "data": {
     "result": "READY",
     "cell_id": "BIN-0013",
-    "cell_index": "3",
-    "bin_type": "3",
-    "reel_layer": "1",
-    "reel_thickness": "20",
-    "reel_diameter": "15"
+    "cell_index": 3,
+    "bin_type": 3,
+    "reel_layer": 1,
+    "reel_thickness": 20,
+    "reel_diameter": 15
   }
 }
 ```
@@ -1222,6 +1222,10 @@ SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、�
 | `READY` | `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `retry_after_ms` | 当前 Bin 的单 Cell 工作授权及物理参数 |
 | `NO_WORK` | 无 | `READY` 字段、`retry_after_ms` | 当前 Bin 不再需要取料，业务明细完成，物理 Bin 继续退箱 |
 | `WAIT` | `retry_after_ms` | `READY` 字段 | 当前不能形成稳定计划 |
+
+字段类型确认（2026-10-16）：`cell_index` 为 int，枚举 1–7；`bin_type` 为 int，枚举 2、3、6；
+`reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float（JSON number）；
+`barcode` 为非空 UTF-8 原始字符串、最多 1000 字符。层数、坐标和尺寸尚无额外物理范围约束，设备映射另行确认。
 
 `READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；WES 按设备附录 O16 的确认映射使用 `cell_index`。`reel_totalthickness` 由 WES 本地计算。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
 
@@ -1429,16 +1433,16 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
       "rack_id": "TRANSFER-RACK-01",
       "rack_face": "A",
       "slot_id": "A-05",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     },
     "next_source_action": {
       "cell_id": "BIN-0013",
-      "cell_index": "3",
-      "bin_type": "3",
-      "reel_layer": "1",
-      "reel_thickness": "20",
-      "reel_diameter": "15"
+      "cell_index": 3,
+      "bin_type": 3,
+      "reel_layer": 1,
+      "reel_thickness": 20,
+      "reel_diameter": 15
     }
   }
 }
@@ -1458,8 +1462,8 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
       "rack_id": "TRANSFER-RACK-01",
       "rack_face": "A",
       "slot_id": "A-05",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     }
   }
 }
@@ -1479,8 +1483,8 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
       "rack_id": "TRANSFER-RACK-01",
       "rack_face": "B",
       "slot_id": "B-01",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     },
     "target_preparation": {
       "mode": "ROTATE"
@@ -1503,8 +1507,8 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
       "rack_id": "TRANSFER-RACK-02",
       "rack_face": "A",
       "slot_id": "A-01",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     },
     "target_preparation": {
       "mode": "REPLACE"
@@ -1605,7 +1609,7 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 `REPLACE` 固定按“当前架 departure 决定与离场 → 新架进场 → PUT”执行。`ACCEPT` 冻结当前盘资格、目标储位与新架要求；WES 取得独立
 departure `READY` 并等待相关 Transport 到位后直接 PUT，不重新请求物料资格。
 
-`next_source_action` 指定当前盘完成后可执行的下一来源，可以是同 Cell 下一盘或另一 Cell；其省略表示本次授权范围内无后续来源。WES 在当前盘权威取放及 WMS 结果满足因果条件后执行下一来源。同一来源成员或 Passage/Work 与 `PkgID` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带同一业务事实重新判断。`RACK_SLOT` 以 `task_id + plan_revision + source_locator` 识别成员；`BIN_CELL` 由 WMS 按当前请求的来源、扫码原文和业务事实决定，WES 本地关联 Passage 与 Action。
+`next_source_action` 授权下一来源，可以是同 Cell 下一盘或另一 Cell；其省略表示本次授权范围内无后续来源。当前栈顶可靠取出且后继授权有效后，WES 可按 §10.3 在当前盘 PUT 或位置报告尚未完成时下发下一条来源命令；下一盘实际离开来源仍由 ECS/PLC 硬件交接许可裁决。依赖当前盘位置报告的业务完成、容量释放或后继步骤仍等待该报告确认，不把这些直接依赖扩大为跨臂统一等待。同一来源成员或 Passage/Work 与 `PkgID` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带同一业务事实重新判断。`RACK_SLOT` 以 `task_id + plan_revision + source_locator` 识别成员；`BIN_CELL` 由 WMS 按当前请求的来源、扫码原文和业务事实决定，WES 本地关联 Passage 与 Action。
 
 ### 10.3 两个机械臂并发
 
@@ -1907,8 +1911,8 @@ WMS 必须先在同一事务中保存结果上报，并更新物料位置、库�
 `409 / CONFLICT`。后续物料决定、
 容量判断、货架离场和任务状态确认必须读取已经提交的位置结果。
 
-WES 收到 `RECORDED | DUPLICATE` 前不得把依赖该位置结果的目标容量、来源明细或任务视为完成；但当 WMS 已对当前盘返回
-WMS 给出 `next_source_action` 时，本次上报确认不是来源机械臂开始下一条命令的统一前提。两机械臂能否同时进入干涉区仍由
+WES 收到 `RECORDED | DUPLICATE` 前不得把依赖该位置结果的目标容量、来源明细或任务视为完成。WMS 已给出有效 `next_source_action`
+且当前栈顶可靠取出时，本次上报确认不是来源机械臂开始下一条命令的统一前提，具体边界见 §10.3。两机械臂能否同时进入干涉区仍由
 ECS/PLC 硬件锁裁决。
 
 ### 12.5 结果上报失败后的重试

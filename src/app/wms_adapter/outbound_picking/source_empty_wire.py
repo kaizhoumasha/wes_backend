@@ -2,21 +2,17 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, TypeAdapter
+from pydantic import Field, TypeAdapter
 
-from src.app.wms_adapter.outbound_picking.material_decide_wire import PickingBinCell
-from src.app.wms_adapter.outbound_picking.plan_delta_wire import PlanRackSlot
+from src.app.wms_adapter.outbound_picking.material_decide_wire import PickingSourceData
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictResponse, RejectedResponse, UnavailableResponse
-from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, StrictWireModel
 from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 SOURCE_EMPTY_OPERATION = "outbound.source.empty_decide@v1"
 
 
-class SourceEmptyData(StrictWireModel):
-    task_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
-    source_locator: Annotated[PlanRackSlot | PickingBinCell, Field(discriminator="type")]
+class SourceEmptyData(PickingSourceData):
     observed_at: NonnegativeMilliseconds
 
 

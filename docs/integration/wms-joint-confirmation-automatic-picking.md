@@ -2,7 +2,7 @@
 title: WMS/WES Integration Contract Amendment Proposal：自动拣料
 status: WMSAccepted
 created_at: 2026-09-21
-updated_at: 2026-09-23
+updated_at: 2026-10-16
 audience: WMS 开发组、WES 架构组
 scope: WMS 已接受全部候选项；WES 严格 DTO、OpenAPI、生产接线和联合验收分别推进
 related:
@@ -268,8 +268,8 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
       "rack_id": "TRANSFER-RACK-01",
       "rack_face": "A",
       "slot_id": "A-05",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     }
   }
 }
@@ -405,11 +405,11 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
   "data": {
     "result": "READY",
     "cell_id": "BIN-0013",
-    "cell_index": "3",
-    "bin_type": "3",
-    "reel_layer": "1",
-    "reel_thickness": "20",
-    "reel_diameter": "15"
+    "cell_index": 3,
+    "bin_type": 3,
+    "reel_layer": 1,
+    "reel_thickness": 20,
+    "reel_diameter": 15
   }
 }
 ```
@@ -459,11 +459,11 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
   "data": {
     "result": "READY",
     "cell_id": "BIN-0013",
-    "cell_index": "3",
-    "bin_type": "3",
-    "reel_layer": "1",
-    "reel_thickness": "20",
-    "reel_diameter": "15"
+    "cell_index": 3,
+    "bin_type": 3,
+    "reel_layer": 1,
+    "reel_thickness": 20,
+    "reel_diameter": 15
   }
 }
 ```
@@ -536,22 +536,22 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
       "rack_id": "TRANSFER-RACK-01",
       "rack_face": "A",
       "slot_id": "A-05",
-      "rack_layer": "1",
-      "rack_column": "1"
+      "rack_layer": 1,
+      "rack_column": 1
     },
     "next_source_action": {
       "cell_id": "BIN-0013",
-      "cell_index": "3",
-      "bin_type": "3",
-      "reel_layer": "1",
-      "reel_thickness": "20",
-      "reel_diameter": "15"
+      "cell_index": 3,
+      "bin_type": 3,
+      "reel_layer": 1,
+      "reel_thickness": 20,
+      "reel_diameter": 15
     }
   }
 }
 ```
 
-**Identity / Retry / Compatibility：** 请求沿自身 `operation_id` 和冻结正文重试；WES 在本地确认该 Passage 已获 `READY`、来源动作可执行后发起。WMS 根据来源、扫码原文及当前业务事实决定结果；`source_locator.cell_id` 使用 WMS 业务编码，下一来源由 WMS 给出 `cell_id + cell_index`。`barcode` 的长度、字符集细则和 `INVALID_DATA` 边界按字段联合验收冻结；`REJECT`、`WAIT` 结果按长期合同处理。`target_preparation=ROTATE/REPLACE` 及换 Cell 的具体时点见第 6 节。
+**Identity / Retry / Compatibility：** 请求沿自身 `operation_id` 和冻结正文重试；WES 在本地确认该 Passage 已获 `READY`、来源动作可执行后发起。WMS 根据来源、扫码原文及当前业务事实决定结果；`source_locator.cell_id` 使用 WMS 业务编码，下一来源由 WMS 给出 `cell_id + cell_index`。`barcode` 为非空 UTF-8 原文、最多 1000 字符；超界按 `INVALID_DATA` 拒绝；`REJECT`、`WAIT` 结果按长期合同处理。`target_preparation=ROTATE/REPLACE` 及换 Cell 的具体时点见第 6 节。
 
 **WMS Decision：Accepted。** `barcode`、目标坐标和下一来源结构按目标示例；同箱再次经过及迟到原身份重试纳入联合验收。
 
@@ -651,13 +651,20 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
 | 修订项 | Current Wire → Target Wire | 待决语义 | Compatibility Impact | WMS Decision |
 | --- | --- | --- | --- | --- |
 | A1 `work_plan.READY` | `cell_ids[]` → 单个 `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `cell_id` 保持 `BIN_ID + INDEX` 编码，`cell_index` 单独定位料箱内料格；设备类型/值域由 O16 冻结 | 一次性替换 READY DTO | WMS Accepted |
-| A2 `material.decide` 请求 | `six_in_one` 六字段 → `barcode` 原文 | 完整扫码原文；长度、字符集细则和 `INVALID_DATA` 边界由字段联合验收冻结 | 一次性替换请求 DTO | WMS Accepted |
+| A2 `material.decide` 请求 | `six_in_one` 六字段 → `barcode` 原文 | 非空 UTF-8 原文，最多 1000 字符；超界按 `INVALID_DATA` 拒绝 | 一次性替换请求 DTO | WMS Accepted |
 | A3 `material.decide.ACCEPT.target_locator` | 增加 `rack_layer`、`rack_column` | WMS 直接给出，`ROTATE/REPLACE` 后同样提供 | 一次性替换 ACCEPT 目标 DTO | WMS Accepted |
 | A4 `material.decide.ACCEPT.next_source_action` | `CONTINUE/SOURCE_DONE` → 下一盘/下一 Cell 对象，含编码 `cell_id` 与独立 `cell_index`；无后续时省略 | 同 Cell 参数及换 Cell 决定由 WMS 按当次业务事实提供 | 一次性替换 ACCEPT 结果 DTO | WMS Accepted |
 
-A4 的 `RACK_SLOT` 来源是单盘储位，目标响应省略 `next_source_action`，其余直接取料来源由插件按当前有效 plan member 继续编排。`BIN_CELL` 的对象可表示同 Cell 下一盘或另一个 Cell；在当前授权和获批后继来源合同范围内，同一 Passage 是否继续取其他 revision 涉及的物料由 WMS 决定，WES 不按 revision 切断当前 Bin 工作。WES 仍等当前盘权威取放和 WMS 结果满足因果条件后才下发后继动作。`REJECT` 继续使用 `business_exception_code + ng_locator + source_disposition`；`WAIT` 继续携带 `retry_after_ms`。自动插件 MVP 暂不执行 NG，不得据此删除长期合同中的 NG 协议。
+A4 的 `RACK_SLOT` 来源是单盘储位，目标响应省略 `next_source_action`，其余直接取料来源由插件按当前有效 plan member 继续编排。`BIN_CELL` 的对象可表示同 Cell 下一盘或另一个 Cell；在当前授权和获批后继来源合同范围内，同一 Passage 是否继续取其他 revision 涉及的物料由 WMS 决定，WES 不按 revision 切断当前 Bin 工作。当前栈顶可靠取出且后继授权有效后，WES 可按主合同 §10.3 在当前盘 PUT 或报告尚未完成时下发下一条来源命令，实际交接由 ECS/PLC 硬件锁裁决；依赖当前盘位置报告的完成条件仍等待 WMS 确认。`REJECT` 继续使用 `business_exception_code + ng_locator + source_disposition`；`WAIT` 继续携带 `retry_after_ms`。自动插件 MVP 暂不执行 NG，不得据此删除长期合同中的 NG 协议。
 
 设备映射须与[机械臂附录](device-annex-automatic-picking-arms.md)共同确认：`rack_side` 与 `rack_face` 的值域（O11）；直接取料 `slot_id` 是否能由 WMS 给出 ECS `bin_*` 参数（O13）；独立 `cell_index` 如何映射 ECS `bin_cell_location`（O16），不得把编码 `cell_id` 直接用作该设备字段；DirectPick 如需 `bin_type/reel_*` 参数，`plan_delta.added_direct_picks[]` 是否应携带这些数据（O17）。这些问题未闭合前，不把设备参数推断写入 WES 主合同。
+
+### 6.0 字段类型确认（2026-10-16）
+
+WMS 已补充确认：`cell_index` 为 int，值为 1–7；`bin_type` 为 int，值为 2、3、6；
+`reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float；
+`barcode` 为原始 str，最多 1000 字符（沿用主合同非空 UTF-8，不裁剪、不拆分）。
+未确认的层数/坐标/尺寸物理范围不额外推定；设备字段映射、`cell_id` 编码对应及 `PkgID` 来源仍在各自关口处理，不阻塞共享 DTO 与 typed 接线。
 
 ### 6.1 退料货架整架任务完成 API（WMS 已确认，WES 待实施）
 

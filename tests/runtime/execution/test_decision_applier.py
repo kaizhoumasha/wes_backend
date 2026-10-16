@@ -421,3 +421,61 @@ async def test_unknown_decision_and_identity_mismatch_fail_closed() -> None:
             _fact(),
             (Wait("OTHER", "evidence:31", "WAIT"),),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report", [False, True])
+async def test_outbound_material_decision_freezes_only_execution_owner(report):
+    from wes_plugin_sdk import PickingRackSlot
+
+    common = {
+        "operation_id": "019f3405-2200-7b01-8b01-000000000001",
+        "task_id": "TASK-1",
+        "source_locator": PickingRackSlot("RACK-1", "A", "S-1"),
+        "plan_revision": 2,
+        "material_execution_id": "EXEC-1",
+        "fact_id": "evidence:31",
+    }
+    if report:
+        decision = wms_operations.outbound_material_movement_report(
+            **common, pkg_id="PKG-1", to_locator=PickingRackSlot("RACK-2", "B", "S-2"), occurred_at=123
+        )
+        operation = "outbound.material.movement_report@v1"
+    else:
+        decision = wms_operations.outbound_material_decide(**common, barcode="原始,条码", scanned_at=123)
+        operation = "outbound.material.decide@v1"
+    confirmations = _WmsConfirmations()
+    await _applier(wms_confirmation_service=confirmations).apply(
+        object(), _evidence(), _execution(), _fact(), (decision,)
+    )
+    (call,) = confirmations.calls
+    assert call["operation"] == operation
+    assert call["material_execution_id"] == 21
+    assert "picking_task_id" not in call and "workline_id" not in call
+    payload = call["request_payload"]
+    assert payload["operation_id"] == decision.operation_id
+    assert payload["data"]["plan_revision"] == 2
+    assert "fact_id" not in payload["data"] and "material_execution_id" not in payload["data"]
+    assert payload["data"].get("PkgID" if report else "barcode") == ("PKG-1" if report else "原始,条码")
+
+
+@pytest.mark.asyncio
+async def test_outbound_material_decision_requires_matching_local_context():
+    from wes_plugin_sdk import PickingRackSlot
+
+    decision = wms_operations.outbound_material_decide(
+        operation_id="019f3405-2200-7b01-8b01-000000000001",
+        task_id="TASK-1",
+        source_locator=PickingRackSlot("RACK-1", "A", "S-1"),
+        plan_revision=2,
+        barcode="raw",
+        scanned_at=123,
+        material_execution_id="OTHER",
+        fact_id="evidence:31",
+    )
+    confirmations = _WmsConfirmations()
+    with pytest.raises(ValueError):
+        await _applier(wms_confirmation_service=confirmations).apply(
+            object(), _evidence(), _execution(), _fact(), (decision,)
+        )
+    assert confirmations.calls == []

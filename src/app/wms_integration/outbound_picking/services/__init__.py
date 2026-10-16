@@ -1,6 +1,7 @@
 """WMS PickingTask Service 导出。"""
 
 from .bin_batch import BinBatchScheduler, BinInboundBatchOwnerService
+from .bin_work_plan import BinWorkPlanResultReader, BinWorkPlanScheduler
 from .manual_bin_admission import ManualBinAdmissionOwnerService, ManualBinAdmissionScheduler
 from .manual_rack_direct_pick_completed import ManualRackDirectPickCompletedService
 from .picking_task_cancel import PickingTaskCancelService
@@ -19,6 +20,8 @@ from .return_rack_arrival import ReturnRackArrivalResultReader, ReturnRackArriva
 __all__ = [
     "BinBatchScheduler",
     "BinInboundBatchOwnerService",
+    "BinWorkPlanResultReader",
+    "BinWorkPlanScheduler",
     "ManualBinAdmissionOwnerService",
     "ManualBinAdmissionScheduler",
     "ManualRackDirectPickCompletedService",

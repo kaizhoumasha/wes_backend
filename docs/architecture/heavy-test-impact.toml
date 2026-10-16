@@ -3243,3 +3243,8 @@ heavy_tests = [
     "tests/integration/wms_adapter/return_rack_task_completion/test_receipt_postgresql.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
+
+# SDK 纯不可变合同边界由 FAST 负责，生产传播由对应 SDK 模块映射选择真实 owner。
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/tests/{test_outbound_material_operations.py,test_outbound_picking_facts.py}"
+heavy_tests = []

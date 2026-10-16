@@ -28,6 +28,10 @@ from src.app.wms_integration.outbound_picking.services.bin_batch import (
     BinBatchScheduler,
     BinInboundBatchOwnerService,
 )
+from src.app.wms_integration.outbound_picking.services.bin_work_plan import (
+    BinWorkPlanResultReader,
+    BinWorkPlanScheduler,
+)
 from src.app.wms_integration.outbound_picking.services.manual_bin_admission import (
     ManualBinAdmissionOwnerService,
     ManualBinAdmissionScheduler,
@@ -72,6 +76,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class DeploymentRuntime:
+    bin_work_plan_scheduler: BinWorkPlanScheduler
+    bin_work_plan_result_reader: BinWorkPlanResultReader
     execution: ExecutionRuntime
     plugins: tuple[InstalledWorkLinePlugin, ...]
     workline_start_service: WorkLineStartService
@@ -230,6 +236,8 @@ def build_deployment_runtime(
         workline_owner=workline_owner,
     )
     return DeploymentRuntime(
+        bin_work_plan_scheduler=BinWorkPlanScheduler(),
+        bin_work_plan_result_reader=BinWorkPlanResultReader(),
         execution=execution,
         plugins=plugins,
         workline_start_service=WorkLineStartService(

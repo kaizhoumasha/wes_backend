@@ -18,11 +18,12 @@ def encode_request(intent: sdk.PickingMaterialIntent, *, timestamp: int) -> dict
             "timestamp": timestamp,
             "data": {
                 "task_id": intent.task_id,
+                **({"plan_revision": intent.plan_revision} if intent.plan_revision is not None else {}),
                 "source_locator": {
                     "type": "RACK_SLOT" if type(intent.source_locator) is sdk.PickingRackSlot else "BIN_CELL",
                     **asdict(intent.source_locator),
                 },
-                "six_in_one": asdict(intent.six_in_one),
+                "barcode": intent.barcode,
                 "scanned_at": intent.scanned_at,
             },
         }
@@ -49,8 +50,12 @@ def decode_outcome(payload: object) -> sdk.PickingMaterialOutcome:
             target = data.target_locator
             return sdk.PickingMaterialOutcome(
                 sdk.PickingMaterialAccept(
-                    sdk.PickingRackSlot(target.rack_id, target.rack_face, target.slot_id),
-                    data.next_source_action,
+                    sdk.PickingTargetRackSlot(
+                        target.rack_id, target.rack_face, target.slot_id, target.rack_layer, target.rack_column
+                    ),
+                    sdk.PickingCellSource(**data.next_source_action.model_dump())
+                    if data.next_source_action is not None
+                    else None,
                     preparation,
                 )
             )

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import ConfigDict, Field, StringConstraints, TypeAdapter, field_validator, model_validator
+from pydantic import ConfigDict, Field, StrictInt, StringConstraints, TypeAdapter, field_validator, model_validator
 
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PlanRackFace, PlanRackSlot
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictResponse, RejectedResponse, UnavailableResponse
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
-from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, StrictWireModel
+from src.app.wms_adapter.outbound_picking.work_plan_wire import (
+    PickingCellSource,  # noqa: TC001 - Pydantic runtime field.
+)
+from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, PositiveInteger, StrictWireModel
 from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 MATERIAL_DECIDE_OPERATION = "outbound.material.decide@v1"
@@ -23,19 +26,23 @@ class PickingBinCell(PlanRackFace):
     cell_id: Identifier
 
 
-class PickingSixInOne(StrictWireModel):
-    HHPN: ScanText
-    MfrPN: ScanText
-    Qty: ScanText
-    DateCode: ScanText
-    LotCode: ScanText
-    PkgID: ScanText
-
-
-class MaterialDecideData(StrictWireModel):
+class PickingSourceData(StrictWireModel):
     task_id: Identifier
     source_locator: Annotated[PlanRackSlot | PickingBinCell, Field(discriminator="type")]
-    six_in_one: PickingSixInOne
+    plan_revision: PositiveInteger | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def validate_source_revision(self) -> Self:
+        if isinstance(self.source_locator, PlanRackSlot):
+            if self.plan_revision is None:
+                raise ValueError("RACK_SLOT 来源必须携带原成员 plan_revision")
+        elif "plan_revision" in self.model_fields_set:
+            raise ValueError("BIN_CELL 来源不得携带 plan_revision")
+        return self
+
+
+class MaterialDecideData(PickingSourceData):
+    barcode: Annotated[str, StringConstraints(min_length=1, max_length=1000)]
     scanned_at: NonnegativeMilliseconds
 
 
@@ -55,17 +62,22 @@ class TargetReplace(StrictWireModel):
     mode: Literal["REPLACE"]
 
 
+class PickingTargetRackSlot(PlanRackSlot):
+    rack_layer: StrictInt
+    rack_column: StrictInt
+
+
 class MaterialAccept(StrictWireModel):
     result: Literal["ACCEPT"]
-    target_locator: PlanRackSlot
-    next_source_action: Literal["CONTINUE", "SOURCE_DONE"]
+    target_locator: PickingTargetRackSlot
+    next_source_action: PickingCellSource | None = None
     target_preparation: Annotated[TargetRotate | TargetReplace, Field(discriminator="mode")] | None = None
 
-    @field_validator("target_preparation", mode="before")
+    @field_validator("target_preparation", "next_source_action", mode="before")
     @classmethod
     def reject_explicit_null(cls, value: object) -> object:
         if value is None:
-            raise ValueError("target_preparation 无动作时必须省略")
+            raise ValueError("无动作字段必须省略，不得传 null")
         return value
 
 
@@ -137,8 +149,8 @@ def parse_material_decide_response(
             )
         if isinstance(response, MaterialDecidedResponse) and isinstance(request.data.source_locator, PlanRackSlot):
             data = response.data
-            if isinstance(data, MaterialAccept) and data.next_source_action != "SOURCE_DONE":
-                raise observed_contract_error(observation, "RACK_SLOT 来源必须 SOURCE_DONE")
+            if isinstance(data, MaterialAccept) and data.next_source_action is not None:
+                raise observed_contract_error(observation, "RACK_SLOT 来源不得携带 next_source_action")
             if isinstance(data, MaterialReject) and (
                 data.business_exception_code != "MATERIAL_REJECTED" or data.source_disposition != "CLOSE"
             ):

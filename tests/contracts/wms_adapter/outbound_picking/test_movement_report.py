@@ -201,6 +201,7 @@ def test_sdk_rejects_invalid_facts(field, value):
         "operation_id": OPERATION_ID,
         "task_id": "TASK-1",
         "source_locator": sdk.PickingRackSlot("RACK-1", "A", "SLOT-1"),
+        "plan_revision": 2,
         "pkg_id": "PKG-1",
         "to_locator": sdk.PickingNgZone("NG-1"),
         "occurred_at": 123,
@@ -216,6 +217,7 @@ def test_direct_pick_report_and_error_outcomes():
         operation_id=OPERATION_ID,
         task_id="TASK-1",
         source_locator=sdk.PickingRackSlot("RACK-1", "A", "SLOT-1"),
+        plan_revision=2,
         pkg_id="x" * 256,
         to_locator=sdk.PickingNgZone("NG-1"),
         occurred_at=0,
@@ -223,6 +225,7 @@ def test_direct_pick_report_and_error_outcomes():
     assert encode_request(intent, timestamp=0)["data"] == {
         "task_id": "TASK-1",
         "source_locator": {"type": "RACK_SLOT", "rack_id": "RACK-1", "rack_face": "A", "slot_id": "SLOT-1"},
+        "plan_revision": 2,
         "PkgID": "x" * 256,
         "to_locator": {"type": "NG_ZONE", "zone_code": "NG-1"},
         "occurred_at": 0,
