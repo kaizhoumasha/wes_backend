@@ -7,9 +7,10 @@ from wes_plugin_sdk import BinWorkPlanReady, PickingBinCell, PickingCellSource, 
 
 from automatic_picking.handlers.source_authorization import WorkSourceFact
 from src.app.device.models.command import DeviceCommand
-from src.app.execution.models import InboundEvidence, MaterialExecution
+from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
 from src.app.execution.repositories import inbound_evidence_repository
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material
+from src.app.wms_adapter.outbound_picking.movement_report_wire import MATERIAL_MOVEMENT_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.work_plan_typed import decode_outcome as decode_plan
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
@@ -319,3 +320,19 @@ class PickupRepository:
         work = await db.get(AutomaticPickingWork, work_id)
         work.authorization_evidence_id, work.consumed_pickup_id = evidence_id, None
         await db.flush()
+
+    async def movement_confirmation(self, db, material_execution_id, operation_id):
+        row = await db.scalar(
+            select(WmsConfirmation).where(
+                WmsConfirmation.operation == MATERIAL_MOVEMENT_REPORT_OPERATION,
+                WmsConfirmation.operation_id == operation_id,
+            )
+        )
+        if row is not None and (
+            row.material_execution_id != material_execution_id
+            or row.workline_id is not None
+            or row.picking_task_id is not None
+            or canonical_json_digest(row.request_payload) != row.request_digest
+        ):
+            raise ValueError("movement report owner or frozen request digest differs")
+        return row

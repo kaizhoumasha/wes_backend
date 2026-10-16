@@ -195,6 +195,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **闭环 Review：**独立 reviewer 首轮发现创建 PUT 缺少本盘可靠取出事实门禁；先以回归复现后修正，再由同一 reviewer 完成旧意见闭环与当前 10 文件完整复审，无新增 finding。跨工作线测试夹具另修为真实存在的 WorkLine，定向核对确认断言语义及 owner 不变，最终 36 项与 QUALITY 已重新通过。准确 RED 为 4 项真实门禁失败和 1 项无效 FK 夹具失败，后者不计业务失败证据。最终仅补本文验证记录，可执行文件保持评审指纹；未暂存、未提交、未部署，不推进真实取盘。任务 7 整体及 G2/G3/G5 生产准入仍未完成。
 
+#### 实施切片 7B：确定 PUT 位置与报告义务的离线原子应用
+
+**范围：**只接 7A 的 BIN_CELL→普通 RACK_SLOT 原 PUT Command。`P/application/placement_flow.py` 的必填读口显式给出匹配成功事实、实际放置时间和本盘权威 PkgID；没有生产读口，不从 barcode/trace 推导，不定义设备结果报文。插件纯 typed Fact/Handler 通过现有 facade 返回 movement_report intent，宿主原 DecisionApplier 创建 Confirmation；不改 SDK/wire/基础流程或生产 composition，不关闭单盘、不启用真实派发。
+
+**最小持久关联：**Pickup 只增加成对的 `put_result_evidence_id` 与 `movement_confirmation_id`（迁移 `55adfc1a25a7`）。前者指向保存确定放置内容的原成功 Evidence，后者指向冻结完整报告的 Confirmation；不另存目标/PkgID/请求正文，不新增位置账本、授权模型或业务状态。配对约束防止半份关联；已有 7A Pickup 保持空引用，存量按当前 PUT 事实接续。存在已确认引用时拒绝有损降级。
+
+**身份与原子性：**先核对原来源/单盘绑定、PUT 的 WorkLine/MaterialExecution/步骤身份、Command 的精确 result Evidence、SUCCEEDED 与匹配成功读口，再核对当前已发布 ACCEPT 的来源与精确目标。ACK、超时或单独状态值都不能生成位置报告。报告只带合同规定的 RACK_SLOT 架/面/槽位，层列仍属目标设备映射。报告 intent、当前位置/报告引用、Evidence Decision 摘要和发布在 FactProcessor 的同一应用事务中提交/回滚；重放沿相同 operation_id、Evidence 和正文，不查询最近历史。
+
+**恢复 owner：**7A batch 继续发现/关联 PUT；成功结果 Evidence 由 FactProcessor 的既有领取、租约、延期与重领扫描恢复，冻结插件的唯一应用路径负责业务解释。已建报告归 Confirmation 原身份履约，不因父任务终态或直接成员取消丢弃已发生物理事实。未知结果/权威 PkgID 未给定时返回 DeferExecution，原 Evidence 未发布、无新报告；本片收到报告结果也明确延期给后续关闭切片，不加 no-op 成功消费者。Work 的下一来源授权仍独立，不等待 M1 报告。
+
+**验收与所有权：**`T/test_placement_report.py` 拥有纯 SDK 决定，`T/integration/test_placement_report_postgresql.py` 拥有成功 PUT→位置/报告原子应用的 PostgreSQL 验收，复用 6B/6C/7A 输入和真实 FactProcessor/DecisionApplier/Confirmation。覆盖回调先于 ACK、并发、双侧故障回滚、租约到期、通知丢失、重放/身份漂移、缺成功/PkgID、M2 并行、存量迁移及报告结果不提前关闭。核心只承接精确迁移 mapping/selector、schema 与插件所有权；不复制基础派发完整矩阵。
+
+**验证：**以已提交 7A `aac76175` 为基线，新增放置/报告 PostgreSQL 36 passed，既有插件 PostgreSQL/真实 worker 回归 130 passed，插件 FAST 88 passed，共 254 项通过且无 skipped；核心聚焦 257 passed，selector 仅选中工作线配置 PostgreSQL 文件，8 passed。最终 QUALITY 通过（核心 FAST 4292 passed、5 项既有 skipped，不计作通过证据）。metadata 无迁移差异，空/存量升级、成对引用和有损降级保护均已覆盖。首轮 35 passed/1 失败来自测试误把“处理并识别摘要冲突”的计数当成失败计数；依据现有内核行为修正计数，并补强原报告不变与 Evidence/MaterialExecution 进入既有 RECONCILING 的断言，最终 36 项已完整重跑通过。
+
+**闭环 Review：**独立 reviewer 核对固定 13 文件及指纹、合同、精确身份、原子事务、恢复 owner、取消后事实、并发和测试/HEAVY 所有权，完整 Review 无可确认 finding。后续仅补本文验证记录，可执行文件保持评审指纹。HEAD、index 与共享 Git config 未漂移，无暂存；G2/G3/G5 仍只约束对应生产路径，fixture 的成功事实和权威 PkgID 不构成合同确认。未提交、未部署，不推进真实取盘，任务 7 整体和单盘关闭仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

@@ -3268,3 +3268,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0328_4e30101440d2_add_automatic_pickup_put_command_.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 确定位置/报告原子业务归插件；核心仅承接新增引用迁移和工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0403_55adfc1a25a7_add_automatic_placement_result_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

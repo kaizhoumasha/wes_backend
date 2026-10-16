@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import CheckConstraint, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -16,6 +16,11 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         UniqueConstraint("work_id", "authorization_evidence_id", name="ux_automatic_pickup_authorization"),
+        CheckConstraint(
+            "(put_result_evidence_id IS NULL AND movement_confirmation_id IS NULL) OR "
+            "(put_command_code IS NOT NULL AND put_result_evidence_id IS NOT NULL AND movement_confirmation_id IS NOT NULL)",
+            name="automatic_pickup_placement_pair",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
     pickup_id: str = Field(max_length=36, unique=True)
@@ -34,4 +39,10 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
     material_retry_at: datetime | None = None
     put_command_code: str | None = Field(
         default=None, max_length=80, foreign_key="wes_biz.device_commands.command_code", unique=True
+    )
+    put_result_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT, unique=True
+    )
+    movement_confirmation_id: int | None = Field(
+        default=None, foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT, unique=True
     )

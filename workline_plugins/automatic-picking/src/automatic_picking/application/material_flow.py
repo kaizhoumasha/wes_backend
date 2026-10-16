@@ -4,7 +4,9 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 
 from wes_plugin_sdk import (
+    DeviceResultReadyFact,
     EvidenceReadyFact,
+    MaterialMovementReportOutcome,
     PickingMaterialAccept,
     PickingMaterialOutcome,
     PickingMaterialWait,
@@ -13,6 +15,7 @@ from wes_plugin_sdk import (
 )
 
 from automatic_picking.handlers.material_flow import MaterialDecidedFact, MaterialScannedFact, material_scanned
+from automatic_picking.handlers.placement import MaterialPutFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -41,7 +44,18 @@ class MatchedMaterialScan:
 
 
 class AutomaticPickingMaterialFlow:
-    def __init__(self, repository, source_flow, scan_reader, executions, *, scheduler, reader, uuid_factory=new_uuid7):
+    def __init__(
+        self,
+        repository,
+        source_flow,
+        scan_reader,
+        executions,
+        *,
+        scheduler,
+        reader,
+        put_flow=None,
+        uuid_factory=new_uuid7,
+    ):
         self.repository, self.source_flow, self.scan_reader, self.executions = (
             repository,
             source_flow,
@@ -49,6 +63,7 @@ class AutomaticPickingMaterialFlow:
             executions,
         )
         self.scheduler, self.reader, self.uuid_factory = scheduler, reader, uuid_factory
+        self.put_flow = put_flow
 
     async def _intent(self, db, work, pickup, execution, operation_id):
         if (
@@ -203,6 +218,11 @@ class AutomaticPickingMaterialFlow:
         return execution.id
 
     async def build(self, db, fact):
+        if self.put_flow is not None and (
+            type(fact) is DeviceResultReadyFact
+            or (type(fact) is WmsResultReadyFact and type(fact.outcome) is MaterialMovementReportOutcome)
+        ):
+            return await self.put_flow.build(db, fact)
         work, pickup, _ = await self.repository.material_context_for_update(db, fact.material_execution_id)
         execution = await self.repository.material_execution(db, pickup.material_execution_id)
         if (
@@ -259,6 +279,9 @@ class AutomaticPickingMaterialFlow:
         )
 
     async def apply_in_session(self, db, *, fact):
+        if type(fact) is MaterialPutFact:
+            await self.put_flow.apply_in_session(db, fact=fact)
+            return
         _, pickup, _ = await self.repository.material_context_for_update(db, fact.material_execution_id)
         execution = await self.repository.material_execution(db, pickup.material_execution_id)
         snapshot = await self._current(db, pickup, execution)
