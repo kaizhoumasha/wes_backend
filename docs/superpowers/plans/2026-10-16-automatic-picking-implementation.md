@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 2026-10-16，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4 及任务 5 的已确认路径在 `codex/automatic-picking-workflow` 实施，G6 首批超期尚未实施。本轮用户授权仅提交任务 1–3，未授权任务 4–5 Push/Deploy；不改变外部合同状态。
+**状态与基线:** 2026-10-16，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4、任务 5 已确认路径及五项 Review 修订已在 `codex/automatic-picking-workflow` 提交为 `2da3990c`。任务 5 的 G6 首批确认路径、任务 6 尚未实现。本轮实施任务 5A 的插件 PostgreSQL 验收，未改生产代码，不提交、不部署、不推进真实取盘；不改变外部合同状态。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -68,6 +68,45 @@
 | 任务 8 的逐盘结束后流出 | 上一行，加任务 6–7 的明确无后继及本轮逐盘收口 | 只有这一入口继承取盘/报告的对应未决项，不扩大到回程公共推进 |
 | 任务 9 drain 准入及完成判断 | 任务 8 的当前 FIFO/回程、任务 5 的 prepare 协调与确认进度 | 不等待全量取盘设备验收；实际关闭含物料任务仍须其必报事实已确认 |
 | 任务 10 的取消/范围完成与直接取料 | 计划事实部分依赖任务 4–5 及既有接收；设备部分复用任务 6–7 | G4 只限制 DirectPick 设备接线，G5 只限制需逐盘报告的正常闭环，不要求先完成无关 drain |
+
+### 当前任务 5–6 剩余项与继续条件
+
+以下按 `2da3990c` 的代码和测试核对，不把基础端口已有、单项测试通过或本计划的复选框当成整项业务已完成。
+
+| 路径 | 当前事实与归属 | 继续条件 |
+| --- | --- | --- |
+| 任务 5 普通 prepare、投料、SCAN2/Work | 已实现并提交，Work 的 READY/WAIT/NO_WORK、结果应用/发布及持久恢复已有验收 | 不受 G2/G3/G5/G6 阻塞；后续只补本业务缺口，不重复实现共享可靠机制 |
+| 任务 5 跨 revision 来源接续 | 切片 5A 的 6 项 PostgreSQL 验收已通过：当前进场复用原 Transport，各 revision 成员独立申请，重启/并发扫描防重、事务回滚、取消及闭合历史清理均已覆盖；未改生产代码 | 本项已闭合，不依赖首批期限或机械臂参数；首批确认和任务 6 按各自条件继续 |
+| 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
+| 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
+| 任务 6 已确认纯业务规则 | READY 的初始来源与 material.decide.ACCEPT.next_source_action 已 typed；Work 目前仅保存初始 authorization_evidence_id，没有 Pickup 或授权消费/无后继交接实现 | 可先验证 LIFO、原身份、授权归 Work、旧 Evidence 不覆盖新授权及双臂独立条件；已确定端口的离线事务测试可用中性 typed fake 证明原子性/至多一次，不代表设备生产接线已验收 |
+| 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
+| 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 除来源映射/关联外，还须闭合 G3 的目标映射及 G5 权威 PkgID 来源；不能先取盘再补猜报告身份 |
+
+G1 的 WMS 字段类型和已确认枚举不重新列为阻塞：`cell_index=1..7`、`bin_type=2/3/6`、层列/层数整型、厚度/直径浮点及原始 barcode 长度已接通；这些不等于设备字段映射已经验收。G4 只限制任务 10 的直接取料设备路径；G7 只限制对应异常分支，不扩大成投料、Work 或纯规则测试的停工条件。
+
+**任务 5 首批分支的唯一 owner 与出口：**G6 闭合后，由自动插件的同一个 completion driver 接入现有 batch 前置钩子，扫描 PREPARING/revision 0。首次匹配 PREPARE_ACCEPTED 的持久接收时间加冻结期限得到到期时间，重复扫描/重启不重置；计划先到停止新建 revision 0 请求，已有义务仍沿原身份交付。确认创建和进度同事务；未决结果由基础 Confirmation 恢复，明确 BUSINESS_IN_PROGRESS 的新请求由插件按到期重新求值，PLAN_REVISION_STALE 等补发增量，旧响应不能关闭新 revision。普通 EXECUTING 分支使用同一协调器，不另建 AUTO worker/timer 或第二个完成 owner。
+
+**任务 6 的所有权边界：**初始及后继待消费授权归当前 Work；消费授权、创建/复用 Pickup 和原来源 Command、登记消费关联必须同事务。Command 技术恢复归设备基础服务；取出结果与扫码汇合归插件 driver；关联成功后才创建/复用 MaterialExecution。最终 ACCEPT 的本盘目标与后继授权/明确无后继交接同事务，Work 可在 M1 闭合后独立恢复 M2，不查询可清理的 M1 历史。只有当前栈顶可靠取出且有 WMS 后继授权才可开始下一来源；无需等待 M1 PUT/report，全线/平台不加软件锁，互锁归 ECS/PLC。
+
+#### 实施切片 5A：跨 revision 来源接续验收（已完成）
+
+**交付：**闭合任务 5 中不依赖 G6 的剩余来源身份路径；先验证现有能力，只在发现实际缺口时作必要修正。不新增模型、状态、配置、operation 或生产入口，不顺带做任务 6–9。
+
+**文件与接口：**新增插件 owner `T/integration/test_source_revision_postgresql.py`；复用宿主 `PickingTaskPlanActivationService.activate_batch()`、插件 `AutomaticPickingBatchDriver.advance_in_session(db, line, task)`、`FeedRepository.source_ready(db, line, member)` 及既有 Transport/Confirmation。若回归证明插件有缺口，仅修改对应 `P/application/{batch_driver,feed_repository}.py` 或计划 handler；若是共享能力缺口，单独说明真实影响，不在插件复制基础机制。既有新旧批次扫码用例仍保留其主要测试所有权。
+
+- [x] 先建立同任务、同 rack/face、两个 revision 的真实成员及当前进场事实，验证复用当前物理生命周期、原 Transport 身份不变；每个新有效成员恰好创建一次带本成员 revision 的 inbound_batch。
+- [x] 验证重复扫描/重启/丢通知不重复申请；创建 Feed 与原 Confirmation 的事务中断全部回滚。旧成员取消只停其未提交尾部，不能取消新成员或让旧结果满足新成员。
+- [x] 验证位置未知、未发布或实际面向不匹配时不得提前投料；新成员需要另一面时只验证等待其实际到位，不提前实现旋转/离场。清理不再承接当前事实的已闭合历史后，新成员仍按当前有效意图和事实运行。
+- [x] 测试准备数据及批处理计数期望对齐现有端口后，6 项业务验收均通过，未发现生产实现缺口，保留现有生产代码。未为得到 RED 破坏实现。
+- [x] 在隔离 PostgreSQL/显式插件环境运行新 owner 与插件受影响回归；如触及宿主入口、队列或模型再选择对应真实 worker、HEAVY/迁移验证。插件测试不进入核心默认套件；按最终差异做一次闭环 Review。
+
+**5A 验证与 Review：**新增 [来源接续 PostgreSQL owner](../../../workline_plugins/automatic-picking/tests/integration/test_source_revision_postgresql.py) 共 6 项；最终显式插件套件 `uv run pytest -c workline_plugins/automatic-picking/pytest.ini workline_plugins/automatic-picking/tests -o addopts= -q --tb=short` 为 61 passed（42 FAST、19 PostgreSQL，含既有真实 Confirmation worker）。测试拓扑/插件所有权检查 14 passed，Ruff 检查、格式及 diff 检查通过，核心 HEAVY selector 为 NONE。每项 PostgreSQL 场景使用迁移至 head 的独占临时库；未改模型、迁移或宿主入口。
+闭环 Review 核对了当前窗口/原 Transport、成员 revision、并发恢复、事务回滚及取消边界，无未关闭问题。历史清理用例先经真实 FactProcessor 发布旧结果，再删除已闭合的旧 Confirmation，并验证 revision 3 继续申请；当前成员、Feed 完成标记、进场绑定和权威位置依据继续保留，未把当前事实误作可删除历史。任务 5 其余未完成项和任务 6 保持原状态；未提交、未部署。
+
+**验收：**当前生命周期复用和成员业务身份独立同时成立；每个未闭合 Feed 的 owner 仍是既有 batch driver，Confirmation/Transport 各沿原身份恢复；不读取已闭合历史决定新业务，无新机械臂 Command。验收后仅勾选任务 5 的来源跨 revision 项，首批超期与任务确认项、任务 6 仍不得整体勾选。
+
+G6 获批后再做任务 5 的首批确认小片；任务 6 可先开展纯规则及已确定端口的离线事务验证，fixture 中设备参数必须标明测试输入/非合同，不生成生产默认值、fallback 或成功占位消费者；模型仅随能够独立验证的原子业务片落地。生产 Pickup/Command 与扫码接线待对应合同闭合后整体接通。若转做任务 8 的明确 NO_WORK 出口，可按其原有独立依赖另开切片，不以任务 6/G5 为阻塞，但不混入本次 5A。
 
 ## 变更面与文件归属
 
@@ -179,14 +218,15 @@
 **接口：**`AutomaticPickingBatchDriver.advance_in_session(db, line, task)`、`advance_completed_in_session(db, line)`；`AutomaticPickingCompletionDriver.advance_in_session(db, line, task)`。
 应用入口使用现有 `AsyncSession`、WorkLine、PickingTask；任务锁内调用同一插件完成协调器，返回本次推进计数，不执行网络 I/O。
 
-- [ ] RED：PREPARING/revision 0 前置入口可达、期限重启不重置、计划先到、旧确认迟到；来源跨 revision 复用物理进场而保持成员独立。
-- [ ] 随本切片创建 Work 与任务确认最小进度、Repository 和 Alembic 迁移；首批期限归插件唯一配置入口，不借派发 deadline 或新通用 timer 表。
+- [x] 补齐跨 revision 复用当前物理进场而保持成员独立的插件验收，范围与出口见切片 5A；不受 G6 阻塞。
+- [ ] G6 闭合后验收 PREPARING/revision 0 前置入口、期限重启不重置、计划先到和旧确认迟到。
+- [ ] 首批确认分支待 G6 闭合后随片增加必要进度、Repository、迁移并接入同一个 completion driver；普通完成分支若具备本地前提可先实施，不为未决期限预建空进度。首批期限归插件唯一配置入口，不借派发 deadline 或新通用 timer 表，不重复创建已交付的 Work/Feed/FeedScan。
 - [x] 实现插件计划准入/应用、来源到位后一次 inbound_batch、完整有序清单最多 4 箱分段及 feed_complete；直接依赖保留，独立架到位可推进。
 - [x] 实现 SCAN2 实扫准入及 work_plan：Work 与任务 3A scheduler 创建的原请求引用同事务保存，经 reader 核对 typed 结果后同事务更新当前阶段；缺 SCAN1/乱序/来源取消后已入线按合同处理，同轮重扫不建新 Work，非预期箱只留证。
 - [x] 在既有静态业务 Evidence 消费端口接入 work_plan；消费者与 batch driver 调用同一事务应用逻辑，按当前 Work/原请求防重。事件应用后发布与丢通知后的周期推进均不走单盘 FactBuilder，不等任务 6 才提供业务入口。
 - [x] GREEN：READY 保存当前 Work 授权、NO_WORK 保存明确业务结束与点2交接、WAIT 保存原决定/到期时间并创建唯一新请求；未知沿原请求恢复。
 
-**本轮进度（2026-10-16）：** G6 没有确认期限与合法范围，首批超期、确认进度表及 completion driver 暂不创建，以上两项保持未勾选；普通 prepare 复用宿主入口。已创建 Work、Feed、FeedScan 三表及迁移，FeedScan 只保存当前成员入线/已准入标记，避免依赖 CLOSED Work 历史。未另加重复的计划接收规则，继续使用共享严格 DTO 和启用时位置绑定校验。SCAN1/SCAN2 用户确认沿用 `A`＋9 位数字及 `-B`/`-C`；仅 SCAN1 已确认正常前进接线，未接异常分流或真实取盘。
+**本轮进度（2026-10-16）：** 首批超期、任务确认进度及 completion driver 目前尚未实施，对应项保持未勾选；首批分支等待 G6 的期限值与合法范围，普通完成分支按其当前本地前提单独验收。跨 revision 来源接续已由切片 5A 的插件 PostgreSQL 测试闭合，未改生产代码。普通 prepare 复用宿主入口。已创建 Work、Feed、FeedScan 三表及迁移，FeedScan 只保存当前成员入线/已准入标记，避免依赖 CLOSED Work 历史。未另加重复的计划接收规则，继续使用共享严格 DTO 和启用时位置绑定校验。SCAN1/SCAN2 用户确认沿用 `A`＋9 位数字及 `-B`/`-C`；仅 SCAN1 已确认正常前进接线，未接异常分流或真实取盘。
 `READY` 保存授权；`EXIT_PENDING` 保存明确 NO_WORK 与点2待交接；实际放行/回程属于任务 8。`FEED_COMPLETE` 由末段已发布的确定物理交接产生，不等 SCAN；中间分段才等本段实扫。Transport 结果接收器复用公共发布链；取消后乱序扫码沿原 Evidence 暂缓恢复。终态 Feed 退出投料扫描，原结果发布且成员交给 Work 后退出准入/阻塞统计，仍保留当前来源完成标记；不把可清理 Confirmation/CLOSED Work 作为运行依据。后续换面/离场门禁尚不属于本轮完整交付。当前状态、测试所有权和验收证据见[任务 4–5 实施记录](../../integration/2026-10-16-automatic-picking-task4-5-implementation.md)。不得将此进度宣称为整项任务 5 或整线业务闭环已完成。
 
 **恢复 owner：**prepare/plan 通知由宿主入口驱动；首批超期与确认归插件 completion owner，经 batch 前置钩子在无 EXECUTING 任务时调用；Work/来源阶段归插件 batch owner。
