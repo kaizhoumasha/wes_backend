@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 待审阅、未实施；2026-10-16，`develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。设计仍为 `ReviewRequired`，本计划不改变外部合同状态。
+**状态与基线:** 2026-10-16，原基线 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`。任务 1–3 已提交为 `e558fe0b`；任务 4 及任务 5 的已确认路径在 `codex/automatic-picking-workflow` 实施，G6 首批超期尚未实施。本轮用户授权仅提交任务 1–3，未授权任务 4–5 Push/Deploy；不改变外部合同状态。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -73,7 +73,7 @@
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
 `S=src/wes_plugin_sdk/src/wes_plugin_sdk/`，`P=workline_plugins/automatic-picking/src/automatic_picking/`，
-`T=workline_plugins/automatic-picking/tests/`；`P`、`T` 及其文件均为待创建，不代表当前已有实现。
+`T=workline_plugins/automatic-picking/tests/`；任务 4–5 的文件已按下方进度创建，其余仍为计划路径。
 
 | 区域 | 当前路径 / 计划新增路径 | 唯一职责 |
 | --- | --- | --- |
@@ -164,10 +164,10 @@
 **修改：**根 `pyproject.toml`、`uv.lock`、三个 `deployment/plugin_*.py` 文件；复用既有 installed-plugin/runtime-binding 合同。
 **接口：**`DEFINITION` 的 `plugin_key="automatic-picking"`、`supported_line_types=("AUTO",)`；包版本在本切片冻结单一初始值，不随宿主运行动态选择。
 
-- [ ] RED：声明可独立导入，静态运行关联身份一致，空插件/人工单装/自动单装/双插件组合各自正确，重复和未知插件 fail closed。
-- [ ] 增加独立安装来源与 optional dependency，设备角色和位置声明只采用已批准语义；实际设备码、线号与位置取绑定，不从 KT11 示例写死。
-- [ ] 沿现有部署入口关联声明和逐步接入的运行对象；没有 handler 的合法事件只留证，不创建成功占位或自动消费历史观察。
-- [ ] GREEN：仅运行目标插件声明/组合 FAST；依赖配置变化后按仓库要求初始化环境和同步依赖，不复用其他 worktree 环境。
+- [x] RED：声明可独立导入，静态运行关联身份一致，空插件/人工单装/自动单装/双插件组合各自正确，重复和未知插件 fail closed。
+- [x] 增加独立安装来源与 optional dependency，设备角色和位置声明只采用已批准语义；实际设备码、线号与位置取绑定，不从 KT11 示例写死。
+- [x] 沿现有部署入口关联声明和逐步接入的运行对象；没有 handler 的合法事件只留证，不创建成功占位或自动消费历史观察。
+- [x] GREEN：仅运行目标插件声明/组合 FAST；依赖配置变化后按仓库要求初始化环境和同步依赖，不复用其他 worktree 环境。
 
 **恢复 owner：**尚无业务接管时基础服务继续保存结果。**验收：**独立安装/装配成立，不声称业务可执行，不引入新框架或人工业务依赖。
 
@@ -181,10 +181,13 @@
 
 - [ ] RED：PREPARING/revision 0 前置入口可达、期限重启不重置、计划先到、旧确认迟到；来源跨 revision 复用物理进场而保持成员独立。
 - [ ] 随本切片创建 Work 与任务确认最小进度、Repository 和 Alembic 迁移；首批期限归插件唯一配置入口，不借派发 deadline 或新通用 timer 表。
-- [ ] 实现插件计划准入/应用、来源到位后一次 inbound_batch、完整有序清单最多 4 箱分段及 feed_complete；直接依赖保留，独立架到位可推进。
-- [ ] 实现 SCAN2 实扫准入及 work_plan：Work 与任务 3A scheduler 创建的原请求引用同事务保存，经 reader 核对 typed 结果后同事务更新当前阶段；缺 SCAN1/乱序/来源取消后已入线按合同处理，同轮重扫不建新 Work，非预期箱只留证。
-- [ ] 在既有静态业务 Evidence 消费端口接入 work_plan；消费者与 batch driver 调用同一事务应用逻辑，按当前 Work/原请求防重。事件应用后发布与丢通知后的周期推进均不走单盘 FactBuilder，不等任务 6 才提供业务入口。
-- [ ] GREEN：READY 保存当前 Work 授权、NO_WORK 保存明确业务结束与点2交接、WAIT 保存原决定/到期时间并创建唯一新请求；未知沿原请求恢复。
+- [x] 实现插件计划准入/应用、来源到位后一次 inbound_batch、完整有序清单最多 4 箱分段及 feed_complete；直接依赖保留，独立架到位可推进。
+- [x] 实现 SCAN2 实扫准入及 work_plan：Work 与任务 3A scheduler 创建的原请求引用同事务保存，经 reader 核对 typed 结果后同事务更新当前阶段；缺 SCAN1/乱序/来源取消后已入线按合同处理，同轮重扫不建新 Work，非预期箱只留证。
+- [x] 在既有静态业务 Evidence 消费端口接入 work_plan；消费者与 batch driver 调用同一事务应用逻辑，按当前 Work/原请求防重。事件应用后发布与丢通知后的周期推进均不走单盘 FactBuilder，不等任务 6 才提供业务入口。
+- [x] GREEN：READY 保存当前 Work 授权、NO_WORK 保存明确业务结束与点2交接、WAIT 保存原决定/到期时间并创建唯一新请求；未知沿原请求恢复。
+
+**本轮进度（2026-10-16）：** G6 没有确认期限与合法范围，首批超期、确认进度表及 completion driver 暂不创建，以上两项保持未勾选；普通 prepare 复用宿主入口。已创建 Work、Feed、FeedScan 三表及迁移，FeedScan 只保存当前成员入线/已准入标记，避免依赖 CLOSED Work 历史。未另加重复的计划接收规则，继续使用共享严格 DTO 和启用时位置绑定校验。SCAN1/SCAN2 用户确认沿用 `A`＋9 位数字及 `-B`/`-C`；仅 SCAN1 已确认正常前进接线，未接异常分流或真实取盘。
+`READY` 保存授权；`EXIT_PENDING` 保存明确 NO_WORK 与点2待交接；实际放行/回程属于任务 8。`FEED_COMPLETE` 由末段已发布的确定物理交接产生，不等 SCAN；中间分段才等本段实扫。Transport 结果接收器复用公共发布链；取消后乱序扫码沿原 Evidence 暂缓恢复。终态 Feed 退出投料扫描，原结果发布且成员交给 Work 后退出准入/阻塞统计，仍保留当前来源完成标记；不把可清理 Confirmation/CLOSED Work 作为运行依据。后续换面/离场门禁尚不属于本轮完整交付。当前状态、测试所有权和验收证据见[任务 4–5 实施记录](../../integration/2026-10-16-automatic-picking-task4-5-implementation.md)。不得将此进度宣称为整项任务 5 或整线业务闭环已完成。
 
 **恢复 owner：**prepare/plan 通知由宿主入口驱动；首批超期与确认归插件 completion owner，经 batch 前置钩子在无 EXECUTING 任务时调用；Work/来源阶段归插件 batch owner。
 **验收：**任务不能永久停在准备状态；投箱与 Work 可从持久记录恢复；新增表随片注册、迁移并通过干净临时库验证，不新增 Bin 库存主账。

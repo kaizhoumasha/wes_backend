@@ -3248,3 +3248,8 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/tests/{test_outbound_material_operations.py,test_outbound_picking_facts.py}"
 heavy_tests = []
+
+# 自动插件私有表由插件 PostgreSQL 套件显式验收；核心仅承接迁移链与模型装配，禁止把插件测试并入 HEAVY。
+[[mapping]]
+source_glob = "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

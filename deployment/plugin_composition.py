@@ -219,6 +219,38 @@ def build_deployment_runtime(
                 drain_flow=drain_flow,
             ),
         )
+    if "automatic-picking" in enabled_plugin_keys:
+        from automatic_picking.application.batch_driver import AutomaticPickingBatchDriver
+        from automatic_picking.application.feed_flow import AutomaticPickingFeedFlow
+        from automatic_picking.application.feed_repository import FeedRepository
+        from automatic_picking.application.flow import AutomaticPickingWorkFlow
+        from automatic_picking.application.plugin import build_plugin as build_automatic_plugin
+        from automatic_picking.application.scan_flow import AutomaticPickingScanFlow
+        from automatic_picking.application.work_repository import WorkRepository
+
+        automatic_works = WorkRepository()
+        automatic_feeds = FeedRepository()
+        automatic_flow = AutomaticPickingWorkFlow(automatic_works, BinWorkPlanScheduler(), BinWorkPlanResultReader())
+        automatic_batch = AutomaticPickingBatchDriver(
+            automatic_works,
+            automatic_feeds,
+            automatic_flow,
+            AutomaticPickingFeedFlow(automatic_feeds, ReliableBinTransportCreator(transport_runtime.service)),
+            BinBatchScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
+        )
+        plugins += (
+            build_automatic_plugin(
+                works=automatic_works,
+                batch_driver=automatic_batch,
+                scan_flow=AutomaticPickingScanFlow(
+                    automatic_works,
+                    automatic_feeds,
+                    automatic_flow,
+                    device_command_service,
+                    batch_driver=automatic_batch,
+                ),
+            ),
+        )
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,

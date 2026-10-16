@@ -2,6 +2,13 @@
 
 
 def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
+    if "automatic-picking" in enabled_plugin_keys:
+        from automatic_picking.application.feed_model import (  # noqa: F401
+            AutomaticPickingFeed,
+            AutomaticPickingFeedScan,
+        )
+        from automatic_picking.application.work_model import AutomaticPickingWork  # noqa: F401
+
     if "manual-picking" in enabled_plugin_keys:
         from manual_picking.application.batch_progress_model import (  # noqa: F401
             ManualPickingInboundBatch,
@@ -16,6 +23,8 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
 
 
 def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) -> bool:
+    if table_name in {"automatic_picking_works", "automatic_picking_feeds", "automatic_picking_feed_scans"}:
+        return "automatic-picking" in enabled_plugin_keys
     return (
         table_name
         not in {

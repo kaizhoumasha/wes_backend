@@ -9,7 +9,7 @@ from pathlib import Path
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    for package, directory in (("manual_picking", "manual-picking"),):
+    for package, directory in (("manual_picking", "manual-picking"), ("automatic_picking", "automatic-picking")):
         if find_spec(package) is not None or (root / "workline_plugins" / directory).exists():
             raise RuntimeError(f"基础制品包含业务包或源码: {package}")
 
@@ -19,18 +19,19 @@ def main() -> None:
 
     if not callable(register_init) or celery_async_runtime is None:
         raise RuntimeError("基础 Web/Worker 入口不可用")
-    try:
-        build_deployment_runtime(
-            enabled_plugin_keys=("manual-picking",),
-            session_factory=object(),
-            transport_runtime=object(),
-            device_command_service=object(),
-        )
-    except ModuleNotFoundError as exc:
-        if exc.name != "manual_picking":
-            raise
-    else:
-        raise RuntimeError("启用缺失插件时未明确失败")
+    for package, key in (("manual_picking", "manual-picking"), ("automatic_picking", "automatic-picking")):
+        try:
+            build_deployment_runtime(
+                enabled_plugin_keys=(key,),
+                session_factory=object(),
+                transport_runtime=object(),
+                device_command_service=object(),
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name != package:
+                raise
+        else:
+            raise RuntimeError("启用缺失插件时未明确失败")
     print("基础制品安装隔离、入口导入和缺包拒绝检查通过")
 
 

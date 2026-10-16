@@ -6,7 +6,7 @@ from wes_plugin_sdk import PluginDefinition
 def load_plugin_definitions(enabled_plugin_keys: tuple[str, ...]) -> tuple[PluginDefinition, ...]:
     if len(set(enabled_plugin_keys)) != len(enabled_plugin_keys):
         raise ValueError("duplicate enabled plugin keys")
-    unknown = set(enabled_plugin_keys) - {"manual-picking"}
+    unknown = set(enabled_plugin_keys) - {"manual-picking", "automatic-picking"}
     if unknown:
         raise ValueError(f"unknown enabled plugins: {sorted(unknown)}")
     definitions: tuple[PluginDefinition, ...] = ()
@@ -14,4 +14,8 @@ def load_plugin_definitions(enabled_plugin_keys: tuple[str, ...]) -> tuple[Plugi
         from manual_picking.definition import DEFINITION
 
         definitions += (DEFINITION,)
+    if "automatic-picking" in enabled_plugin_keys:
+        from automatic_picking.definition import DEFINITION as AUTOMATIC_DEFINITION
+
+        definitions += (AUTOMATIC_DEFINITION,)
     return definitions
