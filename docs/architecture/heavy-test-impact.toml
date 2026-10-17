@@ -3288,3 +3288,8 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261017_0708_71246b611dbf_add_automatic_return_direction_.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动回架分配事务由插件独立验收；核心承接模型/schema与部署注册。
+[[mapping]]
+source_glob = "migrations/versions/20261018_0205_a448148f9636_add_automatic_return_allocation_progress.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

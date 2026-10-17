@@ -22,7 +22,10 @@ def test_automatic_installation_preserves_static_identity_and_runtime_ports(keys
     assert automatic.runtime_binding.business_wms_operations == (
         "outbound.bin.inbound_batch@v1",
         "outbound.bin.work_plan@v1",
+        "outbound.bin.return_batch@v1",
     )
+    assert automatic.picking_task_batch_driver.return_batch_flow is None
+    assert automatic.runtime_binding.business_evidence_consumer.return_batch_flow is None
     assert automatic.runtime_binding.handlers == ()
     assert automatic.runtime_binding.fact_factory is None
     assert automatic.runtime_binding.decision_application is None

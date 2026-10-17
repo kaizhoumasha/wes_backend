@@ -276,6 +276,25 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 下一片再接 FIFO 合格连续前缀、冻结 `return_batch` 请求/决定和 BIN_MOVE 交接，不能把本片候选资格当作 WMS 精确目标分配；同架面下一轮分配及运动前门禁仍按主合同另行验收。任务 8 整体仍未完成；生产 reader/mapper 未启用，本轮不提交、不部署、不启用真实派发或真实取盘。
 
+
+#### 实施切片 8D：冻结回架前缀、分配结果与 BIN_MOVE 交接
+
+**范围：**在 8C 已形成候选资格的前提下，精确 HANDOFF_POSITION、当前实际 rack/face 与到位 Evidence、权威运输结果均由离线 typed reader 显式给定。只接正常 FIFO 前缀、`return_batch` 与原 BIN_MOVE 的可靠业务关联，不启用生产 reader/mapper、实际派发或取盘，不接 drain 或完整换面/离场入口。
+
+**最小当前进度：**增加插件私有 `AutomaticPickingReturnAllocation`，仅保存当前到位/架面、原 operation、请求时有序 Return execution ID、结果引用/选中数量、原 Transport 及交接/收口引用。完整冻结请求和响应仍只归 Confirmation/Evidence，动作正文归 Transport。Return 只增加当前 allocation 引用；ACCEPTED 交接同事务清除该引用并关闭 Return，allocation 保留标量成员身份与原 Transport，不以已关闭 Return 的 FK 或旧 Work/Feed 恢复后段。迁移 `a448148f9636` 保留存量 8C 的空分配引用，有分配进度时拒绝有损降级；部署只增加模型注册，不装配生产业务流程。
+
+**FIFO 与原子性：**按首次 SCAN4 时间从当前待派发物理队首读取，只取资格已应用发布、精确位置已知的连续前缀，最多 4 箱；未知/未就绪项截断，不先过滤 READY 再越过它。已由原请求领取的成员不重复进入待派发范围，不能据此宣称物理 EMPTY。当前进度、成员领取与原 Confirmation 创建同事务；请求内顺序号从 1 连续冻结，重提不换身份或正文，新成员不追加到旧请求。结果由既有 typed reader 按原义务校验，READY/NO_BATCH 的分配关联、未选成员释放及发布同事务；NO_BATCH 结束本次到位决定，不按其 retry_after_ms 在同一次物理到位轮询。
+
+同一次实际到位可在前一 READY 批次满足终态门禁后继续处理 FIFO 尾部，新请求使用新 operation；不能把 NO_BATCH 的到位结束限制扩大到 READY。每轮仅以 operation 唯一，在既有 WorkLine 锁下串行检查当前进度；下一轮请求、成员领取及已交接成功旧进度的归档同事务，不依赖已归档的分配历史。机会式/运动前服务阶段的结束条件仍由后续阶段入口负责，本片不增加阶段状态或入口。
+
+**BIN_MOVE 与门禁：**READY 已应用发布、原实际架面仍匹配且原源位置确认后，复用 ReliableBinTransportCreator 创建和关联单次 BIN_MOVE；冻结目标与其他活跃 Bin 搬运的冲突检查使用既有目标事务锁身份，不建立储位主账或自行改址。Return 按原 Transport 的明确 ACCEPTED（或已证实的成功终态）交接，不伪造物理终位。同一 WorkLine/rack/face 下一轮请求仍等原 BIN_MOVE 的权威终态在宿主及插件发布、最终位置已知且成功终位匹配冻结目标；明确未接纳的 REJECTED 只解除该轮分配等待，不伪造 Return 交接或业务重试。未知/失败恢复保留原身份和直接依赖，未确认的异常业务决定不猜。独立已知架面可继续，另一个架面事实未发布不构成全线围栏。
+
+**唯一恢复 owner：**当前分配和必要后继归原 batch 前置入口，无 EXECUTING、无新事件仍扫描；原 WMS 请求的收发与技术恢复归 Confirmation；WMS/Transport 结果的业务应用及发布归 FactProcessor；原 BIN_MOVE 履约、物理结果及位置投影归 Transport。自动插件结果发布器只新增固定回程分支并校验原 WorkLine binding，不把跨任务回程挂回某个已结束的 PickingTask。已闭合 Return 清理后，allocation 仍独立承接同面等待。已交接成功的旧进度可随同到位下一轮请求原子归档，或在已收口且权威读口确认到位轮次已替换/结束后退出扫描；NO_BATCH 当前到位结束标记只走后一出口。未知读口不退役该标记，未发布的独立架面只限制其本身。
+
+**所有权与后续：**插件 `T/test_return_allocation.py` 验证输入边界，`T/integration/test_return_allocation_postgresql.py` 拥有前缀、冻结/应用/搬运/交接原子性、并发、重放、同面门禁与历史清理验收。8A–8C 测试继续承接已有行为，核心仅验收部署模型隔离、schema、selector/测试拓扑。G2/G3/G5 仍只限制对应取盘、扫码和报告生产路径；当前回程的生产关联、位置及架面读口另外闭合，fixture 不成为映射合同。后续补运动前无候选/原义务分支及完整换面离场、正常逐盘结束入口，再进入任务 9 drain。
+
+**验证与闭环 Review：**本片实现及验收完成。最终新增 PostgreSQL 35 passed、8A–8C 回归 87 passed、插件 FAST 126 passed；核心聚焦 256 passed、选中宿主 HEAVY 18 passed。QUALITY 通过（4316 passed、5 个既有 skipped，跳过项不计通过）。迁移验收覆盖存量 8C 保持、空进度降级后重升、有分配进度时拒绝有损降级，以及模型/schema 一致性；插件与选中 HEAVY 无跳过项。独立只读 full Review 发现同到位 READY 尾部被错误永久阻断的 P2，新增两个 PostgreSQL 反例先失败后通过；删除过宽到位唯一约束，在同一 WorkLine 锁及事务下创建下一轮并归档已交接成功旧进度。原 Reviewer 合并完成旧意见闭环与当前 fresh full Review，计划退役出口文字也同步闭合，无剩余确认的 P1/P2/P3 问题。受影响完整验收及门禁已刷新，证据绑定最终可执行快照；后续仅补本文验证记录。本轮不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

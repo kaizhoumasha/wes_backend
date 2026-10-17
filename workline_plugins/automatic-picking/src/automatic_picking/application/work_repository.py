@@ -7,6 +7,7 @@ from src.app.execution.models import InboundEvidence
 
 from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
+from .return_allocation_model import AutomaticPickingReturnAllocation
 from .return_model import AutomaticPickingReturn
 from .work_model import AutomaticPickingWork
 
@@ -64,12 +65,31 @@ class WorkRepository:
                 col(AutomaticPickingReturn.archived_at).is_(None),
             )
         )
-        count = work_count + return_count + len(await FeedRepository().list_admission_pending(db, workline_id))
+        allocation_count = await db.scalar(
+            select(func.count())
+            .select_from(AutomaticPickingReturnAllocation)
+            .where(
+                AutomaticPickingReturnAllocation.workline_id == workline_id,
+                AutomaticPickingReturnAllocation.archived_at.is_(None),
+                AutomaticPickingReturnAllocation.settled_at.is_(None),
+            )
+        )
+        count = (
+            work_count
+            + return_count
+            + allocation_count
+            + len(await FeedRepository().list_admission_pending(db, workline_id))
+        )
         return {"count": count, "sample": "automatic-picking current Work/feed/Return" if count else None}
 
     async def archive_open_work(self, db, *, workline_id, archived_at):
         count = 0
-        for model in (AutomaticPickingWork, AutomaticPickingFeed, AutomaticPickingReturn):
+        for model in (
+            AutomaticPickingWork,
+            AutomaticPickingFeed,
+            AutomaticPickingReturn,
+            AutomaticPickingReturnAllocation,
+        ):
             rows = (
                 await db.scalars(
                     select(model)

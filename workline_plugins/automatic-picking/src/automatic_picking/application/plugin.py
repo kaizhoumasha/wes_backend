@@ -22,7 +22,11 @@ def build_plugin(*, scan_flow, batch_driver, works, material_flow=None):
             fact_factory=material_flow,
             decision_application=material_flow,
             business_evidence_consumer=scan_flow,
-            business_wms_operations=("outbound.bin.inbound_batch@v1", "outbound.bin.work_plan@v1"),
+            business_wms_operations=(
+                "outbound.bin.inbound_batch@v1",
+                "outbound.bin.work_plan@v1",
+                "outbound.bin.return_batch@v1",
+            ),
         ),
         picking_task_prepare_policy=AutomaticPickingPreparePolicy(),
         picking_task_plan_applied_handler=PickingTaskPlanAppliedHandler(),

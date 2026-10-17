@@ -52,4 +52,7 @@ class AutomaticPickingReturn(EnterpriseMixin, DataTableMixin, table=True):
     ready_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT, unique=True
     )
+    allocation_id: int | None = Field(
+        default=None, foreign_key="wes_biz.automatic_picking_return_allocations.id", sa_type=SQL_COMPAT_BIGINT
+    )
     archived_at: datetime | None = None

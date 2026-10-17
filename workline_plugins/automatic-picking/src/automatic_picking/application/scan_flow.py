@@ -23,10 +23,21 @@ def normal_bin_code(raw, role):
 
 class AutomaticPickingScanFlow:
     def __init__(
-        self, works, feeds, work_flow, commands, *, batch_driver=None, tasks=None, worklines=None, exit_flow=None
+        self,
+        works,
+        feeds,
+        work_flow,
+        commands,
+        *,
+        batch_driver=None,
+        tasks=None,
+        worklines=None,
+        exit_flow=None,
+        return_batch_flow=None,
     ):
         self.works, self.feeds, self.work_flow, self.commands = works, feeds, work_flow, commands
         self.exit_flow = exit_flow
+        self.return_batch_flow = return_batch_flow
         self.batch_driver = batch_driver
         self.tasks = tasks or PickingTaskRepository()
         self.worklines = worklines or workline_repository
@@ -43,7 +54,16 @@ class AutomaticPickingScanFlow:
         ):
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
         if evidence.kind == "WMS_RESULT":
-            result = await self._result(db, line, evidence)
+            if evidence.operation == "outbound.bin.return_batch@v1":
+                result = (
+                    await self.return_batch_flow.apply_result_in_session(db, line=line, evidence=evidence)
+                    if self.return_batch_flow is not None
+                    else "WAIT_FOR_EXIT"
+                )
+            else:
+                result = await self._result(db, line, evidence)
+        elif evidence.kind == "TRANSPORT_RESULT" and self.return_batch_flow is not None:
+            result = await self.return_batch_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
         elif evidence.kind == "DEVICE_RESULT" and self.exit_flow is not None:
             result = await self.exit_flow.direction_result_in_session(db, line=line, evidence=evidence)
         elif evidence.kind == "DEVICE_EVENT" and line.is_active:

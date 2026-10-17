@@ -19,7 +19,7 @@ class AutomaticPickingTransportOutcomePublisher:
             binding is None
             or binding.client_request_id != outcome.client_request_id
             or str(binding.workline_id) != outcome.caller.workline_id
-            or binding.picking_task_id is None
+            or (binding.picking_task_id is None and binding.step != "AUTOMATIC_PICKING_RETURN")
         ):
             raise ValueError("automatic Transport outcome differs from its frozen owner")
         rack_steps = {"PICKING_TASK_TARGET_RACK_IN", "PICKING_TASK_BIN_SOURCE_RACK_IN", "PICKING_TASK_RETURN_RACK_IN"}
@@ -28,7 +28,7 @@ class AutomaticPickingTransportOutcomePublisher:
                 len(outcome.members) != 1 or outcome.members[0].object_id != binding.resource_fence_id
             ):
                 raise ValueError("automatic rack outcome differs from its frozen rack")
-        elif binding.step != "AUTOMATIC_PICKING_FEED":
+        elif binding.step not in {"AUTOMATIC_PICKING_FEED", "AUTOMATIC_PICKING_RETURN"}:
             raise ValueError("unsupported automatic Transport binding step")
         accepted = await self.evidences.accept(
             db,

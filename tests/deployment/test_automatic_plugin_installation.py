@@ -12,6 +12,7 @@ from deployment.plugin_models import include_plugin_table
         "automatic_picking_feed_scans",
         "automatic_picking_pickups",
         "automatic_picking_returns",
+        "automatic_picking_return_allocations",
     ],
 )
 def test_automatic_tables_belong_only_to_explicit_installation(name):
