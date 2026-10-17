@@ -3293,3 +3293,7 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261018_0205_a448148f9636_add_automatic_return_allocation_progress.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261018_0255_b1692d740313_add_automatic_return_motion_evaluation.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

@@ -9,6 +9,7 @@ from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
 from .return_allocation_model import AutomaticPickingReturnAllocation
 from .return_model import AutomaticPickingReturn
+from .return_motion_model import AutomaticPickingReturnMotion
 from .work_model import AutomaticPickingWork
 
 
@@ -74,10 +75,20 @@ class WorkRepository:
                 AutomaticPickingReturnAllocation.settled_at.is_(None),
             )
         )
+        motion_count = await db.scalar(
+            select(func.count())
+            .select_from(AutomaticPickingReturnMotion)
+            .where(
+                AutomaticPickingReturnMotion.workline_id == workline_id,
+                AutomaticPickingReturnMotion.archived_at.is_(None),
+                AutomaticPickingReturnMotion.closed_at.is_(None),
+            )
+        )
         count = (
             work_count
             + return_count
             + allocation_count
+            + motion_count
             + len(await FeedRepository().list_admission_pending(db, workline_id))
         )
         return {"count": count, "sample": "automatic-picking current Work/feed/Return" if count else None}
@@ -89,6 +100,7 @@ class WorkRepository:
             AutomaticPickingFeed,
             AutomaticPickingReturn,
             AutomaticPickingReturnAllocation,
+            AutomaticPickingReturnMotion,
         ):
             rows = (
                 await db.scalars(

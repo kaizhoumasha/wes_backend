@@ -9,6 +9,8 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
+from .return_motion_repository import ReturnMotionRepository
+
 
 @dataclass(frozen=True, slots=True)
 class MatchedReturnFace:
@@ -37,6 +39,20 @@ class MatchedReturnLocation:
         BinReturnCandidate(1, self.bin_code, self.location_code)
 
 
+@dataclass(frozen=True, slots=True)
+class MatchedReturnMotion:
+    face: MatchedReturnFace
+    source_evidence_id: int
+
+    def __post_init__(self):
+        if (
+            type(self.face) is not MatchedReturnFace
+            or type(self.source_evidence_id) is not int
+            or not 0 < self.source_evidence_id <= 2**63 - 1
+        ):
+            raise ValueError("motion evaluation requires exact face and business Evidence")
+
+
 class AutomaticPickingReturnBatchFlow:
     def __init__(
         self,
@@ -46,26 +62,29 @@ class AutomaticPickingReturnBatchFlow:
         face_reader,
         location_reader,
         *,
+        motion_reader=None,
+        motions=None,
         clock=timezone.now_for_db,
         uuid_factory=new_uuid7,
     ):
         self.repository, self.scheduler, self.creator = repository, scheduler, creator
         self.face_reader, self.location_reader = face_reader, location_reader
         self.clock, self.uuid_factory = clock, uuid_factory
+        self.motion_reader, self.motions = motion_reader, motions or ReturnMotionRepository()
 
     async def _prefix(self, db, line):
         fifo = await self.repository.returns.list_fifo(db, line.id)
         if fifo is None:
-            return (), ()
+            return None
         rows, candidates = [], []
         for row in fifo:
             if row.allocation_id is not None:
                 continue
             if not await self.repository.qualified(db, row):
-                break
+                return (rows, tuple(candidates)) if rows else None
             location = await self.location_reader.read_in_session(db, return_id=row.id)
             if location is None:
-                break
+                return (rows, tuple(candidates)) if rows else None
             if (
                 type(location) is not MatchedReturnLocation
                 or location.return_id != row.id
@@ -103,17 +122,98 @@ class AutomaticPickingReturnBatchFlow:
             known.append(face)
         return tuple(known), complete
 
+    @staticmethod
+    def _face_identity(value):
+        return value.arrival_evidence_id, value.rack_id, value.rack_face
+
+    async def _motion_obligation_closed(self, db, allocation):
+        evidence = (
+            await self.repository.evidence(db, allocation.response_evidence_id)
+            if allocation.response_evidence_id
+            else None
+        )
+        if evidence is None or evidence.apply_status != "APPLIED" or evidence.published_at is None:
+            return False
+        if allocation.selected_count == 0:
+            return True
+        if allocation.settled_at is None:
+            return False
+        task, _members = await self.repository.transport(db, allocation)
+        if task.status != "REJECTED" and allocation.handed_off_at is None:
+            return False
+        result = (
+            await self.repository.evidence(db, allocation.transport_result_evidence_id)
+            if allocation.transport_result_evidence_id
+            else None
+        )
+        return result is not None and result.apply_status == "APPLIED" and result.published_at is not None
+
+    async def _motion_can_close(self, db, allocation, allocations):
+        if not await self._motion_obligation_closed(db, allocation):
+            return False
+        for original in allocations:
+            if (
+                original.rack_id == allocation.rack_id
+                and original.id != allocation.id
+                and not await self._motion_obligation_closed(db, original)
+            ):
+                return False
+        return True
+
+    async def _motion_phases(self, db, line, faces, complete, allocations):
+        phases, count = await self.motions.current(db, line.id), 0
+        intents = await self.motion_reader.read_in_session(db, workline_id=line.id) if self.motion_reader else ()
+        if intents is not None and type(intents) is not tuple:
+            raise TypeError("motion intents require immutable explicit input")
+        for intent in intents or ():
+            if type(intent) is not MatchedReturnMotion or intent.face.workline_id != line.id:
+                raise ValueError("motion intent differs from WorkLine")
+            if (
+                not line.is_active
+                or intent.face not in faces
+                or any(self._face_identity(p) == self._face_identity(intent.face) for p in phases)
+            ):
+                continue
+            evidence = await self.repository.evidence(db, intent.source_evidence_id)
+            if (
+                evidence is None
+                or evidence.workline_id != line.id
+                or evidence.apply_status != "APPLIED"
+                or evidence.published_at is None
+                or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            ):
+                raise ValueError("motion intent requires published authoritative business Evidence")
+            phases.append(await self.motions.add(db, intent))
+            count += 1
+        for current in phases:
+            if current.closed_at is None and current.allocation_id is not None:
+                allocation = await self.motions.allocation(db, current)
+                if await self._motion_can_close(db, allocation, allocations):
+                    await self.motions.close(db, current, now=self.clock())
+                    count += 1
+        if complete:
+            await self.motions.retire(db, phases, faces, now=self.clock())
+        return phases, count
+
     async def advance_in_session(self, db, line):
         allocations = await self.repository.current(db, line.id)
         faces, complete = await self._faces(db, line)
         count = 0
         for allocation in allocations:
             count += await self._advance_allocation(db, line, allocation, faces or ())
+        phases, motion_count = await self._motion_phases(db, line, faces, complete, allocations)
+        count += motion_count
         if complete:
             await self.repository.retire_completed(db, allocations, faces, now=self.clock())
         if not line.is_active:
             return count
         for face in faces:
+            motion = next(
+                (p for p in phases if p.archived_at is None and self._face_identity(p) == self._face_identity(face)),
+                None,
+            )
+            if motion is not None and (motion.closed_at is not None or motion.allocation_id is not None):
+                continue
             same_arrival = [
                 a
                 for a in allocations
@@ -121,18 +221,39 @@ class AutomaticPickingReturnBatchFlow:
                 and a.rack_id == face.rack_id
                 and a.rack_face == face.rack_face
             ]
-            if any(a.selected_count == 0 for a in same_arrival):
+            no_batch = next((a for a in same_arrival if a.selected_count == 0), None)
+            if no_batch is not None:
+                if motion is not None:
+                    await self.motions.bind(db, motion, no_batch)
+                    count += 1
+                    if await self._motion_can_close(db, no_batch, allocations):
+                        await self.motions.close(db, motion, now=self.clock())
+                        count += 1
                 continue
+            if motion is not None:
+                blocked = False
+                for original in allocations:
+                    if original.rack_id == face.rack_id and not await self._motion_obligation_closed(db, original):
+                        blocked = True
+                        break
+                if blocked:
+                    continue
             if any(
                 a.rack_id == face.rack_id and a.rack_face == face.rack_face and a.settled_at is None
                 for a in allocations
             ):
                 continue
-            rows, candidates = await self._prefix(db, line)
+            prefix = await self._prefix(db, line)
+            if prefix is None:
+                continue
+            rows, candidates = prefix
             if not candidates:
+                if motion is not None:
+                    await self.motions.close(db, motion, now=self.clock())
+                    count += 1
                 continue
             operation_id, now = self.uuid_factory(), self.clock()
-            await self.repository.add(
+            allocation = await self.repository.add(
                 db,
                 line=line,
                 face=face,
@@ -149,6 +270,8 @@ class AutomaticPickingReturnBatchFlow:
                 return_candidates=candidates,
             )
             await self.scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
+            if motion is not None:
+                await self.motions.bind(db, motion, allocation)
             allocations = await self.repository.current(db, line.id)
             count += 1
         return count

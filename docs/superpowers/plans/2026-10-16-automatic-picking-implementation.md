@@ -295,6 +295,20 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**本片实现及验收完成。最终新增 PostgreSQL 35 passed、8A–8C 回归 87 passed、插件 FAST 126 passed；核心聚焦 256 passed、选中宿主 HEAVY 18 passed。QUALITY 通过（4316 passed、5 个既有 skipped，跳过项不计通过）。迁移验收覆盖存量 8C 保持、空进度降级后重升、有分配进度时拒绝有损降级，以及模型/schema 一致性；插件与选中 HEAVY 无跳过项。独立只读 full Review 发现同到位 READY 尾部被错误永久阻断的 P2，新增两个 PostgreSQL 反例先失败后通过；删除过宽到位唯一约束，在同一 WorkLine 锁及事务下创建下一轮并归档已交接成功旧进度。原 Reviewer 合并完成旧意见闭环与当前 fresh full Review，计划退役出口文字也同步闭合，无剩余确认的 P1/P2/P3 问题。受影响完整验收及门禁已刷新，证据绑定最终可执行快照；后续仅补本文验证记录。本轮不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成。
 
+#### 实施切片 8E：运动前求值的持久阶段与门禁
+
+**范围：**复用 8D 的精确位置/实际架面读口、typed 结果应用与原 BIN_MOVE 恢复。运动前业务依据由离线 `MatchedReturnMotion` 显式给定，复用 `MatchedReturnFace`；不从扫码、任务状态或候选空查询推断运动意图，不创建旋转/离场 Transport，不接 drain、逐盘结束或生产 reader/mapper。
+
+**最小当前进度：**插件私有 `AutomaticPickingReturnMotion` 仅保存 WorkLine、本次实际架面到位 Evidence、业务依据 Evidence、架/面、原 allocation execution 标量 ID、求值结束及归档时间；唯一到位/架面阶段只限制运动前服务，不给 8D 的所有 READY 加回到位唯一约束。无新授权模型、业务状态枚举或 timer。待处理阶段的原分配是当前依赖；阶段结束后仅凭本阶段事实抑制重开，不读取已关闭 allocation、Return、Work、Feed 或 Confirmation。迁移 `b1692d740313` 基于 `a448148f9636`，有阶段/出口事实时拒绝有损降级。
+
+**先恢复后判断：**batch 原入口先推进 8D 可靠义务，再发现/创建当前运动前阶段。原请求未知、结果未应用/未发布、READY 未创建 BIN_MOVE、仅 ACCEPTED 或终位未知均保留等待；本架其他当前直接回架义务也须闭合。既有 NO_BATCH 必须已应用发布才可消费，不能跳过其他直接义务。READY 沿原 Transport 权威终态及已知成功目标收口；明确未接纳的 REJECTED 在结果发布后仅结束该等待，不关闭 Return、不伪造位置或新增业务重试。
+
+**一次求值：**未产生本阶段请求时才在原义务检查之后读取当前 FIFO。顺序/资格/位置未知与真正无当前可派发候选分别返回；后者只结束求值，不声明物理 EMPTY。新请求、成员领取、Confirmation 与阶段关联同事务。阶段自己的 READY 所选成员及直接义务闭合即结束，未选尾部或后来候选不延长本阶段；此前独立批次完成后仍可进入尚未求值的运动前阶段。无运动前结束标记的 8D 正常路径保留同到位合法下一批能力。未知架面、空列表或其他独立架的事实不退役结束标记，确认同架新的权威到位后旧标记才退出当前扫描。
+
+**恢复与测试所有权：**运动前阶段归同一个 batch 前置入口，缺新事件、缺 EXECUTING 或重启后未再次提供运动输入也能按当前记录恢复；结果仍归 FactProcessor，原请求/动作仍归 Confirmation/Transport。Work blocker/archiver 纳入未结束阶段；部署只注册模型，不启用生产业务。`T/test_return_motion.py` 拥有 typed 输入边界，`T/integration/test_return_before_motion_postgresql.py` 拥有阶段、原义务优先、并发/崩溃/重放及清理恢复；8D 与 8A–8C 继续承接原行为，核心只证明模型部署、schema 与 selector/测试拓扑。G2/G3/G5 及其他未决项仍只限制各自生产分支。
+
+**验证与闭环 Review：**本片实现与离线验收完成。新增 PostgreSQL 26 passed、8D 回归 35 passed、8A–8C 回归 87 passed、插件 FAST 133 passed；核心聚焦 257 passed、选中宿主 HEAVY 18 passed。QUALITY 通过（4317 passed、5 个既有 skipped，跳过项不计通过）；中途终端脚本用例遇到一次系统 setpgid 权限瞬时错误，单项复查及随后完整 QUALITY 均通过，未修改该脚本或断言。迁移覆盖存量 8D 保持、空阶段降级后重升、有阶段事实时拒绝有损降级及模型/schema 一致性。独立只读 full Review 发现缺失本架事实也会退役结束标记的 P2，新增空列表/仅其他架两个 PostgreSQL 反例先失败，最小修复为同架新到位才退役；原 Reviewer 合并完成旧意见闭环与当前 fresh full Review，无剩余确认的 P1/P2/P3。格式化后的退役定向回归 3 passed；插件与选中 HEAVY 无跳过项。最终可执行快照与评审指纹一致，后续仅补本文验证记录。不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成，实际旋转/离场、原进场轮次的运动绑定及机会式入口留在后续切片。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
