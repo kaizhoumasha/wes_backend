@@ -3338,3 +3338,7 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261020_0239_588d54e9fe3e_handoff_automatic_drain_return_members.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_0548_77b256c269b3_handoff_automatic_drain_departures.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

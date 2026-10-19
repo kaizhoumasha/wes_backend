@@ -482,6 +482,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **后续边界：**完整QUALITY留后续获授权Commit hook。本片不提交、不部署，不接drain收口、已接纳FAILED重决策、补架或生产装配，不启用真实派发或取盘；设备映射、扫码关联、PkgID、权威失败面向及首批期限等未决项保持原范围。
 
+#### 实施切片 9G：正常 drain 收口与原离场义务原子交接
+
+**范围与出口：**原 READY 冻结成员全部沿 9C 权威回库成功事实登记，且每个冻结货架的原 CTU03 已明确 ACCEPTED，或其精确成功结果已完整发布时，根 drain 才归档退出。原 RACK 首次接纳冻结的 `result_deadline_at` 非空也保留其已经接纳的正事实，后续 FAILED/RECONCILING 先于首次扫描不能抹去交接；只读取该事实，不比较期限或引入新 timer。请求未决、确定 WAIT、未发布 READY、未接纳的 PENDING 或交付未知均不构成交接；少一个原成员或货架交接也不能退出。交接与根退出在原 WorkLine 事务提交，不把 ACCEPTED、根归档或历史缺失推定为物理离场、EMPTY、WMS 释放容量或任务完成。
+
+**持久事实与恢复 owner：**根仅增加 `departure_handoffs`（冻结 rack→原 Transport identity）正事实，避免先完成货架的已闭合 Motion 清理后丢失根进度；不复制请求正文、位置、资源容量或创建授权模型。batch 以原 Motion 的 typed drain READY Evidence 发现 departure，脱离已归档根表和 DrainRack，继续恢复原请求/动作；Confirmation、FactProcessor 与 Transport 分别保留可靠交付、应用发布和物理结果 owner。根退出后未结束 Motion 仍计入既有未完工作量。原 Motion、当前 READY Evidence、决定与 Transport/Binding 是未闭合义务的直接因果依赖，须保留；可清理根、DrainRack 和已闭合 allocation 不再成为原离场发现入口。晚到原结果只闭合原 Motion，不能重开根或写入新轮次。
+
+**迁移与测试所有权：**Alembic `77b256c269b3` 基于 `588d54e9fe3e` 仅增加交接映射，存量行置空，不从历史补造成功；降级遇非空交接事实拒绝丢失。插件 `integration/test_drain_completion_postgresql.py` 拥有正常出口、原子回滚、并发、重放、ACK 前成功回调、根历史清理后独立恢复、无 EXECUTING、多架闭合历史清理及新旧轮次隔离验收。9A/9C/9D/9E/9F 为直接回归；核心仅承接安装/测试拓扑及迁移所选 workline configuration HEAVY，不进入插件业务判断。
+
+**验证与闭环 Review：**正常出口先取得真实 RED，再最小实现。独立首轮发现 1 个 P2：ACK 后、首轮扫描前的 FAILED/RECONCILING 会漏记交接；四组合回调反例取得 2 失败/2 通过，再复用原 RACK 首次接纳正事实修复，未增加字段、timer 或失败重决策。修后新领域集 25 项及受影响 departure 回归 81 项重新全部通过；9A/9C/rotation 的 102 项未安装 departure flow，不执行修正分支，证据仍有效。合计 208 项不同插件 PostgreSQL 用例，加所选真实 HEAVY 8 项为 216 项，均非 skip。存量 9F 升级、干净库迁移链、目标表 schema 比对及有损降级拒绝通过；既有 metadata 循环外键 warning 保留。插件 FAST 174 项、核心安装/拓扑 33 项、selector 合同 266 项通过，8 个 Python 文件 Ruff/格式及 diff 检查通过。原 Reviewer 以修订快照合并完成 P2 闭环与 fresh full Review，无新增 P1/P2/P3；其后仅更新本文验收记录，可执行快照未变。
+
+**后续边界：**不接补架、完成确认或已接纳后 FAILED 重决策，不增加通用模型、业务状态、timer、worker 或生产装配，不做 bin-line-common 抽取。设备映射、精确扫码关联、PkgID、首批期限及失败权威架面等未决项保持原阻塞范围。当前仅离线实现与验证，不提交、不部署、不启用真实派发或取盘；完整 QUALITY 留获授权 Commit hook。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

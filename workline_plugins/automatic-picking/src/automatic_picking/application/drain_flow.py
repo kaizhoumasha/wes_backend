@@ -9,6 +9,7 @@ from src.app.wms_integration.outbound_picking.services.picking_task_prepare impo
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
+from .drain_return_repository import DrainReturnRepository
 from .return_allocation_flow import MatchedReturnLocation
 
 
@@ -125,6 +126,14 @@ class AutomaticPickingDrainFlow:
             intent, outcome = await self.reader.read(db, evidence, workline_id=line.id)
             count += await self._remember(db, current, evidence, intent, outcome)
             if type(snapshot.result) is ReturnBufferDrainReady:
+                DrainReturnRepository.validate_members(current)
+                self.repository.validate_departure_handoffs(current, snapshot.result)
+                if set(current.returned_ids) == set(current.return_ids) and set(current.departure_handoffs) == {
+                    rack.rack_id for rack in snapshot.result.racks
+                }:
+                    current.archived_at = self.clock()
+                    await db.flush()
+                    return count + 1
                 return count + (
                     await self.inbound.advance_in_session(db, line, current, snapshot.result)
                     if self.inbound is not None

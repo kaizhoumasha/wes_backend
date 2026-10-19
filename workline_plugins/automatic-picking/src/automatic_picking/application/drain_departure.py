@@ -17,6 +17,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
 from .drain_departure_repository import DRAIN_DEPARTURE_STEP, DrainDepartureRepository
+from .drain_repository import DrainRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +65,35 @@ class DrainDepartureFlow:
                 if context is not None:
                     count += await self._request(db, line, stage, context)
                     continue
-            if await self.repository.finished(db, stage):
+            finished = await self.repository.finished(db, stage)
+            count += await self._remember_handoff(db, line, stage, task, finished=finished)
+            if finished:
                 stage.archived_at = self.clock()
                 await db.flush()
                 count += 1
         return count
+
+    async def _remember_handoff(self, db, line, stage, task, *, finished):
+        # 原 RACK 首次接纳的冻结期限保留接纳事实，后续失败不能抹去交接。
+        if task.status != "ACCEPTED" and task.result_deadline_at is None and not finished:
+            return 0
+        current = await self.rotation.returns.drains.current(db, line)
+        if current is None or type(current[1]) is not ReturnBufferDrainReady:
+            return 0
+        root, ready = current
+        if root.response_evidence_id != stage.source_evidence_id:
+            return 0
+        DrainRepository.validate_departure_handoffs(root, ready)
+        if stage.rack_id not in {rack.rack_id for rack in ready.racks}:
+            raise ValueError("departure handoff rack differs from original reservation")
+        original = root.departure_handoffs.get(stage.rack_id)
+        if original is not None:
+            if original != task.transport_task_id:
+                raise ValueError("drain departure handoff identity drift")
+            return 0
+        root.departure_handoffs = {**root.departure_handoffs, stage.rack_id: task.transport_task_id}
+        await db.flush()
+        return 1
 
     async def _recover_decision(self, db, line, stage):
         snapshot = await self.repository.decision(db, stage)

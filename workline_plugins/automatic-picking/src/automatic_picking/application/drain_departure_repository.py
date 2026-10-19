@@ -8,7 +8,6 @@ from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
 from src.utils.canonical_json import canonical_json_digest
 
-from .drain_model import AutomaticPickingDrain
 from .return_motion_model import AutomaticPickingReturnMotion
 
 DRAIN_DEPARTURE_STEP = "AUTOMATIC_PICKING_DRAIN_RACK_OUT"
@@ -23,15 +22,13 @@ class DrainDepartureRepository:
             (
                 await db.scalars(
                     select(AutomaticPickingReturnMotion)
-                    .join(
-                        AutomaticPickingDrain,
-                        AutomaticPickingDrain.response_evidence_id == AutomaticPickingReturnMotion.source_evidence_id,
-                    )
+                    .join(InboundEvidence, InboundEvidence.id == AutomaticPickingReturnMotion.source_evidence_id)
                     .where(
                         AutomaticPickingReturnMotion.workline_id == line_id,
                         AutomaticPickingReturnMotion.departure_operation_id.is_not(None),
                         AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
-                        AutomaticPickingDrain.workline_id == line_id,
+                        InboundEvidence.workline_id == line_id,
+                        InboundEvidence.operation == "workline.return_buffer.drain_rack_decide@v1",
                         AutomaticPickingReturnMotion.archived_at.is_(None),
                     )
                     .with_for_update(of=AutomaticPickingReturnMotion)
@@ -42,13 +39,11 @@ class DrainDepartureRepository:
     async def by_decision(self, db, line_id, operation_id):
         return await db.scalar(
             select(AutomaticPickingReturnMotion)
-            .join(
-                AutomaticPickingDrain,
-                AutomaticPickingDrain.response_evidence_id == AutomaticPickingReturnMotion.source_evidence_id,
-            )
+            .join(InboundEvidence, InboundEvidence.id == AutomaticPickingReturnMotion.source_evidence_id)
             .where(
                 AutomaticPickingReturnMotion.workline_id == line_id,
-                AutomaticPickingDrain.workline_id == line_id,
+                InboundEvidence.workline_id == line_id,
+                InboundEvidence.operation == "workline.return_buffer.drain_rack_decide@v1",
                 AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
                 AutomaticPickingReturnMotion.departure_operation_id == operation_id,
             )

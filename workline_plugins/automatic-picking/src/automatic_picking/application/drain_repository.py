@@ -17,6 +17,17 @@ class DrainRepository:
         self.returns = self.allocations.returns
         self.tasks = PickingTaskRepository()
 
+    @staticmethod
+    def validate_departure_handoffs(root, ready):
+        handoffs = root.departure_handoffs
+        if (
+            type(handoffs) is not dict
+            or not set(handoffs).issubset(r.rack_id for r in ready.racks)
+            or any(type(value) is not str or not value.strip() for value in handoffs.values())
+            or len(set(handoffs.values())) != len(handoffs)
+        ):
+            raise ValueError("drain departure handoffs differ from original reservation")
+
     async def current(self, db, line_id):
         return await db.scalar(
             select(AutomaticPickingDrain)
@@ -55,5 +66,6 @@ class DrainRepository:
             current.operation_id, current.return_ids = operation_id, return_ids
             current.response_evidence_id = current.retry_at = None
             current.returned_ids = []
+            current.departure_handoffs = {}
         await db.flush()
         return current
