@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 
+from automatic_picking.application.drain_departure_repository import DRAIN_DEPARTURE_STEP, DrainDepartureRepository
 from automatic_picking.application.drain_inbound_repository import (
     DRAIN_INBOUND_STEP,
     DRAIN_ROTATION_STEP,
@@ -30,7 +31,13 @@ class AutomaticPickingTransportOutcomePublisher:
             or (
                 binding.picking_task_id is None
                 and binding.step
-                not in {"AUTOMATIC_PICKING_RETURN", DEPARTURE_STEP, DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}
+                not in {
+                    "AUTOMATIC_PICKING_RETURN",
+                    DEPARTURE_STEP,
+                    DRAIN_INBOUND_STEP,
+                    DRAIN_ROTATION_STEP,
+                    DRAIN_DEPARTURE_STEP,
+                }
             )
         ):
             raise ValueError("automatic Transport outcome differs from its frozen owner")
@@ -42,6 +49,7 @@ class AutomaticPickingTransportOutcomePublisher:
             DEPARTURE_STEP,
             DRAIN_INBOUND_STEP,
             DRAIN_ROTATION_STEP,
+            DRAIN_DEPARTURE_STEP,
         }
         if binding.step in rack_steps:
             if (outcome.members or outcome.status == "SUCCEEDED") and (
@@ -54,6 +62,8 @@ class AutomaticPickingTransportOutcomePublisher:
             await DrainInboundRepository().validate_outcome(db, outcome, binding)
         if binding.step == DEPARTURE_STEP:
             await SourceRackDepartureRepository(ReturnMotionRepository()).validate_outcome(db, outcome, binding)
+        if binding.step == DRAIN_DEPARTURE_STEP:
+            await DrainDepartureRepository().validate_outcome(db, outcome, binding)
         accepted = await self.evidences.accept(
             db,
             kind=InboundEvidenceKind.TRANSPORT_RESULT,

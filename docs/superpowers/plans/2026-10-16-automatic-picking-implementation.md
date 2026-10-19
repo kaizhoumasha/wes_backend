@@ -444,6 +444,20 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 首轮两项P2及闭环追加一项P2均以真实事务反例先RED后GREEN：未知普通架面读口保留旧分配时不得用空来源时间；接入前独立READY不能替代本阶段最终求值；原成员已回库后，范围外新FIFO队头不得留住旧reservation架面。最终求值归原ReturnBatchFlow，明确范围外队头只结束本范围求值，不跳队领取或改写成功事实。原成员未知、未合格、未交接依旧等待。同一独立Reviewer合并完成完整审查、意见闭环及最终差异核对，无剩余确认P1/P2/P3。当前12文件可执行快照保持固定，无暂存/提交/部署；独占测试环境已清理。离场、drain收口及现场/真实worker验收不在本片完成结论内。
 
+#### 实施切片 9D 后续片：终面求值与显式 departure READY 的 CTU03 交接
+
+**范围：**原 drain READY、精确当前到位、完整参数及已发布 departure READY 显式给定的离线路径。终面同样先准备运动前阶段，再由原 ReturnBatchFlow 恢复原义务并完成一次求值；未接本片时维持9D首片的终面边界。不接首次 departure、WAIT续问、拒绝后重新决定、离场失败重试、补架或 drain 收口，不启用生产装配或真实派发。
+
+**身份与事务：**显式输入只关联原 drain id、rack、当前到位 Evidence 和 departure operation；已有 Motion 的 departure operation/Transport/result 引用承接原执行。终面阶段已结束、本架所有原分配及直接义务已闭合、当前权威架面仍匹配且未被更新动作接管后，才消费精确 WorkLine-owned、task_id=null 的原 READY。READY 请求不得早于当前到位及本次阶段结束，目的地原样采用 WMS rack_destination，固定 CTU03；Transport、原 READY Binding、Motion 引用及原进场窗口 departure 关联同事务提交。不伪造来源 Feed、服务结束 Evidence 或来源轮次时间，不新增表、字段、业务状态、migration 或通用授权。
+
+**交接与恢复 owner：**显式安装本片后，原 batch 前置入口先扫描持久 Motion 的原离场引用，再准备架面求值，最后按原 drain 推进新动作；恢复不需要新候选、EXECUTING任务或新通知，停用后仍可收口已建动作。Transport 保持原身份提交及技术恢复，FactProcessor 应用并发布匹配的原结果。ACCEPTED仅释放本地进场窗口，不代表物理成功、drain完成或WMS reservation释放；本架未闭合结果不统一阻塞其他架。只有原成功终态、唯一RACK成员、已知精确终位、宿主和业务发布均闭合后，才归档该面离场阶段；ZONE目标保留WMS原目标，实际成功终位仍须为明确RACK_POSITION。明确非成功或未知结果保留原阶段，不创建替代动作。
+
+**所有权与历史：**普通来源 departure 扫描仅领取有来源绑定的Motion，drain结果使用独立静态step沿冻结Binding接入，不按task_id=null猜业务owner。原离场的READY、当前Motion/Binding/Transport及其结果仍为直接依赖；已交接且无当前引用的中间面阶段、分配和动作可清理，恢复不查询最后历史响应或已清理来源Feed。终面冻结后后到FIFO不重开阶段，不扩展原return_ids，原成员未全部回库也不冒充drain完成。
+
+**测试所有权：**插件 integration/test_drain_departure_postgresql.py 拥有终面求值、原READY身份/发布门禁、创建和关联原子性、并发、崩溃、接纳与回调时序、多架、旧轮次/接管、无EXECUTING、停用、结果重放及合法历史清理。9B/9C/9D首片和普通来源departure/WAIT/明确未接纳路径做定向回归；核心只承接安装/拓扑，HEAVY执行最终selector清单。未决设备映射、扫码关联、PkgID和首批期限保持原阻塞范围；完整QUALITY留后续获授权提交hook。
+
+**验证与闭环 Review：**本片29项、9D首片28项、9C31项及9B33项 PostgreSQL 联合验收121 passed；普通来源departure/WAIT/明确未接纳三域106 passed，合计227项不同用例。插件FAST174项、核心安装/拓扑33项通过；HEAVY selector为NONE，9个Python文件Ruff/格式及diff检查通过。既有全局metadata循环外键warning保留，未改schema。终面缺阶段与有READY未建CTU03均先取得真实RED再GREEN；开发回归中一项断言误将未业务发布视为完成、一项历史清理fixture缺一次持久扫描，分别按合同和既有owner补齐前置，未放宽生产门禁。独立Reviewer核对固定10文件及完整调用链、事务、对象锁、测试所有权和历史边界，未确认P1/P2/P3，无需代码修正；最终可执行快照保持不变。仅完成本片离线验收，不提交、不部署，不接首次departure、WAIT续问或drain收口。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

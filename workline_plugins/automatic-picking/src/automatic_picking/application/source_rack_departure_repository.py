@@ -32,6 +32,7 @@ class SourceRackDepartureRepository:
                     .where(
                         AutomaticPickingReturnMotion.workline_id == line_id,
                         AutomaticPickingReturnMotion.departure_operation_id.is_not(None),
+                        AutomaticPickingReturnMotion.inbound_client_request_id.is_not(None),
                         AutomaticPickingReturnMotion.archived_at.is_(None),
                     )
                     .order_by(AutomaticPickingReturnMotion.id)

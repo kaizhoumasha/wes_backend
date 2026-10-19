@@ -16,7 +16,7 @@ class DrainRotationFlow:
         self.returns, self.creator, self.clock = returns, creator, clock
         self.repository = DrainInboundRepository()
 
-    async def prepare_in_session(self, db, line):
+    async def prepare_in_session(self, db, line, *, include_final=False):
         if not line.is_active:
             return 0
         current = await self.returns.drains.current(db, line)
@@ -30,7 +30,7 @@ class DrainRotationFlow:
                 continue
             task, fact = arrival
             faces = next(r.rack_faces for r in ready.racks if r.rack_id == row.rack_id)
-            if task.request_json["target_face"] == faces[-1]:
+            if task.request_json["target_face"] == faces[-1] and not include_final:
                 continue
             stage = next(
                 (
