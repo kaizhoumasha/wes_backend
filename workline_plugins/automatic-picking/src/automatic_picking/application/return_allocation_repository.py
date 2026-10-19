@@ -64,8 +64,9 @@ class ReturnAllocationRepository:
             == evidence.payload_digest
         )
 
-    async def add(self, db, *, line, face, operation_id, rows, completed, now):
+    async def add(self, db, *, line, face, operation_id, rows, completed, now, drain_id=None):
         allocation = AutomaticPickingReturnAllocation(
+            drain_id=drain_id,
             workline_id=line.id,
             arrival_evidence_id=face.arrival_evidence_id,
             rack_id=face.rack_id,

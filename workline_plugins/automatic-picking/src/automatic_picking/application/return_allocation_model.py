@@ -22,6 +22,9 @@ class AutomaticPickingReturnAllocation(EnterpriseMixin, DataTableMixin, table=Tr
         ),
         {"schema": SchemaType.BIZ.value},
     )
+    drain_id: int | None = Field(
+        default=None, foreign_key="wes_biz.automatic_picking_drains.id", index=True, sa_type=SQL_COMPAT_BIGINT
+    )
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     arrival_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
     rack_id: str = Field(max_length=100)

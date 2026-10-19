@@ -28,6 +28,7 @@ class AutomaticPickingDrain(EnterpriseMixin, DataTableMixin, table=True):
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     operation_id: str = Field(max_length=36, unique=True)
     return_ids: list[int] = Field(sa_type=JSON)
+    returned_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     response_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )

@@ -9,6 +9,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
+from .drain_return_repository import DrainReturnRepository
 from .return_motion_repository import ReturnMotionRepository
 
 
@@ -76,17 +77,22 @@ class AutomaticPickingReturnBatchFlow:
         uuid_factory=new_uuid7,
     ):
         self.repository, self.scheduler, self.creator = repository, scheduler, creator
+        self.drains = DrainReturnRepository()
         self.face_reader, self.location_reader = face_reader, location_reader
         self.clock, self.uuid_factory = clock, uuid_factory
         self.motion_reader, self.motions = motion_reader, motions or ReturnMotionRepository()
 
-    async def _prefix(self, db, line):
+    async def _prefix(self, db, line, *, drain=None, drain_face=False):
         fifo = await self.repository.returns.list_fifo(db, line.id)
         if fifo is None:
             return None
         rows, candidates = [], []
         for row in fifo:
+            if not self.drains.allowed(drain, row, drain_face=drain_face):
+                return (rows, tuple(candidates)) if rows else None
             if row.allocation_id is not None:
+                if drain_face or (drain is not None and row.id in drain[0].return_ids):
+                    return (rows, tuple(candidates)) if rows else None
                 continue
             if not await self.repository.qualified(db, row):
                 return (rows, tuple(candidates)) if rows else None
@@ -223,7 +229,9 @@ class AutomaticPickingReturnBatchFlow:
 
     async def advance_in_session(self, db, line):
         allocations = await self.repository.current(db, line.id)
+        drain = await self.drains.current(db, line)
         faces, complete = await self._faces(db, line)
+        faces, drain_faces = await self.drains.faces(db, line, drain, faces)
         count = 0
         for allocation in allocations:
             count += await self._advance_allocation(db, line, allocation, faces or ())
@@ -292,7 +300,7 @@ class AutomaticPickingReturnBatchFlow:
                 for a in allocations
             ):
                 continue
-            prefix = await self._prefix(db, line)
+            prefix = await self._prefix(db, line, drain=drain, drain_face=face in drain_faces)
             if prefix is None:
                 continue
             rows, candidates = prefix
@@ -308,6 +316,7 @@ class AutomaticPickingReturnBatchFlow:
                 face=face,
                 operation_id=operation_id,
                 rows=rows,
+                drain_id=self.drains.owner(drain, rows),
                 completed=tuple(a for a in same_arrival if a.settled_at is not None and a.handed_off_at is not None),
                 now=now,
             )
@@ -434,6 +443,7 @@ class AutomaticPickingReturnBatchFlow:
             or evidence.normalized_payload["outcome_version"] != task.outcome_version
         ):
             return count
+        count += await self.drains.record_returned(db, allocation, task, members, evidence, self.repository.reader)
         if task.status == "REJECTED" or (
             task.status == "SUCCEEDED"
             and all(

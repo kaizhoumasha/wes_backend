@@ -123,14 +123,14 @@ class DrainInboundRepository:
         # 发布后由 batch 重验物理到位并写交接；FactProcessor 事务不提前把自己标为 published。
         return "DRAIN_INBOUND_OBSERVED"
 
-    async def recover_arrival(self, db, line, row):
+    async def current_arrival(self, db, line, row):
         binding = await db.get(TransportDecisionBinding, row.binding_id)
         task = await db.scalar(
             select(TransportTask).where(TransportTask.client_request_id == binding.client_request_id)
         )
         root, _, target = await self.validate_transport(db, task, binding)
         if root.archived_at is not None:
-            return 0
+            return None
         fact = await db.scalar(
             select(InboundEvidence).where(
                 InboundEvidence.source_identity == f"transport:{task.transport_task_id}:outcome:{task.outcome_version}",
@@ -138,11 +138,18 @@ class DrainInboundRepository:
             )
         )
         if fact is None or await self.observe(db, line, fact) != "DRAIN_INBOUND_OBSERVED":
-            return 0
+            return None
         if not await ReturnMotionRepository().current_arrival(
             db, line.id, fact.id, row.rack_id, task.request_json["target_face"], target
         ):
+            return None
+        return task, fact
+
+    async def recover_arrival(self, db, line, row):
+        arrival = await self.current_arrival(db, line, row)
+        if arrival is None:
             return 0
+        _task, fact = arrival
         if row.arrival_evidence_id is not None:
             if row.arrival_evidence_id != fact.id:
                 raise ValueError("drain arrival identity drift")

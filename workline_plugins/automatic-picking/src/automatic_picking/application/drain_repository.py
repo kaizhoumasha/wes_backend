@@ -54,5 +54,6 @@ class DrainRepository:
         else:
             current.operation_id, current.return_ids = operation_id, return_ids
             current.response_evidence_id = current.retry_at = None
+            current.returned_ids = []
         await db.flush()
         return current
