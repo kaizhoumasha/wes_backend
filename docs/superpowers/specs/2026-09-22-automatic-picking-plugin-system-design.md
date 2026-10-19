@@ -119,7 +119,7 @@ src / wes_plugin_sdk         ──×→ automatic-picking / manual-picking
 | Pickup | 保存 Work 或 DirectPick 二选一关联、授权 Evidence、来源 locator、来源 Command、扫码 Evidence、MaterialExecution、目标准备/PUT/报告引用 | Command 和 MaterialExecution 已有可靠生命周期，但不能独自恢复“扫码前哪次授权取了哪盘” |
 | 自动回程 execution | 保存首次 SCAN3/SCAN4 Evidence、物理 FIFO 顺序、方向命令、冻结回架决定与 Transport 关联 | 自动插件拥有回程业务，不读取人工 `BinLineReturn`；消息和运输内容仍由基础对象保存 |
 | 任务确认进度 | 按现有 PickingTask 身份关联 prepare 接受 Evidence、冻结首批期限/到期时间、当前 completion_confirm 引用及业务重问时间 | PickingTask 本身没有这些等待字段；附属进度由插件拥有，不新增任务身份、公共任务状态或通用定时实体 |
-| 排空进度 | 按现有 WorkLine 身份保存当前 drain operation/决定引用、WAIT 到期时间、请求时冻结的回程成员及消费进度 | WAIT 后原 Confirmation 已结束，READY reservation 又须跨任务恢复；不能用最近一条历史响应或其他插件表代替当前进度 |
+| 排空进度 | 按现有 WorkLine 身份保存当前 drain operation/决定引用、WAIT 到期时间、剩余责任及本次请求成员范围和回库进度；9H 补架保留首次 READY 的 reservation operation 标量引用 | WAIT 后原 Confirmation 已结束，READY reservation 又须跨任务恢复；在途责任不等于本次可请求数量，不能用最近历史响应或其他插件表代替当前进度 |
 
 批次完整清单、设备正文和 WMS 请求/响应只保存在已有 Evidence、Command、Confirmation 中，业务记录保存稳定引用和必要运行索引。
 投箱分段和来源架阶段以原成员、冻结清单及 Transport binding 恢复；确需游标时仅保存当前未闭合进度，不复制整份计划或建立容量账。
@@ -279,14 +279,43 @@ SCAN4 匹配放行 Command 的成功结果使候选具备 return_batch 资格；
 | --- | --- |
 | 请求待定 | 排空进度引用原请求，由 WmsConfirmation 负责原身份派发/重提；插件不创建第二个并行决定 |
 | 确定 WAIT | 原决定闭合；自动插件 batch driver 同事务保存 WAIT Evidence 引用及接收时间加 retry_after_ms 得到的到期时间，不延长原请求或复用其身份重问 |
-| WAIT 到期 | batch driver 在 WorkLine 事务锁内核对原 WAIT、当前请求引用、drain 准入和当前可回料数量；有需求且无未决请求/活动 reservation 时，以新 operation_id 创建一次新义务并替换当前进度引用 |
+| 初始 WAIT 到期 | batch driver 在 WorkLine 事务锁内核对原 WAIT、当前请求引用、drain 准入和当前可回料数量；有需求且无未决请求/活动 reservation 时，以新 operation_id 创建一次新义务并替换当前进度引用；下一任务优先只作用于该初始准入 |
 | READY 执行中 | batch driver 从当前引用恢复 reservation 和原冻结成员，按实际到位架面推进普通 return_batch；新入队成员不追加到旧范围，也不重复请求容量 |
-| 当前等待结束 / 本轮完成 | WAIT 到期已无候选或已不满足 drain 准入时结束该等待，保留候选供正常服务；READY 按主合同的原成员回库事实及直接义务收口，不凭超时、父任务完成或新任务到达释放 reservation |
+| READY 耗尽但仍有原成员未回库 / 补架 WAIT 到期 | 9H 按下述原子接续，将未回库原成员交给新的当前决定；保留同一 WMS reservation 引用，不把旧进度退出当成正常完成，不因新任务到达丢弃原需求 |
+| 当前等待结束 / 本轮完成 | 初始 WAIT 到期已无候选或已不满足初始准入时结束等待，保留候选供正常服务；补架 WAIT 仅在本次决定已发布且原成员全部权威回库时结束。READY 按主合同的原成员回库事实及直接义务收口，不凭超时、父任务完成或新任务到达释放 reservation |
 
-每次确定 WAIT 后的下一请求都重新冻结当前数量及成员；原 WAIT 没有分配，不持续占有旧候选。
+每次初始 WAIT 后的下一请求都重新冻结当前数量及成员；原 WAIT 没有分配，不持续占有旧候选。补架 WAIT 仅在原剩余成员中重新求值，不纳入新到成员。
 到期重问所需引用和时间保存在 WorkLine 所属的插件排空进度中，原任务即使已完成也可扫描；同事务替换引用保证并发扫描只生成一个新请求。
 当前等待结束后，新需求从当前事实重新准入，不依赖已闭合等待历史；READY reservation 不因新任务到达被取消或覆盖，WMS 按自身权威事实管理容量释放。
 本次不实现停用/插件切换触发的 drain，该触发按现有待决边界保持未实现，不由本设计自动解锁。
+
+**9H 正常补架接续设计（文档基线，未实现；外部接续语义须按主合同 §9.2.3 的 9H 补充完成双方冻结后才启用真实请求）。**
+
+采用“复用现有排空记录、逐请求原子交接”，不在同一记录里另维护完整供架历史或增加通用轮次表。已有 `operation_id` 始终标识该记录的冻结请求；`return_ids` 承担全部未回库责任，本次真正请求供架的成员另作冻结范围，两者在补架中可不同。新记录承接全部剩余 execution，先前已回库成员不再成为新记录的运行依赖。
+
+- 身份只增加排空记录上的可空标量 `reservation_operation_id`：初始尚无 READY 时为空，首次 READY 应用时冻结为该请求 operation；补架新记录继承该值，后续补架 READY 仍属于它。它是外部容量义务引用，不是外键式历史依赖、库存/容量账或新授权对象；正文和完整供架集合只读当前 Confirmation/Evidence。
+- 同一标量也是主合同 9H 提议的补架请求及原成员 `return_batch` 的 `data.reservation_operation_id`，不额外建立另一套 WMS/WES 对照身份。初次 drain 请求省略、补架必填且不得为 null；回架任一入口只要消费原成员就必填，不消费原成员则省略，单次不得混 owner。WMS 在决定事务内校验精确原 reservation，已结束/别线/另一轮时按原冲突合同拒绝，不按当前工作线隐式重绑。两类现有严格 wire/typed intent 尚无该字段；双方冻结后才同步各自所属 DTO、SDK、Adapter/OpenAPI、自动/人工消费者与测试，本轮只写文档，不做裸 dict、兼容别名或版本分叉。
+- 范围只增加本次冻结 `request_return_ids`：`required_slot_count == len(request_return_ids)`，它是 `return_ids` 的有序子集。`return_ids` 仍包含原独立 BIN_MOVE 中的未回库成员；请求范围只取其中当前实际缓冲位的连续合格前缀，不把已确定分配重复请求、不等待独立已交接动作的终态才能为其他成员补架。初次请求两份范围相同；字段分别证明业务责任与请求身份，不能用只有数量的 wire 正文恢复成员，亦不新增在途/历史成员副表。实际 schema/存量迁移随实施另审，只能由确定当前范围建立，不猜补架或活动 reservation。
+- `response_evidence_id`、`retry_at`、`departure_handoffs` 表达当前决定及本轮供架；`returned_ids` 保存当前责任范围的确定回库事实。新记录承接旧 `return_ids - returned_ids`，并冻结本次 `request_return_ids`，归还进度和本轮离场交接从空集合开始；不扫描旧根、旧 Return 或已闭合分配恢复已满足需求。初始 WAIT 的 9A 准入保持原规则，携带 reservation 引用的补架 WAIT 由补架分支推进，不新增 mode/state 字段。
+- 每轮 DrainRack 仍以当前 drain 记录和 rack 关联 Binding；新 drain 记录本身区分新供架决定，同一 rack 的新轮次不冒领旧关联。原 Motion 保留原到位/READY/Transport 引用；旧排空根退出不切断这些直接依赖，也不要求旧根永久存在。未结束的原物理义务不因补架而可清理。
+
+补架由现有 batch 前置扫描恢复，顺序是先恢复原决定/分配/物理事实，再判定原供架耗尽。当前决定的应需供架集合与 `departure_handoffs` 的逐架原 CTU03 正事实证明耗尽；交接写入已经过冻结终面、此前面序/运动前阶段和本架直接请求/BIN_MOVE 门禁，不重新扫描可清理的中间面 Motion。未到位架、未服务面或仍应启动的供架不能当耗尽，未交接的直接义务继续原恢复；独立架原成员在途动作不扩大为耗尽门禁。同架再用仍等原动作权威成功及已知 RACK_POSITION；其他独立架不因此统一等待。晚到 FAILED/RECONCILING 不抹已成立交接；已接纳后 FAILED 的新决定/动作不在本片，原 Motion 继续留证与恢复。
+
+同一 WorkLine 锁事务中的接续步骤：
+
+1. 精确核对当前记录、已发布决定、同一 reservation 引用、原成员及确定回库正事实，得到完整剩余责任；再从实际待派发 FIFO 冻结可请求的连续合格前缀。原在途成员仍在责任集合但不重复计数；未知/未闭合队头不得越过，新成员不凑数。没有可请求成员时不发送零数量，存在未完责任则保留当前 owner；已发布 WAIT 且责任全满足时退出。新请求必须携带精确 reservation 引用；WMS 冲突/未知保留原义务，不改成无引用的初次请求。
+2. 只在上述正常耗尽或已发布补架 WAIT 到期时创建新 operation/new Confirmation；新当前记录保存相同 reservation 引用、完整剩余责任及本次请求成员。旧记录退出 current 与新可靠义务、唯一 current 同事务提交；未完独立动作的原身份不改写，后续回库事实按精确成员与 reservation 交给新 current。旧 `archived_at` 在此只表示需求已交接，不能作为“旧成员全部成功回库”的事实；不改写旧 operation、READY 或 Transport 结果。
+3. 提交前任一步失败全部回滚；提交后只凭新 current 的请求身份、两份成员范围、reservation 引用恢复。旧响应按原身份留存，不能重新激活旧根、覆盖当前请求或创建第二轮动作。已可清理旧根、旧决定和已闭合分配不作为新 current 的查询前驱；原 Motion/Allocation 的直接因果引用不改写，仍被其未闭合义务引用的数据继续保留。原回库事实先于交接时写入旧 current 并在接续时扣除，后于交接时写入新 current；同一 WorkLine 锁使两种时序均有唯一责任 owner。已扣除成员的旧结果重放不把它加回新范围，同箱码新 execution 或新 reservation 不冒领旧结果。
+
+确定补架 WAIT 保存首次结果接收时间加 `retry_after_ms` 的固定到期点；初始 prepare 优先不取消这次原业务续行。WAIT 未分配的候选可以由普通回架入口承接；两个入口在同一 WorkLine 锁下按当前 Return 身份防重，单次 `return_batch` 不跨原成员与新成员的 owner 范围。原成员无论由哪个入口、哪个前驱决定的原 Action 回库，均校验原分配/Transport/结果及同一 reservation，再将确定物理成功与当前排空 `returned_ids` 同事务落地；不再同步维护已退出 current 的旧根进度。原动作因果引用不改写；仍被该未闭合动作直接引用的旧记录不是可清理历史。到期有正数可请求成员时以新 current 接续，无可请求成员但有在途责任则等原事实及周期扫描，已全部权威回库且本次 WAIT 已发布时结束等待；不从 Return 已归档、ACCEPTED 或记录不存在推断成功。
+
+上述普通入口也须在创建可靠请求时原子冻结原成员资格与显式 reservation 引用，不能仅在本地标注 owner、让 WMS 按承接架猜核销。WMS 依主合同保存 READY 分配的原 `(return_batch operation_id, sequence_no)`、完整箱码/来源/目标与 reservation，BIN_MOVE 接纳前唯一匹配并冻结 Transport/member 关联；无唯一匹配则冲突，不向 RCS 启动。原权威成功及匹配终位仅核销一次，NO_BATCH/未分配尾部不占名额，无引用新成员不核销原 reservation；WMS 自己维护原容量与成功名额，WES 不复制这份账。迟到结果用冻结分配归属，禁止按最新 reservation 或相同箱码更新。此项是两 operation 的待冻结合同变化，不增 WES 第三个字段/成员模型，不扩展 Transport wire；存量分配无精确归属时不猜恢复，新业务重试不在本片。
+
+请求未知、结果未发布或已确定分配时保留原身份和成员依赖，不用新操作覆盖，也不因父任务完成/新任务到达丢弃。当前范围随后全部回库时仍先闭合已创建的可靠义务；确定结果后不为已满足需求再启动 CTU01。已启动供架沿原动作交接，未启动资格须从当前决定及不可清理的当前执行关联证明，不把缺失历史当作 EMPTY。补架 READY 的动作仍用本轮 Evidence、实际到位及原进场轮次，复用 9B–9G；补架不接任务完成确认。
+
+唯一业务 Next Owner 为自动插件 batch；Confirmation 负责原身份派发/重提，FactProcessor 负责当前决定与确定回库事实的应用/发布，Transport 负责原物理动作。普通回架入口更新同一份当前排空事实，不建立第二个补架 owner。现有周期入口在无 EXECUTING、无新事件时仍发现 current；不新增 worker/timer、默认生产 reader、基础层补架判断或 `bin-line-common`。
+
+验收归自动插件：并发只产生一个 successor；义务创建/旧退出/新 current 任一处崩溃全回滚；WAIT 固定到期、新 READY 接回原执行链、普通与补架两入口防重；新候选/同箱码新 execution 不混入；旧结果、跨轮同架和已接纳失败隔离；无 EXECUTING、无通知及清理全部可清理前驱历史后独立恢复。WMS 另验收公开幂等、唯一 reservation、新 operation 的原子关联、普通架消费原成员的精确核销与新成员排除；覆盖分配到原 Transport 的唯一绑定、部分 READY/NO_BATCH 不重复占名额、原权威成功仅核销一次、旧结果不记新 reservation。不能由离线 Mock 代替双方合同确认。
 
 任务业务完成条件为：所有当前已接收成员均有确定业务结果、没有待执行的本地业务工作、必须上报的位置结果已获 WMS 确认。
 插件经 completion driver 请求 completion_confirm，携带连续计划游标，仅 WMS COMPLETED 才关闭 PickingTask。

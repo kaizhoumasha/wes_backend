@@ -1102,9 +1102,8 @@ WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rac
 结构、identity 或内容漂移保留原可靠义务并进入对账。冻结 wire 见
 [`return_buffer_drain/wire.py`](../../src/app/wms_adapter/return_buffer_drain/wire.py)。
 
-WMS 内部以 `(workline_code, drain_operation_id)` 保存该线唯一活动容量 reservation；不增加 wire 字段。普通 `return_batch` 使用已有
-`workline_code + rack_id + rack_face`，为当前已权威到位的 reservation 货架面计算并消费精确 slot。物理结果或位置未知时 reservation 不释放；本次
-`required_slot_count` 对应成员全部权威回库后关闭 drain 并释放剩余容量。后续新入队 Bin 不追加到旧 reservation。
+WMS 内部以 `(workline_code, drain_operation_id)` 保存该线唯一活动容量 reservation；现有首次请求不增加 wire 字段。下方待冻结的 9H 补充将 `drain_operation_id` 明确为首次 READY 的请求身份，正常补架的新决定仍关联该 reservation，并提议增加一个补架关联字段；当前生产 DTO 尚不支持该补充。
+普通 `return_batch` 使用已有 `workline_code + rack_id + rack_face`，为当前已权威到位的货架面计算并消费精确 slot；该位置关联本身不证明候选属于哪个 drain reservation，9H 提议的精确核销归属见下文。物理结果或位置未知时，不释放受影响对象的原占用或已确定分配；原请求范围的成员全部权威回库后，WMS 关闭容量义务并释放其剩余容量，不把它解释为未知对象已物理离场。后续新入队 Bin 不追加到旧 reservation。
 `NO_BATCH` 表示本次回架决定闭合但没有可分配储位；无论是否已有 `READY` 批次，WES 都不得把它变成同面轮询或设备级卡点。
 当前货架继续 CTU02/CTU03；所有工作货架耗尽后由 drain 请求 WMS 补发空载货架。`UNAVAILABLE` 或响应未知只重试原 return_batch identity。
 
@@ -1115,6 +1114,25 @@ rack_id 的既有 RACK 引用，目标为本线已配置工作位，不从 WMS �
 其它 reservation 货架进场，由 RCS 负责排队，不等待旧架最终位置。历史或无关 Transport 不构成 WorkLine 级门闩。
 当前可派发 FIFO 前缀先按实际到位架和当前面求值一次；本架已确定分配的直接义务未闭合时不离场。已确认无分配的候选、尚未到退箱位的 pre-buffer 或后续未分配 FIFO 不构成留架理由；直接义务闭合后请求离场决定并创建唯一 CTU03，退箱 FIFO 仍由后续合格货架按原顺序承接。
 CTU03 接纳释放 WES 本地业务窗口；同架复用仍等待权威成功回调及明确 `RACK_POSITION`。WMS 拥有 rack/face、容量与储位分配及 reservation 释放，WES 拥有本地可靠编排，RCS/ECS 拥有接纳和最终物理事实。本地窗口释放或排空退出均不证明地点 EMPTY、物理成功或 WMS reservation 已释放；WMS 对后续分配的明确拒绝仍按原响应与重试合同处理。
+
+**9H 正常补架接续补充（合同/设计稿，尚未实现；本补充须经 WMS 双方冻结后才作为真实补架联调准入）。**本节只补齐正常 READY 供架耗尽后的续供，不改变既有异常退役合同，不授权完成确认或已接纳后 FAILED 重决策。drain 决定及 §9.2.2 `return_batch` 的 Method、Path、operation、响应 DTO、字面量、错误码和技术重试沿用各自合同；两类请求各提议增加同一个精确关联字段，不新增补架 operation 或 reservation API。此处是提案，不表示已批准字段或当前严格 parser 可接收。
+
+| 补充请求 JSON Path | 9H 待冻结规则 |
+| --- | --- |
+| `data.reservation_operation_id` | 初次决定禁止携带；正常补架及其 WAIT 到期续问必填，值为本 WorkLine 原活动 reservation 首次 READY 的 UUIDv7 operation_id。禁止 `null`、空值、当前任务 ID、最近响应 ID或前一次补架 operation_id；原 reservation 未结束时保持不变。其余 data 仍只有 `workline_code + required_slot_count` |
+| §9.2.2 `return_batch` 的 `data.reservation_operation_id` | 候选属于原 reservation 冻结成员时必填相同首次 READY UUIDv7，不论走普通还是 drain 入口、不论承接架是否由该 reservation 提供；不属于任何 reservation 的候选必须省略。单次请求不得混入其他归属；禁止 `null`，不增加候选 Return execution ID 或新的成员 API |
+
+仅凭工作线和数量不能区分“为原活动 reservation 补架”和“旧 reservation 已结束后的新需求”，仅凭箱码或承接架也不能证明原成员归属；本补充不以 WMS 当前唯一记录隐式猜测关联。双方冻结后须在 drain 和 return_batch 各自所属 wire/SDK typed intent、Adapter/OpenAPI 及消费者测试同步实现，禁止插件先发送裸 dict 绕过现有严格 DTO；人工插件等既有消费者也须按自身明确归属对齐，不能只改自动插件。
+
+1. **业务 reservation 与一次决定分开。**首次 READY 建立 reservation；补架每次使用新 `operation_id`，表示为同一活动 reservation 的剩余需求重新决定供架，不是原 READY 的技术重试，不新建第二份并行 reservation。原 READY 及其完整响应始终不可改写。
+2. **WMS 原子关联。**WMS 先按公开幂等身份重放相同规范化请求（包含该关联字段），否则在同一事务/等价串行边界内核对 `workline_code + reservation_operation_id` 恰为本线仍活动的原 reservation，冻结新请求归属并保存完整决定。原 reservation 已结束、属于别线或该线已是另一 reservation 时返回既有 `409 / CONFLICT + STATE_CONFLICT`，不能当初次请求或绑定最新 reservation；未携带关联字段的初次请求遇本线活动 reservation 同样冲突，不自动变补架。补架 READY 的 `racks[]` 仅是本次供架集合，不是所有历史供架的合集；WMS 原子归属该集合并继续承担剩余容量义务，不把本次 `required_slot_count` 累加为新业务需求。WAIT 只闭合本次决定，未新分配供架，不关闭或释放原活动 reservation；未知/UNAVAILABLE 仍重提原请求。不能唯一匹配时拒绝，不猜测关联或给默认架；旧请求重放返回原结果，不重新绑定该线后来建立的 reservation。
+3. **耗尽有正面依据。**WES 以当前决定冻结的应需供架集合与当前 `departure_handoffs` 中逐架的原 CTU03 交接正事实判定正常耗尽；交接写入前已验证冻结终面、此前面序及运动前阶段结束、本架直接回架义务闭合。该正事实承接已完成门禁，不重新查询可清理的中间面 Motion；尚未交接的当前直接义务仍按原对象恢复。晚到 FAILED/RECONCILING 不抹去已成立交接，但本节不恢复失败重决策。原架未到位、未服务到的冻结面、未创建的应需供架、未消费 READY、本次供架自身直接 BIN_MOVE 未取得已发布终态/已知终位，均不能当成耗尽；独立架上原成员的在途动作保留责任，不扩大为本次供架耗尽门禁。不能因为新候选为空或记录缺失就补架。
+4. **剩余责任与本次请求成员分开。**WES 在同一事务内按原冻结 Return execution 身份及顺序扣除已权威回库成员，得到仍须承接的全部剩余责任；其中尚在原分配/已交接 BIN_MOVE 中的成员保留原动作，不重复计入补架数量。本次请求只冻结这份原范围中实际位于 RETURN_BUFFER、可回架且未被原请求/分配占用的 FIFO 连续合格前缀，`required_slot_count` 等于该请求成员数且为正数；不得越过当前物理 FIFO 未闭合队头、不以位置未知或记录缺失删掉剩余责任。已经明确交接且不再属于当前待派发 FIFO 的独立 BIN_MOVE 不成为其他合格成员补架的统一物理终态门禁；其未完成责任仍由当前进度及原动作保留。范围/顺序冲突保留原 owner，不跳过成员凑数。新到成员及同箱码的新 Return execution 不加入本次接续，后续另按当前需求准入。Return ID 为 WES 本地身份，不发送给 WMS。
+5. **WES 原子移交 current。**旧供架耗尽或确定补架 WAIT 到期、有正数可请求成员时，同一 WorkLine 锁事务提交新 Confirmation、新的当前排空进度、全部剩余责任及本次请求成员，并让旧进度退出 current。新进度保留原 reservation 的首次 READY operation 引用；原动作/请求正文仍在原可靠对象。责任与本次请求数不要求相同，不能漏掉在独立原动作中的成员；这些动作后续事实仍交给同一 reservation 的当前责任 owner，不改写原 Action 因果身份。旧进度退出仅表示未完成需求已交接，不表示全部成功回库或 WMS 已释放 reservation。提交前崩溃全部回滚，提交后从新 current 恢复，不沿已闭合前驱找剩余需求。
+6. **补架 WAIT 继续原业务。**到期按剩余原成员和当前事实以新身份重新决定，不因后续任务到达而套用“首次 drain / 初始 WAIT 的下一任务优先”规则丢弃原 reservation。确定 WAIT 没有分配，不持续占有未分配候选；原成员仍可由合法的当前普通回架入口消费，权威回库事实须同事务登记到其当前排空 owner。没有可请求成员但仍有在途/未知责任时保留当前进度，由原事实和周期扫描恢复，不发送零数量或越过队头。原成员全部回库且当前决定为已发布 WAIT 时结束本地等待，WMS 按原权威事实释放容量。独立任务的 prepare、激活和动作仍可推进。
+   **WMS 核销归属：**WES 对原冻结 Return execution 的成员资格负责，创建任一入口的 return_batch 时，在同一 WorkLine 事务内校验当前原责任、冻结候选 execution 与 reservation 引用并创建可靠义务；后来新成员及同箱码新 execution 不携带旧引用，不得与原成员混批。WMS 不需要接收本地 Return ID，以该显式引用作为 WES 的成员归属声明；幂等重放优先，其余请求原子校验本线精确活动 reservation，并将 READY 实际分配的 `(return_batch operation_id, sequence_no)` 及箱码、来源、目标冻结归属该 reservation，累计分配不得超出原需求。NO_BATCH/未分配尾部不占用成员名额；相同请求重放不重复计入。无引用请求不核销该线活动 reservation，即使使用其供架；有引用请求即使使用普通架也核销原义务。WMS 在接纳 BIN_MOVE 前，按完整箱码、来源及目标唯一匹配未履约分配并冻结原 Transport/member 关联，不能按该线最近决定或箱码最近记录匹配；不能唯一确定时按所属冲突合同拒绝、不启动物理执行。之后仅原 Transport/member 的权威成功及匹配终位核销对应名额一次，ACK、未知或失败不核销，迟到结果始终按冻结归属而非当前活动 reservation 应用。原初次 READY 需求数对应的名额全部权威成功后，WMS 关闭原容量义务；先前独立分配、无引用的新成员或新一轮同箱码均不能充数。两入口防重与原请求不可变规则确保同一 execution 不换 operation 重复占名额；新业务重试、存量无精确归属分配不得靠历史推断接入本片。
+7. **未知与需求归零不能丢义务。**当前补架请求未决或结果未发布时保留原引用与交付 owner；即使出现需求变化也不覆盖它或创建另一身份。确定 READY/WAIT 应用后再按当前权威成员事实判断后继，不为已回库成员创建 CTU01。已有 CTU01/CTU02/CTU03、BIN_MOVE 和确定分配继续由原 owner 收口；本地退出须证明原成员都已回库、已启动供架均已离场交接，以及没有未交接的当前决定/分配。未启动资格由当前决定及必须保留的执行关联证明，不从已清理历史推断；这不证明 EMPTY 或旧动作物理成功。
+8. **供架身份与恢复。**新 READY 接回已有 CTU01→return_batch/BIN_MOVE→冻结面序 CTU02→departure/CTU03。动作绑定本次决定 Evidence、原进场轮次及当前到位面；同架再次供给须等待该架前一动作的权威成功及已知 RACK_POSITION，其他架不等待其终位。补架准入、成员范围和 WAIT 归自动插件 batch；Confirmation、FactProcessor、Transport 分别承担原身份交付、应用/发布和物理动作。旧 Motion 继续按其直接因果 Evidence 恢复，不查询旧排空根，也不能把旧结果应用到新供架轮。
 
 人工拣料插件通过 `ManualPickingDrainExecution` 持久表达本次本地排空状态：`ACTIVE` 可推进；各 reservation 货架离场已明确接纳且正常排空完成后为 `COMPLETED`；满足确定异常退出条件后为 `EXCEPTION_RETIRED`。两种终态均不再成为 current，不回退到历史前驱。该记录及原成员关联用于跨重启保留退出决定和因果身份，不复制请求、响应、位置或库存，不改变 wire/OpenAPI。
 

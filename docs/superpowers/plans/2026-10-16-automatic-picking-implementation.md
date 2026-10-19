@@ -494,6 +494,26 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **后续边界：**不接补架、完成确认或已接纳后 FAILED 重决策，不增加通用模型、业务状态、timer、worker 或生产装配，不做 bin-line-common 抽取。设备映射、精确扫码关联、PkgID、首批期限及失败权威架面等未决项保持原阻塞范围。当前仅离线实现与验证，不提交、不部署、不启用真实派发或取盘；完整 QUALITY 留获授权 Commit hook。
 
+#### 实施切片 9H：正常补架的 reservation 接续与 current 原子交接（合同/设计已补，代码未实施）
+
+**合同状态与范围：**主合同 §9.2.3 的 9H 补充和插件设计 §5.4 定义正常 READY 耗尽后的补架；新增接续语义及 `data.reservation_operation_id` 为待 WMS 双方冻结的设计稿，不能称为已确认生产合同或已有联调能力。无新 Method/Path/operation、响应 DTO 或公共 reservation API；初次请求不带新字段，补架及其 WAIT 续问必填原 reservation 首次 READY operation_id，禁止 null 或用最近响应替代。WMS 原子校验原活动身份，无引用却遇活动 reservation、引用过期/别线/新旧轮不符按所属冲突合同处理，不能自动改为新需求。冻结后才同步所属 wire、SDK typed intent、Adapter/OpenAPI 及测试，禁止插件先发裸 dict。现有已确认字段边界不重新列为未决；生产参数、设备/扫码/PkgID、首批期限及已接纳失败恢复仍只限制各自路径。真实 WMS 补架准入先取得双方冻结证据；不依赖新增 wire 的离线纯规则可先验收，完整请求交接需先完成本字段的合同对齐。
+
+**最小建模：**WMS 继续只有首次 READY operation 标识的一份活动 reservation，新补架 operation 只重新决定同一 reservation 的剩余供架，响应不可改写、数量不累加；READY 只返回本轮供架，WAIT 不释放原 reservation。WES 复用 `AutomaticPickingDrain` 逐请求交接，拟仅新增 `reservation_operation_id` 标量与 `request_return_ids` 冻结范围。前者首次 READY 冻结并由补架继承；现有 `return_ids` 承接全部未回库责任，后者只记录本次实际可请求的 FIFO 前缀，数量与 wire 一致；已交接的独立 BIN_MOVE 仍在责任集合中而不重复计数、不拦住其他合格成员补架。`returned_ids` 表达当前责任的回库正事实，`departure_handoffs` 表达本轮供架交接。不新增通用轮次表、授权、业务状态、timer 或历史 parent 链；实际 schema/迁移随获准代码切片另审，存量引用/范围只能由确定依据建立。
+
+**回架核销接线：**同一待冻结字段也进入 `return_batch`：普通/drain 任一入口消费原成员均携带首次 READY reservation 引用，不属于原范围则省略且不混批。冻结范围是 WES 的权威成员归属声明，WMS 不从工作线唯一活动记录、供架集合或箱码猜归属。WMS 在 READY 决定事务保存实际分配的原 operation/sequence 与完整箱码/来源/目标及 reservation，再于 BIN_MOVE 接纳前唯一匹配并冻结 Transport/member；不能唯一确定则拒绝，不扩 Transport wire。只由原权威成功与匹配终位核销一次，NO_BATCH/未分配尾部不占名额，原初次需求全部成功才关闭容量义务；普通架回库的原成员照常核销，新成员/新同箱码/旧结果不记到后来 reservation。两域 wire/typed/Adapter/OpenAPI、自动与人工消费者均须完成所有权对齐；当前无该字段，存量无精确归属不推断，不凭此文档启用请求。
+
+**首个实施切片：**先验收正常供架耗尽、剩余原成员/FIFO/权威缓冲位置，以及补架请求与 current 接续；复用 9A 的可靠端口和 9B–9G 的执行路径，不扩面为失败自动恢复。耗尽使用当前 READY 应需供架集合及 `departure_handoffs` 中精确原 CTU03 交接正事实；写入交接已覆盖冻结面序、运动前阶段及本架直接义务，不重读可清理的中间面历史、不把独立架原成员在途动作扩大为门禁。晚到 FAILED/RECONCILING 不抹已成立交接。原架 CTU03 明确接纳即可交出业务窗口；同架再用继续等待其权威成功和已知终位，独立架不等旧架终位。未知/未发布/未消费分配仍归原 owner，不能当 NO_BATCH、零剩余或供架耗尽。
+
+**原子性与出口：**同 WorkLine 锁内冻结剩余原责任/顺序、本次请求的连续合格前缀、新 operation 与 Confirmation、新 current 的原 reservation 引用，并使旧 current 退出；提交前任一步失败全回滚，提交后从新 current 独立恢复。仅按权威回库正事实扣除责任，不添加新到 Bin、不从 UNKNOWN 猜成功；在途责任不被本次请求前缀遗漏。旧进度归档是需求交接，不能冒充 9G 正常完成。补架 WAIT 固定首次接收时间加 retry_after_ms，到期重问仍只核对剩余原成员；不套用初始 WAIT 的下一任务优先而丢弃原业务。普通回架可承接 WAIT 的未分配候选，两个入口同锁防重，后续原动作事实按精确 reservation/成员登记当前责任；回库先于交接则从旧 current 扣除，后于交接则写新 current。无可请求成员但有在途责任时保留 owner、不请求零数量；全部回库且 WAIT 已发布时退出。未知请求先保留原交付义务，不为已回库成员新建 CTU01。
+
+**恢复 owner 与清理：**业务准入、范围与到期续问归现有自动 batch 前置入口；Confirmation、FactProcessor 和 Transport 保持原身份交付、应用/发布和物理动作 owner。旧 Motion/Allocation 继续从直接因果引用恢复，旧 READY/根不能覆盖新 current；新 current 的责任与请求恢复不查已可清理旧根、最近响应、已闭合 Return/分配或历史最大 revision。新 current 已承接后，只有不再被未闭合义务引用的前驱历史才可清理；仍为原动作直接依赖的旧数据属于当前执行，不称为可清理历史。无 EXECUTING/无新事件也能扫描，补架与普通入口不建立各自第二份状态或恢复队列。
+
+**验收与测试归属（待实施）：**插件拥有补架纯规则及 PostgreSQL 用例，覆盖首次/连续补架、部分原成员已回库、WAIT 中普通入口消费、已交接独立 BIN_MOVE 尚未终态时仍为其他合格成员补架、回库在 current 切换前后、无可请求成员但有未完责任、零剩余、并发、创建/交接各点崩溃、旧响应重放、同架新轮次/独立架、新到成员隔离及历史清理后恢复。精确检验本轮 READY 到原 CTU01/return_batch/BIN_MOVE/CTU02/CTU03 接续，不把 ACK 当物理成功。WMS 侧另验收精确原 reservation 字段、无活动/别线/另一轮拒绝、公开幂等、活动 reservation 原子关联、WAIT 不释放及 READY 不重复记容量；冻结后补齐所属 wire/typed/OpenAPI 测试，不能用 Mock 宣称外部合同已确认。只在代码/schema 变更时再确定精确核心 HEAVY mapping；本轮纯文档不创建 pytest、运行 QUALITY/HEAVY 或生产迁移。
+
+WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、后来新成员及同箱码新 execution 排除、部分 READY/NO_BATCH 名额不重复、分配到 Transport 的匹配歧义拒绝、回调先于 ACK 和旧结果只核销原归属；插件验证显式字段与成员冻结同事务，两入口防重且不混 owner。供架耗尽专项覆盖中间面历史已清理、终面交接正事实仍存，以及交接后晚到失败不重新挡住独立补架。
+
+**本轮边界：**只补合同、插件设计和本计划，完成一次文档闭环 review；不实施完成确认、已接纳后 FAILED 重决策、生产装配或真实派发，不做 bin-line-common 抽取，不提交、不部署、不推进真实取盘。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
