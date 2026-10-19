@@ -1,0 +1,154 @@
+"""下一任务优先的排空决定与 WAIT 恢复；READY 只冻结交接，不创建货架动作。"""
+
+from dataclasses import dataclass
+from datetime import timedelta
+
+from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
+
+from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
+from src.core.uuid7 import new_uuid7
+from src.utils.timezone import timezone
+
+from .return_allocation_flow import MatchedReturnLocation
+
+
+@dataclass(frozen=True, slots=True)
+class MatchedDrainBuffer:
+    location_code: str
+    capacity: int
+
+    def __post_init__(self):
+        if type(self.location_code) is not str or not self.location_code.strip():
+            raise ValueError("drain requires an explicit authoritative buffer location")
+        if type(self.capacity) is not int or self.capacity < 1:
+            raise ValueError("drain requires explicit positive buffer capacity")
+
+
+class AutomaticPickingDrainFlow:
+    def __init__(
+        self,
+        repository,
+        prepare,
+        scheduler,
+        reader,
+        buffer_reader,
+        location_reader,
+        *,
+        clock=timezone.now_for_db,
+        uuid_factory=new_uuid7,
+    ):
+        self.repository, self.prepare, self.scheduler, self.reader = repository, prepare, scheduler, reader
+        self.buffer_reader, self.location_reader = buffer_reader, location_reader
+        self.clock, self.uuid_factory = clock, uuid_factory
+
+    async def _candidates(self, db, line):
+        buffer = await self.buffer_reader.read_in_session(db, workline_id=line.id)
+        if buffer is None:
+            return None
+        if type(buffer) is not MatchedDrainBuffer:
+            raise TypeError("drain requires immutable authoritative buffer input")
+        rows = await self.repository.returns.list_fifo(db, line.id)
+        if rows is None:
+            return None
+        result = []
+        for row in rows:
+            if row.allocation_id is not None or not await self.repository.allocations.qualified(db, row):
+                return result or None
+            position = await self.location_reader.read_in_session(db, return_id=row.id)
+            if position is None:
+                return result or None
+            if type(position) is not MatchedReturnLocation or (
+                position.return_id,
+                position.workline_id,
+                position.bin_code,
+            ) != (row.id, line.id, row.bin_code):
+                raise ValueError("drain buffer position differs from current Return identity")
+            if position.location_code != buffer.location_code:
+                break
+            result.append(row.id)
+            if len(result) > buffer.capacity:
+                raise ValueError("confirmed drain members exceed authoritative buffer capacity")
+        return result
+
+    async def _remember(self, db, current, evidence, intent, outcome):
+        if (
+            intent.operation_id != current.operation_id
+            or intent.required_slot_count != len(current.return_ids)
+            or not current.return_ids
+            or len(set(current.return_ids)) != len(current.return_ids)
+            or any(type(value) is not int or value <= 0 for value in current.return_ids)
+        ):
+            raise ValueError("drain result differs from frozen request members")
+        if type(outcome.result) is ReturnBufferDrainWait:
+            due = evidence.received_at + timedelta(milliseconds=outcome.result.retry_after_ms)
+        elif type(outcome.result) is ReturnBufferDrainReady:
+            due = None
+        else:
+            raise ValueError("unknown typed drain result")
+        if current.response_evidence_id is not None:
+            if (current.response_evidence_id, current.retry_at) != (evidence.id, due):
+                raise ValueError("drain result or WAIT deadline drift")
+            return 0
+        current.response_evidence_id, current.retry_at = evidence.id, due
+        await db.flush()
+        return 1
+
+    async def apply_result_in_session(self, db, *, line, evidence):
+        current = await self.repository.current(db, line.id)
+        if current is None or current.operation_id != evidence.operation_id:
+            return "IGNORED"
+        intent, outcome = await self.reader.read(db, evidence, workline_id=line.id)
+        await self._remember(db, current, evidence, intent, outcome)
+        return "DRAIN_DECIDED"
+
+    async def advance_in_session(self, db, line):
+        current = await self.repository.current(db, line.id)
+        count = 0
+        if current is not None:
+            snapshot = await self.reader.for_operation(db, workline_id=line.id, operation_id=current.operation_id)
+            if snapshot is None:
+                raise ValueError("current drain request is missing")
+            if snapshot.result is None:
+                return 0
+            evidence = await self.repository.evidence(db, snapshot.evidence_id)
+            # read() validates the same reliable identity for live application and scan recovery.
+            intent, outcome = await self.reader.read(db, evidence, workline_id=line.id)
+            count += await self._remember(db, current, evidence, intent, outcome)
+            if type(snapshot.result) is ReturnBufferDrainReady or self.clock() < current.retry_at:
+                return count
+        if not line.is_active:
+            return count
+        return count + await self._admit(db, line, current)
+
+    async def _admit(self, db, line, current):
+        prepared = await self.prepare.prepare_next_in_session(db, line, now=self.clock())
+        if prepared.prepared:
+            await self._retire_wait(db, current)
+            return 1
+        if prepared.reason != PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK:
+            if await self.repository.tasks.has_active_for_workline(db, line.id):
+                return await self._retire_wait(db, current)
+            return 0
+        if await self.repository.normal_service_pending(db, line.id):
+            return await self._retire_wait(db, current)
+        members = await self._candidates(db, line)
+        if members is None:
+            return 0
+        if not members:
+            return await self._retire_wait(db, current)
+        operation_id, now = self.uuid_factory(), self.clock()
+        intent = wms_operations.workline_return_buffer_drain_rack_decide(
+            operation_id=operation_id, workline_code=line.line_code, required_slot_count=len(members)
+        )
+        await self.scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
+        await self.repository.replace(
+            db, current=current, line_id=line.id, operation_id=operation_id, return_ids=members
+        )
+        return 1
+
+    async def _retire_wait(self, db, current):
+        if current is None:
+            return 0
+        current.archived_at = self.clock()
+        await db.flush()
+        return 1

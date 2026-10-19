@@ -27,6 +27,7 @@ def build_plugin(*, scan_flow, batch_driver, works, material_flow=None):
                 "outbound.bin.work_plan@v1",
                 "outbound.bin.return_batch@v1",
                 "outbound.rack.departure_decide@v1",
+                "workline.return_buffer.drain_rack_decide@v1",
             ),
         ),
         picking_task_prepare_policy=AutomaticPickingPreparePolicy(),

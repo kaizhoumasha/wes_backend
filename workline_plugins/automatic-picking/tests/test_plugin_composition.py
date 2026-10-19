@@ -24,8 +24,10 @@ def test_automatic_installation_preserves_static_identity_and_runtime_ports(keys
         "outbound.bin.work_plan@v1",
         "outbound.bin.return_batch@v1",
         "outbound.rack.departure_decide@v1",
+        "workline.return_buffer.drain_rack_decide@v1",
     )
     assert automatic.picking_task_batch_driver.return_batch_flow is None
+    assert automatic.picking_task_batch_driver.drain_flow is None
     assert automatic.runtime_binding.business_evidence_consumer.return_batch_flow is None
     assert automatic.runtime_binding.handlers == ()
     assert automatic.runtime_binding.fact_factory is None

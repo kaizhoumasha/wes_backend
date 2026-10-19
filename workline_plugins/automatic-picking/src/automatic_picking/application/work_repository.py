@@ -5,6 +5,7 @@ from sqlmodel import col
 
 from src.app.execution.models import InboundEvidence
 
+from .drain_model import AutomaticPickingDrain
 from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
 from .return_allocation_model import AutomaticPickingReturnAllocation
@@ -95,6 +96,16 @@ class WorkRepository:
             + allocation_count
             + motion_count
             + len(await FeedRepository().list_admission_pending(db, workline_id))
+            + (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(AutomaticPickingDrain)
+                    .where(
+                        AutomaticPickingDrain.workline_id == workline_id,
+                        AutomaticPickingDrain.archived_at.is_(None),
+                    )
+                )
+            )
         )
         return {"count": count, "sample": "automatic-picking current Work/feed/Return" if count else None}
 
@@ -106,6 +117,7 @@ class WorkRepository:
             AutomaticPickingReturn,
             AutomaticPickingReturnAllocation,
             AutomaticPickingReturnMotion,
+            AutomaticPickingDrain,
         ):
             rows = (
                 await db.scalars(

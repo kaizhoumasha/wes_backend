@@ -388,6 +388,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **所有权与验证：**业务重新决定继续归插件 batch/Motion，FactProcessor 负责原结果应用与发布，Confirmation/Transport 负责原身份可靠交付；不新增模型、业务状态、worker、timer、迁移或基础层业务规则。新增插件 PostgreSQL recovery 测试覆盖并发、事务崩溃、旧结果重放、跨 revision、窗口释放、同架/跨线接管、当前依赖及合法历史清理；复用 8H/8I/8J 回归。最终验证：新增 8K PostgreSQL 31 项，8H/8I/8J PostgreSQL 回归 117 项，共 148 项通过；插件 FAST 168 项、测试拓扑/所有权 14 项通过，Ruff、格式及 diff 检查通过，HEAVY selector 为 NONE。独立 Reviewer 完整闭环审查未确认 P1/P2/P3，无需代码修复。完整 QUALITY 由本轮提交 hook 执行；未决字段、设备/扫码映射、PkgID、首批期限保持原范围。本轮仅提交当前工作分支，不部署、不启用真实派发、不推进真实取盘。
 
+#### 实施切片 9A：下一任务优先的 drain 决定与持久交接
+
+**范围：**只实现 drain 首次准入、当前 operation/结果引用、确定 WAIT 到期续问和 READY 冻结交接；不创建 drain 货架 Transport，不接 reservation 执行或任务完成确认，不启用生产装配。当前插件未声明 RETURN_BUFFER 槽位，本片使用显式权威缓冲位置/容量及既有 MatchedReturnLocation 读口作为离线前提，不把 OUTLET 推断为退箱位，不生成生产默认值。
+
+**准入与原子性：**现有 batch 前置入口在无 EXECUTING 任务时仍调用插件 drain owner。先按当前引用恢复未知请求、未发布结果或 READY，只有首次请求/确定 WAIT 到期才进入新决定准入；同 WorkLine 锁事务优先调用 prepare_next_in_session，claim、绑定及 prepare 义务原子提交。成功准备即交回既有 prepare 生命周期；只有明确 NO_ELIGIBLE_TASK 才继续核对本线当前 Work/Feed、未释放来源窗口及当前 FIFO。WORKLINE_NOT_READY 等原因不能当作无任务。FIFO 依既有首次 SCAN4 事实取序，已分配、未合格、位置未知的队头不可越过；权威缓冲位置/容量缺失不创建请求，数量超界明确拒绝，不截断冒充正确容量。
+
+**当前进度与恢复：**新增插件 AutomaticPickingDrain 仅保存 WorkLine 当前 operation、响应 Evidence、WAIT 到期时间和冻结 Return ids；请求/完整响应及可靠交付仍只归 Confirmation/Evidence。新义务与当前引用创建/替换同事务，单线当前唯一索引为并发后盾；确定 WAIT 以原 Evidence 接收时间加 retry_after_ms 固定期限。未知沿原身份恢复，旧响应不能覆盖新游标；WAIT 到期无已确认需求或下一任务优先时退出当前等待，事实未知仍保留 owner。READY 保留原决定和原成员，新增候选不追加，独立任务可按既有 prepare 入口准备；本片不伪造 reservation 消费、物理完成或 EMPTY。
+
+**恢复所有权与历史：**业务准入/WAIT/READY 继续归插件 batch，原结果应用与发布归 FactProcessor，技术交付归 Confirmation；未接 drain flow 时结果延期保留。新增当前进度计入业务停用/换绑 blocker，并接入现有显式归档。当前引用的请求、Evidence 和 READY 成员仍是直接依赖；旧 WAIT 引用退出、可清理前段 Work/Feed 删除后，新实例从当前进度恢复，不扫描最近历史响应或依赖已完成任务。没有新通用授权、timer、worker 或基础层业务规则，不导入人工 drain。
+
+**测试所有权与验证：**插件 test_drain_flow 拥有输入与 batch 接线，integration/test_drain_progress_postgresql 拥有下一任务优先、当前引用、WAIT/READY、并发、崩溃、重放、无 EXECUTING、合法历史清理及本表迁移验收；插件 composition 测试保持静态 operation 集与默认未装配断言。核心只承接显式模型安装/过滤、拓扑、selector 及配置/schema HEAVY。最终验证：插件 PostgreSQL 43 项、受影响回归 41 项、插件 FAST 174 项、核心安装/拓扑/所有权 32 项、selector 合同 236 项及所选 HEAVY 18 项均通过；3 项既有真实 worker 用例明确未运行，不计通过。干净库降至父版本再升 head、schema/当前唯一索引及拒绝有损降级通过，Ruff/格式/diff 检查通过。首轮 Review 发现容量校验可被未知/未合格/已分配尾项提前返回绕过的 P2，已补三例真实 PostgreSQL 反例先 RED 后修正：每次确认成员加入前缀后立即校验原容量，不增加新规则；三例 GREEN、完整 43 项及 FAST 已刷新。同一 Reviewer 合并完成该意见闭环与当前完整审查，无剩余确认 P1/P2/P3。完整 QUALITY 由本轮提交 hook 执行。设备/扫码映射、PkgID、失败离场面向与首批期限仍按各自分支保留；本轮仅提交当前工作分支，不部署、不创建 drain 货架 Transport、不启用真实派发或真实取盘。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
