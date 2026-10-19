@@ -539,7 +539,15 @@ class _Policy:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "cancel_timing", ["before_http", "during_http", "after_lease_reclaim", "after_lease_retirement"]
+    "cancel_timing",
+    [
+        "before_http",
+        "during_http",
+        "after_lease_reclaim",
+        "after_lease_retirement",
+        "history_pruned",
+        "history_pruned_during_http",
+    ],
 )
 async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
     integration_session_factory,
@@ -623,7 +631,7 @@ async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
     )
     pending = None
     try:
-        if cancel_timing != "before_http":
+        if cancel_timing not in {"before_http", "history_pruned"}:
             pending = asyncio.create_task(service.dispatch_batch(now=now, limit=1))
             await asyncio.wait_for(entered.wait(), timeout=10)
         cancel = PickingTaskCancelEvent.model_validate(
@@ -638,6 +646,18 @@ async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
         assert receipt.code == "RECEIVED"
         async with factory() as db:
             assert await PickingTaskRepository().has_applied_task_cancel(db, task_id)
+        if cancel_timing.startswith("history_pruned"):
+            async with factory.begin() as db:
+                archived = await db.get(PickingTask, task_id)
+                await PickingTaskRepository().archive_single(db, task=archived, archived_at=now)
+                await db.execute(
+                    delete(InboundEvidence).where(
+                        InboundEvidence.picking_task_id == task_id,
+                        InboundEvidence.operation == "outbound.picking_task.cancel@v1",
+                    )
+                )
+            async with factory() as db:
+                assert await PickingTaskRepository().has_applied_task_cancel(db, task_id)
         if cancel_timing == "after_lease_retirement":
             assert await service.dispatch_batch(now=now + timedelta(minutes=2), limit=1) == 1
         if cancel_timing == "after_lease_reclaim":
@@ -665,13 +685,17 @@ async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
             assert stored.response_evidence_id is stored.response_result is stored.completed_at is None
             assert stored.operation_id == operation_id
             assert stored.request_payload == frozen and stored.request_digest == original_digest
-            assert stored_task.status == PickingTaskStatus.CANCELLED
+            assert stored_task.status == (
+                PickingTaskStatus.ARCHIVED
+                if cancel_timing.startswith("history_pruned")
+                else PickingTaskStatus.CANCELLED
+            )
             evidence = await db.scalar(
                 select(InboundEvidence).where(
                     InboundEvidence.operation_id == operation_id, InboundEvidence.kind == InboundEvidenceKind.WMS_RESULT
                 )
             )
-            if cancel_timing == "before_http":
+            if cancel_timing in {"before_http", "history_pruned"}:
                 assert adapter.calls == 0 and evidence is None
             else:
                 assert adapter.calls == 1
@@ -680,7 +704,10 @@ async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
             cancelled = await db.scalar(
                 select(InboundEvidence).where(InboundEvidence.operation_id == cancel.operation_id)
             )
-            assert cancelled.apply_status == InboundEvidenceApplyStatus.APPLIED
+            if cancel_timing.startswith("history_pruned"):
+                assert cancelled is None
+            else:
+                assert cancelled.apply_status == InboundEvidenceApplyStatus.APPLIED
         assert await service.dispatch_batch(now=now + timedelta(minutes=3), limit=1) == 0
     finally:
         release.set()

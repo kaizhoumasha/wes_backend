@@ -3243,3 +3243,12 @@ heavy_tests = [
     "tests/integration/wms_adapter/return_rack_task_completion/test_receipt_postgresql.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_cancel_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+]

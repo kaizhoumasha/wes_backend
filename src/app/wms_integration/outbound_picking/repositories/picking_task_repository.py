@@ -6,13 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select, text
 
-from src.app.execution.models import (
-    InboundEvidence,
-    InboundEvidenceApplyStatus,
-    InboundEvidenceConflict,
-    InboundEvidenceKind,
-)
-from src.app.wms_adapter.outbound_picking.cancel_wire import PICKING_TASK_CANCEL_OPERATION
+from src.app.execution.models import InboundEvidenceConflict
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.database.base_repository import BaseRepository
 
@@ -47,19 +41,10 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         return await db.scalar(select(PickingTask).where(columns.id == picking_task_id).with_for_update())
 
     async def has_applied_task_cancel(self, db: AsyncSession, picking_task_id: int) -> bool:
-        columns = cast("Any", InboundEvidence).__table__.c
+        # 当前取消事实随任务保留，不依赖可清理的接收历史。
+        columns = cast("Any", PickingTask).__table__.c
         return (
-            await db.scalar(
-                select(columns.id)
-                .where(
-                    columns.picking_task_id == picking_task_id,
-                    columns.kind == InboundEvidenceKind.WMS_EVENT,
-                    columns.operation == PICKING_TASK_CANCEL_OPERATION,
-                    columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
-                    columns.normalized_payload["data"]["cancel_scope"].as_string() == "TASK",
-                )
-                .limit(1)
-            )
+            await db.scalar(select(columns.id).where(columns.id == picking_task_id, columns.cancelled_at.is_not(None)))
             is not None
         )
 

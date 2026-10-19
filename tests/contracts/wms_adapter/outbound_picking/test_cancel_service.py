@@ -97,6 +97,7 @@ async def test_task_cancel_applies_within_the_evidence_transaction() -> None:
 
     assert result.code == "RECEIVED"
     assert task.status is PickingTaskStatus.CANCELLED
+    assert task.cancelled_at == NOW
     task.increment_version.assert_called_once_with()
     assert evidence.picking_task_id == 1
     assert evidence.apply_status is Status.APPLIED
