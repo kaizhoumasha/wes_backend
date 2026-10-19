@@ -428,6 +428,22 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**9C PostgreSQL 31 项、9B 回归 33 项、其它聚焦回归 40 项、插件 FAST 174 项、核心安装/拓扑/selector 269 项、所选配置 HEAVY 8 项通过；40 项为定向选择，不代表相关领域全量验收。隔离 PostgreSQL 验证存量9B升级、干净库迁移往返、受影响表 schema 无差异及拒绝丢失当前归属/成功事实的降级；全局 metadata 比较仍有既有循环外键 warning。Ruff、格式和 diff 检查通过。独立 Reviewer 核对固定12文件及六组日志，完成完整审查，未确认 P1/P2/P3，无需修正；未改变已验证的可执行快照。恢复仍由原 batch/FactProcessor/Confirmation/Transport 承担，换面离场与 drain 收口留给后续切片，离线成功事实不代表现场业务已完成。
 
+#### 实施切片 9D 首片：drain 冻结面序换面与到位交接
+
+**范围：**在原 reservation、精确当前到位、完整冻结位置参数和权威结果显式给定的离线前提下，实现同架按 `rack_faces[]` 顺序的 CTU02 唯一创建、关联、结果消费及换面后向9C交接。不接 departure/CTU03、补架、异常自动重试或 drain 收口，不启用生产组合根、真实派发或取盘。
+
+**最小持久接续：**复用 AutomaticPickingDrainRack 的 binding_id/arrival_evidence_id 保存本轮当前动作和已交接到位；首个 CTU01 的实际到位可交接给同 reservation 的当前 CTU02。新动作、当前 binding 替换和本面阶段出口同一 WorkLine 事务提交；新动作未确认成功发布前 arrival 引用为空。动作关联固定原 READY Evidence、drain operation、rack 和冻结面序号；位置沿本轮已经权威匹配的冻结工作位，不新增 WMS 字段或推断设备映射。没有新增表、字段、业务状态或迁移。
+
+**门禁与恢复：**复用既有 AutomaticPickingReturnMotion 表达每面运动前求值，原 return_batch/分配及同架直接义务先恢复，未知、未发布或 READY 已分配未闭合均不按无候选处理。只在明确接入本片后，由 batch 在回架求值前准备 drain 面阶段，不伪造 Feed、来源时间或来源服务结束；本阶段的新请求继续由原回架 owner 原子关联。接入前的独立 READY 批次先恢复，不能直接代替本阶段最终求值；其闭合后仍按当前 FIFO 求值。普通9C同面分批能力保留。原义务闭合或确定无候选后冻结阶段，后到候选不重开。新面来自对应 CTU02 的权威成功、唯一 RACK 成员、当前因果位置/面及宿主和业务发布，不要求新投影继续匹配旧 CTU01；旧结果只留证，不覆盖当前动作。两入口仍通过原 Allocation/Confirmation 领取防重，独立架不等待其它架动作。当前架存在更新的未闭合动作或已被新因果事实接管时不创建本轮换面。
+
+**唯一 owner 与历史：**插件 batch 的原 drain/inbound 入口先扫描当前动作并恢复已发布到位，再推进冻结面序。Transport 负责原动作提交和技术恢复，FactProcessor 负责原结果应用/发布；不增加 worker、timer 或通用授权机制。当前 READY 和当前动作/未闭合分配仍是直接依赖；成功交接后，未被其它当前对象引用的旧面阶段和已闭合分配可清理，恢复不查询最后历史响应。仍被宿主活动窗口引用的原对象继续保留。无 EXECUTING 或新通知也可恢复原义务；终面停在9C回架，不创建离场或归档 drain。
+
+**测试所有权：**插件 integration/test_drain_rotation_postgresql.py 拥有冻结面序、创建/关联/到位事务、并发、重放、ACK时序、未知/发布门禁、两入口、多架、无EXECUTING和合法历史清理。9B/9C、回架分配/运动前阶段和普通来源运动/离场直接消费者定向回归；核心只验证安装和测试拓扑，HEAVY 按最终 selector 清单执行。完整 QUALITY 留后续获授权提交 hook；未决值继续按原分支保留。
+
+**验证与闭环 Review：**本片28项与9C31项 PostgreSQL 最终联合验收59 passed；9B33项和普通回架/运动前及来源分流65项定向回归通过，合计157项不同 PostgreSQL 用例。末次修正只影响 drain 原范围外队头分支，按 Reviewer 核对的覆盖路径复用9B及普通域证据，并完整刷新本片/9C。插件 FAST174项、核心安装/拓扑33项通过，HEAVY selector 为 NONE（无 schema、基础层或核心测试资产变化）；Ruff/格式/diff检查通过。既有全局 metadata 循环外键 warning 保留，受影响 schema 比较无差异。
+
+首轮两项P2及闭环追加一项P2均以真实事务反例先RED后GREEN：未知普通架面读口保留旧分配时不得用空来源时间；接入前独立READY不能替代本阶段最终求值；原成员已回库后，范围外新FIFO队头不得留住旧reservation架面。最终求值归原ReturnBatchFlow，明确范围外队头只结束本范围求值，不跳队领取或改写成功事实。原成员未知、未合格、未交接依旧等待。同一独立Reviewer合并完成完整审查、意见闭环及最终差异核对，无剩余确认P1/P2/P3。当前12文件可执行快照保持固定，无暂存/提交/部署；独占测试环境已清理。离场、drain收口及现场/真实worker验收不在本片完成结论内。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

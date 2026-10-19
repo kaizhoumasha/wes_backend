@@ -36,9 +36,10 @@ class MatchedDrainInbound:
 
 
 class DrainInboundFlow:
-    def __init__(self, creator, reader):
+    def __init__(self, creator, reader, *, rotation=None):
         self.creator, self.reader = creator, reader
         self.repository = DrainInboundRepository()
+        self.rotation = rotation
 
     async def advance_in_session(self, db, line, current, ready):
         rows = {row.rack_id: row for row in await self.repository.racks(db, current.id)}
@@ -92,6 +93,8 @@ class DrainInboundFlow:
             db.add(AutomaticPickingDrainRack(drain_id=current.id, rack_id=rack.rack_id, binding_id=binding.id))
             await db.flush()
             count += 1
+        if self.rotation is not None:
+            count += await self.rotation.advance_in_session(db, line, current, ready)
         return count
 
     async def apply_transport_result_in_session(self, db, *, line, evidence):

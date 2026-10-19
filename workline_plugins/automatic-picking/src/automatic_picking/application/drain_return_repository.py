@@ -8,7 +8,7 @@ from src.app.transport.models import TransportTask
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
 from src.utils.canonical_json import canonical_json_digest
 
-from .drain_inbound_repository import DrainInboundRepository
+from .drain_inbound_repository import DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP, DrainInboundRepository
 from .drain_model import AutomaticPickingDrain
 from .drain_repository import DrainRepository
 
@@ -43,12 +43,18 @@ class DrainReturnRepository:
         return root, result
 
     async def faces(self, db, line, current, faces):
+        ordinary = []
+        for face in faces:
+            fact = await db.get(InboundEvidence, face.arrival_evidence_id)
+            # 冻结步骤随 Evidence 保留；旧动作清理不能让历史到位绕过当前 owner。
+            if fact.normalized_payload.get("step") not in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}:
+                ordinary.append(face)
         if current is None or type(current[1]) is not ReturnBufferDrainReady:
-            return faces, ()
+            return tuple(ordinary), ()
         from .return_allocation_flow import MatchedReturnFace
 
         root, _ready = current
-        inbound, known, actions = DrainInboundRepository(), [], set()
+        inbound, known = DrainInboundRepository(), []
         for row in await inbound.racks(db, root.id):
             binding = await db.get(TransportDecisionBinding, row.binding_id)
             task = await db.scalar(
@@ -56,18 +62,11 @@ class DrainReturnRepository:
             )
             if task is None:
                 raise ValueError("drain return lost original ingress")
-            actions.add(task.transport_task_id)
             arrival = await inbound.current_arrival(db, line, row)
             if arrival is None or row.arrival_evidence_id != arrival[1].id:
                 continue
             task, fact = arrival
             known.append(MatchedReturnFace(fact.id, line.id, row.rack_id, task.request_json["target_face"]))
-        # 同一旧进场即使由另一入口上报，也必须通过当前原因果及9B持久交接。
-        ordinary = []
-        for face in faces:
-            fact = await db.get(InboundEvidence, face.arrival_evidence_id)
-            if fact.transport_task_id not in actions:
-                ordinary.append(face)
         return tuple(dict.fromkeys((*ordinary, *known))), tuple(known)
 
     @staticmethod

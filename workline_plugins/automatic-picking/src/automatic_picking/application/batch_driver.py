@@ -44,6 +44,9 @@ class AutomaticPickingBatchDriver:
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
+        drain_phase_count = (
+            await self.drain_flow.prepare_return_motion_in_session(db, line) if self.drain_flow is not None else 0
+        )
         allocation_count = await self.return_batch_flow.advance_in_session(db, line) if self.return_batch_flow else 0
         motion_count = await self.rack_motion_flow.advance_in_session(db, line) if self.rack_motion_flow else 0
         departure_count = await self.rack_departure_flow.advance_in_session(db, line) if self.rack_departure_flow else 0
@@ -53,7 +56,7 @@ class AutomaticPickingBatchDriver:
             if self.exit_flow is not None
             else 0
         )
-        count += allocation_count + motion_count + departure_count
+        count += drain_phase_count + allocation_count + motion_count + departure_count
         if self.material_flow is not None:
             count += await self.material_flow.advance_in_session(db, line_id=line.id, now=now)
         if self.target_flow is not None:

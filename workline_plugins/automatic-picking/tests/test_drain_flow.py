@@ -16,7 +16,9 @@ async def test_drain_owner_is_reached_without_an_executing_task():
         None,
         None,
     )
-    batch.drain_flow = N(advance_in_session=AsyncMock(return_value=1))
+    batch.drain_flow = N(
+        advance_in_session=AsyncMock(return_value=1), prepare_return_motion_in_session=AsyncMock(return_value=0)
+    )
     line = N(id=7)
     assert await batch.advance_completed_in_session(object(), line) == 1
     batch.drain_flow.advance_in_session.assert_awaited_once()

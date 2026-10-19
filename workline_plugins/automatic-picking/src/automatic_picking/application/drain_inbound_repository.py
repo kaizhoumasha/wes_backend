@@ -12,6 +12,7 @@ from .drain_model import AutomaticPickingDrain, AutomaticPickingDrainRack
 from .return_motion_repository import ReturnMotionRepository
 
 DRAIN_INBOUND_STEP = "AUTOMATIC_PICKING_DRAIN_RACK_IN"
+DRAIN_ROTATION_STEP = "AUTOMATIC_PICKING_DRAIN_RACK_ROTATE"
 
 
 class DrainInboundRepository:
@@ -36,20 +37,29 @@ class DrainInboundRepository:
         )
 
     async def validate_transport(self, db, task, binding):
-        row = await db.scalar(
-            select(AutomaticPickingDrainRack).where(AutomaticPickingDrainRack.binding_id == binding.id)
+        root = await db.scalar(
+            select(AutomaticPickingDrain).where(
+                AutomaticPickingDrain.response_evidence_id == binding.source_evidence_id
+            )
         )
-        root = await db.get(AutomaticPickingDrain, row.drain_id) if row else None
+        row = (
+            await db.scalar(
+                select(AutomaticPickingDrainRack).where(
+                    AutomaticPickingDrainRack.drain_id == root.id,
+                    AutomaticPickingDrainRack.rack_id == binding.resource_fence_id,
+                )
+            )
+            if root
+            else None
+        )
         if (
             root is None
+            or row is None
             or binding.workline_id != root.workline_id
             or binding.picking_task_id is not None
-            or binding.step != DRAIN_INBOUND_STEP
-            or binding.resource_fence_id != row.rack_id
-            or binding.correlation_id != f"drain:{root.operation_id}:{row.rack_id}"
-            or binding.source_evidence_id != root.response_evidence_id
+            or binding.step not in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}
         ):
-            raise ValueError("drain inbound lost exact reservation binding")
+            raise ValueError("drain rack lost exact reservation binding")
         snapshot = await ReturnBufferDrainResultReader().for_operation(
             db, workline_id=root.workline_id, operation_id=root.operation_id
         )
@@ -58,23 +68,43 @@ class DrainInboundRepository:
             or type(snapshot.result) is not ReturnBufferDrainReady
             or snapshot.evidence_id != root.response_evidence_id
         ):
-            raise ValueError("drain inbound requires original published READY")
+            raise ValueError("drain rack requires original published READY")
         rack = next((r for r in snapshot.result.racks if r.rack_id == row.rack_id), None)
-        target = {"kind": "RACK_POSITION", "location_code": binding.window_target_location_code}
+        rotation = binding.step == DRAIN_ROTATION_STEP
+        face = task.request_json.get("target_face") if task else None
+        index = rack.rack_faces.index(face) if rack and face in rack.rack_faces else -1
+        target = (
+            task.request_json.get("position")
+            if rotation and task
+            else {"kind": "RACK_POSITION", "location_code": binding.window_target_location_code}
+        )
+        correlation = (
+            f"drain-rotation:{root.operation_id}:{row.rack_id}:{index}"
+            if rotation
+            else f"drain:{root.operation_id}:{row.rack_id}"
+        )
         if (
             task is None
             or task.client_request_id != binding.client_request_id
-            or task.kind != "RACK_MOVE"
+            or task.kind != ("RACK_ROTATE" if rotation else "RACK_MOVE")
             or task.authority_workline_id != root.workline_id
             or rack is None
-            or not binding.window_target_location_code
+            or (index < 1 if rotation else index != 0)
+            or binding.correlation_id != correlation
+            or not isinstance(target, dict)
+            or target.get("kind") != "RACK_POSITION"
+            or not target.get("location_code")
             or task.request_json.get("rack_id") != row.rack_id
-            or task.request_json.get("source") != {"kind": "RACK", "location_code": row.rack_id}
-            or task.request_json.get("target") != target
-            or task.request_json.get("target_face") != rack.rack_faces[0]
-            or task.request_json.get("rcs_template_id") != "CTU01"
+            or task.request_json.get("rcs_template_id") != ("CTU02" if rotation else "CTU01")
+            or (
+                not rotation
+                and (
+                    task.request_json.get("source") != {"kind": "RACK", "location_code": row.rack_id}
+                    or task.request_json.get("target") != target
+                )
+            )
         ):
-            raise ValueError("drain inbound Transport differs from frozen first face/position")
+            raise ValueError("drain rack Transport differs from frozen face/position")
         return root, row, target
 
     async def validate_outcome(self, db, outcome, binding):
@@ -99,7 +129,7 @@ class DrainInboundRepository:
         )
         if binding is None:
             return "RECONCILING"
-        root, _row, _ = await self.validate_transport(db, task, binding)
+        root, row, _ = await self.validate_transport(db, task, binding)
         if (
             root.workline_id != line.id
             or evidence.workline_id != line.id
@@ -109,13 +139,17 @@ class DrainInboundRepository:
             or payload.get("transport_task_id") != task.transport_task_id
             or payload.get("client_request_id") != binding.client_request_id
             or payload.get("source_evidence_id") != binding.source_evidence_id
-            or payload.get("step") != DRAIN_INBOUND_STEP
+            or payload.get("step") != binding.step
             or canonical_json_digest(payload) != evidence.payload_digest
             or type(payload.get("outcome_version")) is not int
             or not 0 < payload["outcome_version"] <= task.outcome_version
         ):
             return "RECONCILING"
-        if root.archived_at is not None or payload["outcome_version"] < task.outcome_version:
+        if (
+            root.archived_at is not None
+            or row.binding_id != binding.id
+            or payload["outcome_version"] < task.outcome_version
+        ):
             return "IGNORED"
         frozen = {key: value for key, value in payload.items() if key not in {"step", "source_evidence_id"}}
         if canonical_json_digest(frozen) != canonical_json_digest(task.outcome_json):

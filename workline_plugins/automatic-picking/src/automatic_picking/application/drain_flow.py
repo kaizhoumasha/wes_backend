@@ -103,6 +103,11 @@ class AutomaticPickingDrainFlow:
         await self._remember(db, current, evidence, intent, outcome)
         return "DRAIN_DECIDED"
 
+    async def prepare_return_motion_in_session(self, db, line):
+        if self.inbound is None or self.inbound.rotation is None:
+            return 0
+        return await self.inbound.rotation.prepare_in_session(db, line)
+
     async def advance_in_session(self, db, line):
         current = await self.repository.current(db, line.id)
         count = 0

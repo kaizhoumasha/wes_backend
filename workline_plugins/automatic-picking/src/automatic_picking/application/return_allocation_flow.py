@@ -89,6 +89,8 @@ class AutomaticPickingReturnBatchFlow:
         rows, candidates = [], []
         for row in fifo:
             if not self.drains.allowed(drain, row, drain_face=drain_face):
+                if drain_face and drain is not None and row.id not in drain[0].return_ids:
+                    return rows, tuple(candidates)
                 return (rows, tuple(candidates)) if rows else None
             if row.allocation_id is not None:
                 if drain_face or (drain is not None and row.id in drain[0].return_ids):
@@ -162,20 +164,27 @@ class AutomaticPickingReturnBatchFlow:
         )
         return result is not None and result.apply_status == "APPLIED" and result.published_at is not None
 
-    async def _motion_can_close(self, db, allocation, allocations, motion):
+    @staticmethod
+    def _motion_allocation_matches(allocation, motion, drain):
+        if allocation.rack_id != motion.rack_id:
+            return False
+        if drain is not None and motion.source_evidence_id == drain[0].response_evidence_id:
+            return allocation.drain_id == drain[0].id or allocation.arrival_evidence_id == motion.arrival_evidence_id
+        return motion.round_started_at is not None and allocation.created_at >= motion.round_started_at
+
+    async def _motion_can_close(self, db, allocation, allocations, motion, drain=None):
         if not await self._motion_obligation_closed(db, allocation):
             return False
         for original in allocations:
             if (
-                original.rack_id == allocation.rack_id
-                and original.created_at >= motion.round_started_at
+                self._motion_allocation_matches(original, motion, drain)
                 and original.id != allocation.id
                 and not await self._motion_obligation_closed(db, original)
             ):
                 return False
         return True
 
-    async def _motion_phases(self, db, line, faces, complete, allocations):
+    async def _motion_phases(self, db, line, faces, complete, allocations, drain=None):
         phases, count = await self.motions.current(db, line.id), 0
         intents = await self.motion_reader.read_in_session(db, workline_id=line.id) if self.motion_reader else ()
         if intents is not None and type(intents) is not tuple:
@@ -217,10 +226,13 @@ class AutomaticPickingReturnBatchFlow:
             if (
                 current.closed_at is None
                 and current.allocation_id is not None
-                and current.inbound_client_request_id is not None
+                and (
+                    current.inbound_client_request_id is not None
+                    or (drain is not None and current.source_evidence_id == drain[0].response_evidence_id)
+                )
             ):
                 allocation = await self.motions.allocation(db, current)
-                if await self._motion_can_close(db, allocation, allocations, current):
+                if await self._motion_can_close(db, allocation, allocations, current, drain):
                     await self.motions.close(db, current, now=self.clock())
                     count += 1
         if complete:
@@ -235,7 +247,7 @@ class AutomaticPickingReturnBatchFlow:
         count = 0
         for allocation in allocations:
             count += await self._advance_allocation(db, line, allocation, faces or ())
-        phases, motion_count = await self._motion_phases(db, line, faces, complete, allocations)
+        phases, motion_count = await self._motion_phases(db, line, faces, complete, allocations, drain)
         count += motion_count
         if complete:
             await self.repository.retire_completed(db, allocations, faces, now=self.clock())
@@ -262,7 +274,11 @@ class AutomaticPickingReturnBatchFlow:
                 continue
             if motion is not None and (motion.closed_at is not None or motion.allocation_id is not None):
                 continue
-            if motion is not None and not await self.motions.current_source(db, line, motion):
+            if (
+                motion is not None
+                and face not in drain_faces
+                and not await self.motions.current_source(db, line, motion)
+            ):
                 continue
             same_arrival = [
                 a
@@ -276,18 +292,16 @@ class AutomaticPickingReturnBatchFlow:
                 if motion is not None:
                     await self.motions.bind(db, motion, no_batch)
                     count += 1
-                    if await self._motion_can_close(db, no_batch, allocations, motion):
+                    if await self._motion_can_close(db, no_batch, allocations, motion, drain):
                         await self.motions.close(db, motion, now=self.clock())
                         count += 1
                 continue
             if motion is not None:
                 blocked = False
                 for original in allocations:
-                    if (
-                        original.rack_id == face.rack_id
-                        and original.created_at >= motion.round_started_at
-                        and not await self._motion_obligation_closed(db, original)
-                    ):
+                    if self._motion_allocation_matches(
+                        original, motion, drain
+                    ) and not await self._motion_obligation_closed(db, original):
                         blocked = True
                         break
                 if blocked:

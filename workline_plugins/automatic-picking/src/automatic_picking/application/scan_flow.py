@@ -3,7 +3,7 @@
 import re
 from datetime import timedelta
 
-from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP
+from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.definition import DEFINITION
@@ -119,7 +119,7 @@ class AutomaticPickingScanFlow:
 
     async def _transport_result(self, db, line, evidence):
         step = evidence.normalized_payload.get("step")
-        if step == DRAIN_INBOUND_STEP:
+        if step in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}:
             drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
             flow = drain.inbound if drain is not None else None
         elif step == DEPARTURE_STEP:
