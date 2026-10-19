@@ -15,6 +15,7 @@ class AutomaticPickingReturnMotion(EnterpriseMixin, DataTableMixin, table=True):
     __tablename__: ClassVar[str] = "automatic_picking_return_motions"
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
+        UniqueConstraint("rotation_transport_task_id", name="ux_auto_motion_rotation_transport"),
         UniqueConstraint(
             "workline_id", "arrival_evidence_id", "rack_id", "rack_face", name="ux_automatic_return_motion_face"
         ),
@@ -40,6 +41,10 @@ class AutomaticPickingReturnMotion(EnterpriseMixin, DataTableMixin, table=True):
     round_causal_token: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
     source_feed_id: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
     service_end_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    rotation_transport_task_id: str | None = Field(default=None, max_length=80)
+    rotation_result_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
     closed_at: datetime | None = None

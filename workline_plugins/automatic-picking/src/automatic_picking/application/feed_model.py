@@ -21,6 +21,13 @@ class AutomaticPickingFeed(EnterpriseMixin, DataTableMixin, table=True):
             "phase IN ('REQUESTED','ALLOCATED','FEEDING','FEED_COMPLETE','CANCELLED','RECONCILING')",
             name="automatic_feed_phase",
         ),
+        CheckConstraint(
+            "(inbound_client_request_id IS NULL AND round_started_at IS NULL AND round_causal_token IS NULL "
+            "AND source_arrival_evidence_id IS NULL) OR "
+            "(inbound_client_request_id IS NOT NULL AND round_started_at IS NOT NULL "
+            "AND round_causal_token IS NOT NULL AND round_causal_token > 0 AND source_arrival_evidence_id IS NOT NULL)",
+            name="automatic_feed_source_round",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
@@ -34,6 +41,13 @@ class AutomaticPickingFeed(EnterpriseMixin, DataTableMixin, table=True):
     offset: int = Field(default=0)
     transport_task_id: str | None = Field(
         default=None, foreign_key="wes_biz.transport_tasks.transport_task_id", max_length=80
+    )
+    # 换面交接后的当前轮次，不依赖可清理的原进场与前阶段。
+    inbound_client_request_id: str | None = Field(default=None, max_length=120)
+    round_started_at: datetime | None = None
+    round_causal_token: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
+    source_arrival_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
     archived_at: datetime | None = None
 

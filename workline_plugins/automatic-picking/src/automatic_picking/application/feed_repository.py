@@ -11,6 +11,7 @@ from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatch
 from src.utils.canonical_json import canonical_json_digest
 
 from .feed_model import AutomaticPickingFeed, AutomaticPickingFeedScan
+from .return_motion_model import AutomaticPickingReturnMotion
 
 
 class FeedRepository:
@@ -56,7 +57,14 @@ class FeedRepository:
                 col(TransportDecisionBinding.resource_fence_id) == member.rack_id,
             )
         )
-        return row is not None and row.status == "SUCCEEDED" and row.outcome_version == row.published_outcome_version
+        if row is None or row.status != "SUCCEEDED" or row.outcome_version != row.published_outcome_version:
+            return False
+        binding = await db.scalar(
+            select(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == row.client_request_id)
+        )
+        if binding.step == "AUTOMATIC_PICKING_SOURCE_RACK_ROTATE":
+            return await self.rotation_round(db, member) is not None
+        return True
 
     async def by_operation(self, db, operation_id):
         return await db.scalar(
@@ -70,7 +78,66 @@ class FeedRepository:
             .with_for_update()
         )
 
+    async def rotation_round(self, db, member):
+        position = await db.scalar(
+            select(PositionProjection).where(
+                PositionProjection.object_type == "RACK", PositionProjection.object_id == member.rack_id
+            )
+        )
+        if position is None:
+            return None
+        arrival_id = await db.scalar(
+            select(InboundEvidence.id)
+            .where(
+                InboundEvidence.transport_task_id == position.source_transport_task_id,
+                InboundEvidence.kind == "TRANSPORT_RESULT",
+                InboundEvidence.apply_status == "APPLIED",
+                InboundEvidence.published_at.is_not(None),
+            )
+            .order_by(InboundEvidence.id.desc())
+        )
+        if arrival_id is None:
+            return None
+        root = await db.scalar(
+            select(AutomaticPickingFeed)
+            .where(
+                AutomaticPickingFeed.picking_task_id == member.picking_task_id,
+                AutomaticPickingFeed.workline_id == position.workline_id,
+                AutomaticPickingFeed.source_arrival_evidence_id == arrival_id,
+                AutomaticPickingFeed.inbound_client_request_id.is_not(None),
+                AutomaticPickingFeed.archived_at.is_(None),
+            )
+            .order_by(AutomaticPickingFeed.id)
+        )
+        if root is None:
+            root = await db.scalar(
+                select(AutomaticPickingReturnMotion)
+                .join(InboundEvidence, InboundEvidence.id == AutomaticPickingReturnMotion.service_end_evidence_id)
+                .where(
+                    InboundEvidence.picking_task_id == member.picking_task_id,
+                    AutomaticPickingReturnMotion.workline_id == position.workline_id,
+                    AutomaticPickingReturnMotion.arrival_evidence_id == arrival_id,
+                    AutomaticPickingReturnMotion.rack_id == member.rack_id,
+                    AutomaticPickingReturnMotion.rack_face == member.rack_face,
+                    AutomaticPickingReturnMotion.inbound_client_request_id.is_not(None),
+                    AutomaticPickingReturnMotion.archived_at.is_(None),
+                )
+            )
+        if root is None:
+            return None
+        return {
+            "inbound_client_request_id": root.inbound_client_request_id,
+            "round_started_at": root.round_started_at,
+            "round_causal_token": root.round_causal_token,
+            "source_arrival_evidence_id": arrival_id,
+        }
+
     async def add_feed(self, db, **values):
+        if "inbound_client_request_id" not in values:
+            member = await db.get(PickingTaskBinSourceRack, values["source_member_id"])
+            transferred = await self.rotation_round(db, member)
+            if transferred is not None:
+                values.update(transferred)
         feed = AutomaticPickingFeed(**values)
         db.add(feed)
         await db.flush()

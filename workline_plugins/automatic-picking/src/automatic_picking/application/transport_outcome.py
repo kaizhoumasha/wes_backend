@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 
+from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceConflictResult, InboundEvidenceService
@@ -22,7 +23,12 @@ class AutomaticPickingTransportOutcomePublisher:
             or (binding.picking_task_id is None and binding.step != "AUTOMATIC_PICKING_RETURN")
         ):
             raise ValueError("automatic Transport outcome differs from its frozen owner")
-        rack_steps = {"PICKING_TASK_TARGET_RACK_IN", "PICKING_TASK_BIN_SOURCE_RACK_IN", "PICKING_TASK_RETURN_RACK_IN"}
+        rack_steps = {
+            "PICKING_TASK_TARGET_RACK_IN",
+            "PICKING_TASK_BIN_SOURCE_RACK_IN",
+            "PICKING_TASK_RETURN_RACK_IN",
+            ROTATION_STEP,
+        }
         if binding.step in rack_steps:
             if (outcome.members or outcome.status == "SUCCEEDED") and (
                 len(outcome.members) != 1 or outcome.members[0].object_id != binding.resource_fence_id

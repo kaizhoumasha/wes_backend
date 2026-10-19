@@ -48,59 +48,11 @@ class ReturnMotionRepository:
         await transport_decision_binding_repository.lock_object_authority(
             db, object_type="RACK", object_id=intent.face.rack_id
         )
-        root = await db.scalar(
-            select(TransportDecisionBinding).where(
-                TransportDecisionBinding.client_request_id == intent.inbound_client_request_id
-            )
-        )
-        if root is None:
-            return None
-        location = line.position_bindings["FIVE_RACK"]["location_id"]
-        if (
-            root.workline_id != line.id
-            or root.resource_fence_id != intent.face.rack_id
-            or root.step != "PICKING_TASK_BIN_SOURCE_RACK_IN"
-            or root.window_target_location_code != location
-            or root.causal_token <= 0
-        ):
-            raise ValueError("motion original ingress binding mismatch")
-        ingress = await db.scalar(
-            select(TransportTask).where(TransportTask.client_request_id == root.client_request_id)
-        )
-        members = (
-            list(
-                (
-                    await db.scalars(
-                        select(TransportMember).where(TransportMember.transport_task_id == ingress.transport_task_id)
-                    )
-                ).all()
-            )
-            if ingress
-            else []
-        )
-        if (
-            ingress is None
-            or ingress.kind != "RACK_MOVE"
-            or ingress.authority_workline_id != line.id
-            or len(members) != 1
-            or members[0].object_type != "RACK"
-            or members[0].object_id != intent.face.rack_id
-            or members[0].target_json != {"kind": "RACK_POSITION", "location_code": location}
-        ):
-            raise ValueError("motion original ingress lost its exact RACK execution")
-        arrival = await self.current_arrival(
-            db,
-            line.id,
-            intent.face.arrival_evidence_id,
-            intent.face.rack_id,
-            intent.face.rack_face,
-            {"kind": "RACK_POSITION", "location_code": location},
-        )
-        if arrival is None:
-            return None
-        if not await self.same_round(db, root, arrival[1]):
-            raise ValueError("motion arrival differs from original round")
         feed = await db.get(AutomaticPickingFeed, intent.source_feed_id)
+        proof = await self.source_round(db, line, intent, feed)
+        if proof is None:
+            return None
+        root, ingress, members, started_at = proof
         member = await db.get(PickingTaskBinSourceRack, feed.source_member_id) if feed else None
         if (
             feed is None
@@ -124,32 +76,9 @@ class ReturnMotionRepository:
             )
         )
         arrival_fact = await db.get(InboundEvidence, intent.face.arrival_evidence_id)
-        original_results = await db.scalars(
-            select(InboundEvidence).where(
-                InboundEvidence.transport_task_id == ingress.transport_task_id,
-                InboundEvidence.kind == "TRANSPORT_RESULT",
-                InboundEvidence.apply_status == "APPLIED",
-                InboundEvidence.published_at.is_not(None),
-            )
-        )
-        for fact in original_results.all():
-            if (
-                ingress.status in {"SUCCEEDED", "FAILED"}
-                and ingress.outcome_version > 0
-                and ingress.outcome_version == ingress.published_outcome_version
-                and not members[0].position_unknown
-                and members[0].final_position_json is not None
-                and fact.workline_id == root.workline_id
-                and fact.picking_task_id == root.picking_task_id
-                and fact.normalized_payload.get("client_request_id") == root.client_request_id
-                and fact.normalized_payload.get("kind") == ingress.kind
-                and fact.normalized_payload.get("status") == ingress.status
-                and fact.normalized_payload.get("outcome_version") == ingress.outcome_version
-                and canonical_json_digest(fact.normalized_payload) == fact.payload_digest
-            ):
-                arrival_fact = fact
-                break
-        if confirmation.created_at < max(root.created_at, arrival_fact.received_at):
+        if ingress is not None:
+            arrival_fact = await self.original_arrival_fact(db, root, ingress, members[0], arrival_fact)
+        if confirmation.created_at < max(started_at, arrival_fact.received_at):
             raise ValueError("motion source Feed predates original round arrival")
         if response.published_at is None:
             return None
@@ -218,7 +147,6 @@ class ReturnMotionRepository:
                 or end.normalized_payload.get("client_request_id") != state.client_request_id
                 or end.normalized_payload.get("outcome_version") != state.outcome_version
                 or end.normalized_payload.get("status") != "SUCCEEDED"
-                or end.normalized_payload.get("kind") != "BIN_MOVE"
                 or not await FeedRepository().chunk_delivered(
                     db, feed, result.bins[((len(result.bins) - 1) // 4) * 4 :]
                 )
@@ -228,10 +156,114 @@ class ReturnMotionRepository:
             raise ValueError("unsupported motion source end")
         return root
 
+    async def source_round(self, db, line, intent, feed):
+        location = line.position_bindings["FIVE_RACK"]["location_id"]
+        arrival = await self.current_arrival(
+            db,
+            line.id,
+            intent.face.arrival_evidence_id,
+            intent.face.rack_id,
+            intent.face.rack_face,
+            {"kind": "RACK_POSITION", "location_code": location},
+        )
+        ingress, members = None, []
+        if feed is not None and feed.inbound_client_request_id is not None:
+            # 下一面 Feed 已接管原轮次；已闭合进场和上一阶段不再参与恢复。
+            root = feed
+            if arrival is None:
+                return None
+            action, binding = arrival
+            if (
+                feed.inbound_client_request_id != intent.inbound_client_request_id
+                or feed.source_arrival_evidence_id != intent.face.arrival_evidence_id
+                or action.kind != "RACK_ROTATE"
+                or binding.step != "AUTOMATIC_PICKING_SOURCE_RACK_ROTATE"
+                or binding.picking_task_id != feed.picking_task_id
+                or feed.round_causal_token is None
+                or binding.causal_token < feed.round_causal_token
+            ):
+                raise ValueError("motion source Feed lost transferred round identity")
+            started_at = feed.round_started_at
+        else:
+            root = await db.scalar(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.client_request_id == intent.inbound_client_request_id
+                )
+            )
+            if root is None:
+                return None
+            if (
+                root.workline_id != line.id
+                or root.resource_fence_id != intent.face.rack_id
+                or root.step != "PICKING_TASK_BIN_SOURCE_RACK_IN"
+                or root.window_target_location_code != location
+                or root.causal_token <= 0
+            ):
+                raise ValueError("motion original ingress binding mismatch")
+            ingress = await db.scalar(
+                select(TransportTask).where(TransportTask.client_request_id == root.client_request_id)
+            )
+            members = (
+                list(
+                    (
+                        await db.scalars(
+                            select(TransportMember).where(
+                                TransportMember.transport_task_id == ingress.transport_task_id
+                            )
+                        )
+                    ).all()
+                )
+                if ingress
+                else []
+            )
+            if (
+                ingress is None
+                or ingress.kind != "RACK_MOVE"
+                or ingress.authority_workline_id != line.id
+                or len(members) != 1
+                or members[0].object_type != "RACK"
+                or members[0].object_id != intent.face.rack_id
+                or members[0].target_json != {"kind": "RACK_POSITION", "location_code": location}
+            ):
+                raise ValueError("motion original ingress lost its exact RACK execution")
+            if arrival is None:
+                return None
+            if not await self.same_round(db, root, arrival[1]):
+                raise ValueError("motion arrival differs from original round")
+            started_at = root.created_at
+        return root, ingress, members, started_at
+
+    async def original_arrival_fact(self, db, root, ingress, member, arrival_fact):
+        original_results = await db.scalars(
+            select(InboundEvidence).where(
+                InboundEvidence.transport_task_id == ingress.transport_task_id,
+                InboundEvidence.kind == "TRANSPORT_RESULT",
+                InboundEvidence.apply_status == "APPLIED",
+                InboundEvidence.published_at.is_not(None),
+            )
+        )
+        for fact in original_results.all():
+            if (
+                ingress.status in {"SUCCEEDED", "FAILED"}
+                and ingress.outcome_version > 0
+                and ingress.outcome_version == ingress.published_outcome_version
+                and not member.position_unknown
+                and member.final_position_json is not None
+                and fact.workline_id == root.workline_id
+                and fact.picking_task_id == root.picking_task_id
+                and fact.normalized_payload.get("client_request_id") == root.client_request_id
+                and fact.normalized_payload.get("status") == ingress.status
+                and fact.normalized_payload.get("outcome_version") == ingress.outcome_version
+                and canonical_json_digest(fact.normalized_payload) == fact.payload_digest
+            ):
+                return fact
+        return arrival_fact
+
     async def bind_source(self, db, current, intent, root):
-        current.inbound_client_request_id = root.client_request_id
-        current.round_started_at = root.created_at
-        current.round_causal_token = root.causal_token
+        transferred = isinstance(root, AutomaticPickingFeed)
+        current.inbound_client_request_id = root.inbound_client_request_id if transferred else root.client_request_id
+        current.round_started_at = root.round_started_at if transferred else root.created_at
+        current.round_causal_token = root.round_causal_token if transferred else root.causal_token
         current.source_feed_id = intent.source_feed_id
         current.service_end_evidence_id = intent.service_end_evidence_id
         await db.flush()
@@ -273,7 +305,6 @@ class ReturnMotionRepository:
             or evidence.normalized_payload.get("client_request_id") != task.client_request_id
             or evidence.normalized_payload.get("outcome_version") != task.outcome_version
             or evidence.normalized_payload.get("status") != "SUCCEEDED"
-            or evidence.normalized_payload.get("kind") != task.kind
             or task.kind not in {"RACK_MOVE", "RACK_ROTATE"}
             or task.authority_workline_id != line_id
             or task.status != "SUCCEEDED"
@@ -326,15 +357,15 @@ class ReturnMotionRepository:
         )
         return previous is not None
 
-    async def current_source(self, db, line, current):
+    async def current_source(self, db, line, current, *, arrival_evidence_id=None, rack_face=None):
         if current.inbound_client_request_id is None:
             return False
         arrival = await self.current_arrival(
             db,
             line.id,
-            current.arrival_evidence_id,
+            current.arrival_evidence_id if arrival_evidence_id is None else arrival_evidence_id,
             current.rack_id,
-            current.rack_face,
+            current.rack_face if rack_face is None else rack_face,
             {"kind": "RACK_POSITION", "location_code": line.position_bindings["FIVE_RACK"]["location_id"]},
         )
         end = await db.get(InboundEvidence, current.service_end_evidence_id)
@@ -523,6 +554,8 @@ class ReturnMotionRepository:
         known = {(f.arrival_evidence_id, f.rack_id, f.rack_face) for f in faces}
         for current in phases:
             if (current.arrival_evidence_id, current.rack_id, current.rack_face) in known:
+                continue
+            if current.rotation_transport_task_id is not None:
                 continue
             if current.closed_at is None and current.allocation_id is not None:
                 continue

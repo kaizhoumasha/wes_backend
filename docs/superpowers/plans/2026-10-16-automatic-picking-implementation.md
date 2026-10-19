@@ -323,6 +323,20 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**本片离线实现与验收完成。最终 PostgreSQL 63 passed（8F 37、8E 26），8D 35、8A–8C 87 及插件 FAST 150 保持通过；新增迁移的存量保留、全空/全有约束、降级重升及有绑定时拒绝有损降级均已覆盖。QUALITY 通过（4317 passed、5 个既有 skipped，跳过项不计通过），选中宿主 HEAVY 8 passed，格式和差异检查通过。独立 Review 确认的三个 P2（同面旧轮次围栏、完整旧 Feed/end 误绑定、跨线接管旧阶段无出口）均先补失败反例后最小修复；另覆盖 root 早于旧请求、清理中间进场历史、原进场已知失败后成功换面以及存量阶段归档清理后旧输入重放。原 Reviewer 合并完成闭环与当前 fresh full Review，无剩余确认的 P1/P2/P3。最终可执行快照匹配评审指纹，后续仅补本文验证记录；主工作区 61 个既有改动、HEAD、暂存区及 Git 配置未漂移。不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成，CTU02/CTU03、机会式入口、生产 reader 与 drain 留待后续明确切片，G2/G3/G5/G6 未决项保留。
 
+#### 实施切片 8G：普通来源架 CTU02 与下一面交接
+
+**范围：**在精确到位、下一服务成员/架面、完整 `TransportRackPosition` 和权威结果显式给定的离线前提下，复用 8F 原轮次与 8E 已结束阶段，为普通来源架创建并关联唯一 CTU02。部署组合不安装生产 reader，不启用真实派发；不接 CTU03、drain 或机会式入口，不新增授权模型、业务表或业务状态，不抽取 bin-line-common。
+
+**创建与结果：**调用方沿既有 WorkLine authority 事务，重验本架当前到位、原来源服务结束、本轮直接回架/BIN/RACK 义务及下一有效成员，沿原阶段唯一创建 Transport 并关联；窗口释放不重置轮次，未 ACK、未知或未发布义务不允许换身份。复用 ReliableRackTransportCreator 的 CTU02 与完整冻结正文；插件静态发布步骤接入现有 typed TransportOutcome、FactProcessor，不重建 HTTP/回调/outbox。回调早于 ACK 仍先保存原结果，再由 batch 核对匹配成功、当前权威位置与目标面，不能将 ACCEPTED 或数据库状态视为换面完成。
+
+**持久交接：**现有阶段增加原旋转 Task 标量及结果 Evidence；下一面 Feed 同事务保存原进场 identity、起点/token、精确本次到位与成员独立 inbound_batch 请求，再归档上一阶段。下一次 8F 绑定从当前 Feed 接管，允许清理已闭合阶段、原 Feed/Confirmation/原进场 Transport，不回读已闭合历史。通用 batch 在原运动交接前不能旁路建 Feed，合法同面后续 revision 从当前 Feed/阶段承接同轮锚点。同架更新因果且明确成功的权威到位可终止旧阶段；计划、reservation 和未知结果不能构成接管。
+
+**恢复 owner：**创建、原动作恢复和下一面事务交接归同一 batch 前置扫描，位于 EXECUTING 准入前；没有新输入或没有 EXECUTING 也继续接收原结果。物理原结果归 Transport，插件应用/发布归 FactProcessor，冻结请求归 Confirmation，下一面 Feed 归既有 batch。未知、未发布或不匹配结果保留原动作和当前阶段，停止受影响交接。旧结果重放不重开已交接阶段。
+
+**测试与迁移：**插件 `test_source_rack_motion.py` 拥有显式 typed 输入；`integration/test_source_rack_motion_postgresql.py` 拥有唯一创建、原子关联、真实本地结果发布、并发/崩溃/重放、回调早于 ACK、跨 revision、窗口释放、同架接管、历史清理与下一面恢复。8F/8E、8D 及 8A–8C 继续证明各自原行为；核心仅证明模型部署/schema、selector 和测试所有权。迁移 `d061a18adea9` 基于 `20d588a3a234`，存量新增列保持空，有运动/交接锚点时拒绝有损降级。G2/G3/G5/G6、设备映射、扫码关联与 PkgID 未决项不由夹具补造，仍只阻塞各自真实分支。
+
+**验证与闭环 Review：**本片离线实现与验收完成。最终 PostgreSQL 100 passed（8G 37、8F 37、8E 26），8D 35、8A–8C 87、直接受影响的 Feed/来源 revision 16 及插件 FAST 158 保持通过；核心 selector/测试拓扑 249、选中宿主 HEAVY 8 passed，最终 QUALITY 4317 passed、5 个既有 skipped（跳过项不计通过），格式与差异检查通过。迁移覆盖存量 8F 保留、完整锚点约束、降级重升、有运动时拒绝有损降级及模型/schema 一致性。真实本地发布路径发现 8F 额外要求 typed outcome 不含的 `kind`，最小修正为校验原 Transport 类型，保留原执行、摘要、成员及位置校验；另补通用 batch 交接前旁路门禁及当前轮次承接。最终专用 PostgreSQL 环境不配置 Redis；扩展执行的 3 个既有真实 worker 用例因缺 `INTEGRATION_REDIS_URL` 未完成，未改实现或断言、未计通过，直接影响集合独立重跑 16 passed、3 deselected；本片没有 worker/队列 wiring 变更。独立只读 full Review 核对 16 文件固定 SHA，无确认的 P1/P2/P3；对象锁疑点沿 `current_source → current_arrival` 复核后撤回，无须重复加锁或扩展模型。最终可执行快照与评审指纹一致，后续仅补本段验证记录。主工作区 61 个既有改动、HEAD、暂存区、依赖与 Git 配置保持不变；不提交、不部署、不启用真实派发或真实取盘。任务 8 整体仍未完成，CTU03、机会式入口、生产 reader 与 drain 留待后续切片，G2/G3/G5/G6 未决项继续保留。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
