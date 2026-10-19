@@ -32,11 +32,18 @@ class CancelDirectPickSource(StrictWireModel):
     plan_revision: PositiveInteger
     rack_id: BusinessIdentifier
     rack_face: RackFaceText
-    slot_ids: Annotated[list[BusinessIdentifier], Field(min_length=1)]
+    slot_ids: Annotated[list[BusinessIdentifier], Field(min_length=1)] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_slots(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "slot_ids" in value and value["slot_ids"] is None:
+            raise ValueError("slot_ids 不得为 null；取消整面成员时省略")
+        return value
 
     @model_validator(mode="after")
     def reject_duplicate_slots(self) -> CancelDirectPickSource:
-        if len(set(self.slot_ids)) != len(self.slot_ids):
+        if self.slot_ids is not None and len(set(self.slot_ids)) != len(self.slot_ids):
             raise ValueError("slot_ids 不得重复")
         return self
 

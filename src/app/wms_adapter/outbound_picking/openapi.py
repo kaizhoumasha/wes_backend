@@ -91,7 +91,7 @@ _CANCEL_BIN_SOURCE_RACK = {
 _CANCEL_DIRECT_PICK_SOURCE = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["plan_revision", "rack_id", "rack_face", "slot_ids"],
+    "required": ["plan_revision", "rack_id", "rack_face"],
     "properties": {
         "plan_revision": _POSITIVE_INTEGER,
         "rack_id": _BUSINESS_IDENTIFIER,

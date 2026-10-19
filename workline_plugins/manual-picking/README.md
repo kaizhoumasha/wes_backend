@@ -119,7 +119,7 @@ PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
 
 WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或按 `PLAN_MEMBERS` 在任意父任务状态下
-撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
+撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已应用的整单 `TASK` 取消停止原 prepare 后续派发，以 `SUPERSEDED` 保留原身份、冻结正文和迟到响应，不伪造成功或恢复任务。成员取消不终止 prepare；取消后的新计划与调度入口保持 fail closed。
 
 SCAN1 本点有效扫码确认 Bin 实际到位，按尚未入线的冻结批次成员唯一关联原任务和原搬运，并校验当前有效计划来源架面；
 不等待入口位置投影、目标转运架或原下架 Transport 成功。扫码确认冻结目标到位时，宿主以 `scan:<Evidence.id>` 留下成员完成依据；整笔所有成员均到位后沿原 Transport 发布

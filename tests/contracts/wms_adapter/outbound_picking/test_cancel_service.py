@@ -271,3 +271,22 @@ async def test_same_identity_with_different_payload_returns_idempotency_conflict
 
     assert (result.code, result.reason_code) == ("CONFLICT", "IDEMPOTENCY_CONFLICT")
     tasks.lock_task_identity.assert_not_awaited()
+
+
+async def test_valid_whole_face_cancel_replays_previously_invalid_original_evidence() -> None:
+    service, task, evidence, _, _, cancellations, _ = setup_service(
+        task_status=PickingTaskStatus.EXECUTION_COMPLETED, evidence_status=Status.IGNORED, duplicate=True
+    )
+    payload = event(scope="PLAN_MEMBERS").model_dump(mode="json", exclude_none=True)
+    del payload["data"]["direct_pick_sources"][0]["slot_ids"]
+    original = PickingTaskCancelEvent.model_validate(payload)
+    evidence.normalized_payload = payload
+    result = await service.record(original, received_at=NOW)
+    repeated = await service.record(original, received_at=NOW)
+    assert (result.code, repeated.code) == ("RECEIVED", "DUPLICATE")
+    assert evidence.id == 10 and evidence.received_at == NOW
+    assert evidence.normalized_payload == payload
+    assert evidence.apply_status is Status.APPLIED
+    assert task.status is PickingTaskStatus.EXECUTION_COMPLETED
+    cancellations.cancel_members.assert_awaited_once()
+    assert cancellations.cancel_members.await_args.kwargs["evidence_id"] == 10

@@ -24,7 +24,7 @@ WMS 决定业务意图、变化与终态；WES 把当前意图编排为自动化
 
 **Action lifetime follows its business basis：自动化动作的生命周期跟随其直接业务依据。**WMS Intent 形成当前自动化 Requirement，WES 为尚未满足的 Requirement 创建 Action，现场 Fact 决定目标是否已满足。`Next Action = f(Current Business Requirements, Observed Facts)`。
 
-**Business completion creates obligations that may outlive workflow state。** Obligation 是 WES 根据当前 Requirement 与权威 Fact 确定、持久化并须取得合同定义结果的外部调用责任。已有 Obligation 的派发和原身份重提不因父级 `PickingTask.status` 随后改变而取消；只有权威业务 Response 可靠保存后才按合同闭合，HTTP 发送成功本身不代表业务完成。`inbound_batch` 的链路是货架面实际到位 Fact → 持久化调用义务 → WMS 返回 `RACK_FACE_DONE` 或 `READY` → 保存 Response Evidence → 重新评估 Requirement。`RACK_FACE_DONE` 不是请求前由 WES 预先生成的事实。
+**Business completion creates obligations that may outlive workflow state。** Obligation 是 WES 根据当前 Requirement 与权威 Fact 确定、持久化并须取得合同定义结果的外部调用责任。已有 Obligation 的派发和原身份重提不因父级 `PickingTask.status` 随后改变而取消；按合同以权威业务 Response 或明确覆盖该请求的权威取消事实闭合，HTTP 发送成功本身不代表业务完成。已应用的整单 `TASK` 取消终止原 prepare 后续派发，保留原身份、冻结正文及迟到响应证据，不恢复已取消任务；其他可靠义务不因父状态变化自动停止。`inbound_batch` 的链路是货架面实际到位 Fact → 持久化调用义务 → WMS 返回 `RACK_FACE_DONE` 或 `READY` → 保存 Response Evidence → 重新评估 Requirement。`RACK_FACE_DONE` 不是请求前由 WES 预先生成的事实。
 
 通信恢复保持同一 Action identity 和冻结请求体；当前业务意图改变而产生的新 Action 使用新 identity 和新冻结请求体，不得以旧 identity 改写原请求。`RECONCILING` 仅用于合同与现有权威 Evidence 无法确定唯一安全下一动作的情况，包括身份、响应语义或权威事实的未解冲突；它保留原身份、义务和 Evidence，等待明确恢复依据。超时、连接中断、Worker 崩溃或租约过期若可用原身份重提，应继续可靠恢复；明确的业务结果按所属合同处理，均不因其不是成功结果而直接对账。技术性 `DELIVERY_UNKNOWN` 由可靠执行层消化，插件只需消费确定业务结果。
 

@@ -98,8 +98,13 @@ class PickingTaskCancelService:
                     # 旧父任务状态门禁的成员拒绝，按原身份和 Evidence 重新应用；首次冲突留存。
                     if envelope.data.cancel_scope != "PLAN_MEMBERS" or reason != "STATE_CONFLICT":
                         return self._result(evidence, "CONFLICT", reason)
-                else:
+                elif not (
+                    Status(evidence.apply_status) is Status.IGNORED
+                    and isinstance(envelope.data, PickingTaskCancelMembersData)
+                    and any(source.slot_ids is None for source in envelope.data.direct_pick_sources or ())
+                ):
                     raise RuntimeError("PickingTask 取消 Evidence 处于非法状态")
+                # 旧合同拒绝的整面请求在当前合同下合法，沿原 Evidence 继续业务校验。
             task = await self._lock_task_authority(db, envelope.data.task_id)
             if task is not None:
                 evidence.picking_task_id = task.id

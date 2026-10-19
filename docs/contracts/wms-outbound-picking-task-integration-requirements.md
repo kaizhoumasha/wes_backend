@@ -491,7 +491,9 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
 - `TASK`：`data` 只允许 `task_id + cancel_scope`，适用于 `QUEUED | PREPARING`；任务进入 `CANCELLED`，保留 issued 冻结的 WorkLine 指派。
 - `PLAN_MEMBERS`：不受父 PickingTask 状态限制（包括 `EXECUTION_COMPLETED | CANCELLED | ARCHIVED`）；`data` 必须在 `task_id + cancel_scope` 外至少携带一个非空选择器：
   `bin_source_racks[] = {plan_revision, rack_id, rack_face[]}` 或
-  `direct_pick_sources[] = {plan_revision, rack_id, rack_face, slot_ids[]}`。同一 revision 内的货架、面和储位不得重复。
+  `direct_pick_sources[] = {plan_revision, rack_id, rack_face, slot_ids[]?}`。同一 revision 内的货架、面和储位不得重复。
+
+`direct_pick_sources[].slot_ids` 可省略：省略时取消指定 `task_id + plan_revision + rack_id + rack_face` 下的全部 direct-pick 成员；传非空列表时只取消列出的储位。显式 `null`、空列表、重复储位或非法标识仍拒绝。选择器不跨任务、revision、货架或面扩展；一条请求可混合整面与指定储位选择器。成员取消仍只改变未取消成员的取消边界，不改写已完成的物理事实或已存在的取消证据。
 
 两个 `plan_revision` 都是所在选择器的必填正整数，必须命中原计划成员。当前 wire 按 `plan_revision + rack_id + rack_face` 判断来源成员是否重复，允许同一物理货架在不同 revision 分别出现并分别取消。
 
@@ -510,7 +512,8 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
       {"plan_revision": 2, "rack_id": "RACK-5F-001", "rack_face": ["A"]}
     ],
     "direct_pick_sources": [
-      {"plan_revision": 2, "rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]}
+      {"plan_revision": 2, "rack_id": "RETURN-RACK-01", "rack_face": "A", "slot_ids": ["A-03"]},
+      {"plan_revision": 2, "rack_id": "RETURN-RACK-01", "rack_face": "B"}
     ]
   }
 }
@@ -521,12 +524,13 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
 不阻止其他仍可取消的成员。全部成员都不可取消时也按幂等成功处理，不产生业务冲突。只有同 identity 内容漂移、任务/WorkLine 不匹配或任务状态不允许时返回
 `409 / CONFLICT`；其中任务状态限制仅适用于 `TASK`，不得因为成员集合部分失效而整条拒绝。
 
+原请求如仅因旧合同要求 `slot_ids` 必填而被 `INVALID_DATA` 拒绝，WMS 可沿用原 `operation_id`、时间戳和原正文重放；当前合同校验通过后，WES 按原 Evidence 继续业务校验并应用取消，保留原身份、规范化正文、摘要、首次接收时间和历史拒绝诊断，后续重放返回 `DUPLICATE`。同 identity 将非空列表改为省略或反向修改仍是正文漂移，返回 `IDEMPOTENCY_CONFLICT`，不得改写原证据。
+
 历史上仅因父任务状态限制被拒绝的 `PLAN_MEMBERS` 请求，WMS 可沿用原 `operation_id` 和原规范化 payload 重放。WES 锁定原 Evidence 与任务，在同一事务内按原选择器补记成员取消边界并将该 Evidence 应用为 `APPLIED`；首次 `STATE_CONFLICT` 记录、原 Evidence 身份、正文、摘要和接收时间保留。成功后再次重放返回 `DUPLICATE`。`TASK` 拒绝、`REFERENCE_CONFLICT` 和同 identity 内容漂移仍按原规则处理。成员取消不改变父任务的完成或归档状态，也不改写已完成的物理事实。
 
 取消只停止尚未发生的业务准入。仅在 WES 本地创建且尚未开始外部发送的 Transport 可以终止发送；已经发出、被接纳、在途或结果未知的
 Transport/DeviceCommand 保留原身份和围栏继续收口。仍有有效来源成员的已到位货架继续调用 `inbound_batch` 取得最终 `RACK_FACE_DONE`；来源成员均取消后由 §9.4 清退扫描承接，已持久化批次继续交付；已进入滚筒线但尚无工作计划的
-Bin 到工作位后由 `work_plan` 返回 `NO_WORK`；已经返回 `READY` 的工作按本次授权继续。`PREPARING` 取消不撤销已发出的 prepare
-`WmsConfirmation`，迟到 `plan_delta` 按 `STATE_CONFLICT` 拒绝且不创建计划成员。
+Bin 到工作位后由 `work_plan` 返回 `NO_WORK`；已经返回 `READY` 的工作按本次授权继续。已应用的 `TASK` 取消 Evidence 终止原 prepare 的后续派发，包括取消后归档的原任务；持久派发扫描在发送前以及 HTTP 返回后核对该事实，将未完成的原 `WmsConfirmation` 收口为既有 `SUPERSEDED`，清除重试与租约，不构造 `PREPARE_ACCEPTED` 或完成时间。原 `operation_id`、冻结正文、摘要、尝试历史和全部证据保留；`PLAN_MEMBERS` 取消不触发该规则。取消前已取得发送许可的调用可返回，匹配原冻结身份的迟到响应（包括旧租约被接管后才返回的响应）仍可靠保存为 Evidence，冲突另行留证，不重新派发、不恢复任务、不触发计划激活。已保存的真实确定响应及既有完成状态不改写。迟到 `plan_delta` 仍按 `STATE_CONFLICT` 拒绝且不创建计划成员。
 
 成员取消通知可在 Transport 取消终态之后 3～180 秒到达，也可以先于终态到达。任一事实提交后，WES 由持久工作线扫描重新评估未释放的当前进场窗口；不得等待 180 秒后推定成员取消。只有 Transport 取消而原成员仍有效时，仍按既有业务重试规则执行；成员取消停止尚未创建的重试，但不撤销已发送动作。当前窗口的来源成员均已取消且货架确认仍在目标点时，改由 §9.4 清退流程承接，不再创建新的取箱批次；已持久化批次的可靠义务和已授权动作继续收口。
 
