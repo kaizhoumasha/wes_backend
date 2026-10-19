@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.49.15.0] - 2026-10-19
+
+### Fixed
+
+- 整单取消后停止后续 prepare 重试，保留原请求身份、冻结正文和迟到响应，不改写已有完成结果；持久化任务取消事实，防止归档和历史清理后恢复重试。
+- 支持省略 `direct_pick_sources.slot_ids` 取消指定任务、计划版本和货架面的全部成员，保留精确储位取消与原拒绝证据重放规则。
+
+
 ## [0.49.14.0] - 2026-10-16
 
 ### Fixed

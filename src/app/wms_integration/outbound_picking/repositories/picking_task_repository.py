@@ -40,6 +40,14 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         columns = cast("Any", PickingTask).__table__.c
         return await db.scalar(select(PickingTask).where(columns.id == picking_task_id).with_for_update())
 
+    async def has_applied_task_cancel(self, db: AsyncSession, picking_task_id: int) -> bool:
+        # 当前取消事实随任务保留，不依赖可清理的接收历史。
+        columns = cast("Any", PickingTask).__table__.c
+        return (
+            await db.scalar(select(columns.id).where(columns.id == picking_task_id, columns.cancelled_at.is_not(None)))
+            is not None
+        )
+
     async def get_workline_id(self, db: AsyncSession, picking_task_id: int) -> int | None:
         columns = cast("Any", PickingTask).__table__.c
         return await db.scalar(select(columns.workline_id).where(columns.id == picking_task_id))

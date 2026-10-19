@@ -162,6 +162,7 @@ class _TaskQueue:
         self.execution_wakes = 0
         self.wms_wakes = 0
         self.transport_debug_wakes = 0
+        self.plans_wakes = 0
         self.error = error
 
     def enqueue_execution_facts(self) -> None:
@@ -176,7 +177,7 @@ class _TaskQueue:
         self.wms_wakes += 1
 
     def enqueue_picking_task_plans(self) -> None:
-        pass
+        self.plans_wakes += 1
 
 
 class _Adapter:
@@ -225,6 +226,10 @@ class _PickingTaskOwner:
         self.valid = valid
         self.calls: list[tuple[object, int, str]] = []
         self.root_calls: list[tuple[object, int]] = []
+        self.cancelled = False
+
+    async def is_dispatch_cancelled(self, db: object, *, picking_task_id: int, operation: str) -> bool:
+        return self.cancelled and operation == "outbound.picking_task.prepare@v1"
 
     async def lock_authority_root(self, db: object, *, picking_task_id: int) -> bool:
         self.root_calls.append((db, picking_task_id))
@@ -232,7 +237,9 @@ class _PickingTaskOwner:
 
     async def validate_dispatch_owner(self, db: object, *, picking_task_id: int, operation: str) -> bool:
         self.calls.append((db, picking_task_id, operation))
-        return self.valid
+        return self.valid and not await self.is_dispatch_cancelled(
+            db, picking_task_id=picking_task_id, operation=operation
+        )
 
     async def validate_response_owner(
         self,
@@ -549,6 +556,7 @@ async def test_received_response_is_preserved_when_owner_changes_during_http(own
     queue = _TaskQueue()
     owner = SimpleNamespace(
         lock_authority_root=AsyncMock(return_value=True),
+        is_dispatch_cancelled=AsyncMock(return_value=False),
         validate_dispatch_owner=AsyncMock(return_value=True),
         validate_response_owner=AsyncMock(return_value=False),
         validate_owner=AsyncMock(side_effect=[True, False]),
@@ -658,6 +666,7 @@ async def test_picking_decision_is_not_sent_without_valid_business_owner(owner_a
                 SimpleNamespace(
                     get_workline_id=AsyncMock(return_value=None),
                     get_by_id_for_update=AsyncMock(return_value=None),
+                    has_applied_task_cancel=AsyncMock(return_value=False),
                 )
             )
             if owner_available
@@ -1157,3 +1166,148 @@ async def test_ready_result_wakes_plans_after_commit_without_redispatch(monkeypa
     if not rollback:
         assert await service.dispatch_batch(now=now) == 0
         assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_applied_task_cancel_stops_original_prepare_before_http() -> None:
+    now = datetime(2026, 10, 17, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    frozen = deepcopy(confirmation.request_payload)
+    owner = _PickingTaskOwner()
+    owner.cancelled = True
+    adapter = _Adapter(None)
+    evidence = _EvidenceService()
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),
+        adapter=adapter,
+        picking_task_owner=owner,
+        evidence_service=evidence,
+    )
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.SUPERSEDED
+    assert not confirmation.retry_eligible and confirmation.next_attempt_at is None
+    assert confirmation.response_evidence_id is confirmation.response_result is confirmation.completed_at is None
+    assert confirmation.request_payload == frozen
+    assert adapter.calls == evidence.calls == []
+    assert await service.dispatch_batch(now=now + timedelta(minutes=10)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code,response_code",
+    [
+        (WmsDispatchCode.DETERMINATE, "PREPARE_ACCEPTED"),
+        (WmsDispatchCode.RETRY, "UNAVAILABLE"),
+        (WmsDispatchCode.RECONCILING, "CONFLICT"),
+    ],
+)
+@pytest.mark.parametrize("lease_reclaimed", [False, True, "claimed", "completed"])
+async def test_cancelled_prepare_preserves_http_response_without_requeue_or_business_wakeup(
+    code,
+    response_code,
+    lease_reclaimed,
+) -> None:
+    now = datetime(2026, 10, 17, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    frozen = deepcopy(confirmation.request_payload)
+    owner = _PickingTaskOwner()
+    response = {"operation_id": confirmation.operation_id, "code": response_code, "timestamp": 2, "data": {}}
+    queue = _TaskQueue()
+
+    class CancellingAdapter(_Adapter):
+        async def dispatch(self, **kwargs):
+            owner.cancelled = True
+            if lease_reclaimed:
+                confirmation.status = (
+                    WmsConfirmationStatus.DISPATCHING
+                    if lease_reclaimed == "claimed"
+                    else WmsConfirmationStatus.SUPERSEDED
+                )
+                confirmation.claim_token = "new-worker" if lease_reclaimed == "claimed" else None
+                confirmation.claim_expires_at = now + timedelta(minutes=5) if lease_reclaimed == "claimed" else None
+                if lease_reclaimed == "completed":
+                    confirmation.status = WmsConfirmationStatus.COMPLETED
+                    confirmation.retry_eligible = False
+                    confirmation.next_attempt_at = None
+                    confirmation.claimed_at = None
+                    confirmation.response_evidence_id = 401
+                    confirmation.response_result = "PREPARE_ACCEPTED"
+                    confirmation.completed_at = now
+                    self.completed_snapshot = confirmation.model_dump()
+            return await super().dispatch(**kwargs)
+
+    adapter = CancellingAdapter(
+        SimpleNamespace(
+            code=code,
+            normalized_response=response,
+            response_result="PREPARE_ACCEPTED" if code == WmsDispatchCode.DETERMINATE else None,
+            retry_after_ms=None,
+        )
+    )
+    evidence = _EvidenceService()
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),
+        adapter=adapter,
+        picking_task_owner=owner,
+        evidence_service=evidence,
+        task_queue_gateway=queue,
+    )
+    assert await service.dispatch_batch(now=now) == 1
+    expected_status = (
+        WmsConfirmationStatus.COMPLETED if lease_reclaimed == "completed" else WmsConfirmationStatus.SUPERSEDED
+    )
+    assert confirmation.status == expected_status
+    assert not confirmation.retry_eligible and confirmation.next_attempt_at is None
+    assert confirmation.claim_token is confirmation.claim_expires_at is None
+    if lease_reclaimed == "completed":
+        assert confirmation.model_dump() == adapter.completed_snapshot
+    else:
+        assert confirmation.response_evidence_id is confirmation.response_result is confirmation.completed_at is None
+    assert confirmation.request_payload == frozen
+    assert len(evidence.calls) == 1
+    assert evidence.calls[0]["normalized_payload"] == response
+    assert evidence.calls[0]["operation_id"] == confirmation.operation_id
+    assert evidence.calls[0]["picking_task_id"] == 31
+    assert queue.plans_wakes == 0
+    assert await service.dispatch_batch(now=now + timedelta(minutes=10)) == 0
+    assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_digest", [False, True])
+async def test_late_retired_prepare_conflict_keeps_cancellation_and_checks_frozen_digest(changed_digest) -> None:
+    now = datetime(2026, 10, 17, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    owner = _PickingTaskOwner()
+    evidence = _ConflictEvidenceService()
+
+    class Adapter(_Adapter):
+        async def dispatch(self, **kwargs):
+            owner.cancelled = True
+            confirmation.status = WmsConfirmationStatus.SUPERSEDED
+            confirmation.claim_token = confirmation.claim_expires_at = None
+            if changed_digest:
+                confirmation.request_digest = "f" * 64
+            return await super().dispatch(**kwargs)
+
+    adapter = Adapter(
+        SimpleNamespace(
+            code=WmsDispatchCode.DETERMINATE,
+            response_result="PREPARE_ACCEPTED",
+            normalized_response={"operation_id": confirmation.operation_id, "code": "PREPARE_ACCEPTED", "data": {}},
+            retry_after_ms=None,
+        )
+    )
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),
+        adapter=adapter,
+        picking_task_owner=owner,
+        evidence_service=evidence,
+    )
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.SUPERSEDED
+    assert len(evidence.calls) == (0 if changed_digest else 1)
+    assert confirmation.response_result is None
