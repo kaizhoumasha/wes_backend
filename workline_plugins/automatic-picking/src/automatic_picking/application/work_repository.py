@@ -1,6 +1,6 @@
 """Work 当前轮次的持久查询；工作线锁由宿主/业务消费者统一取得。"""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlmodel import col
 
 from src.app.execution.models import InboundEvidence
@@ -81,7 +81,10 @@ class WorkRepository:
             .where(
                 AutomaticPickingReturnMotion.workline_id == workline_id,
                 AutomaticPickingReturnMotion.archived_at.is_(None),
-                AutomaticPickingReturnMotion.closed_at.is_(None),
+                or_(
+                    AutomaticPickingReturnMotion.closed_at.is_(None),
+                    AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
+                ),
             )
         )
         count = (

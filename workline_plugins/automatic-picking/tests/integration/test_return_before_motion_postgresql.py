@@ -1,6 +1,8 @@
 """8E 只冻结运动前求值出口；位置、架面和运动依据均为显式离线输入。"""
 
 import pytest
+import pytest_asyncio
+from motion_binding_support import source_facts
 from sqlalchemy import select
 from test_return_allocation_postgresql import (
     FaceReader,
@@ -12,15 +14,33 @@ from test_return_allocation_postgresql import (
     arrived,
     complete_transport,
     database,
-    new_face,
     observed,
     pending,
     processor,
-    qualified,
     result,
+)
+from test_return_allocation_postgresql import (
+    new_face as base_new_face,
+)
+from test_return_allocation_postgresql import (
+    qualified as base_qualified,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+@pytest_asyncio.fixture
+async def qualified(observed):
+    p = await base_qualified.__wrapped__(observed)
+    await source_facts(p, p.faces[0])
+    return p
+
+
+async def new_face(p, rack="OFFLINE-RACK", face="A"):
+    value = await base_new_face(p, rack=rack, face=face)
+    root = next((ctx.root for ctx in p.motion_sources.values() if ctx.rack_id == rack), None)
+    await source_facts(p, value, root_client=root)
+    return value
 
 
 class MotionReader:
@@ -31,7 +51,16 @@ class MotionReader:
         from automatic_picking.application.return_allocation_flow import MatchedReturnMotion
 
         faces = await FaceReader(self.p).read_in_session(db, workline_id=workline_id)
-        return tuple(MatchedReturnMotion(face, face.arrival_evidence_id) for face in faces)
+        return tuple(
+            MatchedReturnMotion(
+                face,
+                face.arrival_evidence_id,
+                self.p.motion_sources[face.arrival_evidence_id].root,
+                self.p.motion_sources[face.arrival_evidence_id].feed_id,
+                self.p.motion_sources[face.arrival_evidence_id].end_id,
+            )
+            for face in faces
+        )
 
 
 def motion_application(p):
@@ -137,7 +166,9 @@ async def test_ready_phase_waits_for_physical_result_and_business_publication(qu
     assert await advance(p, batch=application(p)[0]) == 0
     async with p.sessions() as db:
         tasks = list((await db.scalars(select(TransportTask))).all())
-        assert len(tasks) == 1 and tasks[0].kind == "BIN_MOVE"
+        assert len(tasks) == 2
+        assert {task.kind for task in tasks} == {"RACK_MOVE", "BIN_MOVE"}
+        assert sum(task.client_request_id == p.motion_sources[p.face_id].root for task in tasks) == 1
 
 
 async def test_original_unknown_request_is_recovered_before_empty_claimed_fifo(qualified):
@@ -502,7 +533,7 @@ async def test_migration_preserves_8d_and_refuses_loss_of_motion_exit(qualified,
     await advance(p, batch=motion_application(p)[0])
     with pytest.raises(subprocess.CalledProcessError) as error:
         run_alembic("downgrade", "a448148f9636", database_url=url)
-    assert "cannot discard automatic motion evaluation identities or exit facts" in error.value.stderr
+    assert "cannot discard automatic motion evaluation source bindings" in error.value.stderr
 
 
 async def test_motion_model_matches_migration(qualified):

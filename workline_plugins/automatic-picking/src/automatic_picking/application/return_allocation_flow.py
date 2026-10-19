@@ -43,12 +43,20 @@ class MatchedReturnLocation:
 class MatchedReturnMotion:
     face: MatchedReturnFace
     source_evidence_id: int
+    inbound_client_request_id: str
+    source_feed_id: int
+    service_end_evidence_id: int
 
     def __post_init__(self):
         if (
             type(self.face) is not MatchedReturnFace
             or type(self.source_evidence_id) is not int
-            or not 0 < self.source_evidence_id <= 2**63 - 1
+            or any(
+                type(v) is not int or not 0 < v <= 2**63 - 1
+                for v in (self.source_evidence_id, self.source_feed_id, self.service_end_evidence_id)
+            )
+            or type(self.inbound_client_request_id) is not str
+            or not 0 < len(self.inbound_client_request_id.strip()) <= 120
         ):
             raise ValueError("motion evaluation requires exact face and business Evidence")
 
@@ -148,12 +156,13 @@ class AutomaticPickingReturnBatchFlow:
         )
         return result is not None and result.apply_status == "APPLIED" and result.published_at is not None
 
-    async def _motion_can_close(self, db, allocation, allocations):
+    async def _motion_can_close(self, db, allocation, allocations, motion):
         if not await self._motion_obligation_closed(db, allocation):
             return False
         for original in allocations:
             if (
                 original.rack_id == allocation.rack_id
+                and original.created_at >= motion.round_started_at
                 and original.id != allocation.id
                 and not await self._motion_obligation_closed(db, original)
             ):
@@ -168,11 +177,7 @@ class AutomaticPickingReturnBatchFlow:
         for intent in intents or ():
             if type(intent) is not MatchedReturnMotion or intent.face.workline_id != line.id:
                 raise ValueError("motion intent differs from WorkLine")
-            if (
-                not line.is_active
-                or intent.face not in faces
-                or any(self._face_identity(p) == self._face_identity(intent.face) for p in phases)
-            ):
+            if not line.is_active or intent.face not in faces:
                 continue
             evidence = await self.repository.evidence(db, intent.source_evidence_id)
             if (
@@ -183,16 +188,37 @@ class AutomaticPickingReturnBatchFlow:
                 or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
             ):
                 raise ValueError("motion intent requires published authoritative business Evidence")
-            phases.append(await self.motions.add(db, intent))
+            current = next((p for p in phases if self._face_identity(p) == self._face_identity(intent.face)), None)
+            if current is not None and current.source_evidence_id != intent.source_evidence_id:
+                raise ValueError("motion trigger identity drift")
+            if current is not None and current.inbound_client_request_id is not None:
+                if (current.inbound_client_request_id, current.source_feed_id, current.service_end_evidence_id) != (
+                    intent.inbound_client_request_id,
+                    intent.source_feed_id,
+                    intent.service_end_evidence_id,
+                ):
+                    raise ValueError("motion source binding identity drift")
+                continue
+            root = await self.motions.source_binding(db, line, intent)
+            if root is None:
+                continue
+            if current is None:
+                current = await self.motions.add(db, intent)
+                phases.append(current)
+            await self.motions.bind_source(db, current, intent, root)
             count += 1
         for current in phases:
-            if current.closed_at is None and current.allocation_id is not None:
+            if (
+                current.closed_at is None
+                and current.allocation_id is not None
+                and current.inbound_client_request_id is not None
+            ):
                 allocation = await self.motions.allocation(db, current)
-                if await self._motion_can_close(db, allocation, allocations):
+                if await self._motion_can_close(db, allocation, allocations, current):
                     await self.motions.close(db, current, now=self.clock())
                     count += 1
         if complete:
-            await self.motions.retire(db, phases, faces, now=self.clock())
+            await self.motions.retire(db, phases, faces, line=line, now=self.clock())
         return phases, count
 
     async def advance_in_session(self, db, line):
@@ -212,7 +238,23 @@ class AutomaticPickingReturnBatchFlow:
                 (p for p in phases if p.archived_at is None and self._face_identity(p) == self._face_identity(face)),
                 None,
             )
+            if (
+                motion is None
+                and self.motion_reader is not None
+                and await self.motions.current_arrival(
+                    db,
+                    line.id,
+                    face.arrival_evidence_id,
+                    face.rack_id,
+                    face.rack_face,
+                    {"kind": "RACK_POSITION", "location_code": line.position_bindings["FIVE_RACK"]["location_id"]},
+                )
+                is None
+            ):
+                continue
             if motion is not None and (motion.closed_at is not None or motion.allocation_id is not None):
+                continue
+            if motion is not None and not await self.motions.current_source(db, line, motion):
                 continue
             same_arrival = [
                 a
@@ -226,20 +268,27 @@ class AutomaticPickingReturnBatchFlow:
                 if motion is not None:
                     await self.motions.bind(db, motion, no_batch)
                     count += 1
-                    if await self._motion_can_close(db, no_batch, allocations):
+                    if await self._motion_can_close(db, no_batch, allocations, motion):
                         await self.motions.close(db, motion, now=self.clock())
                         count += 1
                 continue
             if motion is not None:
                 blocked = False
                 for original in allocations:
-                    if original.rack_id == face.rack_id and not await self._motion_obligation_closed(db, original):
+                    if (
+                        original.rack_id == face.rack_id
+                        and original.created_at >= motion.round_started_at
+                        and not await self._motion_obligation_closed(db, original)
+                    ):
                         blocked = True
                         break
                 if blocked:
                     continue
             if any(
-                a.rack_id == face.rack_id and a.rack_face == face.rack_face and a.settled_at is None
+                a.rack_id == face.rack_id
+                and a.rack_face == face.rack_face
+                and a.settled_at is None
+                and (motion is None or a.created_at >= motion.round_started_at)
                 for a in allocations
             ):
                 continue
