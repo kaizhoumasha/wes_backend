@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from wes_plugin_sdk import RackDepartureReady, TransportRackPosition
 
-from src.app.execution.models import InboundEvidence, TransportDecisionBinding
+from src.app.execution.models import InboundEvidence, TransportDecisionBinding, WmsConfirmation
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
 from src.utils.canonical_json import canonical_json_digest
@@ -29,13 +29,62 @@ class DrainDepartureRepository:
                     )
                     .where(
                         AutomaticPickingReturnMotion.workline_id == line_id,
-                        AutomaticPickingReturnMotion.departure_transport_task_id.is_not(None),
+                        AutomaticPickingReturnMotion.departure_operation_id.is_not(None),
+                        AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
+                        AutomaticPickingDrain.workline_id == line_id,
                         AutomaticPickingReturnMotion.archived_at.is_(None),
                     )
                     .with_for_update(of=AutomaticPickingReturnMotion)
                 )
             ).all()
         )
+
+    async def by_decision(self, db, line_id, operation_id):
+        return await db.scalar(
+            select(AutomaticPickingReturnMotion)
+            .join(
+                AutomaticPickingDrain,
+                AutomaticPickingDrain.response_evidence_id == AutomaticPickingReturnMotion.source_evidence_id,
+            )
+            .where(
+                AutomaticPickingReturnMotion.workline_id == line_id,
+                AutomaticPickingDrain.workline_id == line_id,
+                AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
+                AutomaticPickingReturnMotion.departure_operation_id == operation_id,
+            )
+            .with_for_update(of=AutomaticPickingReturnMotion)
+        )
+
+    async def decision(self, db, stage, *, evidence=None):
+        request = await db.scalar(
+            select(WmsConfirmation).where(
+                WmsConfirmation.operation == "outbound.rack.departure_decide@v1",
+                WmsConfirmation.operation_id == stage.departure_operation_id,
+            )
+        )
+        if request is None:
+            raise ValueError("drain departure lost current request")
+        if request.status != "COMPLETED":
+            if evidence is not None:
+                raise ValueError("drain departure result has no completed request")
+            return await self.reader.by_operation_id(
+                db, workline_id=stage.workline_id, operation_id=stage.departure_operation_id, rack_id=stage.rack_id
+            )
+        fact = evidence if evidence is not None else await db.get(InboundEvidence, request.response_evidence_id)
+        snapshot = await self.reader.for_evidence(
+            db,
+            workline_id=stage.workline_id,
+            operation_id=stage.departure_operation_id,
+            rack_id=stage.rack_id,
+            evidence_id=fact.id,
+        )
+        if (
+            fact.workline_id != stage.workline_id
+            or fact.picking_task_id is not None
+            or canonical_json_digest(fact.normalized_payload) != fact.payload_digest
+        ):
+            raise ValueError("drain departure result differs from frozen owner or digest")
+        return snapshot if evidence is not None or fact.published_at is not None else None
 
     async def validate_transport(self, db, task, binding):
         if (

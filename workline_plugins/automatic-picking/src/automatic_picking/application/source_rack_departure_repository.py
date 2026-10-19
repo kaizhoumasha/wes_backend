@@ -46,6 +46,7 @@ class SourceRackDepartureRepository:
             select(AutomaticPickingReturnMotion)
             .where(
                 AutomaticPickingReturnMotion.workline_id == line_id,
+                AutomaticPickingReturnMotion.inbound_client_request_id.is_not(None),
                 AutomaticPickingReturnMotion.departure_operation_id == operation_id,
             )
             .with_for_update()

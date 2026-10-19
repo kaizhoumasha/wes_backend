@@ -3,9 +3,10 @@
 import re
 from datetime import timedelta
 
-from automatic_picking.application.drain_departure_repository import DRAIN_DEPARTURE_STEP
+from automatic_picking.application.drain_departure_repository import DRAIN_DEPARTURE_STEP, DrainDepartureRepository
 from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP
-from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP
+from automatic_picking.application.return_motion_repository import ReturnMotionRepository
+from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.definition import DEFINITION
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
@@ -70,11 +71,7 @@ class AutomaticPickingScanFlow:
                     else "WAIT_FOR_EXIT"
                 )
             elif evidence.operation == "outbound.rack.departure_decide@v1":
-                result = (
-                    await self.rack_departure_flow.apply_decision_result_in_session(db, line=line, evidence=evidence)
-                    if self.rack_departure_flow is not None
-                    else "WAIT_FOR_EXIT"
-                )
+                result = await self._departure_result(db, line, evidence)
             elif evidence.operation == "outbound.bin.return_batch@v1":
                 result = (
                     await self.return_batch_flow.apply_result_in_session(db, line=line, evidence=evidence)
@@ -117,6 +114,22 @@ class AutomaticPickingScanFlow:
         return BusinessEvidenceApplication(
             BusinessEvidenceDisposition.APPLIED, canonical_json_digest({"evidence_id": evidence_id, "result": result})
         )
+
+    async def _departure_result(self, db, line, evidence):
+        source = await SourceRackDepartureRepository(ReturnMotionRepository()).by_decision(
+            db, line.id, evidence.operation_id
+        )
+        drain = await DrainDepartureRepository().by_decision(db, line.id, evidence.operation_id)
+        if source is not None:
+            flow = self.rack_departure_flow
+        elif drain is not None:
+            root = self.batch_driver.drain_flow if self.batch_driver is not None else None
+            flow = root.inbound.departure if root is not None and root.inbound is not None else None
+        else:
+            return "DEPARTURE_OLD_DECISION"
+        if flow is None:
+            return "WAIT_FOR_EXIT"
+        return await flow.apply_decision_result_in_session(db, line=line, evidence=evidence)
 
     async def _transport_result(self, db, line, evidence):
         step = evidence.normalized_payload.get("step")

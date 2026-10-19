@@ -458,6 +458,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**本片29项、9D首片28项、9C31项及9B33项 PostgreSQL 联合验收121 passed；普通来源departure/WAIT/明确未接纳三域106 passed，合计227项不同用例。插件FAST174项、核心安装/拓扑33项通过；HEAVY selector为NONE，9个Python文件Ruff/格式及diff检查通过。既有全局metadata循环外键warning保留，未改schema。终面缺阶段与有READY未建CTU03均先取得真实RED再GREEN；开发回归中一项断言误将未业务发布视为完成、一项历史清理fixture缺一次持久扫描，分别按合同和既有owner补齐前置，未放宽生产门禁。独立Reviewer核对固定10文件及完整调用链、事务、对象锁、测试所有权和历史边界，未确认P1/P2/P3，无需代码修正；最终可执行快照保持不变。仅完成本片离线验收，不提交、不部署，不接首次departure、WAIT续问或drain收口。
 
+#### 实施切片 9E：drain 首次 departure 与确定 WAIT 持久续问
+
+**范围与身份：**沿用9D终面阶段、当前权威到位和原冻结drain reservation，所有直接回库义务闭合后才创建首次 typed departure 请求。Confirmation与Motion的当前 `departure_operation_id` 同事务落地；后续结果必须匹配原WorkLine、rack、当前operation、请求正文和响应Evidence。普通来源以来源绑定领取，drain以原READY关联领取，不能仅凭 `task_id=null` 选择owner。未扩展字段、模型、业务状态、通用timer、SDK或宿主业务逻辑。
+
+**WAIT与READY：**确定WAIT的到期时间固定为原Evidence的 `received_at + retry_after_ms`，FactProcessor同事务应用业务结果和发布；已发布结果也可由持久扫描补记到期时间。到期后重新核验当前原架面、终面阶段及直接义务，以新operation和替换当前游标同事务续问。未知、对账或未发布结果保留原身份；重放旧结果不延长期限、不覆盖新游标。departure义务不受FIFO为空、无EXECUTING或下一任务准备结果取消。READY沿当前持久游标接回9D的CTU03创建、关联和结果恢复，不需要重提供显式READY输入。
+
+**恢复owner与历史：**原batch入口先恢复operation-only和已建Transport，再推进新候选；Confirmation负责原身份交付，FactProcessor负责精确typed结果应用/发布，Transport继续负责原执行。当前drain根/READY、Motion、当前Confirmation及原动作仍是直接依赖；旧WAIT及已交接的闭合历史可清理。停用线遵循既有宿主领取规则，结果保留至恢复活动；不以停用制造新动作。没有通知、没有EXECUTING任务、双worker竞争或事务中断均不另建owner。
+
+**测试所有权与边界：**插件 `integration/test_drain_departure_decision_postgresql.py` 承接首次请求、当前游标、WAIT期限、续问原子性、结果发布、READY接回、并发/崩溃/旧结果、来源owner隔离、多架独立、无EXECUTING及历史清理恢复。9C/9D和普通来源departure三域做定向回归，核心只验证安装/拓扑。不接drain收口或失败重决策，不启用生产装配或真实派发；设备映射、扫码关联、PkgID及首批期限等未决项保持原阻塞范围。
+
+**验证与闭环 Review：**新增25项、9C/9D回归88项及普通来源departure三域106项 PostgreSQL 验收全部通过，合计219项不同用例；插件FAST174项、核心安装/拓扑33项通过。HEAVY selector为NONE，5个Python文件Ruff/格式及diff检查通过，无schema变化；既有metadata循环外键warning保留。首次请求和WAIT游标/发布先取得真实RED再GREEN。开发验证纠正离线时钟早于权威到位的fixture，并按SRS及宿主既有规则修正停用线测试前提，未放宽生产门禁。独立Reviewer核对固定6文件、事务/锁、恢复链、owner隔离、测试所有权与历史边界，未确认P1/P2/P3，无需代码修正；其后仅补齐回归结果和本文验收记录。完整QUALITY留后续获授权提交hook；本片不提交、不部署，不接drain收口或失败重决策。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
