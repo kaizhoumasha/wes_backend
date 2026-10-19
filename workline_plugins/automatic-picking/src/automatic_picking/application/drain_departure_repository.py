@@ -191,6 +191,29 @@ class DrainDepartureRepository:
         await db.flush()
         return "DRAIN_DEPARTURE_OBSERVED"
 
+    async def rejected(self, db, stage):
+        task, _, _ = await self.transport(db, stage)
+        if task.status != "REJECTED":
+            return False
+        fact = (
+            await db.get(InboundEvidence, stage.departure_result_evidence_id)
+            if stage.departure_result_evidence_id
+            else None
+        )
+        if (
+            fact is None
+            or fact.published_at is None
+            or task.outcome_version < 1
+            or task.outcome_version != task.published_outcome_version
+        ):
+            return False
+        if (
+            fact.normalized_payload.get("outcome_version") != task.outcome_version
+            or fact.normalized_payload.get("status") != "REJECTED"
+        ):
+            raise ValueError("drain rejection differs from original published result")
+        return True
+
     async def finished(self, db, stage):
         task, _, target = await self.transport(db, stage)
         fact = (

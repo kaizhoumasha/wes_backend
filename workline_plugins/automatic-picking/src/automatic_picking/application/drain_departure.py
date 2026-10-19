@@ -59,6 +59,11 @@ class DrainDepartureFlow:
                 and await self.repository.observe(db, line, fact) == "RECONCILING"
             ):
                 raise ValueError("drain departure result differs from original action")
+            if await self.repository.rejected(db, stage):
+                context = await self._current_context(db, line, stage)
+                if context is not None:
+                    count += await self._request(db, line, stage, context)
+                    continue
             if await self.repository.finished(db, stage):
                 stage.archived_at = self.clock()
                 await db.flush()
@@ -69,8 +74,18 @@ class DrainDepartureFlow:
         snapshot = await self.repository.decision(db, stage)
         if snapshot is None or snapshot.status != "COMPLETED":
             return 0
+        context = await self._current_context(db, line, stage)
+        if type(snapshot.outcome.result) is RackDepartureWait:
+            changed = await self._remember_wait(db, stage, snapshot)
+            if context is not None and self.clock() >= stage.departure_retry_at:
+                return changed + await self._request(db, line, stage, context)
+            return changed
+        if context is None:
+            return 0
+        return await self._create_transport(db, line, stage, context, stage.departure_operation_id)
+
+    async def _current_context(self, db, line, stage):
         current = await self.rotation.returns.drains.current(db, line)
-        context = None
         if (
             current is not None
             and type(current[1]) is ReturnBufferDrainReady
@@ -81,15 +96,8 @@ class DrainDepartureFlow:
                 (r for r in await self.rotation.repository.racks(db, root.id) if r.rack_id == stage.rack_id), None
             )
             if row is not None:
-                context = await self._context(db, line, root, ready, row, stage)
-        if type(snapshot.outcome.result) is RackDepartureWait:
-            changed = await self._remember_wait(db, stage, snapshot)
-            if context is not None and self.clock() >= stage.departure_retry_at:
-                return changed + await self._request(db, line, stage, context)
-            return changed
-        if context is None:
-            return 0
-        return await self._create_transport(db, line, stage, context, stage.departure_operation_id)
+                return await self._context(db, line, root, ready, row, stage)
+        return None
 
     async def _remember_wait(self, db, stage, snapshot):
         fact = await db.get(InboundEvidence, snapshot.evidence_id)
@@ -189,6 +197,7 @@ class DrainDepartureFlow:
         )
         await self.scheduler.create_in_session(db, intent, workline_id=line.id, created_at=self.clock())
         stage.departure_operation_id, stage.departure_retry_at = operation_id, None
+        stage.departure_transport_task_id = stage.departure_result_evidence_id = None
         await db.flush()
         return 1
 

@@ -470,6 +470,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**新增25项、9C/9D回归88项及普通来源departure三域106项 PostgreSQL 验收全部通过，合计219项不同用例；插件FAST174项、核心安装/拓扑33项通过。HEAVY selector为NONE，5个Python文件Ruff/格式及diff检查通过，无schema变化；既有metadata循环外键warning保留。首次请求和WAIT游标/发布先取得真实RED再GREEN。开发验证纠正离线时钟早于权威到位的fixture，并按SRS及宿主既有规则修正停用线测试前提，未放宽生产门禁。独立Reviewer核对固定6文件、事务/锁、恢复链、owner隔离、测试所有权与历史边界，未确认P1/P2/P3，无需代码修正；其后仅补齐回归结果和本文验收记录。完整QUALITY留后续获授权提交hook；本片不提交、不部署，不接drain收口或失败重决策。
 
+#### 实施切片 9F：drain 离场明确未接纳后的重新决定
+
+**范围与准入：**原CTU03明确REJECTED、原宿主结果和匹配业务Evidence均已发布，原drain/READY仍有效、当前到位架面仍权威匹配、终面阶段及直接义务闭合且没有更新动作接管时，由原batch departure恢复入口创建一次新决定。复用9E当前请求、WAIT续问和9D的READY→CTU03路径；发送未知、未发布、已接纳或已接纳后FAILED均保留原执行身份，不进入本分支。窗口释放不改变原进场轮次；同架其它owner的未ACK动作也须让位，独立架不受统一阻断。
+
+**事务与恢复owner：**新Confirmation、Motion当前operation替换、旧Transport/result退出当前引用在原WorkLine事务中提交；提交前中断全部回滚，提交后丢通知由既有持久扫描恢复。旧请求、READY、Transport和Evidence不改写；重放旧结果不能覆盖新游标或新动作。沿用batch业务恢复、Confirmation可靠交付、FactProcessor应用/发布及Transport原动作恢复，不新增模型、字段、业务状态、通用timer、worker或基础层业务流程。
+
+**历史与测试所有权：**当前drain根/READY、原进场到位、Motion和当前请求/动作仍为直接依赖。旧动作整体闭合且新动作已承接窗口引用后，旧departure请求/结果/动作可清理，恢复不查最后历史响应。插件 `integration/test_drain_departure_recovery_postgresql.py` 承接重决策、并发、事务崩溃、旧结果重放、窗口释放、owner接管、无EXECUTING、多架独立及历史清理恢复；9E/9D/9C做直接回归，核心仅承接安装与测试拓扑。普通来源实现及其fixture未改，不重复将其独立完整矩阵作为本片主owner。
+
+**验证与闭环Review：**首次反例取得真实RED（发布拒绝后仍只有一个departure请求），最小修正后GREEN。最终新增27项、9E/9D/9C直接回归113项 PostgreSQL 验收全部通过，合计140项不同用例；开发轮25项不重复计数。插件FAST174项、核心安装/拓扑33项通过；HEAVY selector为NONE，3个Python文件Ruff/格式及diff检查通过，无schema变化。既有metadata循环外键warning保留。独立Reviewer核对固定4文件、原owner/事务/锁、结果发布与身份、直接义务、调用与测试所有权及历史清理边界，未确认P1/P2/P3，无需代码修正；其后仅补齐回归结果和本文验收记录，生产和测试快照未变化。
+
+**后续边界：**完整QUALITY留后续获授权Commit hook。本片不提交、不部署，不接drain收口、已接纳FAILED重决策、补架或生产装配，不启用真实派发或取盘；设备映射、扫码关联、PkgID、权威失败面向及首批期限等未决项保持原范围。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
