@@ -1,4 +1,4 @@
-"""普通来源架按精确原 READY 离场；当前请求与 WAIT 由既有 batch 持久恢复。"""
+"""普通来源架 departure 与明确未接纳重决策；既有 batch 持久恢复当前请求。"""
 
 from dataclasses import dataclass
 from datetime import timedelta
@@ -54,10 +54,16 @@ class SourceRackDepartureFlow:
         for current in await self.repository.pending(db, line.id):
             if current.departure_transport_task_id is None:
                 count += await self._advance_decision(db, line, current)
-            elif await self.repository.finished(db, current):
-                current.archived_at = self.clock()
-                await db.flush()
-                count += 1
+            else:
+                if await self.repository.rejected(db, current):
+                    context = await self._context(db, line, current)
+                    if context is not None:
+                        count += await self._request(db, line, current, context)
+                        continue
+                if await self.repository.finished(db, current):
+                    current.archived_at = self.clock()
+                    await db.flush()
+                    count += 1
         intents = await self.reader.read_in_session(db, workline_id=line.id) if self.reader else None
         if intents is not None and type(intents) is not tuple:
             raise TypeError("departure requires immutable explicit inputs")
@@ -110,6 +116,7 @@ class SourceRackDepartureFlow:
         )
         await self.scheduler.create_in_session(db, intent, workline_id=line.id, created_at=self.clock())
         current.departure_operation_id, current.departure_retry_at = operation_id, None
+        current.departure_transport_task_id = current.departure_result_evidence_id = None
         await db.flush()
         return 1
 

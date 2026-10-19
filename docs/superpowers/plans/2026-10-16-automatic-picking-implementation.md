@@ -378,6 +378,16 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **测试所有权与验收：**插件 `integration/test_source_rack_candidates_postgresql.py` 拥有真实发现、原子交接、并发、崩溃、跨 revision、窗口释放、同架接管、旧轮次及清理恢复，复用原 8F/8I owner 回归。插件业务测试不进入核心 QUALITY/HEAVY；新增迁移精确映射到宿主配置/迁移验收，核心承接 selector、拓扑和该 schema 路径。首轮独立 Review 发现多面历史依赖 P2，已用 A→B 清理反例先 RED 后修正，并补当前 B Feed 清理、有损降级拒绝及存量回填/schema 验收；闭环审查另发现普通 task 入口遗漏完成事实和存量源 Feed 清理后升级无出口两个 P2，已补真实 A1→B→A2 后 task advance 及旧库升级拒绝反例；共用准入同时覆盖 CTU01 等待阶段和 CTU02 换面后已继承完成事实；同一精确到位和 owner 优先读取已绑定 Motion 的完成事实，未绑定才回退 Feed，避免部分 Feed 清理后被旧列表遮蔽；新 revision 仍可接续；迁移覆盖 B 阶段创建前后，标记完整则回填、前序标记丢失则拒绝升级。最终验收：8J PostgreSQL 42 项、受影响投料/换面 PostgreSQL 47 项、插件 FAST 168 项、所选 HEAVY 8 项均通过；QUALITY 完整刷新通过（4319 passed、5 个既有 skipped），lint/format/diff 检查通过。3 项真实 worker 测试明确未运行，不计入通过。迁移覆盖干净库至 head、旧链回填/schema 对齐、缺失依据升级拒绝及有损降级保护。原 Reviewer 已合并完成旧意见闭环与当前完整审查，无剩余确认问题。保持未提交、未部署、未启用生产组合/真实派发；原工作区改动保持不动。
 
+#### 实施切片 8K：普通来源架离场明确未接纳后的重新决定
+
+**范围：**只接原 CTU03 Transport 明确 `REJECTED`、匹配结果已应用并发布、当前货架仍权威在原工作位且业务 owner/原轮次有效的离线路径。复用 Motion 当前 departure 引用及 8I/8H；不接已接纳后 `FAILED`、drain、生产装配或真实派发。
+
+**事务与恢复：**batch 前置扫描从原 Motion 发现明确拒绝，核对原 Transport/READY/结果身份和摘要，再重验当前面向、来源服务结束及本架直接义务。新 departure 请求创建与 operation 游标替换、旧当前 Transport/result 引用退出在同一 WorkLine 锁事务提交；旧 Transport、请求正文及 Evidence 不改写。确定 WAIT 按原接收时间加 `retry_after_ms` 保存到期时间，未知沿原请求恢复；READY 用新决定创建唯一新 Transport。旧结果重放不覆盖新游标，也不复活已接管的旧轮次。没有候选、父任务完成或窗口释放不丢失原 owner。
+
+**历史与边界：**源 Feed/原 Confirmation 已将必要事实交给 Motion 后可清理；当前服务结束和实际到位 Evidence 继续作为直接依据。活动进场窗口仍引用的拒绝 Transport 是当前依赖，保留至新 Transport 接管窗口引用后再清理；窗口已释放且新决定已接管时，旧离场记录可在新 READY 前清理。清理后新实例仍恢复当前请求和后续重新决定，不读历史最后响应。发送未知、仅 ACCEPTED、结果未发布、位置/面向未知和在途接管不产生替代动作；更新的权威实际接管按既有路径退役旧业务。未来 revision 本身不延长原停靠。
+
+**所有权与验证：**业务重新决定继续归插件 batch/Motion，FactProcessor 负责原结果应用与发布，Confirmation/Transport 负责原身份可靠交付；不新增模型、业务状态、worker、timer、迁移或基础层业务规则。新增插件 PostgreSQL recovery 测试覆盖并发、事务崩溃、旧结果重放、跨 revision、窗口释放、同架/跨线接管、当前依赖及合法历史清理；复用 8H/8I/8J 回归。最终验证：新增 8K PostgreSQL 31 项，8H/8I/8J PostgreSQL 回归 117 项，共 148 项通过；插件 FAST 168 项、测试拓扑/所有权 14 项通过，Ruff、格式及 diff 检查通过，HEAVY selector 为 NONE。独立 Reviewer 完整闭环审查未确认 P1/P2/P3，无需代码修复。完整 QUALITY 由本轮提交 hook 执行；未决字段、设备/扫码映射、PkgID、首批期限保持原范围。本轮仅提交当前工作分支，不部署、不启用真实派发、不推进真实取盘。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

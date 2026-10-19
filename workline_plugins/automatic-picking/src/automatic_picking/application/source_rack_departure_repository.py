@@ -285,6 +285,43 @@ class SourceRackDepartureRepository:
         await db.flush()
         return "SOURCE_DEPARTURE_OBSERVED"
 
+    async def rejected(self, db, current):
+        task, binding = await self.transport(db, current)
+        if task.status != "REJECTED":
+            return False
+        fact = (
+            await db.get(InboundEvidence, current.departure_result_evidence_id)
+            if current.departure_result_evidence_id
+            else None
+        )
+        if (
+            fact is None
+            or fact.apply_status != "APPLIED"
+            or fact.published_at is None
+            or task.outcome_version < 1
+            or task.outcome_version != task.published_outcome_version
+        ):
+            return False
+        payload = fact.normalized_payload
+        if (
+            fact.kind != "TRANSPORT_RESULT"
+            or fact.workline_id != current.workline_id
+            or fact.picking_task_id is not None
+            or fact.transport_task_id != task.transport_task_id
+            or binding.workline_id != current.workline_id
+            or binding.resource_fence_id != current.rack_id
+            or payload.get("transport_task_id") != task.transport_task_id
+            or payload.get("client_request_id") != task.client_request_id
+            or payload.get("source_evidence_id") != binding.source_evidence_id
+            or payload.get("step") != DEPARTURE_STEP
+            or payload.get("status") != "REJECTED"
+            or type(payload.get("outcome_version")) is not int
+            or payload["outcome_version"] != task.outcome_version
+            or canonical_json_digest(payload) != fact.payload_digest
+        ):
+            raise ValueError("departure rejection differs from original Transport result")
+        return True
+
     async def finished(self, db, current):
         task, binding = await self.transport(db, current)
         fact = (
