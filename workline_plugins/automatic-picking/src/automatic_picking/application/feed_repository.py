@@ -30,6 +30,16 @@ class FeedRepository:
         )
 
     async def source_ready(self, db, line, member):
+        leaving = await db.scalar(
+            select(AutomaticPickingReturnMotion.id).where(
+                AutomaticPickingReturnMotion.workline_id == line.id,
+                AutomaticPickingReturnMotion.rack_id == member.rack_id,
+                AutomaticPickingReturnMotion.departure_transport_task_id.is_not(None),
+                AutomaticPickingReturnMotion.archived_at.is_(None),
+            )
+        )
+        if leaving is not None:
+            return False
         position = await db.scalar(
             select(PositionProjection).where(
                 col(PositionProjection.object_type) == "RACK", col(PositionProjection.object_id) == member.rack_id

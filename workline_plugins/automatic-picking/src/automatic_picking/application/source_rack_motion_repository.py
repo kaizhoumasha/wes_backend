@@ -30,6 +30,7 @@ class SourceRackMotionRepository:
                         AutomaticPickingReturnMotion.workline_id == line_id,
                         AutomaticPickingReturnMotion.archived_at.is_(None),
                         AutomaticPickingReturnMotion.rotation_transport_task_id.is_not(None),
+                        AutomaticPickingReturnMotion.departure_transport_task_id.is_(None),
                     )
                     .order_by(AutomaticPickingReturnMotion.id)
                     .with_for_update()

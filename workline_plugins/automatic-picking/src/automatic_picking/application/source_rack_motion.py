@@ -48,7 +48,7 @@ class SourceRackMotionFlow:
             current = await self.repository.by_id(db, intent.motion_id)
             if current is None or current.workline_id != line.id:
                 raise ValueError("rotation lost exact motion stage")
-            if current.archived_at is not None:
+            if current.archived_at is not None or current.departure_transport_task_id is not None:
                 continue
             expected = {"kind": "RACK_POSITION", "location_code": intent.position.location_code}
             if (
@@ -138,9 +138,8 @@ class SourceRackMotionFlow:
         owner, members = await self.repository.service_members(db, line, current, face)
         handed_off = False
         if owner is not None and owner.status in {"EXECUTION_COMPLETED", "CANCELLED", "ARCHIVED"}:
-            current.archived_at = self.clock()
-            await db.flush()
-            return 1
+            # 最后来源轮次仍由离场扫描承接，父任务终态不证明已离场。
+            return 0
         for member in members:
             feed = await self.feeds.by_member(db, member.id)
             if feed is not None:

@@ -614,7 +614,8 @@ async def test_no_executing_task_still_observes_original_result_without_new_busi
     await advance(p, batch=batch)
     assert (await phase(p)).rotation_result_evidence_id is not None
     assert await next_feed(p) is None
-    assert (await phase(p)).archived_at is not None
+    # 父任务结束后，当前来源轮次留给离场 owner；并不证明物理离场。
+    assert (await phase(p)).archived_at is None
 
 
 async def test_normal_batch_cannot_bypass_handoff_and_later_revision_inherits_current_round(bound):

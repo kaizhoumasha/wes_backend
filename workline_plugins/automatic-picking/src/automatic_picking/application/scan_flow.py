@@ -3,6 +3,7 @@
 import re
 from datetime import timedelta
 
+from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.definition import DEFINITION
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
@@ -36,11 +37,13 @@ class AutomaticPickingScanFlow:
         exit_flow=None,
         return_batch_flow=None,
         rack_motion_flow=None,
+        rack_departure_flow=None,
     ):
         self.works, self.feeds, self.work_flow, self.commands = works, feeds, work_flow, commands
         self.exit_flow = exit_flow
         self.return_batch_flow = return_batch_flow
         self.rack_motion_flow = rack_motion_flow
+        self.rack_departure_flow = rack_departure_flow
         self.batch_driver = batch_driver
         self.tasks = tasks or PickingTaskRepository()
         self.worklines = worklines or workline_repository
@@ -65,6 +68,10 @@ class AutomaticPickingScanFlow:
                 )
             else:
                 result = await self._result(db, line, evidence)
+        elif evidence.kind == "TRANSPORT_RESULT" and evidence.normalized_payload.get("step") == DEPARTURE_STEP:
+            if self.rack_departure_flow is None:
+                return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
+            result = await self.rack_departure_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
         elif evidence.kind == "TRANSPORT_RESULT" and evidence.normalized_payload.get("step") == ROTATION_STEP:
             if self.rack_motion_flow is None:
                 return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)

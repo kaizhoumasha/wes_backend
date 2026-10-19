@@ -85,6 +85,7 @@ class WorkRepository:
                     AutomaticPickingReturnMotion.closed_at.is_(None),
                     AutomaticPickingReturnMotion.inbound_client_request_id.is_(None),
                     AutomaticPickingReturnMotion.rotation_transport_task_id.is_not(None),
+                    AutomaticPickingReturnMotion.departure_transport_task_id.is_not(None),
                 ),
             )
         )

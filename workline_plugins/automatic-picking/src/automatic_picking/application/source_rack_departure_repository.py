@@ -1,0 +1,246 @@
+"""调用方持有 WorkLine authority 锁；只消费精确原离场决定。"""
+
+from sqlalchemy import and_, or_, select
+from wes_plugin_sdk import RackDepartureReady, TransportRackPosition
+
+from src.app.execution.models import InboundEvidence, TransportDecisionBinding, WmsConfirmation
+from src.app.transport.models import TransportMember, TransportTask
+from src.app.wms_integration.outbound_picking.models import PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureResultReader
+from src.utils.canonical_json import canonical_json_digest
+
+from .feed_model import AutomaticPickingFeed
+from .return_motion_model import AutomaticPickingReturnMotion
+from .source_rack_motion_repository import SourceRackMotionRepository
+
+DEPARTURE_STEP = "AUTOMATIC_PICKING_SOURCE_RACK_OUT"
+
+
+class SourceRackDepartureRepository:
+    def __init__(self, motions, reader=None):
+        self.motions = motions
+        self.reader = reader or RackDepartureResultReader()
+
+    async def by_id(self, db, identity):
+        return await db.get(AutomaticPickingReturnMotion, identity, with_for_update=True)
+
+    async def pending(self, db, line_id):
+        return list(
+            (
+                await db.scalars(
+                    select(AutomaticPickingReturnMotion)
+                    .where(
+                        AutomaticPickingReturnMotion.workline_id == line_id,
+                        AutomaticPickingReturnMotion.departure_transport_task_id.is_not(None),
+                        AutomaticPickingReturnMotion.archived_at.is_(None),
+                    )
+                    .order_by(AutomaticPickingReturnMotion.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+
+    async def ready(self, db, line, current, operation_id):
+        snapshot = await self.reader.by_operation_id(
+            db, workline_id=line.id, operation_id=operation_id, rack_id=current.rack_id
+        )
+        if snapshot is None or snapshot.status != "COMPLETED":
+            return None
+        if type(snapshot.outcome.result) is not RackDepartureReady:
+            return None
+        if snapshot.intent.current_location.location_code != line.position_bindings["FIVE_RACK"]["location_id"]:
+            raise ValueError("departure current location differs from source work position")
+        face = current.rack_face
+        arrival_id = current.arrival_evidence_id
+        if current.rotation_transport_task_id is not None:
+            rotation, _ = await SourceRackMotionRepository(self.motions).transport(db, current)
+            arrival_id = current.rotation_result_evidence_id
+            face = rotation.request_json["target_face"]
+        if snapshot.intent.current_face != face:
+            raise ValueError("departure current face differs from exact arrival")
+        arrival = await db.get(InboundEvidence, arrival_id) if arrival_id else None
+        end = await db.get(InboundEvidence, current.service_end_evidence_id)
+        if arrival is None or end is None:
+            return None
+        if snapshot.intent.task_id is not None or snapshot.completed_at is None:
+            raise ValueError("departure lost WorkLine READY identity")
+        if snapshot.intent.rack_id != current.rack_id or snapshot.intent.current_face is None:
+            raise ValueError("departure requires exact normal source identity")
+        request = await db.scalar(
+            select(WmsConfirmation).where(
+                WmsConfirmation.operation_id == operation_id,
+                WmsConfirmation.operation == "outbound.rack.departure_decide@v1",
+            )
+        )
+        if request.created_at < max(current.round_started_at, arrival.received_at, end.received_at):
+            raise ValueError("departure READY predates source service")
+        if not await self.motions.current_source(db, line, current, arrival_evidence_id=arrival_id, rack_face=face):
+            return None
+        return snapshot
+
+    async def service_finished(self, db, current):
+        end = await db.get(InboundEvidence, current.service_end_evidence_id)
+        if end is None or end.apply_status != "APPLIED" or end.published_at is None:
+            return False
+        # READY 已给定；只有本轮实际承接的未结束 Feed 能阻止离场，计划成员不是物理依赖。
+        pending = await db.scalar(
+            select(AutomaticPickingFeed.id)
+            .join(PickingTaskBinSourceRack, PickingTaskBinSourceRack.id == AutomaticPickingFeed.source_member_id)
+            .where(
+                AutomaticPickingFeed.workline_id == current.workline_id,
+                AutomaticPickingFeed.picking_task_id == end.picking_task_id,
+                PickingTaskBinSourceRack.rack_id == current.rack_id,
+                AutomaticPickingFeed.archived_at.is_(None),
+                AutomaticPickingFeed.phase.not_in(("FEED_COMPLETE", "CANCELLED")),
+                or_(
+                    AutomaticPickingFeed.inbound_client_request_id == current.inbound_client_request_id,
+                    and_(
+                        AutomaticPickingFeed.inbound_client_request_id.is_(None),
+                        AutomaticPickingFeed.created_at >= current.round_started_at,
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        return pending is None
+
+    async def bind(self, db, current, operation_id, transport_id):
+        current.departure_operation_id = operation_id
+        current.departure_transport_task_id = transport_id
+        await db.flush()
+
+    async def transport(self, db, current):
+        task = await db.scalar(
+            select(TransportTask).where(TransportTask.transport_task_id == current.departure_transport_task_id)
+        )
+        binding = (
+            await db.scalar(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.client_request_id == task.client_request_id
+                )
+            )
+            if task
+            else None
+        )
+        if binding is None or binding.correlation_id != "departure:" + current.departure_operation_id:
+            raise ValueError("departure stage lost original Transport binding")
+        await self.validate_transport(db, task, binding)
+        return task, binding
+
+    async def validate_transport(self, db, task, binding):
+        if (
+            task is None
+            or task.kind != "RACK_MOVE"
+            or task.authority_workline_id != binding.workline_id
+            or binding.picking_task_id is not None
+            or binding.step != DEPARTURE_STEP
+            or not binding.correlation_id.startswith("departure:")
+        ):
+            raise ValueError("source departure lost WorkLine Transport identity")
+        operation_id = binding.correlation_id.removeprefix("departure:")
+        snapshot = await self.reader.by_operation_id(
+            db, workline_id=binding.workline_id, operation_id=operation_id, rack_id=binding.resource_fence_id
+        )
+        if (
+            snapshot is None
+            or snapshot.status != "COMPLETED"
+            or type(snapshot.outcome.result) is not RackDepartureReady
+            or snapshot.evidence_id != binding.source_evidence_id
+        ):
+            raise ValueError("departure Transport lost its exact published READY")
+        destination = snapshot.outcome.result.rack_destination
+        expected = {
+            "kind": "RACK_POSITION" if type(destination) is TransportRackPosition else "ZONE",
+            "location_code": destination.location_code,
+        }
+        if (
+            task.request_json.get("rack_id") != binding.resource_fence_id
+            or task.request_json.get("rcs_template_id") != "CTU03"
+            or task.request_json.get("target") != expected
+        ):
+            raise ValueError("departure frozen Transport differs from READY destination")
+        return expected
+
+    async def validate_outcome(self, db, outcome, binding):
+        task = await db.scalar(
+            select(TransportTask).where(TransportTask.transport_task_id == outcome.transport_task_id)
+        )
+        if task is None or task.client_request_id != binding.client_request_id:
+            raise ValueError("departure outcome lost original Transport")
+        await self.validate_transport(db, task, binding)
+
+    async def observe(self, db, line, evidence):
+        current = await db.scalar(
+            select(AutomaticPickingReturnMotion)
+            .where(AutomaticPickingReturnMotion.departure_transport_task_id == evidence.transport_task_id)
+            .with_for_update()
+        )
+        if current is None:
+            return "IGNORED"
+        payload = evidence.normalized_payload
+        if current.archived_at is not None:
+            return (
+                "SOURCE_DEPARTURE_OLD_OUTCOME"
+                if (
+                    evidence.workline_id == line.id == current.workline_id
+                    and evidence.picking_task_id is None
+                    and payload.get("transport_task_id") == current.departure_transport_task_id
+                    and payload.get("step") == DEPARTURE_STEP
+                    and canonical_json_digest(payload) == evidence.payload_digest
+                )
+                else "RECONCILING"
+            )
+        task, binding = await self.transport(db, current)
+        if (
+            evidence.workline_id != line.id
+            or current.workline_id != line.id
+            or evidence.picking_task_id is not None
+            or payload.get("transport_task_id") != task.transport_task_id
+            or payload.get("client_request_id") != task.client_request_id
+            or payload.get("source_evidence_id") != binding.source_evidence_id
+            or payload.get("step") != DEPARTURE_STEP
+            or canonical_json_digest(payload) != evidence.payload_digest
+        ):
+            return "RECONCILING"
+        version = payload.get("outcome_version")
+        if type(version) is not int or not 0 < version <= task.outcome_version:
+            return "RECONCILING"
+        if version < task.outcome_version or current.archived_at is not None:
+            return "SOURCE_DEPARTURE_OLD_OUTCOME"
+        current.departure_result_evidence_id = evidence.id
+        await db.flush()
+        return "SOURCE_DEPARTURE_OBSERVED"
+
+    async def finished(self, db, current):
+        task, binding = await self.transport(db, current)
+        fact = (
+            await db.get(InboundEvidence, current.departure_result_evidence_id)
+            if current.departure_result_evidence_id
+            else None
+        )
+        if (
+            fact is None
+            or fact.published_at is None
+            or task.outcome_version < 1
+            or task.outcome_version != task.published_outcome_version
+            or fact.normalized_payload.get("outcome_version") != task.outcome_version
+        ):
+            return False
+        if task.status != "SUCCEEDED":
+            return await SourceRackMotionRepository(self.motions).superseded(db, current, binding)
+        target = await self.validate_transport(db, task, binding)
+        members = list(
+            (
+                await db.scalars(
+                    select(TransportMember).where(TransportMember.transport_task_id == task.transport_task_id)
+                )
+            ).all()
+        )
+        return (
+            len(members) == 1
+            and members[0].object_type == "RACK"
+            and members[0].object_id == current.rack_id
+            and members[0].status == "SUCCEEDED"
+            and not members[0].position_unknown
+            and members[0].final_position_json == target
+        )
