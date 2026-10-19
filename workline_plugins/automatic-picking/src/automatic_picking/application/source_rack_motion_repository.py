@@ -62,6 +62,7 @@ class SourceRackMotionRepository:
             task.status != "EXECUTING"
             or task.plan_blocked_evidence_id is not None
             or member.cancelled_evidence_id is not None
+            or member.id in current.completed_source_member_ids
         ):
             return None
         feed = await db.scalar(

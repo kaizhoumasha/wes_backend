@@ -141,6 +141,8 @@ class SourceRackMotionFlow:
             # 最后来源轮次仍由离场扫描承接，父任务终态不证明已离场。
             return 0
         for member in members:
+            if member.id in current.completed_source_member_ids:
+                continue
             feed = await self.feeds.by_member(db, member.id)
             if feed is not None:
                 if (
@@ -155,6 +157,9 @@ class SourceRackMotionFlow:
                     evidence.id,
                 ):
                     raise ValueError("next Feed differs from rotation handoff")
+                feed.completed_source_member_ids = sorted(
+                    set(feed.completed_source_member_ids) | set(current.completed_source_member_ids)
+                )
                 handed_off = True
                 continue
             now, operation_id = self.clock(), self.uuid_factory()
@@ -168,6 +173,7 @@ class SourceRackMotionFlow:
                 round_started_at=current.round_started_at,
                 round_causal_token=current.round_causal_token,
                 source_arrival_evidence_id=evidence.id,
+                completed_source_member_ids=list(current.completed_source_member_ids),
             )
             await self.scheduler.create_in_session(
                 db,

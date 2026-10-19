@@ -72,9 +72,10 @@ class FeedRepository:
         binding = await db.scalar(
             select(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == row.client_request_id)
         )
-        if binding.step == "AUTOMATIC_PICKING_SOURCE_RACK_ROTATE":
-            return await self.rotation_round(db, member) is not None
-        return True
+        current = await self.rotation_round(db, member)
+        if current is not None and member.id in current["completed_source_member_ids"]:
+            return False
+        return binding.step != "AUTOMATIC_PICKING_SOURCE_RACK_ROTATE" or current is not None
 
     async def by_operation(self, db, operation_id):
         return await db.scalar(
@@ -109,29 +110,29 @@ class FeedRepository:
         if arrival_id is None:
             return None
         root = await db.scalar(
-            select(AutomaticPickingFeed)
+            select(AutomaticPickingReturnMotion)
+            .join(InboundEvidence, InboundEvidence.id == AutomaticPickingReturnMotion.service_end_evidence_id)
             .where(
-                AutomaticPickingFeed.picking_task_id == member.picking_task_id,
-                AutomaticPickingFeed.workline_id == position.workline_id,
-                AutomaticPickingFeed.source_arrival_evidence_id == arrival_id,
-                AutomaticPickingFeed.inbound_client_request_id.is_not(None),
-                AutomaticPickingFeed.archived_at.is_(None),
+                InboundEvidence.picking_task_id == member.picking_task_id,
+                AutomaticPickingReturnMotion.workline_id == position.workline_id,
+                AutomaticPickingReturnMotion.arrival_evidence_id == arrival_id,
+                AutomaticPickingReturnMotion.rack_id == member.rack_id,
+                AutomaticPickingReturnMotion.rack_face == member.rack_face,
+                AutomaticPickingReturnMotion.inbound_client_request_id.is_not(None),
+                AutomaticPickingReturnMotion.archived_at.is_(None),
             )
-            .order_by(AutomaticPickingFeed.id)
         )
         if root is None:
             root = await db.scalar(
-                select(AutomaticPickingReturnMotion)
-                .join(InboundEvidence, InboundEvidence.id == AutomaticPickingReturnMotion.service_end_evidence_id)
+                select(AutomaticPickingFeed)
                 .where(
-                    InboundEvidence.picking_task_id == member.picking_task_id,
-                    AutomaticPickingReturnMotion.workline_id == position.workline_id,
-                    AutomaticPickingReturnMotion.arrival_evidence_id == arrival_id,
-                    AutomaticPickingReturnMotion.rack_id == member.rack_id,
-                    AutomaticPickingReturnMotion.rack_face == member.rack_face,
-                    AutomaticPickingReturnMotion.inbound_client_request_id.is_not(None),
-                    AutomaticPickingReturnMotion.archived_at.is_(None),
+                    AutomaticPickingFeed.picking_task_id == member.picking_task_id,
+                    AutomaticPickingFeed.workline_id == position.workline_id,
+                    AutomaticPickingFeed.source_arrival_evidence_id == arrival_id,
+                    AutomaticPickingFeed.inbound_client_request_id.is_not(None),
+                    AutomaticPickingFeed.archived_at.is_(None),
                 )
+                .order_by(AutomaticPickingFeed.id)
             )
         if root is None:
             return None
@@ -140,6 +141,7 @@ class FeedRepository:
             "round_started_at": root.round_started_at,
             "round_causal_token": root.round_causal_token,
             "source_arrival_evidence_id": arrival_id,
+            "completed_source_member_ids": list(root.completed_source_member_ids),
         }
 
     async def add_feed(self, db, **values):

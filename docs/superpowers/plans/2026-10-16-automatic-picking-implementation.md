@@ -366,6 +366,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**本片离线实现及验收完成。最终 8I PostgreSQL 31 passed、8H 回归 44 passed、插件 FAST 168 passed；8E–8G 回归 100 passed、直接 Feed 消费者 16 passed，另外 3 个 Feed worker 用例未纳入本轮验收。核心聚焦 1176 passed；精确 selector 选中宿主 HEAVY 13 passed，包含 Scheduler 真实本地 worker 3 项、typed reader 原生 PostgreSQL 2 项和工作线配置/迁移 8 项。最终 QUALITY 4319 passed、5 个既有 skipped（跳过项不计通过），Ruff、格式与差异检查通过。迁移验证包含存量 8H 保留、模型/schema 一致性、完整约束和请求期有损降级拒绝；保留既有 Evidence/PickingTask 外键环警告。独立 Review 首轮发现正常未发布响应中断独立业务扫描、同文件 Scheduler HEAVY owner 遗漏两项 P2；分别以真实独立 Feed 和 selector 回归先 RED 后修正，再由同一 Reviewer 合并完成旧意见闭环与最新 21 文件 fresh full Review，无剩余确认问题。可执行文件保持评审指纹，后续仅补本段验证记录；HEAD、暂存区、Git 配置、依赖及主工作区 62 个既有改动指纹保持不变。测试仅使用独占临时 PostgreSQL/Redis 和本地 Mock WMS，不构成生产联调或物理验收；未暂存、未提交、未部署，不启用真实派发或真实取盘。生产候选 reader、drain 及 G2/G3/G5/G6 未决边界保留，任务 8 整体仍未完成。
 
+#### 实施切片 8J：普通来源架真实候选发现与持久交接
+
+**范围：**新增插件私有 `source_rack_candidates.py`，为现有当前架面、运动前来源绑定及首次 departure 三个读口提供真实 Repository 输入。当前面必须来自配置 FIVE_RACK 的精确 RACK 成员、原 Transport 成功且结果已发布、当前位置与因果匹配；识别普通 CTU01 与既有自动 CTU02 到位，不以最新历史响应、计划面向或空查询猜测。来源结束分别取精确 RACK_FACE_DONE，或非空投料最后分段的已发布权威交接；交接前当前面已接收且未取消的来源成员不能缺少完成依据。
+
+**交接与恢复：**复用 8E 的运动前求值、8F 的原进场轮次/Feed/服务结束绑定及 8I 的 operation 游标。既有 batch 在 WorkLine 锁事务中发现、验证并保存阶段，满足门禁后同事务创建首次 departure；创建后由原阶段恢复，不依赖候选再次出现。当前阶段已经绑定时不因新 revision 重绑；冻结阶段之后的新成员不延长原停靠。既有合法未服务下一面不成为 departure 候选；CTU02 生产候选/参数 reader 不在本片新增。最后换面成功但没有下一 Feed 时，仍可用原阶段与真实当前面交给 8I，不能要求虚构 Feed。
+
+**历史边界：**已有 Feed 与运动阶段分别增加 `completed_source_member_ids`，只承接同一任务/来源架已完成的不可变成员事实，不表示下一来源授权、当前面或物理位置。阶段绑定时同事务承接源 Feed 已继承的事实与仍存在的当前完成标记，CTU02 的下一面 Feed 再同事务继承；下一阶段沿该事实继续承接。A→B 交接后可清理 A Feed、Confirmation、旧阶段及原进场历史，B 阶段承接后也不再读取 B Feed/原 Confirmation；首次 departure 只核对当前阶段已承接的完成成员和当前合法未完成成员。缺失不是已完成；已完成成员不因新物理轮次重开，旧物理到位也不能证明本轮到位。迁移 `6680af0fe85b` 基于 `de97e0860fd5`，仅从仍存在的当前标记回填，不补造已丢失事实；活跃已绑定阶段的源 Feed 已清理，或活跃已交接 Feed 的前序同架已接收成员缺少当前标记、无法区分未服务和已清理时明确拒绝升级；标记完整的旧多面链正常回填。降级会丢失已交接且不再能从当前标记重建的完成依据时拒绝执行。仍被当前阶段直接引用的服务结束/到位 Evidence 不是可清理历史。
+
+**所有权与未启用边界：**阶段与 departure 的业务恢复归现有 batch；结果应用/发布归 FactProcessor，原身份交付归 Confirmation，Command/Transport 沿现有基础恢复。不新增授权模型、业务状态、worker、timer 或业务共享层；生产组合根本轮不注入这些 flow，离线组合使用真实读口证明接续。扫码关联、方向/取盘/PUT 参数、PkgID、首批期限不猜；不接 departure 异常、drain 或真实派发。
+
+**测试所有权与验收：**插件 `integration/test_source_rack_candidates_postgresql.py` 拥有真实发现、原子交接、并发、崩溃、跨 revision、窗口释放、同架接管、旧轮次及清理恢复，复用原 8F/8I owner 回归。插件业务测试不进入核心 QUALITY/HEAVY；新增迁移精确映射到宿主配置/迁移验收，核心承接 selector、拓扑和该 schema 路径。首轮独立 Review 发现多面历史依赖 P2，已用 A→B 清理反例先 RED 后修正，并补当前 B Feed 清理、有损降级拒绝及存量回填/schema 验收；闭环审查另发现普通 task 入口遗漏完成事实和存量源 Feed 清理后升级无出口两个 P2，已补真实 A1→B→A2 后 task advance 及旧库升级拒绝反例；共用准入同时覆盖 CTU01 等待阶段和 CTU02 换面后已继承完成事实；同一精确到位和 owner 优先读取已绑定 Motion 的完成事实，未绑定才回退 Feed，避免部分 Feed 清理后被旧列表遮蔽；新 revision 仍可接续；迁移覆盖 B 阶段创建前后，标记完整则回填、前序标记丢失则拒绝升级。最终验收：8J PostgreSQL 42 项、受影响投料/换面 PostgreSQL 47 项、插件 FAST 168 项、所选 HEAVY 8 项均通过；QUALITY 完整刷新通过（4319 passed、5 个既有 skipped），lint/format/diff 检查通过。3 项真实 worker 测试明确未运行，不计入通过。迁移覆盖干净库至 head、旧链回填/schema 对齐、缺失依据升级拒绝及有损降级保护。原 Reviewer 已合并完成旧意见闭环与当前完整审查，无剩余确认问题。保持未提交、未部署、未启用生产组合/真实派发；原工作区改动保持不动。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -46,6 +46,7 @@ class AutomaticPickingReturnMotion(EnterpriseMixin, DataTableMixin, table=True):
     round_started_at: datetime | None = None
     round_causal_token: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
     source_feed_id: int | None = Field(default=None, sa_type=SQL_COMPAT_BIGINT)
+    completed_source_member_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     service_end_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )

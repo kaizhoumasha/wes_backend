@@ -261,6 +261,23 @@ class ReturnMotionRepository:
 
     async def bind_source(self, db, current, intent, root):
         transferred = isinstance(root, AutomaticPickingFeed)
+        feed = await db.get(AutomaticPickingFeed, intent.source_feed_id)
+        members = await db.scalars(
+            select(AutomaticPickingFeed.source_member_id)
+            .join(PickingTaskBinSourceRack, PickingTaskBinSourceRack.id == AutomaticPickingFeed.source_member_id)
+            .join(InboundEvidence, InboundEvidence.id == AutomaticPickingFeed.response_evidence_id)
+            .where(
+                AutomaticPickingFeed.workline_id == current.workline_id,
+                AutomaticPickingFeed.picking_task_id == feed.picking_task_id,
+                AutomaticPickingFeed.phase == "FEED_COMPLETE",
+                AutomaticPickingFeed.response_evidence_id.is_not(None),
+                AutomaticPickingFeed.archived_at.is_(None),
+                InboundEvidence.apply_status == "APPLIED",
+                InboundEvidence.published_at.is_not(None),
+                PickingTaskBinSourceRack.rack_id == current.rack_id,
+            )
+        )
+        current.completed_source_member_ids = sorted(set(feed.completed_source_member_ids) | set(members))
         current.inbound_client_request_id = root.inbound_client_request_id if transferred else root.client_request_id
         current.round_started_at = root.round_started_at if transferred else root.created_at
         current.round_causal_token = root.round_causal_token if transferred else root.causal_token

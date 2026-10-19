@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -33,6 +33,7 @@ class AutomaticPickingFeed(EnterpriseMixin, DataTableMixin, table=True):
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     picking_task_id: int = Field(foreign_key="wes_biz.picking_tasks.id", sa_type=SQL_COMPAT_BIGINT)
     source_member_id: int = Field(foreign_key="wes_biz.picking_task_bin_source_racks.id", sa_type=SQL_COMPAT_BIGINT)
+    completed_source_member_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     operation_id: str = Field(max_length=36, unique=True)
     phase: str = Field(default="REQUESTED", max_length=30)
     response_evidence_id: int | None = Field(
