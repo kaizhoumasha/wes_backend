@@ -3,6 +3,7 @@
 import re
 from datetime import timedelta
 
+from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.definition import DEFINITION
@@ -81,16 +82,8 @@ class AutomaticPickingScanFlow:
                 )
             else:
                 result = await self._result(db, line, evidence)
-        elif evidence.kind == "TRANSPORT_RESULT" and evidence.normalized_payload.get("step") == DEPARTURE_STEP:
-            if self.rack_departure_flow is None:
-                return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
-            result = await self.rack_departure_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
-        elif evidence.kind == "TRANSPORT_RESULT" and evidence.normalized_payload.get("step") == ROTATION_STEP:
-            if self.rack_motion_flow is None:
-                return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
-            result = await self.rack_motion_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
-        elif evidence.kind == "TRANSPORT_RESULT" and self.return_batch_flow is not None:
-            result = await self.return_batch_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
+        elif evidence.kind == "TRANSPORT_RESULT":
+            result = await self._transport_result(db, line, evidence)
         elif evidence.kind == "DEVICE_RESULT" and self.exit_flow is not None:
             result = await self.exit_flow.direction_result_in_session(db, line=line, evidence=evidence)
         elif evidence.kind == "DEVICE_EVENT" and line.is_active:
@@ -123,6 +116,23 @@ class AutomaticPickingScanFlow:
         return BusinessEvidenceApplication(
             BusinessEvidenceDisposition.APPLIED, canonical_json_digest({"evidence_id": evidence_id, "result": result})
         )
+
+    async def _transport_result(self, db, line, evidence):
+        step = evidence.normalized_payload.get("step")
+        if step == DRAIN_INBOUND_STEP:
+            drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
+            flow = drain.inbound if drain is not None else None
+        elif step == DEPARTURE_STEP:
+            flow = self.rack_departure_flow
+        elif step == ROTATION_STEP:
+            flow = self.rack_motion_flow
+        else:
+            flow = self.return_batch_flow
+            if flow is None:
+                return "IGNORED"
+        if flow is None:
+            return "WAIT_FOR_EXIT"
+        return await flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
 
     async def _result(self, db, line, evidence):
         if evidence.operation == "outbound.bin.inbound_batch@v1":

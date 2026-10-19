@@ -1,4 +1,4 @@
-"""下一任务优先的排空决定与 WAIT 恢复；READY 只冻结交接，不创建货架动作。"""
+"""下一任务优先的排空决定与 WAIT 恢复；READY 可显式接入离线进场 owner。"""
 
 from dataclasses import dataclass
 from datetime import timedelta
@@ -34,12 +34,14 @@ class AutomaticPickingDrainFlow:
         buffer_reader,
         location_reader,
         *,
+        inbound=None,
         clock=timezone.now_for_db,
         uuid_factory=new_uuid7,
     ):
         self.repository, self.prepare, self.scheduler, self.reader = repository, prepare, scheduler, reader
         self.buffer_reader, self.location_reader = buffer_reader, location_reader
         self.clock, self.uuid_factory = clock, uuid_factory
+        self.inbound = inbound
 
     async def _candidates(self, db, line):
         buffer = await self.buffer_reader.read_in_session(db, workline_id=line.id)
@@ -114,7 +116,13 @@ class AutomaticPickingDrainFlow:
             # read() validates the same reliable identity for live application and scan recovery.
             intent, outcome = await self.reader.read(db, evidence, workline_id=line.id)
             count += await self._remember(db, current, evidence, intent, outcome)
-            if type(snapshot.result) is ReturnBufferDrainReady or self.clock() < current.retry_at:
+            if type(snapshot.result) is ReturnBufferDrainReady:
+                return count + (
+                    await self.inbound.advance_in_session(db, line, current, snapshot.result)
+                    if self.inbound is not None
+                    else 0
+                )
+            if self.clock() < current.retry_at:
                 return count
         if not line.is_active:
             return count

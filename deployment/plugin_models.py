@@ -3,7 +3,10 @@
 
 def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
     if "automatic-picking" in enabled_plugin_keys:
-        from automatic_picking.application.drain_model import AutomaticPickingDrain  # noqa: F401
+        from automatic_picking.application.drain_model import (  # noqa: F401
+            AutomaticPickingDrain,
+            AutomaticPickingDrainRack,
+        )
         from automatic_picking.application.feed_model import (  # noqa: F401
             AutomaticPickingFeed,
             AutomaticPickingFeedScan,
@@ -37,6 +40,7 @@ def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) 
         "automatic_picking_return_allocations",
         "automatic_picking_return_motions",
         "automatic_picking_drains",
+        "automatic_picking_drain_racks",
     }:
         return "automatic-picking" in enabled_plugin_keys
     return (

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import JSON, CheckConstraint, Index, text
+from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint, text
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -33,3 +33,22 @@ class AutomaticPickingDrain(EnterpriseMixin, DataTableMixin, table=True):
     )
     retry_at: datetime | None = None
     archived_at: datetime | None = None
+
+
+class AutomaticPickingDrainRack(EnterpriseMixin, DataTableMixin, table=True):
+    """每架当前执行引用；不复制 reservation、Transport 正文或位置。"""
+
+    __tablename__: ClassVar[str] = "automatic_picking_drain_racks"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        UniqueConstraint("drain_id", "rack_id", name="ux_automatic_drain_rack"),
+        {"schema": SchemaType.BIZ.value},
+    )
+    drain_id: int = Field(foreign_key="wes_biz.automatic_picking_drains.id", sa_type=SQL_COMPAT_BIGINT)
+    rack_id: str = Field(max_length=160)
+    binding_id: int = Field(
+        foreign_key="wes_biz.transport_decision_bindings.id", unique=True, sa_type=SQL_COMPAT_BIGINT
+    )
+    arrival_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )

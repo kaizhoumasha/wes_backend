@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 
+from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP, DrainInboundRepository
 from automatic_picking.application.return_motion_repository import ReturnMotionRepository
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
@@ -22,7 +23,10 @@ class AutomaticPickingTransportOutcomePublisher:
             binding is None
             or binding.client_request_id != outcome.client_request_id
             or str(binding.workline_id) != outcome.caller.workline_id
-            or (binding.picking_task_id is None and binding.step not in {"AUTOMATIC_PICKING_RETURN", DEPARTURE_STEP})
+            or (
+                binding.picking_task_id is None
+                and binding.step not in {"AUTOMATIC_PICKING_RETURN", DEPARTURE_STEP, DRAIN_INBOUND_STEP}
+            )
         ):
             raise ValueError("automatic Transport outcome differs from its frozen owner")
         rack_steps = {
@@ -31,6 +35,7 @@ class AutomaticPickingTransportOutcomePublisher:
             "PICKING_TASK_RETURN_RACK_IN",
             ROTATION_STEP,
             DEPARTURE_STEP,
+            DRAIN_INBOUND_STEP,
         }
         if binding.step in rack_steps:
             if (outcome.members or outcome.status == "SUCCEEDED") and (
@@ -39,6 +44,8 @@ class AutomaticPickingTransportOutcomePublisher:
                 raise ValueError("automatic rack outcome differs from its frozen rack")
         elif binding.step not in {"AUTOMATIC_PICKING_FEED", "AUTOMATIC_PICKING_RETURN"}:
             raise ValueError("unsupported automatic Transport binding step")
+        if binding.step == DRAIN_INBOUND_STEP:
+            await DrainInboundRepository().validate_outcome(db, outcome, binding)
         if binding.step == DEPARTURE_STEP:
             await SourceRackDepartureRepository(ReturnMotionRepository()).validate_outcome(db, outcome, binding)
         accepted = await self.evidences.accept(

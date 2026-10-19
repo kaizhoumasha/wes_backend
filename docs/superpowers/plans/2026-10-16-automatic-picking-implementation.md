@@ -400,6 +400,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **测试所有权与验证：**插件 test_drain_flow 拥有输入与 batch 接线，integration/test_drain_progress_postgresql 拥有下一任务优先、当前引用、WAIT/READY、并发、崩溃、重放、无 EXECUTING、合法历史清理及本表迁移验收；插件 composition 测试保持静态 operation 集与默认未装配断言。核心只承接显式模型安装/过滤、拓扑、selector 及配置/schema HEAVY。最终验证：插件 PostgreSQL 43 项、受影响回归 41 项、插件 FAST 174 项、核心安装/拓扑/所有权 32 项、selector 合同 236 项及所选 HEAVY 18 项均通过；3 项既有真实 worker 用例明确未运行，不计通过。干净库降至父版本再升 head、schema/当前唯一索引及拒绝有损降级通过，Ruff/格式/diff 检查通过。首轮 Review 发现容量校验可被未知/未合格/已分配尾项提前返回绕过的 P2，已补三例真实 PostgreSQL 反例先 RED 后修正：每次确认成员加入前缀后立即校验原容量，不增加新规则；三例 GREEN、完整 43 项及 FAST 已刷新。同一 Reviewer 合并完成该意见闭环与当前完整审查，无剩余确认 P1/P2/P3。完整 QUALITY 由本轮提交 hook 执行。设备/扫码映射、PkgID、失败离场面向与首批期限仍按各自分支保留；本轮仅提交当前工作分支，不部署、不创建 drain 货架 Transport、不启用真实派发或真实取盘。
 
+#### 实施切片 9B：drain CTU01 与到位持久交接
+
+**范围：**在原 READY 已匹配、应用并发布，精确工作位、完整 CTU01 参数及权威结果显式给定的离线前提下，实现 reservation 每架唯一进场、精确绑定及首次到位交接。不接 return_batch、换面离场或 reservation 收口，不启用生产装配；不推断设备、扫码、RETURN_BUFFER 位置/容量或 PkgID。
+
+**原子性与最小持久化：**新增 AutomaticPickingDrainRack 只关联 drain、rack、TransportDecisionBinding 和可空的到位 Evidence。每架执行与原 drain operation、READY、首个冻结面、目标工作位精确关联；Transport、窗口、Binding 与该执行引用同事务创建。复用 ReliableRackTransportCreator 和现有进场窗口，picking_task_id 为空。窗口 REUSED 不能代替本轮身份，旧同架窗口不被冒领；未知结果不创建替代动作。racks 是无序集合，一架缺参数或等待不阻塞其它可提交架，物理窗口仍由既有能力约束。
+
+**到位与恢复 owner：**Transport 持续拥有原身份提交、技术重试及未知结果；插件静态 publisher 校验原 reservation 与动作，FactProcessor 校验结果身份/版本及完整冻结 outcome 并负责业务发布。batch 在没有 EXECUTING、通知丢失或重启时继续扫描原执行引用；先恢复原义务，再读取尚未创建架的显式参数。仅在匹配 SUCCEEDED、唯一成功 RACK 成员、精确目标/面和当前因果位置投影、宿主结果与业务 Evidence 均发布后，原子保存到位 Evidence。ACK/ACCEPTED 不代表到位；旧轮次/旧版本不能覆盖当前交接。单架到位可独立留给下一片，不等待整组到齐。
+
+**历史与后续边界：**当前 drain READY/Confirmation、Binding、Transport 和到位 Evidence 仍是当前直接依赖，保留至后续 owner 接管；旧 WAIT 和已交接的前段 Work/Feed 可清理。恢复不查询最后历史响应、不创建虚构任务/Feed，不增加授权模型、业务状态、通用 timer 或基础层业务规则。下一片 9C 才将原冻结 Return ids 与实际到位架面接入普通 return_batch，9D 再处理冻结面顺序和离场；没有这些后续事实不关闭 drain 或释放 reservation。
+
+**验证归属：**插件 integration/test_drain_inbound_postgresql.py 拥有唯一创建、原子回滚、并发、回调早于 ACK、结果重放、身份/内容漂移、多架独立推进、无 EXECUTING 与合法历史清理恢复；原 9A 和既有 Transport 分流路径做定向回归。核心只承接模型安装/过滤、测试拓扑/所有权、selector 与 schema/config HEAVY。新增迁移由 Alembic 生成 revision，支持干净库往返与拒绝丢失执行身份的降级；完整 QUALITY 留给后续明确授权提交的 hook。最终验证：9B PostgreSQL 33 项、9A 及旧 Transport 分流回归 49 项、插件 FAST 174 项、核心安装/拓扑/所有权/selector 269 项、所选 schema/config HEAVY 18 项通过；Ruff、格式和 diff 检查通过。迁移在隔离 PostgreSQL 的干净逻辑库执行，schema 比较无差异，拒绝丢失执行身份的降级；比较全局 metadata 时仍有既有循环外键 warning。本轮独立 Reviewer 核对固定 13 文件与日志并完成完整审查，未确认 P1/P2/P3，无需代码修正。未新增 worker、队列或 timer 接线，未运行真实 worker；不提交、不部署、不启用真实派发或真实取盘。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
@@ -415,7 +427,7 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 | 插件声明 | 包根 `pyproject.toml`、`P/{__init__,definition,prepare_policy}.py` | 独立安装包、静态声明及准备策略 |
 | 插件应用协调 | `P/application/{plugin,flow,batch_driver,completion_driver}.py` | 既有插件端口实现、事务协调和当前业务扫描 |
 | 插件业务与存储 | `P/handlers/`；`P/application/{work_model,work_repository,pickup_model,pickup_repository,task_confirmation_model,task_confirmation_repository}.py` | 当前轮次、扫码前关联、授权及任务确认进度；随任务 5–7 增加 |
-| 插件回程与排空 | `P/application/{return_model,return_repository,return_flow,drain_model,drain_repository,drain_flow}.py` | 本线回程 FIFO 和当前排空进度；随任务 8–9 增加 |
+| 插件回程与排空 | `P/application/{return_model,return_repository,return_flow,drain_model,drain_repository,drain_flow,drain_inbound,drain_inbound_repository}.py` | 本线回程 FIFO 和当前排空进度；随任务 8–9 增加 |
 | 部署关联 | `deployment/{plugin_definitions,plugin_models,plugin_composition}.py`、根 `pyproject.toml`、`uv.lock` | 安装来源、静态组合、模型注册/过滤，不放工作流判断 |
 | 迁移/验证归属 | Alembic 生成的 `migrations/versions/` 新文件、`migrations/env.py` 的既有接线、`docs/architecture/heavy-test-impact.toml` | 每个新增模型的持久化及精确核心 HEAVY 映射；插件测试不进入 selector |
 | 生成合同 | `scripts/export_release_provider.py` 的现有导出入口及实际受影响消费方 | 生成当前 provider 快照，不手改生成物、不为本任务扩大前端交互范围 |

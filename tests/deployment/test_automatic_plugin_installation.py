@@ -15,6 +15,7 @@ from deployment.plugin_models import include_plugin_table
         "automatic_picking_return_allocations",
         "automatic_picking_return_motions",
         "automatic_picking_drains",
+        "automatic_picking_drain_racks",
     ],
 )
 def test_automatic_tables_belong_only_to_explicit_installation(name):
