@@ -18,7 +18,7 @@ class AutomaticPickingReturnMotion(EnterpriseMixin, DataTableMixin, table=True):
         UniqueConstraint("departure_operation_id", name="ux_auto_motion_departure_operation"),
         UniqueConstraint("departure_transport_task_id", name="ux_auto_motion_departure_transport"),
         CheckConstraint(
-            "(departure_operation_id IS NULL AND departure_transport_task_id IS NULL AND departure_result_evidence_id IS NULL) OR (departure_operation_id IS NOT NULL AND departure_transport_task_id IS NOT NULL)",
+            "(departure_operation_id IS NULL AND departure_transport_task_id IS NULL AND departure_result_evidence_id IS NULL AND departure_retry_at IS NULL) OR (departure_operation_id IS NOT NULL AND ((departure_transport_task_id IS NULL AND departure_result_evidence_id IS NULL) OR (departure_transport_task_id IS NOT NULL AND departure_retry_at IS NULL)))",
             name="automatic_motion_departure_binding",
         ),
         UniqueConstraint("rotation_transport_task_id", name="ux_auto_motion_rotation_transport"),
@@ -53,6 +53,7 @@ class AutomaticPickingReturnMotion(EnterpriseMixin, DataTableMixin, table=True):
     rotation_result_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
+    departure_retry_at: datetime | None = None
     departure_operation_id: str | None = Field(default=None, max_length=120)
     departure_transport_task_id: str | None = Field(default=None, max_length=80)
     departure_result_evidence_id: int | None = Field(

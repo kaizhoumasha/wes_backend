@@ -1434,6 +1434,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261018_0326_20d588a3a234_bind_automatic_motion_to_original_.py",
         "migrations/versions/20261019_2035_d061a18adea9_handoff_automatic_source_rack_rotation.py",
         "migrations/versions/20261019_2145_43401479b2cc_handoff_automatic_source_rack_departure.py",
+        "migrations/versions/20261019_2246_de97e0860fd5_persist_automatic_source_departure_.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[
@@ -1693,3 +1694,13 @@ def test_unified_api_access_log_paths_have_real_postgresql_owner(changed_path):
 def test_outbound_api_access_log_and_worker_paths_have_real_prefork_owner(changed_path):
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
     assert CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST in select_heavy_tests([changed_path], config)
+
+
+def test_departure_typed_reader_uses_its_native_postgresql_owner():
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert select_heavy_tests(
+        ["src/app/wms_integration/outbound_picking/services/rack_departure.py"], config, repo_root=REPO_ROOT
+    ) == [
+        "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
+        "tests/integration/wms_adapter/outbound_picking/test_departure_reader_postgresql.py",
+    ]

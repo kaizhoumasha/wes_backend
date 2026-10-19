@@ -555,7 +555,7 @@ class ReturnMotionRepository:
         for current in phases:
             if (current.arrival_evidence_id, current.rack_id, current.rack_face) in known:
                 continue
-            if current.rotation_transport_task_id is not None or current.departure_transport_task_id is not None:
+            if current.rotation_transport_task_id is not None or current.departure_operation_id is not None:
                 continue
             if current.closed_at is None and current.allocation_id is not None:
                 continue

@@ -843,7 +843,7 @@ async def test_ready_from_before_current_round_is_not_reused(bound):
     assert (await phase(p)).departure_transport_task_id is None
 
 
-async def test_partial_departure_reference_is_rejected_by_database(bound):
+async def test_orphan_departure_transport_is_rejected_by_database(bound):
     from automatic_picking.application.return_motion_model import AutomaticPickingReturnMotion
     from sqlalchemy import update
     from sqlalchemy.exc import IntegrityError
@@ -855,7 +855,7 @@ async def test_partial_departure_reference_is_rejected_by_database(bound):
             await db.execute(
                 update(AutomaticPickingReturnMotion)
                 .where(AutomaticPickingReturnMotion.id == (await phase(p)).id)
-                .values(departure_operation_id=p.departure_operation_id)
+                .values(departure_transport_task_id="orphan")
             )
 
 

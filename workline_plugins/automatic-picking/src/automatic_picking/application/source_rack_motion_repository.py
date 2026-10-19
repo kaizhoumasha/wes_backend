@@ -30,7 +30,7 @@ class SourceRackMotionRepository:
                         AutomaticPickingReturnMotion.workline_id == line_id,
                         AutomaticPickingReturnMotion.archived_at.is_(None),
                         AutomaticPickingReturnMotion.rotation_transport_task_id.is_not(None),
-                        AutomaticPickingReturnMotion.departure_transport_task_id.is_(None),
+                        AutomaticPickingReturnMotion.departure_operation_id.is_(None),
                     )
                     .order_by(AutomaticPickingReturnMotion.id)
                     .with_for_update()
@@ -156,7 +156,7 @@ class SourceRackMotionRepository:
             ).all()
         )
 
-    async def superseded(self, db, current, binding):
+    async def superseded(self, db, current, binding=None):
         position = await db.scalar(
             select(PositionProjection).where(
                 PositionProjection.object_type == "RACK", PositionProjection.object_id == current.rack_id
@@ -166,7 +166,8 @@ class SourceRackMotionRepository:
             position is None
             or position.position_unknown
             or position.source_causal_token is None
-            or position.source_causal_token <= binding.causal_token
+            or position.source_causal_token
+            <= (binding.causal_token if binding is not None else current.round_causal_token)
         ):
             return False
         facts = await db.scalars(

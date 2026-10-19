@@ -60,7 +60,13 @@ class AutomaticPickingScanFlow:
         ):
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
         if evidence.kind == "WMS_RESULT":
-            if evidence.operation == "outbound.bin.return_batch@v1":
+            if evidence.operation == "outbound.rack.departure_decide@v1":
+                result = (
+                    await self.rack_departure_flow.apply_decision_result_in_session(db, line=line, evidence=evidence)
+                    if self.rack_departure_flow is not None
+                    else "WAIT_FOR_EXIT"
+                )
+            elif evidence.operation == "outbound.bin.return_batch@v1":
                 result = (
                     await self.return_batch_flow.apply_result_in_session(db, line=line, evidence=evidence)
                     if self.return_batch_flow is not None

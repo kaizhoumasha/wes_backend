@@ -351,6 +351,21 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **验证与闭环 Review：**本片离线实现及验收完成。最终 8H PostgreSQL 44 passed（含迁移链、存量保留、模型/schema 一致性及有损降级拒绝），插件 FAST 167 passed；8E–8F 回归 63 passed、8G 回归 37 passed、直接 Feed 消费者离线回归 16 passed，未运行依赖真实 worker 的另外 3 项。核心聚焦 249 passed、精确 selector 选中宿主 HEAVY 8 passed，QUALITY 通过（4317 passed、5 个既有 skipped，跳过项不计通过）。schema 比对保留既有 Evidence/PickingTask 外键环警告，无新增迁移差异。独立只读 Review 发现创建前回读已闭合 Feed 历史、全取消来源失去离场出口两项 P2；三个反例先 RED，再按原 READY 与当前服务结束事实、实际本轮 Feed 因果范围修正，新增五类轮次/取消回归。原 Reviewer 合并完成旧意见闭环和最新完整 diff 的 fresh full Review，无剩余确认问题。验证绑定当前可执行快照，后续仅补本文记录；HEAD、暂存区、依赖文件及主工作区原有改动指纹保持不变。本轮不提交、不部署、不启用真实派发或真实取盘，任务 8 整体仍未完成。
 
+
+#### 实施切片 8I：普通来源架首次 departure 决定与 WAIT 持久续问
+
+**范围：**延续 8H 的显式精确到位、原进场轮次及全部当前来源服务结束依据；插件私有 matched 输入无既有 operation 时发起首次决定，有原 READY 时仍走 8H。生产服务结束候选 reader 不在本片装配，不以缺失 Feed、父任务完成或无 EXECUTING 任务推定服务结束。先收口当前阶段和直接物理义务，再创建 WorkLine-owned、`task_id=null` 的 typed departure 请求。未决设备映射、扫码关联、PkgID 和首批期限不设默认值；不接 drain、REJECTED 后业务重决策或已接纳 FAILED 面向恢复，不启用真实派发/取盘。
+
+**最小持久进度：**复用既有阶段的 departure operation 游标，仅增加 `departure_retry_at`；无新授权模型、业务状态枚举或 timer。首次请求/原游标、到期新请求/游标替换分别同事务提交；迁移 `de97e0860fd5` 基于 `43401479b2cc`，允许 operation 先于 Transport 存在，仍拒绝孤立 deadline/result/Transport。存量 8H 引用不改写；请求期拒绝有损降级。请求未决、WAIT 与 READY 尚未创建 CTU03 均进入现有 batch 前置扫描，不要求再提供候选、设备事件或 EXECUTING 任务。
+
+**结果与原子性：**基础 Confirmation 可靠保存响应后，固定插件 WMS consumer 经 FactProcessor 对精确当前 operation/原 Evidence/WorkLine/rack 做 typed 校验；WAIT Evidence 接收时间加 `retry_after_ms` 与结果发布同事务保存，重启/重放不重置。新增宿主 `RackDepartureResultReader.for_evidence` 仅读取原待应用响应，不拥有业务时机、时间或状态；原已发布 reader 仍禁止未发布响应驱动物理动作。WAIT 到期由 batch 在原 WorkLine/对象 authority 锁下重新核对当前游标、已发布原 WAIT 和当前事实，使用新 operation 与当时权威位置/面向创建请求；未知、RECONCILING、未发布或身份漂移不成为 WAIT，不换身份。正常未发布响应经精确 typed 校验后仅等待当前项，独立 Feed/回程等阶段仍可提交；身份和摘要冲突不被正常等待吞掉。READY 沿 8H 创建/关联唯一 CTU03；原结果重放不推进新游标，旧已闭合 WAIT/Feed/来源 Confirmation 可清理，不依赖历史最近响应。
+
+**恢复与边界：**批处理仍先推进原回架/运动义务，再恢复 departure；请求期阶段即冻结来源服务，换面/通用退役/新 Feed 不再抢占同一阶段。计划或未来 revision 本身不延长停靠；当前本架在途/未知/未发布动作仍阻止新决定与运动，独立架不受统一阻断。已确认更新因果的实际接管结束旧本地阶段，保留原 Confirmation/Transport/Evidence 的可靠交付和物理结果，不恢复旧服务。窗口释放不重置原轮次。FactProcessor 只拥有当前响应应用/发布；业务到期新请求唯一归 batch；发送、原身份重提及物理接纳/结果沿现有 owner，不新增队列或 worker。
+
+**测试所有权：**插件 typed 输入由原 FAST 文件承接；`integration/test_source_rack_departure_decision_postgresql.py` 拥有首次请求、当前游标、WAIT、FactProcessor 真实事务交接和应用/发布崩溃，以及并发/重放/跨 revision/轮次/接管/窗口释放/历史清理。8H 原孤立引用断言按本片请求期合同改为拒绝孤立 Transport，其他物理语义保留。宿主 FAST 和原生 PostgreSQL 仅验证 typed reader 的原身份与应用/发布读取边界；精确 HEAVY mapping 保留同文件 Scheduler 的真实 worker 派发验收，并增加 reader 原生 PostgreSQL owner；其他 20 个服务的原 HEAVY 集合保持不变。插件测试不进入核心 QUALITY/HEAVY。
+
+**验证与闭环 Review：**本片离线实现及验收完成。最终 8I PostgreSQL 31 passed、8H 回归 44 passed、插件 FAST 168 passed；8E–8G 回归 100 passed、直接 Feed 消费者 16 passed，另外 3 个 Feed worker 用例未纳入本轮验收。核心聚焦 1176 passed；精确 selector 选中宿主 HEAVY 13 passed，包含 Scheduler 真实本地 worker 3 项、typed reader 原生 PostgreSQL 2 项和工作线配置/迁移 8 项。最终 QUALITY 4319 passed、5 个既有 skipped（跳过项不计通过），Ruff、格式与差异检查通过。迁移验证包含存量 8H 保留、模型/schema 一致性、完整约束和请求期有损降级拒绝；保留既有 Evidence/PickingTask 外键环警告。独立 Review 首轮发现正常未发布响应中断独立业务扫描、同文件 Scheduler HEAVY owner 遗漏两项 P2；分别以真实独立 Feed 和 selector 回归先 RED 后修正，再由同一 Reviewer 合并完成旧意见闭环与最新 21 文件 fresh full Review，无剩余确认问题。可执行文件保持评审指纹，后续仅补本段验证记录；HEAD、暂存区、Git 配置、依赖及主工作区 62 个既有改动指纹保持不变。测试仅使用独占临时 PostgreSQL/Redis 和本地 Mock WMS，不构成生产联调或物理验收；未暂存、未提交、未部署，不启用真实派发或真实取盘。生产候选 reader、drain 及 G2/G3/G5/G6 未决边界保留，任务 8 整体仍未完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

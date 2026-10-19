@@ -48,7 +48,7 @@ class SourceRackMotionFlow:
             current = await self.repository.by_id(db, intent.motion_id)
             if current is None or current.workline_id != line.id:
                 raise ValueError("rotation lost exact motion stage")
-            if current.archived_at is not None or current.departure_transport_task_id is not None:
+            if current.archived_at is not None or current.departure_operation_id is not None:
                 continue
             expected = {"kind": "RACK_POSITION", "location_code": intent.position.location_code}
             if (

@@ -34,7 +34,7 @@ class FeedRepository:
             select(AutomaticPickingReturnMotion.id).where(
                 AutomaticPickingReturnMotion.workline_id == line.id,
                 AutomaticPickingReturnMotion.rack_id == member.rack_id,
-                AutomaticPickingReturnMotion.departure_transport_task_id.is_not(None),
+                AutomaticPickingReturnMotion.departure_operation_id.is_not(None),
                 AutomaticPickingReturnMotion.archived_at.is_(None),
             )
         )
