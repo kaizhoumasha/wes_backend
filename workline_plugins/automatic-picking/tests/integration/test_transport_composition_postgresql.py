@@ -98,8 +98,8 @@ async def advance(p, app):
         return await app.plugins[0].picking_task_batch_driver.advance_completed_in_session(db, line)
 
 
-async def event(p, role, stamp):
-    device = "OFFLINE-SCAN3" if role == "SCAN3" else "SCAN4"
+async def event(p, role, stamp, *, bin_code=None):
+    device = "OFFLINE-SCAN3" if role == "SCAN3" else role
     identity = new_uuid7()
     payload = {
         "device_code": device,
@@ -109,7 +109,7 @@ async def event(p, role, stamp):
         "event_type": "SCAN_COMPLETED",
         "timestamp": stamp,
         "is_debug": False,
-        "data": {"bin_code": p.work.bin_code + "-B"},
+        "data": {"bin_code": (bin_code or p.work.bin_code) + ("-C" if role == "SCAN2" else "-B")},
     }
     async with p.sessions.begin() as db:
         fact = InboundEvidence(
@@ -308,3 +308,189 @@ async def test_actual_composition_source_rotation_then_departure_uses_current_re
         assert departure.request_json["rcs_template_id"] == "CTU03"
         assert departure.request_json["target"] == {"kind": "RACK_POSITION", "location_code": "OFFLINE-OUT"}
     provider.submit.assert_not_awaited()
+
+
+async def test_actual_composition_normal_feed_scans_create_first_work_request_once(source, monkeypatch):
+    from automatic_picking.application.feed_model import AutomaticPickingFeed, AutomaticPickingFeedScan
+    from automatic_picking.definition import DEFINITION
+    from test_source_revision_postgresql import arrive
+
+    from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
+    from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
+    from src.app.wms_adapter.outbound_picking.inbound_batch_wire import (
+        parse_bin_inbound_batch_request,
+        parse_bin_inbound_batch_response,
+    )
+    from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+    from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher
+    from tests.support.transport_callbacks import record_valid_callback
+
+    p, bin_code = source, "A123456789"
+    async with p.sessions.begin() as db:
+        line = await db.get(WorkLine, p.line.id)
+        line.position_bindings = {
+            **line.position_bindings,
+            "OUTLET": {"location_type": "HANDOFF_POSITION", "location_id": "AUTO-OUTLET"},
+        }
+        line.run_mode, line.flow_mode = "AUTO", None
+        line.config = {"device_bindings": {r.role_key: r.role_key for r in DEFINITION.device_roles}}
+        devices = [
+            Device(device_code=role, device_name="offline feed scan", work_line_id=line.id)
+            for role in ("SCAN1", "SCAN2")
+        ]
+        db.add_all(devices)
+        await db.flush()
+        line.device_contracts = {
+            d.device_code: {
+                "device_id": d.id,
+                "endpoint_base_url": "http://127.0.0.1:1",
+                "contract_key": "FIXTURE_ONLY",
+                "contract_version": "1",
+                "command_timeout_ms": 10000,
+                "status_max_age_ms": 10000,
+            }
+            for d in devices
+        }
+    app, service, provider = runtime(p, monkeypatch)
+    p.runtime, p.service = app, service
+    await arrive(p)
+    assert await app.picking_task_plan_activation_service.activate_batch() == 1
+    async with p.sessions.begin() as db:
+        feed = (await db.scalars(select(AutomaticPickingFeed))).one()
+        feed_id, batch_operation_id = feed.id, feed.operation_id
+        request = (
+            await db.scalars(select(WmsConfirmation).where(WmsConfirmation.operation_id == batch_operation_id))
+        ).one()
+        payload = {
+            "operation_id": batch_operation_id,
+            "code": "DECIDED",
+            "timestamp": 1000,
+            "data": {
+                "result": "READY",
+                "bins": [
+                    {
+                        "bin_code": bin_code,
+                        "source_locator": {
+                            "type": "RACK_BIN_SLOT",
+                            "rack_id": "SOURCE-1",
+                            "rack_face": "A",
+                            "slot_id": "1",
+                        },
+                    }
+                ],
+            },
+        }
+        parse_bin_inbound_batch_response(200, payload, request=parse_bin_inbound_batch_request(request.request_payload))
+        accepted = await InboundEvidenceService().accept(
+            db,
+            kind="WMS_RESULT",
+            source_identity=request.operation + ":" + request.operation_id,
+            normalized_payload=payload,
+            received_at=p.now,
+            workline_id=p.line.id,
+            operation=request.operation,
+            operation_id=request.operation_id,
+            apply_status="APPLIED",
+        )
+        ready_id = accepted.evidence.id
+        await WmsConfirmationLifecycleService().complete(
+            db, request, response_evidence_id=ready_id, response_result="READY", completed_at=p.now
+        )
+        assert feed.transport_task_id is None
+    await app.execution.fact_processor.process_batch()
+    async with p.sessions() as db:
+        feed = await db.get(AutomaticPickingFeed, feed_id)
+        move_id = feed.transport_task_id
+        assert feed.response_evidence_id == ready_id and feed.phase == "FEEDING"
+        assert (await db.get(InboundEvidence, ready_id)).published_at is not None
+        move = (await db.scalars(select(TransportTask).where(TransportTask.transport_task_id == move_id))).one()
+        assert move.status == "PENDING"
+        assert move.request_json["moves"] == [
+            {
+                "bin_code": bin_code,
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "SOURCE-1", "rack_face": "A", "slot_id": "1"},
+                "target": {"kind": "HANDOFF_POSITION", "location_code": "AUTO-INLET"},
+            }
+        ]
+        assert not (await db.scalars(select(AutomaticPickingWork))).all()
+        assert not (await db.scalars(select(DeviceCommand))).all()
+    await record_valid_callback(
+        service,
+        operation_id=new_uuid7(),
+        transport_task_id=move_id,
+        operation=RESULT_OPERATION,
+        timestamp=1100,
+        payload={
+            "kind": "BIN_MOVE",
+            "outcome_revision": 1,
+            "results": [
+                {
+                    "container_id": bin_code,
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "AUTO-INLET"},
+                }
+            ],
+        },
+    )
+    assert await service.process_pending_evidence(10) == 1
+    publisher = InstalledPluginTransportOutcomePublisher(
+        p.sessions,
+        app.plugins,
+        queue_gateway=N(enqueue_execution_facts=lambda: None, enqueue_picking_task_plans=lambda: None),
+    )
+    assert await service.publish_pending_outcomes(10, publisher) == 1
+    await app.execution.fact_processor.process_batch()
+    await advance(p, app)
+    scan1_id = await event(p, "SCAN1", 1200, bin_code=bin_code)
+    await app.execution.fact_processor.process_batch()
+    async with p.sessions() as db:
+        entry = (await db.scalars(select(AutomaticPickingFeedScan))).one()
+        command = (await db.scalars(select(DeviceCommand))).one()
+        assert entry.feed_id == feed_id and entry.evidence_id == scan1_id and entry.bin_code == bin_code
+        assert entry.scan1_command_code == command.command_code and not entry.work_admitted
+        assert command.device_code == "SCAN1" and command.task_type == "MOVE_FORWARD" and command.params == {}
+        assert command.material_execution_id is None
+        assert (await db.get(InboundEvidence, scan1_id)).published_at is not None
+        assert not (await db.scalars(select(AutomaticPickingWork))).all()
+    scan2_id = await event(p, "SCAN2", 1300, bin_code=bin_code)
+    app, _, recovered_provider = runtime(p, monkeypatch)
+    await app.execution.fact_processor.process_batch()
+    async with p.sessions() as db:
+        work = (await db.scalars(select(AutomaticPickingWork))).one()
+        request = (
+            await db.scalars(select(WmsConfirmation).where(WmsConfirmation.operation == "outbound.bin.work_plan@v1"))
+        ).one()
+        first_identity = work.id, work.operation_id, request.id, request.request_digest
+        assert (work.workline_id, work.picking_task_id, work.feed_id, work.bin_code) == (
+            p.line.id,
+            p.task.id,
+            feed_id,
+            bin_code,
+        )
+        assert work.phase == "PLAN_PENDING" and work.scan2_evidence_id == scan2_id and work.scanned_at == 1300
+        assert request.operation_id == work.operation_id and request.status == "PENDING"
+        assert request.request_payload["data"] == {"task_id": p.task.task_id, "bin_code": bin_code, "scanned_at": 1300}
+        assert (await db.get(InboundEvidence, scan2_id)).published_at is not None
+        assert (await db.scalars(select(AutomaticPickingFeedScan))).one().work_admitted
+    app, _, replay_provider = runtime(p, monkeypatch)
+    for role, stamp in (("SCAN1", 1400), ("SCAN2", 1500)):
+        await event(p, role, stamp, bin_code=bin_code)
+        await app.execution.fact_processor.process_batch()
+    await advance(p, app)
+    async with p.sessions() as db:
+        work = (await db.scalars(select(AutomaticPickingWork))).one()
+        request = (
+            await db.scalars(select(WmsConfirmation).where(WmsConfirmation.operation == "outbound.bin.work_plan@v1"))
+        ).one()
+        assert (work.id, work.operation_id, request.id, request.request_digest) == first_identity
+        assert work.scan2_evidence_id == scan2_id and work.scanned_at == 1300 and work.phase == "PLAN_PENDING"
+        assert request.status == "PENDING" and request.response_evidence_id is None
+        feed = (await db.scalars(select(AutomaticPickingFeed))).one()
+        assert (feed.id, feed.operation_id, feed.response_evidence_id) == (feed_id, batch_operation_id, ready_id)
+        assert feed.phase == "FEED_COMPLETE" and feed.offset == 1
+        assert len((await db.scalars(select(AutomaticPickingFeedScan))).all()) == 1
+        assert (await db.scalars(select(DeviceCommand))).one().command_code == command.command_code
+        assert len((await db.scalars(select(TransportTask).where(TransportTask.kind == "BIN_MOVE"))).all()) == 1
+        assert not (await db.scalars(select(AutomaticPickingReturn))).all()
+    for original_provider in (provider, recovered_provider, replay_provider):
+        original_provider.submit.assert_not_awaited()

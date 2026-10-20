@@ -711,6 +711,16 @@ HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 T
 
 C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收；机械臂映射、单盘扫码关联、PkgID、首批期限各限制其路径。代码装配可用不等于已启用生产，更不等于任务 11 完成；本轮不改启用配置，不部署或启动生产实例，不真实派发。验证：插件 FAST `252 passed`，实际组合根 PostgreSQL 贯通 `3 passed`，核心安装/拓扑/所有权 `23 passed`。六文件 PostgreSQL 回归首轮为 `127 passed, 3 failed`；三项均是旧 Work-only 用例缺少新增装配所需的本线绑定，未修改生产容错或放宽断言，只补该用例的隔离配置及真实命令服务，随后该完整 Work 文件 `13 passed`。新贯通文件在最终端口快照另跑 `3 passed`；按节点身份对照，130 个不同回归节点均已有对应通过记录，不把首轮失败写成整组一次全绿。组合根既有 selector 选中 11 个核心 HEAVY 文件，最终 `75 passed`，含真实 worker；保留既有 serializer/schema cycle warning，不新增插件 HEAVY 映射。本轮无 schema 改动，复用一个独占临时 PostgreSQL，合规测试库的空库→当前 head 迁移通过。初次核心运行因入口库名不满足测试保护而中止，改用已迁移的 test 库后完整 manifest 重跑通过，未放宽保护；该失败运行不作为证据。上述通过项均无 skip。固定 16 文件快照的独立闭环 review 未发现可复现或有明确可达路径的 P1/P2/P3 问题；已核对唯一恢复 owner、原动作身份、参数来源、测试所有权及 C1/C2 边界。当前同轮历史清理有既有正面证据，不将其扩大为所有跨轮提前清理场景均已证明。末尾仅整理测试排版并校准本文 review 结论，完整 QUALITY 留获授权提交边界。
 
+### 正常投料到首个 Work 请求：实际装配离线验收（本轮未提交）
+
+以已提交搬运接线 `5c42941c` 为基线，本片仅补 `tests/integration/test_transport_composition_postgresql.py` 的组合验收，不改生产代码、schema、DTO、装配配置或恢复机制。现有来源到位→inbound_batch 与 NO_WORK→回程分别保留原测试 owner；本片填补两者之间正常投料及扫码到 Work 的接线差额，不重复 9H、共享派发或租约矩阵。
+
+使用同一 `build_deployment_runtime` 工厂、真实本地 Transport/DeviceCommand 服务和 FactProcessor。来源计划、设备绑定、位置、单箱 READY 与匹配成功终位仅为显式隔离输入：原来源架到位发布→唯一 Feed/inbound_batch→原 READY 应用发布→唯一投料 BIN_MOVE→正常 SCAN1 `-B` 及原 MOVE_FORWARD→SCAN2 `-C`→唯一 Work 与首个 PENDING work_plan Confirmation。中途重建装配，重复扫码后保留原 Feed/Command/Work/operation 和首次 scanned_at；停在 PLAN_PENDING，不注入 Work 或中间 flow，不返回 work_plan 决定，不创建机械臂执行或回程。
+
+恢复 owner 沿用宿主计划激活、自动 batch/Feed/ScanFlow/Work、原 Transport/Command/Confirmation 和 FactProcessor；通知丢失由现有持久扫描发现，本片不新增队列、状态、timer 或 bin-line-common。测试基础设施复用独占临时 PostgreSQL 及现有逐例迁移 harness，测试队列通知关闭，Transport provider 禁止发送，不启动 worker/Beat、生产实例或 WMS 派发。没有任务注册、路由或序列化变化，不扩展真实进程矩阵。
+
+最终实际装配 PostgreSQL 文件 `4 passed`（新增正常投料到 Work 1 项、既有装配 3 项），测试拓扑/所有权 `14 passed`，均无 skip；Ruff check/format 和 diff 检查通过，未暂存 selector 为 NONE。固定两文件快照的独立闭环 review 未发现有证据且可达的 P1/P2/P3 问题；仅改变插件集成测试及本文，核心 HEAVY、完整 QUALITY 和未改动 9H 矩阵不重复运行。C1/C2 容量接续与核销仍待 WMS 补证；不涉及 PkgID、机械臂映射、首批期限、完成确认或已接纳后 FAILED 重决策，不以此片证明任务 11 整体或现场闭环完成。
+
 ## 实施切片
 
 ### 任务 0：固定执行范围和证据
