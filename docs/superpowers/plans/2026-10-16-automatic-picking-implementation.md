@@ -584,6 +584,14 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **连续 READY 片最终验证：**独占 PostgreSQL 17、每例干净迁移库下，新增连续 READY、补架 WAIT、事实读取、进场与正常收口五文件组合 137 项全部通过，含新增 17 项，无失败、错误或 skip；本片无 schema 变更，明确排除 3 项既有升级/降级验收。插件 FAST 239 项、核心安装/测试拓扑/所有权 33 项通过；4 个 Python 文件 Ruff/格式、文档结构及 diff 检查通过。HEAVY selector 为 NONE，插件验收不进入核心 selector。先取得 successor READY 读取缺失及同架提前进场两项真实 RED，再完成上述最小修正；扩展测试中两处夹具调用时序/字段读取错误已在最终组合前修正，不放宽业务断言。最终组合与已评审可执行指纹一致，其后仅补记本段证据；完整 QUALITY 留到授权 Commit hook。未提交、未部署、不启用真实派发。
 
+**9H 宿主持久扫描入口离线验收。**基于 `963d90d0`，新增插件 `integration/test_drain_host_recovery_postgresql.py`，测试中重建既有离线插件装配，注入 `PickingTaskPlanActivationService`；通过公开 `activate_batch()` 使用真实工作线发现、插件身份和 WorkLine 事务锁，进入现有 `advance_completed_in_session()`。不替换宿主扫描、Repository 或 batch 方法，不改部署组合根；该验收不代表生产已装配 drain，也不代表真实 worker/Beat 已验证。
+
+只补三个入口检查点：无 EXECUTING 且丢失通知时发现到期补架 WAIT，按原责任产生唯一续问；清理前驱根后恢复 successor READY，并发宿主扫描只创建一次精确 CTU01；current 已正常退出且两轮根/原请求已清理后，宿主扫描仍按原 Motion/Transport 接入迟到成功事实并归档原离场义务，不产生新动作或重开 current。重建扫描实例与重复扫描保持冻结请求、动作身份和业务快照。复用现有 WAIT、successor、正常收口和清理夹具，不复制业务状态/崩溃矩阵。
+
+宿主入口只负责持久发现及事务调用，业务 current/到期续问仍归自动 batch；Confirmation、FactProcessor、Motion/Allocation/Transport 和 WMS 容量账所有权不变。C1/C2 仍待补证，设备映射、扫码关联、PkgID 等未决值不猜；不接完成确认、已接纳后 FAILED 重决策，不新增模型、状态、timer 或 bin-line-common。后续真实 worker 离线验收只补队列/进程唤醒和周期恢复边界，待对应装配与环境就绪，不重跑本片业务矩阵。
+
+**宿主入口片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库下，最终三个入口验收全部通过，无失败、错误或 skip；测试拓扑/所有权 14 项通过，Ruff/格式、文档结构与 diff 检查通过，HEAVY selector 为 NONE。独立 reviewer 对固定两文件 SHA256 完成 scoped full review，确认真实宿主发现/锁调用、业务阳性断言、唯一 current/动作身份及清理后的原 owner 恢复，无 P1/P2/P3；首尾 HEAD 为 `963d90d0`，index 为空，文件指纹一致。未发现需要生产修正的接线缺口，仅新增插件验收和本计划记录，未重跑已闭合业务矩阵或完整 QUALITY；后者留授权提交边界。未验证真实 worker/Beat，未改生产装配、未提交、未部署或启用真实派发。review 后仅追加本段证据，可执行测试指纹不变。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
