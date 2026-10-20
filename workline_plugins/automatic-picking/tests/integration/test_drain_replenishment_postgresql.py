@@ -1,7 +1,9 @@
 """首次 READY 持久事实的只读求值；不创建补架义务或替换 current。"""
 
+import asyncio
+
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from test_drain_completion_postgresql import accepted
 from test_drain_departure_decision_postgresql import application
 from test_drain_departure_postgresql import phase
@@ -356,3 +358,172 @@ async def test_archived_return_alone_is_not_a_positive_handoff(drainable):
         (await db.get(AutomaticPickingReturn, p.return_id)).archived_at = p.now
     with pytest.raises(ValueError, match="scope"):
         evaluate(await read(p))
+
+
+async def concurrent_owner_read(p, owner, order):
+    """以 PostgreSQL 实际阻塞为屏障，读口与原 owner 分别先持有 WorkLine 锁。"""
+    held, release = asyncio.Event(), asyncio.Event()
+    waiter_pid = asyncio.get_running_loop().create_future()
+    blocker_pid = None
+
+    async def transaction(*, reading, first):
+        nonlocal blocker_pid
+        async with p.sessions() as db:
+            async with db.begin():
+                pid = await db.scalar(text("SELECT pg_backend_pid()"))
+                if first:
+                    blocker_pid = pid
+                else:
+                    waiter_pid.set_result(pid)
+                line = await db.get(WorkLine, p.line.id, with_for_update=True)
+                if first and reading:
+                    held.set()
+                    await release.wait()
+                if reading:
+                    statements = []
+
+                    def record(connection, cursor, statement, parameters, context, executemany):
+                        statements.append(statement)
+
+                    connection = (await db.connection()).sync_connection
+                    event.listen(connection, "before_cursor_execute", record)
+                    try:
+                        fact = await reader(p).read_in_session(db, line=line, now=p.now)
+                        result = evaluate(fact) if fact is not None else None
+                        assert not db.new and not db.dirty and not db.deleted
+                    finally:
+                        event.remove(connection, "before_cursor_execute", record)
+                    assert statements and all(sql.lstrip().upper().startswith("SELECT") for sql in statements)
+                    value = fact, result
+                else:
+                    await owner(db, line)
+                    value = None
+                if first and not reading:
+                    held.set()
+                    await release.wait()
+                if first and order == "owner_rollback":
+                    await db.rollback()
+                return value
+
+    first = asyncio.create_task(transaction(reading=order == "read_first", first=True))
+    second = None
+    try:
+        await asyncio.wait_for(held.wait(), 10)
+        second = asyncio.create_task(transaction(reading=order != "read_first", first=False))
+        pid = await asyncio.wait_for(waiter_pid, 10)
+
+        async def blocked():
+            async with p.sessions() as db:
+                while not await db.scalar(
+                    text("SELECT :blocker = ANY(pg_blocking_pids(:waiter))"),
+                    {"blocker": blocker_pid, "waiter": pid},
+                ):
+                    if second.done():
+                        await second
+                        pytest.fail("second transaction bypassed the WorkLine lock")
+                    await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(blocked(), 10)
+        release.set()
+        values = await asyncio.wait_for(asyncio.gather(first, second), 10)
+        return values[0 if order == "read_first" else 1]
+    finally:
+        release.set()
+        for task in (first, second):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (first, second) if task is not None), return_exceptions=True)
+
+
+@pytest.mark.parametrize("order", ["read_first", "owner_first", "owner_rollback"])
+@pytest.mark.parametrize("progress", ["returned", "bin_move_handoff", "normal_close"])
+async def test_first_ready_read_serializes_with_existing_owner_progress(drainable, progress, order):
+    from automatic_picking.application.drain_model import AutomaticPickingDrain
+    from automatic_picking.application.return_motion_model import AutomaticPickingReturnMotion
+    from test_drain_completion_postgresql import departing
+    from test_drain_return_postgresql import created, movement_result
+    from test_return_allocation_postgresql import application as ordinary_application
+
+    from src.app.transport.models import TransportTask
+
+    p = drainable
+    if progress == "returned":
+        a = await created(p)
+        await movement_result(p, a)
+        owner = p.app[0].return_batch_flow.advance_in_session
+    elif progress == "bin_move_handoff":
+        second, a = await independent_move(p, handoff=False)
+        await accepted(p)
+        p.faces = []  # 此次只恢复已创建的独立 BIN_MOVE，不准入新分配。
+        owner = ordinary_application(p)[0].return_batch_flow.advance_in_session
+    else:
+        root, task = await departing(p)
+        stage = await phase(p)
+        await accepted(p)
+        owner = p.app[0].advance_completed_in_session
+
+    root = await current(p)
+    before = await read(p)
+    assert before.return_ids == tuple(root.return_ids)
+    assert before.operation_id == before.reservation_operation_id == root.operation_id
+    if progress == "returned":
+        assert before.returned_ids == ()
+        assert evaluate(before).remaining_return_ids == (p.return_id,)
+    elif progress == "bin_move_handoff":
+        assert before.inflight_return_ids == ()
+        assert evaluate(before).action == "WAIT"
+    else:
+        assert before.returned_ids == before.return_ids
+        assert not before.departure_handoffs
+        assert evaluate(before).action == "WAIT"
+    async with p.sessions() as db:
+        confirmations = set((await db.scalars(select(WmsConfirmation.id))).all())
+
+    fact, result = await concurrent_owner_read(p, owner, order)
+    after = await read(p)  # 新会话、新 reader：没有缓存求值或独立恢复 owner。
+    if order == "owner_first":
+        assert fact == after
+    else:
+        assert fact == before
+    if fact is not None:
+        assert result == evaluate(fact)
+        assert fact.operation_id == fact.reservation_operation_id == root.operation_id
+    else:
+        assert result is None
+
+    if order == "owner_rollback":
+        assert after == before
+        async with p.sessions.begin() as db:
+            line = await db.get(WorkLine, p.line.id, with_for_update=True)
+            await owner(db, line)
+        after = await read(p)
+
+    async with p.sessions() as db:
+        saved = await db.get(AutomaticPickingDrain, root.id)
+        assert saved.operation_id == root.operation_id
+        assert set((await db.scalars(select(WmsConfirmation.id))).all()) == confirmations
+        if progress == "normal_close":
+            assert after is None and await current(p) is None
+            assert saved.archived_at is not None and saved.returned_ids == saved.return_ids
+            assert saved.departure_handoffs == {stage.rack_id: task.transport_task_id}
+            assert (await db.get(TransportTask, task.id)).status == "ACCEPTED"
+            motion = await db.get(AutomaticPickingReturnMotion, stage.id)
+            assert motion.archived_at is None and motion.departure_transport_task_id == task.transport_task_id
+        else:
+            assert saved.archived_at is None and (await current(p)).id == root.id
+            saved_allocation = await allocation(p)
+            if progress == "returned":
+                assert after.returned_ids == (p.return_id,)
+                assert evaluate(after).remaining_return_ids == ()
+                assert evaluate(after).action == "WAIT" and evaluate(after).request_return_ids == ()
+                assert saved_allocation.handed_off_at is not None and saved_allocation.settled_at is not None
+            else:
+                assert after.returned_ids == () and after.inflight_return_ids == (p.return_id,)
+                assert evaluate(after).remaining_return_ids == (p.return_id, second)
+                assert evaluate(after).request_return_ids == (second,)
+                assert evaluate(after).action == "REQUEST"
+                assert saved_allocation.handed_off_at is not None and saved_allocation.settled_at is None
+
+    stable = await fingerprint(p)
+    assert await read(p) == after
+    assert await fingerprint(p) == stable

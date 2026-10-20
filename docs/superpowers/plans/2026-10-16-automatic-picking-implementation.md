@@ -528,6 +528,12 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 **验收与恢复 owner：**插件 `integration/test_drain_replenishment_postgresql.py` 唯一拥有该读取组合的 PostgreSQL 验收，29 项覆盖当前身份/摘要/消费门禁、耗尽、多成员与新 execution 隔离、FIFO 未知队头、独立接纳/未接纳、原分配和 Transport 漂移、删除已闭合 Return/Allocation/中间 Motion 后新 reader/会话重新求值及无 EXECUTING。全业务表指纹和 ORM dirty/new/deleted 检查证明读口与求值不写数据；测试建材沿用既有离线 owner，不等同真实派发。使用本片独占临时 PostgreSQL，各例干净逻辑库由现有迁移 harness 建立；没有新增迁移。先取得缺失读口 RED，再由独立在途/当前容量反例取得真实 RED 并最小移除过严读取门槛；最终新 PostgreSQL 29 项、插件 FAST 237 项、核心安装/拓扑/所有权23项通过，Ruff/格式/diff 检查通过，HEAVY selector 为 NONE。只读口和纯规则不取得新的持久 owner：原 batch、Confirmation、FactProcessor、Transport 继续各自恢复；本片不接持久补架 WAIT、跨 successor current 或 WMS 核销。独立 Reviewer 已对固定三文件快照完成完整 review，未发现 P1/P2/P3，无代码修正；审查前后 SHA 一致，闭环完成。随后仅补记本文审查结果，可执行证据未失效。
 
+**9H 首次 READY 读取的并发验收补片（只补测试，未接持久执行）。**沿用同一插件 PostgreSQL 测试所有者，增加三类既有 owner 推进与只读求值的两事务竞争：9C 应用已发布、精确成功的回库事实，独立 BIN_MOVE 已接纳后的 Allocation 交接，以及 9G 将原 CTU03 交接事实与正常 drain 归档一起提交。每类分别覆盖读口先持锁、owner 先提交、owner 修改后回滚；使用 `pg_blocking_pids` 观察实际 WorkLine 锁等待后才放行，不以调度延时推断互斥。读口先行时 owner 等到求值完成；owner 先行时新会话只读到提交后的完整事实；回滚不泄露 returned/handoff/归档进度，再由原 owner 重跑恢复。
+
+验收同时核对精确原 operation/reservation 身份、剩余责任和独立在途范围；接纳交接不产生回库成功，全部回库但尚未完成供架交接仍由 9G 处理，根归档后读口返回无 current 而不找历史 READY。正常收口保留原未终态 CTU03/Motion 及其恢复归属；不因本地 drain 关闭推定物理离场完成。SQL 记录与 ORM 状态检查约束读口只执行 SELECT，竞争前后 Confirmation 身份集合不变，重启式新 reader/会话求值前后全业务表指纹不变；不创建补架 Confirmation、不替换 current、不保存求值结果。读取本身不取得持久恢复 owner，继续由原 return allocation/batch、FactProcessor、Confirmation、Transport/Motion 扫描恢复。新增字段与 reservation 核销语义仍待 WMS 双方冻结；本片不进入 successor current、完成确认或已接纳后 FAILED 重决策。
+
+本补片验证：独占 PostgreSQL 17.10、现有每例干净迁移 harness 下，该读口完整 PostgreSQL 38 项通过（新增竞争 9 项），插件 FAST 237 项通过；Ruff、格式和 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改本测试所有者及计划；完整 QUALITY 留到用户授权的提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，未提出生产修正；审查前后文件 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照未变。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
