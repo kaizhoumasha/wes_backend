@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-10-16
+updated_at: 2026-10-20
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -1115,7 +1115,11 @@ rack_id 的既有 RACK 引用，目标为本线已配置工作位，不从 WMS �
 当前可派发 FIFO 前缀先按实际到位架和当前面求值一次；本架已确定分配的直接义务未闭合时不离场。已确认无分配的候选、尚未到退箱位的 pre-buffer 或后续未分配 FIFO 不构成留架理由；直接义务闭合后请求离场决定并创建唯一 CTU03，退箱 FIFO 仍由后续合格货架按原顺序承接。
 CTU03 接纳释放 WES 本地业务窗口；同架复用仍等待权威成功回调及明确 `RACK_POSITION`。WMS 拥有 rack/face、容量与储位分配及 reservation 释放，WES 拥有本地可靠编排，RCS/ECS 拥有接纳和最终物理事实。本地窗口释放或排空退出均不证明地点 EMPTY、物理成功或 WMS reservation 已释放；WMS 对后续分配的明确拒绝仍按原响应与重试合同处理。
 
+<a id="9h-replenishment-freeze"></a>
+
 **9H 正常补架接续补充（合同/设计稿，尚未实现；本补充须经 WMS 双方冻结后才作为真实补架联调准入）。**本节只补齐正常 READY 供架耗尽后的续供，不改变既有异常退役合同，不授权完成确认或已接纳后 FAILED 重决策。drain 决定及 §9.2.2 `return_batch` 的 Method、Path、operation、响应 DTO、字面量、错误码和技术重试沿用各自合同；两类请求各提议增加同一个精确关联字段，不新增补架 operation 或 reservation API。此处是提案，不表示已批准字段或当前严格 parser 可接收。
+
+双方冻结的逐项状态、确认记录要求及验收正反例统一维护在[自动拣料联合确认 §9](../integration/wms-joint-confirmation-automatic-picking.md#9-9h-正常补架的双方冻结确认清单)。本节是业务与 wire 提案真源，联合确认清单只引用本节，不另定义字段或状态；原 2026-09-23 的 Accepted 不覆盖本次新增接续与核销语义。
 
 | 补充请求 JSON Path | 9H 待冻结规则 |
 | --- | --- |

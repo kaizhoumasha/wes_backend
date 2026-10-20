@@ -542,6 +542,8 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 本组合补片验证：独占 PostgreSQL 17.10、每例干净迁移数据库下，该读取组合完整 PostgreSQL 41 项通过（新增3项），插件 FAST 237 项通过；Ruff、格式与 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改插件测试和计划，完整 QUALITY 留到提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，无需生产修正或追加测试；审查前后 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照不变。
 
+**9H 冻结确认清单（仅文档，待双方结论）。**复用[自动拣料联合确认 §9](../../integration/wms-joint-confirmation-automatic-picking.md#9-9h-正常补架的双方冻结确认清单)记录已确认基线、F1–F8 待确认项、双方证据和验收正反例；业务与 wire 真源仍为主合同 §9.2.3 的 9H 补充。既有 2026-09-23 Accepted 不覆盖新增引用和核销，草案、离线测试或收到成功响应均不升级确认状态。冻结前不再追加已覆盖的首次 READY 组合矩阵；下一最小实施片须先取得双方冻结证据，再同步两 operation 的 wire/SDK/converter/Adapter/OpenAPI 及自动/人工消费者。单次 successor 的新义务/旧退出/新 current 原子验收及持久 WAIT 在其后；现有 batch、Confirmation、FactProcessor、Transport/Motion/Allocation 所有权不变。本次只整理现有文档，不改生产代码或机器合同、不创建测试、不提交部署、不启用持久执行或真实派发。已完成讨论 JSON 解析/示例 UUIDv7 与时间戳、表格结构、新链接锚点及 diff 检查；独立文档 review 未发现 P1/P2/P3，审查前后三文件 SHA 一致，闭环完成。随后仅补记此结论，F1–F8 仍全部待双方冻结，正反例仍未执行，不作为 WMS 确认或联调通过证据。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

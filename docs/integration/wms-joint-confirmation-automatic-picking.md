@@ -1,10 +1,10 @@
 ---
 title: WMS/WES Integration Contract Amendment Proposal：自动拣料
-status: WMSAccepted
+status: ReviewRequired
 created_at: 2026-09-21
-updated_at: 2026-10-16
+updated_at: 2026-10-20
 audience: WMS 开发组、WES 架构组
-scope: WMS 已接受全部候选项；WES 严格 DTO、OpenAPI、生产接线和联合验收分别推进
+scope: §1–8 保留既有确认基线；§9 的 9H 接续与核销待双方冻结；实现和联合验收状态分别记录
 related:
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-manual-outbound-picking-integration-requirements.md
@@ -14,7 +14,9 @@ related:
 
 # WMS/WES Integration Contract Amendment Proposal：自动拣料
 
-WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4–6 的目标请求/响应形态和退料货架整架任务完成 API。确认发生于 2026-09-23，由 WES 记录；[出库主合同](../contracts/wms-outbound-picking-task-integration-requirements.md)承接已明确的业务规则与目标 wire。严格 DTO、OpenAPI、生产接线和联合验收仍按各自状态执行；尚未给出具体取值的设备映射及字段边界由对应联合项继续冻结。
+WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员规则、§4–6 的目标请求/响应形态和退料货架整架任务完成 API。确认发生于 2026-09-23，由 WES 记录；[出库主合同](../contracts/wms-outbound-picking-task-integration-requirements.md)承接已明确的业务规则与目标 wire。严格 DTO、OpenAPI、生产接线和联合验收仍按各自状态执行；尚未给出具体取值的设备映射及字段边界由对应联合项继续冻结。
+
+本文总状态 `ReviewRequired` 指新增 §9 尚待双方冻结，不撤销 §1–8 已确认记录；2026-09-23 的 Accepted 不延伸到后补的 9H 字段及核销语义。编辑、离线验证或接口返回成功都不构成双方确认。
 
 ## 1. Identity Rules
 
@@ -42,7 +44,7 @@ WMS 已确认接受本文全部候选项，包括跨 revision 成员规则、§4
 | `material.decide`、`source.empty_decide`、`material.movement_report`，`BIN_CELL` | WMS 业务决定 / 结果记录 | WMS 按各请求的来源、扫码或逐盘事实决定和记录；WES 本地按 Passage 与 Action 身份编排 | WMS Accepted |
 | `work_completed` | 当前料箱任务 | WMS 通知 `task_id + bin_code + result + completed_at`；WES 本地匹配当前等待的 Passage | 当前 wire |
 | `return_rack.arrival_report` | Physical Action | `transport_task_id` 关联原搬运事实 | 现行 wire |
-| `return_batch` | Passage / FIFO | 以当前 RETURN_BUFFER FIFO 候选形成请求；Passage 关联单独核实 | 现行 wire |
+| `return_batch` | Passage / FIFO | 以当前 RETURN_BUFFER FIFO 候选形成请求；9H 原成员引用见 §9 | 现行 wire；9H 待双方冻结 |
 | 退料货架整架任务完成 API | Rack task / Plan stream | `data.through_plan_revision` 作为完成范围截止点；operation、方向和 DTO 见 §6.1 | WMS Accepted；WES 未实现 |
 
 下文示例使用与主合同相同的公共信封。`Current Wire` 指向既有实现字段；`Target Wire` 是 WMS 已接受的目标字段和完整示例。示例响应只展示代表性业务结果，其他结果和 `409/422/503` 仍以主合同为准，除非下文明确修改。
@@ -773,6 +775,119 @@ WMS 接受自动线独立 WorkLine 候选 `workline_code=KT11` 及 `task_type=AU
 
 ## 8. 确认记录和后续实施
 
-WMS 对第 2 节全部候选项的答复为 `Accepted`，由 WES 于 2026-09-23 根据本次确认记录。WES 以 SCAN2 证据创建本地 Passage、确定 `WAIT` 后以新 `operation_id` 重问、响应未知时沿原身份重试；WMS 在三个 BIN_CELL API 中按业务事实处理迟到/重复请求和新旧工作。最终字段边界、设备映射和联合用例按 §6 的具体依赖继续冻结与验收。
+WMS 对第 2 节截至 2026-09-23 的既有候选项答复为 `Accepted`，由 WES 根据当时确认记录。该记录不包含新增 §9；9H 仍逐项记录双方结论。WES 以 SCAN2 证据创建本地 Passage、确定 `WAIT` 后以新 `operation_id` 重问、响应未知时沿原身份重试；WMS 在三个 BIN_CELL API 中按业务事实处理迟到/重复请求和新旧工作。最终字段边界、设备映射和联合用例按 §6 的具体依赖继续冻结与验收。
 
-已确认的业务规则与目标 wire 写入[出库主合同](../contracts/wms-outbound-picking-task-integration-requirements.md)。后续同步严格 DTO/OpenAPI/业务调用、完成联合用例验证及设备映射；这些完成后本文归档为历史确认记录。主合同作为目标合同真源，联调仍须核对双方实际接线版本。
+已确认的业务规则与目标 wire 写入[出库主合同](../contracts/wms-outbound-picking-task-integration-requirements.md)。后续同步严格 DTO/OpenAPI/业务调用、完成联合用例验证及设备映射；既有条目完成且新增 §9 已有双方冻结及独立验收记录后，本文才可归档为历史确认记录。主合同作为目标合同真源，联调仍须核对双方实际接线版本。
+
+
+## 9. 9H 正常补架的双方冻结确认清单
+
+### 9.1 真源、确认状态与现有基线
+
+业务与 wire 真源为[主合同 §9.2.3 的 9H 补充](../contracts/wms-outbound-picking-task-integration-requirements.md#9h-replenishment-freeze)，并引用其 §4、§9.2.2；本文只整理冻结问题和验收向量，不另建一套设计。本节的新增字段及关联、核销语义全部为**待双方冻结**，尚无 WMS/WES 联合确认人、日期或冻结版本记录。WES 已完成草案及首次 READY 离线验收，不等于新增合同已获双方接受。
+
+| 已确认基线 | 当前含义及依据 | 不因此确认的 9H 增量 |
+| --- | --- | --- |
+| 两类 operation、方向和端点 | 均由 WES 向 WMS `POST /api/v1/wes/decisions`；`workline.return_buffer.drain_rack_decide@v1` 与 `outbound.bin.return_batch@v1` 沿主合同，不新建 operation/API | 不证明现有请求可携带 reservation 引用 |
+| 公共身份与错误 | 公开幂等键为 `(operation, operation_id)`；技术重试冻结原 timestamp 和规范化正文；同步决定重放完整原结果，不以 `DUPLICATE` 代替；错误结构沿 §4 | 新字段进入规范化/摘要和新业务条件的冲突适用仍待确认 |
+| 已有响应联合 | drain 为 `READY / WAIT`；return_batch 为 `READY / NO_BATCH`；各分支字段、数值边界沿原字段表 | 补架 WAIT 保留原 reservation、READY 只提供本轮供架等接续含义待确认 |
+| FIFO 与物理边界 | return_batch 只分配实际 FIFO 的连续前缀；ACK/ACCEPTED 不等于物理成功；同架面下一分配仍等原动作已发布终态及已知终位 | 不证明 WMS 已按精确 reservation 核销成员 |
+| 原有字段策略 | 独立 drain DTO 逐层拒绝额外字段；既有 outbound/return_batch 对合法消息过滤冗余字段后规范化，已定义字段仍按所属规则校验 | 不把 return_batch 全局改为拒绝冗余字段；新引用一旦冻结为已定义字段，就必须校验并计入摘要，不能继续当冗余字段丢弃 |
+
+当前 SDK/DTO 未支持本节新增引用；drain 可能拒绝新增字段，既有 return_batch 可能将其视为冗余字段。仅发送该字段后得到成功响应，不能证明字段被应用、reservation 被关联或核销有效。双方冻结后才同步两域 wire、SDK typed intent、typed converter、Adapter/OpenAPI 和自动/人工消费者，不用裸 dict、兼容别名或 Mock 绕过。
+
+### 9.2 待双方逐项确认
+
+下表均引用主合同 9H 补充，不将提案升级为已确认合同。WMS/WES 两列仅在取得各自明确证据后更新；不能用本清单编辑日期代替确认日期。
+
+| 编号 | 待确认内容 | 主合同依据 | WMS 结论 | WES 结论 |
+| --- | --- | --- | --- | --- |
+| F1 两类请求引用 | drain 初次请求省略 `data.reservation_operation_id`，补架及其 WAIT 续问必填原首次 READY UUIDv7；原成员的 return_batch 无论普通/drain 入口、是否使用 reservation 供架均必填同值；非原成员省略且不得混批。禁止 null、空值、任务 ID、最近响应或前一次补架 operation。Return execution ID 不进入 wire | 两字段表、条款1、4、6 | 待确认 | 待联合冻结 |
+| F2 幂等与活动身份 | 同 operation/operation_id、同合法规范化正文先重放原完整结果，即使原 reservation 后来结束；引用属于已定义正文。合法正文漂移按 `409 / CONFLICT + IDEMPOTENCY_CONFLICT`；新 operation 的已结束/别线/另一轮引用，以及无引用初次请求遇本线活动 reservation，按提案 `409 / CONFLICT + STATE_CONFLICT`。不改绑最新 reservation | 条款1–2 | 待确认 | 待联合冻结 |
+| F3 WAIT/READY | 新 operation 只决定同一 reservation 的剩余供架；WAIT 闭合本次决定但不释放原 reservation，按原 retry_after_ms 固定到期后再用新 identity 求值；READY.racks 只含本轮供架，不累加原业务需求，不重写旧响应。未知/UNAVAILABLE 沿原 identity 重提；return_batch.NO_BATCH 不变成同到位面轮询 | 条款1–3、6–7及§9.2.2 | 待确认 | 待联合冻结 |
+| F4 成员与分配绑定 | WES 原子冻结原 execution 资格、顺序与显式引用；WMS 不按箱码、承接架或工作线最新记录猜归属。READY 实际分配的 `(return_batch operation_id, sequence_no)`、完整箱码/来源/目标绑定原 reservation；BIN_MOVE 接纳前唯一匹配并冻结原 Transport/member，歧义拒绝且不启动物理执行 | 条款4、6 | 待确认 | 待联合冻结 |
+| F5 核销与名额 | 只由原 Transport/member 权威成功且终位匹配核销一次；ACK、未知、失败不核销。部分 READY 只记实际分配前缀，NO_BATCH/未分配尾部不占名额；普通架回库原成员仍核销，非原成员不核销。旧结果只记原归属；原首次需求全部成功才关闭容量义务，不按各次 required_slot_count 累加 | 条款2、6–7 | 待确认 | 待联合冻结 |
+| F6 WES current 与恢复 | 完整剩余责任包含独立在途；本次请求只含实际 FIFO 合格前缀。新义务、新 current、旧退出在同 WorkLine 事务提交；旧退出表示交接而非完成。后续原动作事实归同一 reservation 的当前责任 owner；已可清理前驱不成为恢复依赖。无可请求成员不发零数量；已创建未知义务不因需求清零被丢弃 | 条款3–8 | 待确认 | 待联合冻结 |
+| F7 失败分类与拒绝证据 | 出现的新字段类型/格式非法按所属 `422 / REJECTED + INVALID_DATA`；WES 已知补架或原成员缺引用先拒绝创建。WMS 收到无引用 drain 遇活动 reservation 按 F2，不能从无引用 return_batch 猜原成员核销；活动身份冲突与内容漂移分别处理。分配到 Transport 无唯一匹配时的所属冲突响应及 reason_code 适用，须双方明确记录，不新造错误码或猜映射；已接纳后 FAILED 的新决定/新动作不在本节 | 字段表、条款2、6及§4 | 待确认 | 待联合冻结 |
+| F8 生效与消费者 | 同时冻结两类请求及核销语义，再同步各自 wire/SDK/converter/Adapter/OpenAPI、自动/人工消费者与正反例；仅完成 WES 本地持久化或仅支持其中一个字段不构成闭环。无需新 operation、Transport wire 字段、通用 reservation 模型或 timer | 补充引言及条款6、8 | 待确认 | 待联合冻结 |
+
+每项确认记录须在对应行关联：双方结论、双方确认人及日期、冻结合同版本/commit、证据文档或联调样例位置；当前均未提供，不预填确认人或日期。存在修改意见时仍为待确认，先修订主合同并核对受影响项，再记录双方最终结论。验收执行另记版本、实际请求/响应及预期对照，不将“同意合同”与“实现已通过”合为一个状态。
+
+### 9.3 讨论请求示例（非合同，冻结前不得作为联调请求）
+
+以下编码、位置和数量仅用于验收向量，不是生产映射或默认值。假设首次 READY operation `R=019f3406-2200-7b03-8b01-000000000101` 的原责任为三个本地 execution：A 已权威回库，B 已在独立 BIN_MOVE 中交接，C 是当前缓冲位 FIFO 合格前缀。剩余责任为 B、C，本次只为 C 请求一个槽位；本地 execution ID 不发送。这里不证明 WMS 已支持引用或已完成核销。
+
+补架决定示例，新 operation 仍引用 R：
+
+```json
+{
+  "operation": "workline.return_buffer.drain_rack_decide@v1",
+  "operation_id": "019f3406-2200-7b03-8b01-000000000102",
+  "timestamp": 1792504800000,
+  "data": {
+    "workline_code": "DEMO-AUTO",
+    "required_slot_count": 1,
+    "reservation_operation_id": "019f3406-2200-7b03-8b01-000000000101"
+  }
+}
+```
+
+原成员 C 的 return_batch 示例；承接架必须已权威到位，且可以是非 reservation 普通架：
+
+```json
+{
+  "operation": "outbound.bin.return_batch@v1",
+  "operation_id": "019f3406-2200-7b03-8b01-000000000201",
+  "timestamp": 1792504801000,
+  "data": {
+    "workline_code": "DEMO-AUTO",
+    "rack_id": "DEMO-RACK-01",
+    "rack_face": "A",
+    "reservation_operation_id": "019f3406-2200-7b03-8b01-000000000101",
+    "return_candidates": [
+      {
+        "sequence_no": 1,
+        "bin_code": "DEMO-BIN-C",
+        "source": {"type": "HANDOFF_POSITION", "location_code": "DEMO-RETURN-BUFFER"}
+      }
+    ]
+  }
+}
+```
+
+若该成员不属于任何原 reservation，请求必须省略引用；不能发送 null。响应继续使用主合同已有封闭联合，不额外回传本地 execution、reservation 账或另一套新字段。上述两请求用于展示不同入口的字段含义，不表示可以绕过当前已冻结请求、分配或 FIFO 门禁同时创建重复义务。
+
+### 9.4 联合验收正反例（预期提案，尚未执行）
+
+以下预期以 F1–F8 同意并生效为前提。基线行为沿主合同；含新增语义的结果仍须双方确认，不能把下表当作当前接口实现承诺。WES 侧拒绝准入的用例不产生 WMS 请求，不虚构 HTTP 返回。
+
+| 正例 | 输入/时序 | 预期与责任方 | 对应项 |
+| --- | --- | --- | --- |
+| P1 首次建立与正常补架 | 首次请求省略引用并得到 READY R；耗尽后新 D 携带 R 和正数实际前缀数量 | WMS 新决定关联同一活动 reservation，不另建业务需求或重写 R；WES 保留在途责任 | F1–F3、F6 |
+| P2 确定 WAIT 续问 | D/R 已得到已发布 WAIT；到期后以新 D2、相同 R、当前原成员前缀请求 | WAIT 不释放 R，不套用初始 drain 的下一任务优先丢弃原需求；WES batch 负责到期准入，WMS 重新决定 | F3、F6 |
+| P3 原决定重放优先 | R 已结束或本线已有新 R2，再以原 identity 和原合法规范化正文重放 D | WMS 返回 D 的原完整决定，不重新绑定 R2、不再次分配；不只返回 DUPLICATE | F2–F3 |
+| P4 普通架承接原成员 | 普通入口携带 R，为原成员得到 READY，原 Transport/member 权威成功且终位匹配 | WMS 按冻结分配与 R 核销一次；不要求承接架来自 R，不从本地 drain_id 推断 WMS 已核销 | F1、F4–F5 |
+| P5 部分分配与 NO_BATCH | R 的候选为 C、D，READY 只分配 C；另一次合法到位决定为 NO_BATCH | 只记 C 实际分配，D/NO_BATCH 不占名额；WES 不越队头、不因 NO_BATCH 同面轮询 | F3–F5 |
+| P6 交付未知 | 新请求已创建，响应丢失或收到 UNAVAILABLE | Confirmation 沿原 operation_id/timestamp/正文恢复；不新建等价决定，不把未知当 WAIT | F2–F3、F6 |
+| P7 混合责任与归零 | 示例 A 已回库、B 在途、C 在 FIFO；随后责任全部权威满足 | 请求数量只为 C，B 不重复申请且不丢责任；未知请求先由原 owner 闭合，确定后不为已满足成员再启动 CTU01 | F5–F6 |
+| P8 回调早于 ACK 与重复事实 | 精确原 Transport 成功/终位先于提交 ACK 到达，随后同一履约结果重放 | 权威事实按原身份保存；匹配原分配后仅核销一次，后到 ACK 不重复核销，旧结果不记后来 reservation | F4–F5 |
+
+| 反例 | 输入/冲突 | 预期拒绝或保留行为 | 对应项 |
+| --- | --- | --- | --- |
+| N1 新字段不合法 | 给已定义引用字段 null、空值或非 UUIDv7 | 冻结后的接收方按类型/格式拒绝，预期 `422 / REJECTED + INVALID_DATA`；不将引用过滤掉后成功处理 | F1、F7 |
+| N2 同 identity 内容漂移 | 将已记录合法请求的 R 改为另一个合法 R，或改数量、候选顺序、来源 | 预期 `409 / CONFLICT + IDEMPOTENCY_CONFLICT`，不覆盖旧决定；不换 identity 规避冲突 | F2 |
+| N3 原活动身份不匹配 | 新 operation 引用已结束/别线/另一轮 R，或无引用初次请求遇本线活动 R | 预期 `409 / CONFLICT + STATE_CONFLICT`，不当成新需求或绑定最新记录 | F2、F7 |
+| N4 新 execution 或混 owner | 同箱码新 execution 被 WES 标成旧 R，或请求混入不同归属候选 | WES 在创建可靠义务前拒绝，不发该请求；不能要求 WMS 用未发送的本地 ID 或箱码最近记录纠正 | F1、F4 |
+| N5 无唯一分配匹配 | BIN_MOVE 与未履约分配按完整箱码/来源/目标匹配为零条或多条 | WMS 按所属冲突合同拒绝且不启动物理执行；具体 reason_code 适用待 F7 记录，不猜新码 | F4、F7 |
+| N6 未取得履约成功 | 仅 ACK/ACCEPTED、权威结果未知、FAILED 或成功终位不匹配冻结目标 | WMS 不核销对应名额。WES 侧结果未应用/未发布时仍保留原依赖，不推定本地完成；WMS 核销依据自身权威事实，不等待 WES 私有发布状态，不在本节新建失败重决策 | F5–F6 |
+| N7 旧结果冒领新 current | 旧 D/旧动作结果晚到，而当前已切换到 successor 或新 reservation | 原身份留证与恢复，不覆盖新请求、不重开旧 current；按冻结归属处理，不给新一轮同箱码充数 | F2、F4–F6 |
+| N8 无可请求前缀 | 全部剩余成员在途，或 FIFO 队头未知/未合格/被原分配占用 | WES 不发零数量或越序请求，原责任及 owner 保留；独立任务不受全线围栏 | F6 |
+| N9 引用省略/携带时机错误 | WES 已知是补架或原成员却省略 R，或初次决定误携带 R | WES 先拒绝创建义务，不发请求。若无引用 drain 到 WMS 遇活动 R，按 N3；无引用 return_batch 不核销原 R，不要求 WMS 从本地 execution 或箱码补猜，也不新增 first/replenishment 标志 | F1–F2、F4、F7 |
+
+WMS 提供决定重放、活动身份原子关联、分配绑定和核销的一致性证据；WES 提供成员资格、两入口防重、current 原子交接和恢复证据。既有 WES 首次 READY 纯规则、只读 PostgreSQL 及多架组合验收只证明其各自范围，不承接尚未实现的 F1–F8 外部语义，也不重复复制公共传输层验收矩阵。
+
+### 9.5 生效顺序与范围
+
+先取得 F1–F8 双方结论及版本证据，再对齐两域 wire/SDK/typed converter/Adapter/OpenAPI 和全部消费者；随后按原计划实施单次 successor 原子交接、持久 WAIT 续问及既有供架执行接续。无需在冻结前再追加已覆盖的首次 READY 组合矩阵。业务准入/到期续问归现有自动 batch；Confirmation 负责原身份交付，FactProcessor 负责 typed Fact 处理/关联与应用发布，Transport 与 Motion/Allocation 保留原物理动作及直接因果恢复；WMS 拥有容量和核销。清单本身不取得运行时恢复 owner。
+
+本节不确认设备位置映射、扫码关联、PkgID 或首批期限的未决值，它们继续只阻塞各自生产路径；不接完成确认、已接纳后 FAILED 重决策、持久执行、部署或真实派发，不做 bin-line-common 抽取。本文整理不等于已向 WMS 发送、已获双方冻结或已通过联合验收。
