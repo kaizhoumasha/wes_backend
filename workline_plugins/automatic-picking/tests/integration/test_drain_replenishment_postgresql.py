@@ -527,3 +527,136 @@ async def test_first_ready_read_serializes_with_existing_owner_progress(drainabl
     stable = await fingerprint(p)
     assert await read(p) == after
     assert await fingerprint(p) == stable
+
+
+async def checked_evaluation(p):
+    before = await fingerprint(p)
+    value = await read(p)
+    result = evaluate(value)
+    assert await fingerprint(p) == before
+    return value, result
+
+
+async def supply_handoff(p, rack, *, completed):
+    from test_drain_departure_postgresql import departure_result, departures
+
+    stage = await phase(p, rack)
+    assert stage.closed_at is not None and stage.departure_operation_id is not None
+    await departure_decided(p, "READY", operation_id=stage.departure_operation_id)
+    await advance(p, batch=p.app[0])
+    task = next(t for t in await departures(p) if t.request_json["rack_id"] == rack)
+    if completed:
+        await departure_result(p, task)
+    else:
+        await accepted(p)
+    await advance(p, batch=p.app[0])
+    assert (await current(p)).departure_handoffs[rack] == task.transport_task_id
+    return stage, task
+
+
+@pytest.mark.parametrize("order", [("OFFLINE-DRAIN", "SECOND"), ("SECOND", "OFFLINE-DRAIN")])
+async def test_each_supply_handoff_gates_first_ready_read_after_closed_motion_cleanup(drainable, order):
+    from automatic_picking.application.return_motion_model import AutomaticPickingReturnMotion
+
+    from src.app.transport.models import TransportTask
+
+    p = drainable
+    await application(p, reservations=(("OFFLINE-DRAIN", ("A",)), ("SECOND", ("A",))))
+    await no_batch(p)
+    await no_batch(p)
+    root = await current(p)
+    value, result = await checked_evaluation(p)
+    assert value.departure_handoffs == () and result.action == "WAIT"
+    assert result.remaining_return_ids == tuple(root.return_ids) and result.request_return_ids == ()
+
+    old, first = await supply_handoff(p, order[0], completed=True)
+    value, result = await checked_evaluation(p)
+    assert dict(value.departure_handoffs) == {order[0]: first.transport_task_id}
+    assert result.action == "WAIT" and result.request_return_ids == ()
+    async with p.sessions.begin() as db:
+        closed = await db.get(AutomaticPickingReturnMotion, old.id)
+        assert closed.archived_at is not None
+        await db.delete(closed)
+    assert await checked_evaluation(p) == (value, result)
+
+    last_stage, last = await supply_handoff(p, order[1], completed=False)
+    value, result = await checked_evaluation(p)
+    assert dict(value.departure_handoffs) == {order[0]: first.transport_task_id, order[1]: last.transport_task_id}
+    assert value.operation_id == value.reservation_operation_id == root.operation_id
+    assert value.returned_ids == value.inflight_return_ids == ()
+    assert result.action == "REQUEST"
+    assert result.remaining_return_ids == result.request_return_ids == tuple(root.return_ids)
+    assert (await current(p)).id == root.id
+    async with p.sessions() as db:
+        assert (await db.get(TransportTask, last.id)).status == "ACCEPTED"  # 交接足以判耗尽，未证明物理离场。
+        live = await db.get(AutomaticPickingReturnMotion, last_stage.id)
+        assert live.archived_at is None and live.departure_transport_task_id == last.transport_task_id
+    assert await checked_evaluation(p) == (value, result)
+
+
+async def test_multi_supply_mixed_responsibility_survives_closed_member_and_motion_cleanup(drainable):
+    from automatic_picking.application.return_allocation_model import AutomaticPickingReturnAllocation
+    from automatic_picking.application.return_model import AutomaticPickingReturn
+    from automatic_picking.application.return_motion_model import AutomaticPickingReturnMotion
+    from test_drain_return_postgresql import movement_result
+    from test_return_allocation_postgresql import application as ordinary_application
+    from test_return_allocation_postgresql import result as batch_result
+
+    p = drainable
+    third = await additional_return(p, bin_code="A000000003", timestamp=3000)
+    await application(p, reservations=(("OFFLINE-DRAIN", ("A",)), ("SECOND", ("A",))))
+    root = await current(p)
+    assert len(root.return_ids) == 3 and root.return_ids[0] == p.return_id and root.return_ids[2] == third
+    second = root.return_ids[1]
+    await advance(p, batch=p.app[0])
+    await batch_result(p, selected=1)
+    await processor(p, scan=p.app[1]).process_batch()
+    await advance(p, batch=p.app[0])
+    returned_allocation = await allocation(p)
+    await movement_result(p, returned_allocation)
+    await advance(p, batch=p.app[0])
+    assert (await current(p)).returned_ids == [p.return_id]
+    await no_batch(p)
+    old, _ = await supply_handoff(p, "OFFLINE-DRAIN", completed=True)
+    await supply_handoff(p, "SECOND", completed=False)
+
+    p.faces = [(p.face_id, "OFFLINE-RACK", "A")]
+    batch, scan = ordinary_application(p)
+    await advance(p, batch=batch)
+    await batch_result(p, selected=1)
+    await processor(p, scan=scan).process_batch()
+    await advance(p, batch=batch)
+    moving = await allocation(p)
+    assert moving.drain_id == root.id and moving.rack_id == "OFFLINE-RACK"
+    assert moving.return_ids[: moving.selected_count] == [second]
+    value, result = await checked_evaluation(p)
+    assert value.returned_ids == (p.return_id,) and value.inflight_return_ids == ()
+    assert result.remaining_return_ids == (second, third) and result.action == "WAIT"
+    assert result.request_return_ids == ()
+
+    await accepted(p)
+    await advance(p, batch=batch)
+    value, result = await checked_evaluation(p)
+    assert value.operation_id == value.reservation_operation_id == root.operation_id
+    assert value.returned_ids == (p.return_id,) and value.inflight_return_ids == (second,)
+    assert tuple(row.return_id for row in value.fifo) == (third,)
+    assert result.remaining_return_ids == (second, third)
+    assert result.action == "REQUEST" and result.request_return_ids == (third,)
+
+    async with p.sessions.begin() as db:
+        for identity in (p.return_id, second):
+            closed = await db.get(AutomaticPickingReturn, identity)
+            assert closed.archived_at is not None
+            await db.delete(closed)
+        closed_allocation = await db.get(AutomaticPickingReturnAllocation, returned_allocation.id)
+        assert closed_allocation.settled_at is not None
+        await db.delete(closed_allocation)
+        closed_motion = await db.get(AutomaticPickingReturnMotion, old.id)
+        assert closed_motion.archived_at is not None
+        await db.delete(closed_motion)
+    assert await checked_evaluation(p) == (value, result)
+    assert (await current(p)).id == root.id
+    async with p.sessions() as db:
+        inflight = await db.get(AutomaticPickingReturnAllocation, moving.id)
+        assert inflight.handed_off_at is not None and inflight.settled_at is None and inflight.archived_at is None
+        assert await db.get(AutomaticPickingReturn, third) is not None

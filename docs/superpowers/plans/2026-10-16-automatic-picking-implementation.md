@@ -534,6 +534,14 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 本补片验证：独占 PostgreSQL 17.10、现有每例干净迁移 harness 下，该读口完整 PostgreSQL 38 项通过（新增竞争 9 项），插件 FAST 237 项通过；Ruff、格式和 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改本测试所有者及计划；完整 QUALITY 留到用户授权的提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，未提出生产修正；审查前后文件 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照未变。
 
+**9H 首次 READY 多架与混合成员的只读组合验收（仅测试，未接持久执行）。**在同一 PostgreSQL 测试所有者内复用既有两架 READY、return allocation、departure 与 batch 夹具，新增三项组合验收。逐架交接按 READY 正序与逆序各验证一次：零交接和仅一架交接均继续 WAIT，全部应需供架取得原 CTU03 交接正事实后才允许剩余原成员成为请求范围；其中最后一架仅 ACCEPTED，保留原 Transport/Motion 继续恢复，不推定物理离场。首架权威成功后清理其已归档 Motion，新会话、新 reader 仍读取原 current 的交接正事实，不回查可清理面历史。
+
+混合成员用例在同一首次 READY 范围内，通过既有 owner 建立一名已权威回库、一名独立普通架 BIN_MOVE、一名实际 FIFO 候选。独立动作未交接时仍按已分配队头阻止越序；接纳并由 owner 交接后，在途成员留在完整剩余责任中，但不重复计入可请求数量，实际请求仅为 FIFO 中的合格原成员。普通入口保留本地原 drain 成员归属，不表示 WMS reservation 核销已接线。删除已归档的成功/在途 Return、已完成原分配及成功离场 Motion 后重新读取，快照、原 operation/reservation 引用、责任与前缀保持一致；未终态独立 Allocation、原请求和动作直接依赖继续保留，不当作可清理历史。
+
+每次读取与纯求值前后核对全业务表指纹，并沿用读口 ORM 无新增/修改/删除检查；不创建补架 Confirmation、不替换 current、不保存求值。只读求值无新增恢复 owner，原 batch/Allocation、FactProcessor、Confirmation、Transport/Motion 继续承担各自职责。新增字段与核销语义仍待 WMS 双方冻结；本片不启用 successor、持久补架 WAIT、完成确认、已接纳后 FAILED 重决策或真实派发。
+
+本组合补片验证：独占 PostgreSQL 17.10、每例干净迁移数据库下，该读取组合完整 PostgreSQL 41 项通过（新增3项），插件 FAST 237 项通过；Ruff、格式与 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改插件测试和计划，完整 QUALITY 留到提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，无需生产修正或追加测试；审查前后 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照不变。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
