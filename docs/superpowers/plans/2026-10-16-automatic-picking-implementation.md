@@ -514,6 +514,14 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 **本轮边界：**只补合同、插件设计和本计划，完成一次文档闭环 review；不实施完成确认、已接纳后 FAILED 重决策、生产装配或真实派发，不做 bin-line-common 抽取，不提交、不部署、不推进真实取盘。
 
+**9H 首片实施：离线纯规则（已实现，未接持久执行）。**插件新增 `automatic_picking/drain_replenishment.py`，仅依赖标准库和现有 SDK typed outcome；冻结局部事实快照并返回瞬时求值分类、全部剩余责任及本次 FIFO 请求前缀，不创建 intent/Confirmation、current、timer 或物理动作，不注册 Handler 或接入 batch。局部 `reservation_operation_id` 仅是显式给定的首次 READY 引用，不是 wire/SDK/schema 新字段，也不证明 WMS reservation 活动。首次 WAIT/未知请求不得伪装为补架；请求未知、结果未发布或供架尚未交接时，先交回原 owner，不要求新候选快照。已发布 WAIT 使用显式冻结到期点，原责任全部满足可结束本地 WAIT；READY 零剩余不创建补架，仍交既有正常收口路径处理。
+
+供架耗尽只使用当前 READY 集合及原 CTU03 交接正事实，不读取中间面历史或用失败覆盖交接。原 execution 成功正事实扣除责任，明确已交接且离开待派发 FIFO 的独立在途成员仍保留责任而不重复计数。实际 FIFO 与原顺序冲突、成员既不在队列也无明确在途依据时拒绝，不从缺失记录推断；位置未知、未合格、已分配或新成员中止请求前缀，不跳过。输入只按 execution ID 关联，不以同箱码替代身份。没有可请求成员时不产生零数量请求；该求值不承担 WMS 核销或实际持久关闭。
+
+**首片验收与恢复所有权：**`tests/test_drain_replenishment.py` 为唯一纯规则 owner，63 项覆盖正常耗尽、多架交接、剩余范围、FIFO 阻塞/顺序、独立在途、WAIT 到期与清零、未知/未发布、旧结果身份、首次 WAIT 隔离及非法输入。先取得能力缺失 RED，并由补充反例取得“先恢复原义务再读候选”5 项 RED、原 READY 引用边界5项 RED，再完成最小实现。插件 FAST 显式排除 integration 后 237 项通过；核心安装、测试拓扑与插件所有权23项通过；两文件 Ruff/格式及 diff 检查通过；核心 HEAVY selector 为 NONE，插件规则由插件验收、不新增核心 mapping。纯规则本身无恢复 owner；未来调用/持久接续仍由现有自动 batch 负责，Confirmation、FactProcessor、Transport 和 WMS 的既有职责不变。独立 Reviewer 对固定三文件快照完成完整 review，未发现 P1/P2/P3，无代码修正；审查前后执行快照一致，闭环完成。随后仅补记本句验收结果，不使既有可执行验证证据失效。
+
+**后续准入不变：**两个 operation 的新增字段、原 reservation 关联与 WMS 核销仍待双方冻结；冻结后先同步所属 wire/typed converter/SDK/Adapter/OpenAPI、自动与人工消费者及测试，再实施新义务/旧 current 退出/新 current 成立的 PostgreSQL 原子验收。此片不修改外部合同、模型或迁移，不证明并发/崩溃持久恢复或真实 WMS 可用；未决设备映射、扫码关联、PkgID 和首批期限继续只阻塞各自真实路径。完成确认、已接纳后 FAILED 重决策、bin-line-common、部署与真实派发仍不在本片。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
