@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from wes_plugin_sdk import ReturnBufferDrainReady, ReturnBufferDrainWait, wms_operations
 
+from automatic_picking.drain_replenishment import evaluate_replenishment
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -36,6 +37,7 @@ class AutomaticPickingDrainFlow:
         location_reader,
         *,
         inbound=None,
+        replenishment_reader=None,
         clock=timezone.now_for_db,
         uuid_factory=new_uuid7,
     ):
@@ -43,6 +45,7 @@ class AutomaticPickingDrainFlow:
         self.buffer_reader, self.location_reader = buffer_reader, location_reader
         self.clock, self.uuid_factory = clock, uuid_factory
         self.inbound = inbound
+        self.replenishment_reader = replenishment_reader
 
     async def _candidates(self, db, line):
         buffer = await self.buffer_reader.read_in_session(db, workline_id=line.id)
@@ -74,13 +77,8 @@ class AutomaticPickingDrainFlow:
         return result
 
     async def _remember(self, db, current, evidence, intent, outcome):
-        if (
-            intent.operation_id != current.operation_id
-            or intent.required_slot_count != len(current.return_ids)
-            or not current.return_ids
-            or len(set(current.return_ids)) != len(current.return_ids)
-            or any(type(value) is not int or value <= 0 for value in current.return_ids)
-        ):
+        DrainReturnRepository.validate_members(current)
+        if intent.operation_id != current.operation_id or intent.required_slot_count != len(current.request_return_ids):
             raise ValueError("drain result differs from frozen request members")
         if type(outcome.result) is ReturnBufferDrainWait:
             due = evidence.received_at + timedelta(milliseconds=outcome.result.retry_after_ms)
@@ -88,10 +86,15 @@ class AutomaticPickingDrainFlow:
             due = None
         else:
             raise ValueError("unknown typed drain result")
+        count = 0
+        if type(outcome.result) is ReturnBufferDrainReady and current.started_operation_id is None:
+            current.started_operation_id = current.operation_id
+            count = 1
         if current.response_evidence_id is not None:
             if (current.response_evidence_id, current.retry_at) != (evidence.id, due):
                 raise ValueError("drain result or WAIT deadline drift")
-            return 0
+            await db.flush()
+            return count
         current.response_evidence_id, current.retry_at = evidence.id, due
         await db.flush()
         return 1
@@ -134,16 +137,45 @@ class AutomaticPickingDrainFlow:
                     current.archived_at = self.clock()
                     await db.flush()
                     return count + 1
-                return count + (
+                progressed = (
                     await self.inbound.advance_in_session(db, line, current, snapshot.result)
                     if self.inbound is not None
                     else 0
                 )
+                return count + progressed + (0 if progressed else await self._continue(db, line, current))
+            if current.started_operation_id is not None:
+                return count  # 单次接续片保留补架 WAIT；持久到期续问由后续切片承接。
             if self.clock() < current.retry_at:
                 return count
         if not line.is_active:
             return count
         return count + await self._admit(db, line, current)
+
+    async def _continue(self, db, line, current):
+        if self.replenishment_reader is None or not line.is_active:
+            return 0
+        fact = await self.replenishment_reader.read_in_session(db, line=line, now=self.clock())
+        if fact is None:
+            return 0
+        result = evaluate_replenishment(fact)
+        if result.action != "REQUEST":
+            return 0
+        operation_id, now = self.uuid_factory(), self.clock()
+        intent = wms_operations.workline_return_buffer_drain_rack_decide(
+            operation_id=operation_id,
+            workline_code=line.line_code,
+            required_slot_count=len(result.request_return_ids),
+        )
+        await self.scheduler.create_in_session(db, intent, workline_id=line.id, created_at=now)
+        await self.repository.continue_current(
+            db,
+            current=current,
+            operation_id=operation_id,
+            remaining=result.remaining_return_ids,
+            requested=result.request_return_ids,
+            now=now,
+        )
+        return 1
 
     async def _admit(self, db, line, current):
         prepared = await self.prepare.prepare_next_in_session(db, line, now=self.clock())

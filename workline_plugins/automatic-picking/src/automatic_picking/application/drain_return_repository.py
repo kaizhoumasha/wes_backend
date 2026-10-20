@@ -18,12 +18,20 @@ class DrainReturnRepository:
     def validate_members(root):
         if (
             type(root.return_ids) is not list
+            or type(root.request_return_ids) is not list
             or type(root.returned_ids) is not list
             or not root.return_ids
-            or any(type(i) is not int or i <= 0 for i in root.return_ids + root.returned_ids)
+            or not root.request_return_ids
+            or (
+                root.started_operation_id is not None
+                and (type(root.started_operation_id) is not str or not root.started_operation_id.strip())
+            )
+            or any(type(i) is not int or i <= 0 for i in root.return_ids + root.returned_ids + root.request_return_ids)
             or len(set(root.return_ids)) != len(root.return_ids)
+            or len(set(root.request_return_ids)) != len(root.request_return_ids)
             or len(set(root.returned_ids)) != len(root.returned_ids)
             or not set(root.returned_ids).issubset(root.return_ids)
+            or [i for i in root.return_ids if i in root.request_return_ids] != root.request_return_ids
         ):
             raise ValueError("drain returned facts differ from original members")
 
@@ -35,7 +43,7 @@ class DrainReturnRepository:
         snapshot = await ReturnBufferDrainResultReader().for_operation(
             db, workline_id=line.id, operation_id=root.operation_id
         )
-        if snapshot is None or snapshot.intent.required_slot_count != len(root.return_ids):
+        if snapshot is None or snapshot.intent.required_slot_count != len(root.request_return_ids):
             raise ValueError("drain return lost original request scope")
         result = snapshot.result
         if type(result) is ReturnBufferDrainReady and root.response_evidence_id != snapshot.evidence_id:
@@ -82,9 +90,11 @@ class DrainReturnRepository:
 
     @staticmethod
     def owner(current, rows):
-        if current is None or type(current[1]) is not ReturnBufferDrainReady:
+        if current is None:
             return None
         root, _ready = current
+        if type(_ready) is not ReturnBufferDrainReady and root.started_operation_id is None:
+            return None
         return root.id if any(row.id in root.return_ids for row in rows) else None
 
     async def record_returned(self, db, allocation, task, members, evidence, reader):

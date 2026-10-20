@@ -289,7 +289,7 @@ SCAN4 匹配放行 Command 的成功结果使候选具备 return_batch 资格；
 当前等待结束后，新需求从当前事实重新准入，不依赖已闭合等待历史；READY reservation 不因新任务到达被取消或覆盖，WMS 按自身权威事实管理容量释放。
 本次不实现停用/插件切换触发的 drain，该触发按现有待决边界保持未实现，不由本设计自动解锁。
 
-**9H 正常补架接续设计（持久路径未实现；沿用 manual-picking drain 基线）。**现有协议及 WMS 需补证范围以[主合同 §9.2.3](../../contracts/wms-outbound-picking-task-integration-requirements.md#9h-replenishment-freeze)为准。撤回两类请求必须新增 `reservation_operation_id` 的方案，不预先扩 SDK、wire、OpenAPI 或人工消费者。WMS 内部容量关联归 WMS；WES 保存自己的当前业务责任和动作因果，不复制容量账。
+**9H 正常补架接续设计（完整持久接续尚未实现；沿用 manual-picking drain 基线）。**现有协议及 WMS 需补证范围以[主合同 §9.2.3](../../contracts/wms-outbound-picking-task-integration-requirements.md#9h-replenishment-freeze)为准。撤回两类请求必须新增 `reservation_operation_id` 的方案，不预先扩 SDK、wire、OpenAPI 或人工消费者。WMS 内部容量关联归 WMS；WES 保存自己的当前业务责任和动作因果，不复制容量账。
 
 人工插件已经实现“一轮供架离场交接后退出 current，再以当前合格 FIFO 创建新 drain 请求”。自动插件的额外缺口是：当前 READY 只有原 `return_ids` 全部回库并且供架交接完才归档，尚不能在供架耗尽、原责任未完时原子转交下一决定。保留自动插件已冻结 execution 范围的约束；它与人工线可在到位后请求当前 FIFO 的做法不同，不据此要求 WMS 接收本地 Return ID 或新增 reservation 声明。
 

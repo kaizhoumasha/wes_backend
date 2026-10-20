@@ -28,6 +28,9 @@ class AutomaticPickingDrain(EnterpriseMixin, DataTableMixin, table=True):
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     operation_id: str = Field(max_length=36, unique=True)
     return_ids: list[int] = Field(sa_type=JSON)
+    request_return_ids: list[int] = Field(sa_type=JSON)
+    # 本地原 READY 已开始的正事实；不发送给 WMS，也不引用可清理旧根。
+    started_operation_id: str | None = Field(default=None, max_length=36)
     returned_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     departure_handoffs: dict[str, str] = Field(default_factory=dict, sa_type=JSON)
     response_evidence_id: int | None = Field(

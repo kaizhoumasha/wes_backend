@@ -60,12 +60,35 @@ class DrainRepository:
 
     async def replace(self, db, *, current, line_id, operation_id, return_ids):
         if current is None:
-            current = AutomaticPickingDrain(workline_id=line_id, operation_id=operation_id, return_ids=return_ids)
+            current = AutomaticPickingDrain(
+                workline_id=line_id, operation_id=operation_id, return_ids=return_ids, request_return_ids=return_ids
+            )
             db.add(current)
         else:
             current.operation_id, current.return_ids = operation_id, return_ids
+            current.request_return_ids = return_ids
             current.response_evidence_id = current.retry_at = None
             current.returned_ids = []
             current.departure_handoffs = {}
         await db.flush()
         return current
+
+    async def continue_current(self, db, *, current, operation_id, remaining, requested, now):
+        # 先释放唯一 current 索引；整次交接仍由调用方的 WorkLine 事务原子提交。
+        current.archived_at = now
+        await db.flush()
+        successor = AutomaticPickingDrain(
+            workline_id=current.workline_id,
+            operation_id=operation_id,
+            started_operation_id=current.started_operation_id,
+            return_ids=list(remaining),
+            request_return_ids=list(requested),
+        )
+        db.add(successor)
+        await db.flush()
+        # 只移交未闭合业务归属，原分配请求、Transport 和因果 Evidence 不变。
+        for allocation in await self.allocations.current(db, current.workline_id):
+            if allocation.drain_id == current.id and allocation.settled_at is None:
+                allocation.drain_id = successor.id
+        await db.flush()
+        return successor

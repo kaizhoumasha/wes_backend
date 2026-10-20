@@ -68,10 +68,16 @@ class FirstDrainReadyReader:
         if root is None:
             return None
         DrainReturnRepository.validate_members(root)
+        if root.started_operation_id is not None and root.started_operation_id != root.operation_id:
+            return None  # 本读口不把 successor 或其 WAIT 当成首次 READY。
         record = await self.reader.for_operation(db, workline_id=line.id, operation_id=root.operation_id)
         if record is None:
             raise ValueError("current drain lost its exact original request")
-        if record.intent.workline_code != line.line_code or record.intent.required_slot_count != len(root.return_ids):
+        if (
+            record.intent.workline_code != line.line_code
+            or record.intent.required_slot_count != len(root.request_return_ids)
+            or root.request_return_ids != root.return_ids
+        ):
             raise ValueError("first READY request differs from current drain scope")
         if type(record.result) is not ReturnBufferDrainReady or root.response_evidence_id is None:
             return None  # 原 batch/FactProcessor 负责未知、未发布、未应用与首次 WAIT；不找历史 READY。
