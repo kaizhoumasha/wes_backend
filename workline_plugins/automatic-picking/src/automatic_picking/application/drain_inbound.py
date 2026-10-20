@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from wes_plugin_sdk import TransportRackPosition, TransportRackReference, TransportRcsTemplateId
 
+from .drain_departure_repository import DrainDepartureRepository
 from .drain_inbound_repository import DRAIN_INBOUND_STEP, DrainInboundRepository
 from .drain_model import AutomaticPickingDrainRack
 
@@ -50,8 +51,13 @@ class DrainInboundFlow:
             count += await self.repository.recover_arrival(db, line, row)
         if not line.is_active:
             return count
+        departing = {
+            stage.rack_id
+            for stage in await DrainDepartureRepository().pending(db, line.id)
+            if stage.departure_transport_task_id is not None
+        }
         for rack in ready.racks:
-            if rack.rack_id in rows:
+            if rack.rack_id in rows or rack.rack_id in departing:
                 continue
             intent = await self.reader.read_in_session(
                 db,

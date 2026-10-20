@@ -1,4 +1,4 @@
-"""首次 READY 与补架 WAIT 的离线事实读口；调用方持有 WorkLine 锁。"""
+"""当前 READY 与补架 WAIT 的离线事实读口；调用方持有 WorkLine 锁。"""
 
 from datetime import timedelta
 
@@ -75,8 +75,6 @@ class DrainReplenishmentReader:
             raise ValueError("current drain lost its exact original request")
         continuation = root.started_operation_id is not None and root.started_operation_id != root.operation_id
         waiting = type(record.result) is ReturnBufferDrainWait
-        if continuation and not waiting:
-            return None  # 连续 READY 供架不在此读口的当前范围。
         if (
             record.intent.workline_code != line.line_code
             or record.intent.required_slot_count != len(root.request_return_ids)

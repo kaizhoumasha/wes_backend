@@ -1116,7 +1116,7 @@ CTU03 接纳释放 WES 本地业务窗口；同架复用仍等待权威成功回
 
 <a id="9h-replenishment-freeze"></a>
 
-**9H 正常补架差额（自动插件完整持久接续尚未实现；WMS 容量接续与核销需补证）。**复用上文及人工线已有 drain 基线：drain 仍只发送 `workline_code + required_slot_count`，普通 `return_batch` 沿 §9.2.2 的当前架面和 FIFO 候选；Method、Path、operation、响应联合、错误码、技术重试及公开幂等身份均不变。撤回此前必须为两类请求新增 `reservation_operation_id` 的前提，不要求人工插件迁移，不以字段扩展作为自动插件离线持久验收的准入。
+**9H 正常补架差额（自动插件 current、WAIT 与连续 READY 已离线实现，未接生产装配；WMS 容量接续与核销需补证）。**复用上文及人工线已有 drain 基线：drain 仍只发送 `workline_code + required_slot_count`，普通 `return_batch` 沿 §9.2.2 的当前架面和 FIFO 候选；Method、Path、operation、响应联合、错误码、技术重试及公开幂等身份均不变。撤回此前必须为两类请求新增 `reservation_operation_id` 的前提，不要求人工插件迁移，不以字段扩展作为自动插件离线持久验收的准入。
 
 本节为业务边界真源，[联合确认 §9](../integration/wms-joint-confirmation-automatic-picking.md#9-9h-正常补架的双方冻结确认清单)只整理证据与验收问题。既有合同继续有效；下表待补证细节不因文档修订或接口成功返回而变成双方已确认实现。若现有 WMS 内部机制足够，继续使用现有 DTO；只有证明确有无法消除的关联歧义时，才另行评审最小合同差额，不预设字段、冲突条件或新错误码。
 

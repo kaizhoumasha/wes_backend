@@ -325,7 +325,7 @@ async def test_restart_cleaned_history_and_old_wait_replay_use_only_current(drai
     assert (await current(p)).retry_at == p.now + timedelta(seconds=1)
 
 
-async def test_wait_renewal_ready_is_saved_without_enabling_continuous_ready_reader(drainable):
+async def test_wait_renewal_ready_waits_for_its_current_supply_handoff(drainable):
     p = drainable
     _, wait, _ = await waiting(p)
     p.now = wait.retry_at
@@ -335,5 +335,5 @@ async def test_wait_renewal_ready_is_saved_without_enabling_continuous_ready_rea
     saved = await current(p)
     assert saved.response_evidence_id == eid and saved.retry_at is None
     before = await fingerprint(p)
-    assert await read(p) is None
+    assert evaluate(await read(p)).action == "WAIT"
     assert await fingerprint(p) == before
