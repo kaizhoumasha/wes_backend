@@ -133,7 +133,7 @@ class AutomaticPickingReturnFlow:
             or snapshot.intent.scanned_at != work.scanned_at
         ):
             raise ValueError("exit requires the current exact NO_WORK result")
-        request = self.request_mapper(work=work, execution_ref_id=self._ref(work))
+        request = await self.request_mapper(db, line=line, work=work, execution_ref_id=self._ref(work))
         if (
             request.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get("SCAN2")
             or request.workline_id != work.workline_id
@@ -271,7 +271,7 @@ class AutomaticPickingReturnFlow:
             if arrival is None:
                 continue
             ref = self.direction_ref(current, role)
-            request = self.direction_mapper(current=current, role=role, execution_ref_id=ref)
+            request = await self.direction_mapper(db, line=line, current=current, role=role, execution_ref_id=ref)
             if (
                 type(request) is not DeviceCommandRequest
                 or request.workline_id != line.id

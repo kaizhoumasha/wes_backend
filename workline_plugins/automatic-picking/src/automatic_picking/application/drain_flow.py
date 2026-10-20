@@ -16,6 +16,8 @@ from .return_allocation_flow import MatchedReturnLocation
 
 @dataclass(frozen=True, slots=True)
 class MatchedDrainBuffer:
+    """回程位置与单次请求上限；不声明物理空位或 WMS 可用容量。"""
+
     location_code: str
     capacity: int
 
@@ -72,8 +74,8 @@ class AutomaticPickingDrainFlow:
             if position.location_code != buffer.location_code:
                 break
             result.append(row.id)
-            if len(result) > buffer.capacity:
-                raise ValueError("confirmed drain members exceed authoritative buffer capacity")
+            if len(result) == buffer.capacity:
+                break
         return result
 
     async def _remember(self, db, current, evidence, intent, outcome):

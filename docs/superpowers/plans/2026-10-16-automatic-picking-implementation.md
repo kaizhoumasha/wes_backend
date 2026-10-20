@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `187950fb`。9H 的 current 接续、WAIT、连续 READY 及指定恢复检查点的真实进程离线验收已提交，当前证据归属和剩余门禁见[9H 收口索引](#task9h-offline-closure)。下文早期切片中的“本轮”“留下一片”“未提交”等保留当时实施快照，不作为当前总进度；整项任务 9、任务 11、WMS 联合及物理验收均未据此宣称完成。本次只校准文档，不提交、不部署、不启用生产装配或真实派发。
+**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `187950fb`。9H 的 current 接续、WAIT、连续 READY 及指定恢复检查点的真实进程离线验收已提交，当前证据归属和剩余门禁见[9H 收口索引](#task9h-offline-closure)。下文早期切片中的“本轮”“留下一片”“未提交”等保留当时实施快照，不作为当前总进度；整项任务 9、任务 11、WMS 联合及物理验收均未据此宣称完成。本轮按用户确认的人工线搬运基线补自动插件实际接线与隔离验收，见“搬运装配实施”；尚未提交，不部署、不启用生产装配或真实派发。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -535,7 +535,7 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 | 门禁 | 尚需依据/动作 | 责任及阻塞范围 |
 | --- | --- | --- |
 | WMS 容量补证 | [C1/C2](../../integration/wms-joint-confirmation-automatic-picking.md#task9h-wms-evidence-gates) 逐项给出实现/合同版本、容量关联及核销账务或等价时序证据，再联合核对正反例 | WMS 提供、双方核对；只阻塞原承诺未履约完的真实补架/核销验收，不推定必须新增字段 |
-| 生产装配 | 当前 `deployment/plugin_composition.py` 的自动插件 batch 未注入 `drain_flow`；测试子进程的显式装配不替代生产接线。后续获授权并具备目标路径输入后，先固定装配、队列/扫描和禁止意外派发边界，再做该差额验收 | 部署装配负责关联既有插件，batch/Confirmation/FactProcessor/原动作 owner 不变；本轮不接线或启用 |
+| 生产装配 | 本轮按人工线搬运基线补齐组合根的显式搬运接线；启用配置和生产实例未变。隔离验证采用同一工厂，本线位置/冻结设备合同提供参数，未接机械臂 Handler 或完成确认；外部派发及现场验收仍待相应授权和证据 | 部署装配负责关联既有插件，batch/Confirmation/FactProcessor/原动作 owner 不变；本轮只补接线代码与隔离验收，不启用配置或生产实例 |
 | 设备与身份输入 | 设备映射、精确扫码关联、PkgID、首批期限分别按目标路径补齐权威依据 | 只限制实际依赖该输入的路径；不阻塞已完成的显式输入离线验收，不猜值 |
 | 后续业务与最终门禁 | 完成确认、已接纳后 FAILED 重决策仍未纳入本轮；任务 11 仍需最终目标分支的迁移、全等待点与完整正常闭环及所选门禁 | 按对应业务 owner 和任务 11 范围单独授权/验收；不由 9H 的指定检查点局部通过替代 |
 
@@ -697,6 +697,19 @@ HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 T
 
 同一文件和执行路径由主 Agent 顺序维护。实施前补齐 SDK 导出、fixture、mock、QA 示例、直接/间接消费者 manifest，
 机械传播一次列全；不以测试失败列表代替调用点枚举。公开 typed 变化触及的宿主、插件及工具消费者都须同批迁移。
+
+
+### 搬运装配实施：复用人工线基线（本轮未提交，隔离验收）
+
+用户已确认货架与料箱搬运完全对照 manual-picking；相同基础端口和参数来源不再整体等待新映射合同。组合根显式调用自动插件自己的 `transport_composition.build_transport_plugin`，将已有回程、普通来源架换面/离场、return_batch 和 drain 的当前 owner 接回同一 batch/SCAN 消费者。首次来源架/目标架进场继续由现有 `PickingTaskPlanActivationService` 拥有，不新建第二个 CTU01 owner；机械臂 source/material/target flow 与 typed 单盘 Handler 仍不安装，不接完成确认或已接纳后 FAILED 重决策。
+
+本线位置取 `position_bindings` 的 FIVE_RACK/INLET/OUTLET；SCAN2/3/4 的 MOVE_FORWARD 取冻结工作线命令 binding、合同版本和技术期限，空 params，重放保留原期限。正常 SCAN3/4 沿人工线 `A＋9位数字-B`，只关联当前 Work/Return 与本次 Evidence，不查最近命令、可清理 Work 或人工业务表。来源下一面读取当前已应用成员与本轮正面事实；drain CTU01 读取精确当前已发布 READY 和本线位置。原 Command、Transport/Binding/窗口、Confirmation、FactProcessor、batch 与 Motion/Allocation 继续原 owner，无新表、状态、timer 或 bin-line-common。
+
+真实组合发现一项本地假设需校准：旧 `MatchedDrainBuffer.capacity` 被当作超过即报错的缓冲总数；本轮按人工线单次请求上限使用该局部输入，取不超过四箱的合格 FIFO 连续前缀，尾部保留，不把它当作物理空位或 WMS 容量账。该行为由插件 FAST 反例和原初始 drain PostgreSQL owner 承接；不改 wire/SDK 或 C1/C2 语义。
+
+主要测试 owner：`tests/test_plugin_composition.py` 验证实际工厂组合和机械臂缺席，`tests/test_return_device_ports.py` / `tests/test_transport_readers.py` 验证新端口边界；`tests/integration/test_transport_composition_postgresql.py` 验证实际组合根从 NO_WORK→正常扫码→FIFO→首次 drain→CTU01 的交接、原进场 owner 复用及普通来源 CTU02→下一面→departure→CTU03。测试显式给定权威输入/结果，禁止 WMS/设备派发；只证明跨 flow 装配差额，不复制共享可靠机制和 9H 补架矩阵。现有回程 mapper 用例只做异步读口签名传播；初始 drain owner 按单次前缀合同校准相应断言。
+
+C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收；机械臂映射、单盘扫码关联、PkgID、首批期限各限制其路径。代码装配可用不等于已启用生产，更不等于任务 11 完成；本轮不改启用配置，不部署或启动生产实例，不真实派发。验证：插件 FAST `252 passed`，实际组合根 PostgreSQL 贯通 `3 passed`，核心安装/拓扑/所有权 `23 passed`。六文件 PostgreSQL 回归首轮为 `127 passed, 3 failed`；三项均是旧 Work-only 用例缺少新增装配所需的本线绑定，未修改生产容错或放宽断言，只补该用例的隔离配置及真实命令服务，随后该完整 Work 文件 `13 passed`。新贯通文件在最终端口快照另跑 `3 passed`；按节点身份对照，130 个不同回归节点均已有对应通过记录，不把首轮失败写成整组一次全绿。组合根既有 selector 选中 11 个核心 HEAVY 文件，最终 `75 passed`，含真实 worker；保留既有 serializer/schema cycle warning，不新增插件 HEAVY 映射。本轮无 schema 改动，复用一个独占临时 PostgreSQL，合规测试库的空库→当前 head 迁移通过。初次核心运行因入口库名不满足测试保护而中止，改用已迁移的 test 库后完整 manifest 重跑通过，未放宽保护；该失败运行不作为证据。上述通过项均无 skip。固定 16 文件快照的独立闭环 review 未发现可复现或有明确可达路径的 P1/P2/P3 问题；已核对唯一恢复 owner、原动作身份、参数来源、测试所有权及 C1/C2 边界。当前同轮历史清理有既有正面证据，不将其扩大为所有跨轮提前清理场景均已证明。末尾仅整理测试排版并校准本文 review 结论，完整 QUALITY 留获授权提交边界。
 
 ## 实施切片
 
@@ -935,4 +948,4 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 | 每个非终态的确定 owner、清理历史后可运行 | 5–11 | 插件与核心各自的持久恢复证据，不以测试绿灯替代物理事实 |
 
 本计划推荐主 Agent 在同一执行现场顺序推进，避免 SDK、converter、共享接线和插件 driver 的交叉修改。
-当前交付仅为 9H 离线证据和剩余门禁的文档校准；既有生产文件、迁移和测试的提交/验收以上文各片为准。本次不新增代码或测试，不提交、不部署、不启用生产装配或真实派发，不接完成确认或已接纳后 FAILED 重决策；后续动作按用户明确授权推进。
+当前交付为人工线搬运基线下的自动插件实际接线与隔离离线贯通；既有 9H 证据收口不重做。新增接线、端口及跨 flow 验收见“搬运装配实施”，不等于任务 11 或生产验收完成。本轮不提交、不部署、不启用生产装配或真实派发，不接机械臂取盘、完成确认或已接纳后 FAILED 重决策；C1/C2 仍待补证。

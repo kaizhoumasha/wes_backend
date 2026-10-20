@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 def application(p, *, repository=None, mapper=None):
     _commands, flow, batch, scan = components(p, repository=repository)
 
-    def request(*, current, role, execution_ref_id):
+    async def request(db, *, line, current, role, execution_ref_id):
         return DeviceCommandRequest(
             device_code="OFFLINE-SCAN3" if role == "SCAN3" else "SCAN4",
             workline_id=current.workline_id,
@@ -368,8 +368,8 @@ async def test_request_identity_mismatch_cannot_create_direction(arrived, bad):
     p = arrived
     original = application(p)[0].direction_mapper
 
-    def wrong(**kwargs):
-        return replace(original(**kwargs), **bad)
+    async def wrong(db, **kwargs):
+        return replace(await original(db, **kwargs), **bad)
 
     with pytest.raises(ValueError, match="direction request differs"):
         await advance(p, batch=application(p, mapper=wrong)[1])

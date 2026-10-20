@@ -48,7 +48,7 @@ class FixtureScan3Reader:
 def components(p, *, repository=None, mapper=None):
     commands = DeviceCommandService(session_factory=p.sessions, clock=lambda: p.now)
 
-    def request(*, work, execution_ref_id):
+    async def request(db, *, line, work, execution_ref_id):
         return DeviceCommandRequest(
             device_code="OFFLINE-SCAN2",
             workline_id=work.workline_id,
@@ -494,7 +494,11 @@ async def test_wrong_exit_mapper_cannot_cross_line_or_become_a_material_command(
     p = pending
     _, flow, _, scan = components(p)
     original = flow.request_mapper
-    flow.request_mapper = lambda **kwargs: replace(original(**kwargs), material_execution_id=999)
+
+    async def wrong(db, **kwargs):
+        return replace(await original(db, **kwargs), material_execution_id=999)
+
+    flow.request_mapper = wrong
     assert await processor(p, scan=scan).process_batch() == 0
     assert await state(p) == ("PLAN_PENDING", None, 0, 0)
 

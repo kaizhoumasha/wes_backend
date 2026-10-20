@@ -508,13 +508,14 @@ async def test_unknown_head_cannot_be_overtaken_by_known_tail(drainable):
     assert not await requests(p)
 
 
-async def test_authoritative_buffer_capacity_is_validated_without_truncating_members(drainable):
+async def test_drain_freezes_only_bounded_fifo_prefix_and_keeps_tail(drainable):
     p = drainable
     await additional_return(p)
     p.buffer = MatchedDrainBuffer("OFFLINE-OUTLET", 1)
-    with pytest.raises(ValueError, match="exceed authoritative buffer capacity"):
-        await advance(p, batch=application(p)[0])
-    assert not await requests(p)
+    await advance(p, batch=application(p)[0])
+    assert len(await requests(p)) == 1
+    root = await current(p)
+    assert root.return_ids == root.request_return_ids == [p.return_id]
 
 
 @pytest.mark.parametrize("crash_at", ["request", "cursor"])
@@ -596,7 +597,7 @@ async def test_due_wait_yields_to_an_already_active_task(drainable, state):
 
 
 @pytest.mark.parametrize("tail", ["unknown_position", "unqualified", "allocated"])
-async def test_blocked_tail_cannot_bypass_capacity_of_confirmed_prefix(drainable, tail):
+async def test_tail_does_not_expand_bounded_drain_prefix(drainable, tail):
     from automatic_picking.application.return_allocation_flow import MatchedReturnFace
     from automatic_picking.application.return_allocation_repository import ReturnAllocationRepository
     from automatic_picking.application.return_model import AutomaticPickingReturn
@@ -641,6 +642,7 @@ async def test_blocked_tail_cannot_bypass_capacity_of_confirmed_prefix(drainable
                 workline_id=line.id,
                 created_at=p.now,
             )
-    with pytest.raises(ValueError, match="exceed authoritative buffer capacity"):
-        await advance(p, batch=application(p)[0])
-    assert not await requests(p) and await current(p) is None
+    await advance(p, batch=application(p)[0])
+    assert len(await requests(p)) == 1
+    root = await current(p)
+    assert root.return_ids == root.request_return_ids == [p.return_id]

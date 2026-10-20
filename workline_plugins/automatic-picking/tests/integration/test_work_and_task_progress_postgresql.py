@@ -177,6 +177,9 @@ async def test_work_and_request_roll_back_together_and_open_bin_is_unique(databa
     ],
 )
 async def test_worker_result_recovered_and_published_with_work_in_one_transaction(database, data, phase):
+    from src.app.device.models import Device
+    from src.app.device.services.device_command_service import DeviceCommandService
+
     database_url, sessions = database
     task, line, feed, scan, now = await seed(sessions)
     async with sessions.begin() as db:
@@ -212,12 +215,32 @@ async def test_worker_result_recovered_and_published_with_work_in_one_transactio
             session_factory=sessions,
             enabled_plugin_keys=("automatic-picking",),
             transport_runtime=N(service=object(), position_projection_service=object(), client=object()),
-            device_command_service=object(),
+            device_command_service=DeviceCommandService(session_factory=sessions),
         )
         plugin = runtime.plugins[0]
         async with sessions.begin() as db:
             line_row = await db.get(WorkLine, line.id)
             line_row.is_active = True
+            # 真实组合现已安装搬运：补齐本线配置，仍不创建来源架或投料义务。
+            line_row.position_bindings = {
+                "FIVE_RACK": {"location_type": "RACK_POSITION", "location_id": "WORK-ONLY-FIVE"},
+                "OUTLET": {"location_type": "HANDOFF_POSITION", "location_id": "WORK-ONLY-OUTLET"},
+            }
+            device = Device(device_code="TEST-SCAN2", device_name="Work offline", work_line_id=line.id)
+            db.add(device)
+            await db.flush()
+            line_row.config = {"device_bindings": {r.role_key: r.role_key for r in DEFINITION.device_roles}}
+            line_row.config = {"device_bindings": {**line_row.config["device_bindings"], "SCAN2": "TEST-SCAN2"}}
+            line_row.device_contracts = {
+                "TEST-SCAN2": {
+                    "device_id": device.id,
+                    "endpoint_base_url": "http://127.0.0.1:1",
+                    "contract_key": "TEST-SCAN",
+                    "contract_version": "1",
+                    "command_timeout_ms": 10000,
+                    "status_max_age_ms": 10000,
+                }
+            }
             # 本测试只有 Work 恢复，不创建或伪造来源义务。
             feed_row = await db.get(AutomaticPickingFeed, feed.id)
             feed_row.archived_at = now
