@@ -592,6 +592,14 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **宿主入口片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库下，最终三个入口验收全部通过，无失败、错误或 skip；测试拓扑/所有权 14 项通过，Ruff/格式、文档结构与 diff 检查通过，HEAVY selector 为 NONE。独立 reviewer 对固定两文件 SHA256 完成 scoped full review，确认真实宿主发现/锁调用、业务阳性断言、唯一 current/动作身份及清理后的原 owner 恢复，无 P1/P2/P3；首尾 HEAD 为 `963d90d0`，index 为空，文件指纹一致。未发现需要生产修正的接线缺口，仅新增插件验收和本计划记录，未重跑已闭合业务矩阵或完整 QUALITY；后者留授权提交边界。未验证真实 worker/Beat，未改生产装配、未提交、未部署或启用真实派发。review 后仅追加本段证据，可执行测试指纹不变。
 
+**9H 真实 worker/Beat 的到期 WAIT 离线验收。**基于 `4dd2fa5c`，插件新增 `integration/drain_wait_worker_runtime.py` 与 `integration/test_drain_wait_worker_recovery.py`，只补子进程和周期唤醒边界。复用既有 broker harness 的真实 worker、readiness、隔离前缀及进程/连接清理，两次启动均显式固定 `pool="prefork"`，不受外部 pool 环境变量覆盖；测试启动时显式追加插件测试模块，不改共享 harness 或生产组合根。worker 在自己的 session factory 上装配既有插件 batch、drain 与宿主扫描服务，源码路径绑定当前 checkout 并留证，避免误用已安装的旧插件副本。Beat 仅保留已有计划扫描任务，沿用当前 10 秒周期、参数、过期配置与 `celery` 路由；不使用 harness 的手工发送入口，不启用其它周期派发。
+
+预置的是已开始补架后的确定 WAIT 检查点及回程资格的已完成历史依据，不重演原供架或创建物理动作。真实 FIFO/wire/资格读口先校验该快照；工作线启用但没有 EXECUTING。暂停整个 worker 进程组后，由 Beat 发布任务且数据库不得推进；恢复后扫描创建唯一续问并原子交接 current，固定到期点不刷新。随后停止并重建 worker/Beat，以新的隔离 broker 前缀和原数据库再次扫描，当前请求与成员范围不变。发布者 PID 所属进程组必须对应两次真实 Beat（区分 uv 启动器与 Beat 子进程），消费 PID 对应两个新建 runtime；任务身份、队列、实际加载源码及前后数据库事实共同形成证据，不以子进程存活或返回成功单独判定通过。
+
+本片只保存新的 PENDING Confirmation，不运行 WMS、Transport 或 Command 派发；WMS HTTP 接收数必须为零，Transport 为空，预置已完成命令的身份、摘要、状态和尝试次数保持不变。Beat 只提供周期唤醒，宿主负责工作线发现/锁，current/固定期限和业务接续仍归 batch，既有 Confirmation/FactProcessor/原动作 owner 不变。C1/C2 仍待 WMS 容量账补证，设备映射、扫码关联、PkgID 等不猜；不接完成确认或已接纳后 FAILED 重决策，不新增生产模型、状态、timer 或 bin-line-common，不启用生产装配、真实派发、提交或部署。不重跑 READY/回库/离场业务矩阵，也不将本片写成完整 worker/Beat 或正常闭环验收。
+
+本片验证与闭环 review：在外部刻意设置 `TRANSPORT_TEST_POOL=solo` 的条件下，真实 PostgreSQL/Redis、prefork worker 与 Beat 的单案例验收 **1 passed，0 skipped**（27.69 秒）；两次发布、消费和 runtime 均精确留证，扫描结果依次为 `1/0`。测试所有权/拓扑检查 **14 passed**，两份新增文件 Ruff 检查和格式检查通过，HEAVY selector 为 `NONE`，文档与 diff 检查通过。首轮 review 发现的 pool 环境覆盖缺口已通过两处显式参数修复；同一 reviewer 完成闭环与当前范围 fresh review，无剩余 finding。生产代码、共享 harness、schema 和生产装配均未改；本片只覆盖暂停恢复与停止后重建，不宣称事务提交/ACK 临界点崩溃矩阵、完整任务 11 或生产业务验收完成。证据对应基线 `4dd2fa5c` 与本片测试工作树；未提交、未部署。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
