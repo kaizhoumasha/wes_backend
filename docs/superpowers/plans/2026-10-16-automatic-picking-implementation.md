@@ -634,6 +634,16 @@ HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 T
 
 独立只读 scoped full review 已完成，无 P1/P2/P3 finding：核对真实 HTTP 入口、三个正式队列、原 publisher、分阶段发布/收口、额外进程清理和直接测试 owner；首尾 HEAD 均为 `18f7ff5d`、index 为空、四文件 SHA256 一致。review 后只追加本段结论，可执行指纹不变。未提交、未部署、不启用生产装配或真实派发，未把本片扩展为回调通用冲突矩阵、领取后崩溃/租约回收或完整任务 11 验收。
 
+**9H FactProcessor 领取提交后真实失效与租约回收离线验收。**基于 `df97c730`，复用原 CTU03 outcome 已发布、业务 Evidence 未发布的检查点，保留 current 已退出、两轮根及原请求已清理、无 EXECUTING。新增一个 `integration/test_drain_fact_claim_worker_recovery.py` 用例，测试 runtime 仅在显式 `claim_stop` 输入下包装当前 FactProcessor 的首次 `_prepare_fact` 入口：真实领取事务已提交，独立会话确认原 token/到期点，再以一次性测试标记停住子进程。父进程只在检查点准备阶段调用既有夹具；进入验收后不直接领取、应用、发布或推进业务，不改数据库租约列、不清空 token、不缩短既有租约。
+
+首阶段由真实 Beat/`device-command` 领取，独立数据库快照确认原 Evidence claim 已提交、业务发布和 Motion 尚未发生；随后以 SIGKILL 终止整个消费者进程组，保留已提交 claim。第二阶段重建隔离 broker 的替换消费者及 Beat，到期前必须实际完成一次空扫描且全业务快照、原 token/到期点不变；越过原持久到期点后，真实扫描重领同一 Evidence，记录新的 token/PID，再经原插件应用/发布，Motion 仍未归档。最后才启动 `celery` batch owner 收口。第三阶段重建两个消费者及 Beat，实际消费后闭合快照不变。验收保留唯一一次预期中断任务，其余已结束任务须成功；原身份/正文/记录集合不增长，设备及 WMS 请求为空。
+
+租约、领取与重领仍归 FactProcessor/InboundEvidenceRepository，插件解释原结果，batch/原 Motion owner 负责收口，Beat 只唤醒。测试不复制共享 claim/fencing/退避机制，不新增通用故障框架、timer、授权模型或业务状态；停点只在测试子进程显式装配。复用已有 HTTP/Transport 前半段证据，不重跑回调、FIFO、多架补架、WAIT 或供应商业务矩阵；共享 runtime 的原五个进程级消费者作为直接回归。不改生产代码、共享 harness、DTO/schema 或生产装配，不发 WMS 请求、不创建新动作，不接完成确认、已接纳后 FAILED 重决策或 bin-line-common。C1/C2 继续待 WMS 补证；本片不等同全部等待点崩溃矩阵、完整任务 11 或现场物理验收完成。
+
+本片最终聚焦验证：新增真实失效/租约回收用例 `1 passed`（64.64 秒），共享 runtime 的 WAIT、successor READY、原离场、FactProcessor 及回调链五个直接消费者 `5 passed`（167.69 秒），拓扑/所有权 `14 passed`（0.84 秒），均无 skip。留证包含五个 runtime、两个 claim 观察点、唯一一次预期中断任务；Fact 扫描结果 `[0, 0, 0, 2, 0]`，batch 为 `[2, 0]`，测试不要求固定 tick 数。替换 worker 首次实际空扫描发生在原到期点前且快照不变，同 Evidence 的新 token 在原到期点之后约 2.21 秒出现；原失败 worker 进程组已真实 SIGKILL，租约列和生产常量均未改写。两个 Python 文件 Ruff/格式、文档结构及 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，完整 QUALITY 留授权提交边界，C1/C2 与片外边界保持原状态。
+
+独立只读 scoped full review 已完成，无 P1/P2/P3 finding：确认真实提交后停点及 SIGKILL、到期前实际空扫描、原 Evidence 新 token 重领、发布/收口分工、直接测试 owner 和进程/连接清理；首尾 HEAD 为 `df97c730`、index 为空、三文件 SHA256 与冻结 manifest 一致。review 后仅追加本段结论，可执行指纹不变。未提交、未部署、不启用生产装配或真实派发；没有把共享租约机制矩阵、完成确认、已接纳后 FAILED 重决策、完整任务 11 或 WMS/现场验收纳入已完成范围。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

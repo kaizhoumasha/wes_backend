@@ -169,6 +169,40 @@ def build_runtime(*, session_factory, **kwargs):
             wms_confirmation_follow_up_planner=None,
             task_queue_gateway=task_queue_gateway,
         )
+        if stop := FIXTURE.get("claim_stop"):
+            import asyncio
+            import signal
+
+            from src.app.execution.models import InboundEvidence
+            from src.utils.timezone import timezone
+
+            original_prepare = execution.fact_processor._prepare_fact
+
+            async def prepare_after_claim(evidence_id, token):
+                if evidence_id == stop["evidence_id"]:
+                    # 此入口位于真实领取事务提交后；独立会话确认，再停住本测试子进程。
+                    async with session_factory() as db:
+                        row = await db.get(InboundEvidence, evidence_id)
+                        assert row.decision_claim_token == token and row.published_at is None
+                        expiry = row.decision_claim_expires_at
+                    try:
+                        await asyncio.to_thread(Path(stop["marker"]).touch, exist_ok=False)
+                        stopping = True
+                    except FileExistsError:
+                        stopping = False
+                    record(
+                        "claim_ready",
+                        evidence_id=evidence_id,
+                        token=token,
+                        expiry=expiry.isoformat(),
+                        observed_at=timezone.now_for_db().isoformat(),
+                        stopping=stopping,
+                    )
+                    if stopping:
+                        os.kill(os.getpid(), signal.SIGSTOP)
+                return await original_prepare(evidence_id, token)
+
+            execution.fact_processor._prepare_fact = prepare_after_claim
     outcome_publisher = None
     if FIXTURE.get("callback_processing"):
         from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher
