@@ -30,7 +30,7 @@ class DrainReplenishmentFact:
     returned_ids: tuple[int, ...]  # 仅匹配原 execution 的权威成功及终位正事实。
     inflight_return_ids: tuple[int, ...]  # 已明确交接且已离开待派发 FIFO，不能由缺失记录推断。
     fifo: tuple[DrainBufferFact, ...]
-    buffer_location_code: str
+    buffer_location_code: str | None  # 只有候选请求求值需要现场缓冲位。
     outcome: (
         ReturnBufferDrainReady
         | ReturnBufferDrainWait
@@ -64,6 +64,8 @@ def _ids(values: tuple[int, ...]) -> set[int]:
 
 
 def _request_prefix(fact: DrainReplenishmentFact, remaining: tuple[int, ...]) -> tuple[int, ...]:
+    if fact.buffer_location_code is None:
+        raise ValueError("FIFO request requires an authoritative buffer location")
     if type(fact.fifo) is not tuple or any(type(row) is not DrainBufferFact for row in fact.fifo):
         raise ValueError("FIFO requires immutable explicit facts")
     for row in fact.fifo:
@@ -103,8 +105,10 @@ def evaluate_replenishment(fact: DrainReplenishmentFact) -> DrainReplenishmentEv
         or not 0 < fact.workline_id < 2**63
         or type(fact.operation_id) is not str
         or not fact.operation_id.strip()
-        or type(fact.buffer_location_code) is not str
-        or not fact.buffer_location_code.strip()
+        or (
+            fact.buffer_location_code is not None
+            and (type(fact.buffer_location_code) is not str or not fact.buffer_location_code.strip())
+        )
         or type(fact.published) is not bool
         or type(fact.now) is not int
         or fact.now < 0

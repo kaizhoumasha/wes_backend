@@ -144,7 +144,7 @@ class AutomaticPickingDrainFlow:
                 )
                 return count + progressed + (0 if progressed else await self._continue(db, line, current))
             if current.started_operation_id is not None:
-                return count  # 单次接续片保留补架 WAIT；持久到期续问由后续切片承接。
+                return count + await self._continue(db, line, current)
             if self.clock() < current.retry_at:
                 return count
         if not line.is_active:
@@ -152,13 +152,17 @@ class AutomaticPickingDrainFlow:
         return count + await self._admit(db, line, current)
 
     async def _continue(self, db, line, current):
-        if self.replenishment_reader is None or not line.is_active:
+        if self.replenishment_reader is None:
             return 0
         fact = await self.replenishment_reader.read_in_session(db, line=line, now=self.clock())
         if fact is None:
             return 0
         result = evaluate_replenishment(fact)
-        if result.action != "REQUEST":
+        if result.action == "EXIT_WAIT":
+            current.archived_at = self.clock()
+            await db.flush()
+            return 1
+        if result.action != "REQUEST" or not line.is_active:
             return 0
         operation_id, now = self.uuid_factory(), self.clock()
         intent = wms_operations.workline_return_buffer_drain_rack_decide(

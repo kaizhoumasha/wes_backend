@@ -1,6 +1,8 @@
-"""首次 READY 的离线事实读口；调用方持有 WorkLine 锁，不写业务进度。"""
+"""首次 READY 与补架 WAIT 的离线事实读口；调用方持有 WorkLine 锁。"""
 
-from wes_plugin_sdk import BinReturnBatchReady, ReturnBufferDrainReady
+from datetime import timedelta
+
+from wes_plugin_sdk import BinReturnBatchReady, ReturnBufferDrainReady, ReturnBufferDrainWait
 
 from automatic_picking.drain_replenishment import DrainBufferFact, DrainReplenishmentFact
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainResultReader
@@ -12,7 +14,7 @@ from .drain_return_repository import DrainReturnRepository
 from .return_allocation_flow import MatchedReturnLocation
 
 
-class FirstDrainReadyReader:
+class DrainReplenishmentReader:
     def __init__(self, *, buffer_reader, location_reader):
         self.buffer_reader, self.location_reader = buffer_reader, location_reader
         self.repository = DrainRepository()
@@ -68,29 +70,44 @@ class FirstDrainReadyReader:
         if root is None:
             return None
         DrainReturnRepository.validate_members(root)
-        if root.started_operation_id is not None and root.started_operation_id != root.operation_id:
-            return None  # 本读口不把 successor 或其 WAIT 当成首次 READY。
         record = await self.reader.for_operation(db, workline_id=line.id, operation_id=root.operation_id)
         if record is None:
             raise ValueError("current drain lost its exact original request")
+        continuation = root.started_operation_id is not None and root.started_operation_id != root.operation_id
+        waiting = type(record.result) is ReturnBufferDrainWait
+        if continuation and not waiting:
+            return None  # 连续 READY 供架不在此读口的当前范围。
         if (
             record.intent.workline_code != line.line_code
             or record.intent.required_slot_count != len(root.request_return_ids)
-            or root.request_return_ids != root.return_ids
+            or (not continuation and root.request_return_ids != root.return_ids)
         ):
-            raise ValueError("first READY request differs from current drain scope")
-        if type(record.result) is not ReturnBufferDrainReady or root.response_evidence_id is None:
+            raise ValueError("replenishment request differs from current drain scope")
+        if (
+            (waiting and not continuation)
+            or type(record.result) not in (ReturnBufferDrainReady, ReturnBufferDrainWait)
+            or root.response_evidence_id is None
+        ):
             return None  # 原 batch/FactProcessor 负责未知、未发布、未应用与首次 WAIT；不找历史 READY。
-        if root.response_evidence_id != record.evidence_id or root.retry_at is not None:
-            raise ValueError("first READY current Evidence identity drift")
-        self.repository.validate_departure_handoffs(root, record.result)
-        buffer = await self.buffer_reader.read_in_session(db, workline_id=line.id)
-        if buffer is None:
+        evidence = await self.repository.evidence(db, record.evidence_id)
+        retry_at = evidence.received_at + timedelta(milliseconds=record.result.retry_after_ms) if waiting else None
+        if root.response_evidence_id != record.evidence_id or root.retry_at != retry_at:
+            raise ValueError("current replenishment Evidence or WAIT deadline drift")
+        if waiting:
+            if root.departure_handoffs:
+                raise ValueError("WAIT cannot carry a supply departure handoff")
+        else:
+            self.repository.validate_departure_handoffs(root, record.result)
+        satisfied_wait = waiting and set(root.returned_ids) == set(root.return_ids)
+        buffer = None if satisfied_wait else await self.buffer_reader.read_in_session(db, workline_id=line.id)
+        if not satisfied_wait and buffer is None:
             return None
-        if type(buffer) is not MatchedDrainBuffer:
-            raise ValueError("first READY requires exact buffer location/capacity")
+        if buffer is not None and type(buffer) is not MatchedDrainBuffer:
+            raise ValueError("replenishment requires exact buffer location/capacity")
         fifo, inflight = (), ()
-        if set(root.departure_handoffs) == {rack.rack_id for rack in record.result.racks}:
+        due = waiting and now >= retry_at
+        exhausted = not waiting and set(root.departure_handoffs) == {rack.rack_id for rack in record.result.racks}
+        if (due and set(root.returned_ids) != set(root.return_ids)) or exhausted:
             rows = await self.repository.returns.list_fifo(db, line.id)
             if rows is None:
                 return None
@@ -113,19 +130,24 @@ class FirstDrainReadyReader:
                     )
                 )
             fifo = tuple(facts)
+        retry_ms = int(timezone.to_utc(retry_at).timestamp() * 1000) if retry_at is not None else None
+        now_ms = int(timezone.to_utc(now).timestamp() * 1000)
+        if waiting and now < retry_at:
+            # 毫秒快照不能把同一毫秒内仍未到期的时刻提前判为到期。
+            now_ms = min(now_ms, retry_ms - 1)
         return DrainReplenishmentFact(
             workline_id=line.id,
             operation_id=root.operation_id,
-            reservation_operation_id=root.operation_id,
+            reservation_operation_id=root.started_operation_id or root.operation_id,
             return_ids=tuple(root.return_ids),
             returned_ids=tuple(root.returned_ids),
             inflight_return_ids=inflight,
             fifo=fifo,
-            buffer_location_code=buffer.location_code,
+            buffer_location_code=buffer.location_code if buffer is not None else None,
             outcome=record.result,
             outcome_operation_id=record.intent.operation_id,
             published=True,
             departure_handoffs=tuple(root.departure_handoffs.items()),
-            retry_at=None,
-            now=int(timezone.to_utc(now).timestamp() * 1000),
+            retry_at=retry_ms,
+            now=now_ms,
         )

@@ -494,7 +494,7 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **后续边界：**不接补架、完成确认或已接纳后 FAILED 重决策，不增加通用模型、业务状态、timer、worker 或生产装配，不做 bin-line-common 抽取。设备映射、精确扫码关联、PkgID、首批期限及失败权威架面等未决项保持原阻塞范围。当前仅离线实现与验证，不提交、不部署、不启用真实派发或取盘；完整 QUALITY 留获授权 Commit hook。
 
-#### 实施切片 9H：正常补架的自动插件持久接续（单次 current 离线接续已实现，完整接续未实施）
+#### 实施切片 9H：正常补架的自动插件持久接续（单次 current 与补架 WAIT 已实现，完整接续未实施）
 
 **合同状态与范围：**沿用[主合同 §9.2.3](../../contracts/wms-outbound-picking-task-integration-requirements.md#9h-replenishment-freeze)、人工线 §5.6 的 drain 基线及自动插件设计 §5.4。撤回两类请求必须新增 `reservation_operation_id`、先改 wire/SDK/converter/Adapter/OpenAPI 和人工消费者再实施的前置链；当前 drain 仍只传工作线和数量，return_batch 使用现有架面及候选。WMS 内部容量关联不因无新增字段而被判定缺失。本片只补自动插件已有 READY 在供架耗尽、原成员尚未回库时缺少的持久接续；容量接续及核销细节需补证，不把既有基线整体重新冻结。
 
@@ -505,7 +505,8 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 | 切片顺序 | 验收及依赖 | 恢复 owner |
 | --- | --- | --- |
 | 单次 current 原子交接（离线已实现） | 并发只有一个 successor；创建/冻结/旧退出/新 current 任一点失败全部回滚；重启不重复请求；回库在切换前后、两入口防重、旧结果及历史清理。复用已有首次 READY 求值，不再追加同义组合 | 自动 batch 负责准入与 current；Confirmation 负责交付；FactProcessor 负责事实应用发布；原 Allocation/Transport 保持身份 |
-| 持久补架 WAIT 与连续接续 | 前一片 current 可独立恢复后，保存固定到期点并续问；不套用初始 prepare 优先丢原业务，无可请求前缀不发零数量；未知先恢复原请求；责任清零先闭合已创建义务。覆盖连续两轮、旧响应、无 EXECUTING、普通入口消费及历史清理 | 同一 batch/Confirmation/FactProcessor，不新增 timer、worker 或业务状态 |
+| 持久补架 WAIT 与责任归零出口（离线已验证） | 保留首次接收计算的固定到期点；到期后按当前责任和正数 FIFO 前缀原子续问。不套用初始 prepare 优先，未知先恢复原请求；已发布 WAIT 的责任清零后退出，不据此核销 WMS 容量。覆盖多次 WAIT、旧响应、无 EXECUTING、普通入口消费及历史清理 | 同一 batch/Confirmation/FactProcessor，原 Motion/Allocation/Transport 继续原义务，不新增 timer、worker 或业务状态 |
+| 连续 READY 接续（未实施） | 续行 READY 按本轮请求、供架集合及原动作交接正事实读取耗尽依据；不复用首次 READY 的全范围数量前提。接回供架执行并验收至少两轮耗尽、交接和清理后恢复 | 同一 batch 与既有供架执行 owner |
 | READY 接回供架执行 | 新决定精确接回 9B–9G；同架等待原动作成功及已知终位，独立架不等无关历史；原未终态 CTU03 不因 current 切换丢 owner | 现有 DrainRack、Motion/Allocation、Transport 及 batch |
 | 真实容量接续与核销验收 | 只对原 READY 承诺未履约完就耗尽的分支，取得 WMS 内部容量关联、WAIT/READY/重放和权威回库核销证据；若现有实现足够则不改 wire，只有真实歧义才另评最小合同差额 | WMS 维护容量账与关闭；WES 提供冻结请求、分配和原动作时序证据 |
 
@@ -558,6 +559,18 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 **本片验证：**独占 PostgreSQL 17.11、每例干净迁移库；最终 drain/回架分配/运动前求值 12 文件 PostgreSQL 组合回归 361 项全部通过，包含新增事务验收 18 项，无失败、错误或 skip；6 条警告来自既有 schema 比对的 Evidence/PickingTask 外键循环。插件 FAST 237 项、迁移 selector 指定的核心 HEAVY 8 项、插件安装 19 项、测试拓扑与所有权 14 项均通过，无 skip；Ruff、格式、迁移单 head 与 diff 检查通过。额外 SDK 边界检查有 1 项基线失败：旧分类期望未包括 HEAD 已有的 `PickingMaterialIntent` / `MaterialMovementReportIntent`，SDK 与该断言相对 HEAD 均无变化，独立复现后不扩面修正或放宽断言；不据此宣称完整 QUALITY 通过，完整门禁留到授权提交边界。
 
 **提交边界补齐：**首个 Commit hook 在脚本测试阶段发现 `test_select_heavy_tests.py` 的精确迁移清单漏列本片迁移；仅追加 `c094b575576f` 的现有路径，未改 selector、mapping 或断言语义。定向复现/验证及该单行 diff 审阅闭合后，重新运行完整 hook；原插件、迁移与 PostgreSQL 验收的文件指纹未变。
+
+**9H 补架 WAIT 实施片（离线已验证，review 已闭环）。**基于 `a82d4cca`，将原首次 READY 读口直接替换为插件本地 `DrainReplenishmentReader`，读取范围仅为首次 READY 或已持久开始依据的补架 WAIT；无兼容入口，不接受 successor READY 作为连续耗尽依据。复用现有 DTO、纯规则、`continue_current()` 和 WorkLine 锁，在固定到期点后按当前完整责任及正数 FIFO 前缀创建新 Confirmation 并原子交接；新 WAIT 从自身首次接收固定新的到期点，原响应重放和重启不刷新期限。数据库微秒到期点保持不变，投影到毫秒纯规则前避免同毫秒提前到期。
+
+已匹配且应用发布的补架 WAIT 在原 execution 全部权威回库后可退出 current，不等待到期、不发零数量；不从箱码、ACK、ACCEPTED 或缺失记录推定回库。普通入口仍可依法承接未分配成员，并把原分配成功交给当前责任 owner。已创建的当前 Confirmation 和事实发布先闭合，原 CTU03 等直接动作在 current 退出、旧根清理后继续由既有 Motion/Transport owner 恢复。未知/未发布请求继续原义务；到期但无合格连续前缀时保留责任。停用禁止新续问，已完成责任退出及原义务恢复不因停用丢失。
+
+新增持久验收唯一归插件 `integration/test_drain_wait_postgresql.py`，复用既有建材与竞争锁验证；原单次交接用例只把 WAIT 断言限定为到期前，首次读取用例只同步读口名称。纯规则的现有快照允许无需候选的阶段缺少缓冲位，实际候选请求仍严格要求权威位置；该边界的两项 FAST 回归归既有 `test_drain_replenishment.py`。未改持久模型、迁移、SDK、宿主、worker 或部署装配；连续 READY 供架、完成确认和已接纳后 FAILED 重决策仍不接，WMS C1/C2 仍仅阻塞原容量未履约完时的真实接续/核销验收。
+
+**首轮 review 修正：**独立 reviewer 发现一项 P2：责任已清零仍无条件读取 buffer，输入不可用会保留本应退出的 WAIT。先以 active/inactive 两项 PostgreSQL 反例和一项纯规则反例取得真实 RED，再让确定出口先于现场候选读取，不伪造位置；原请求、Evidence、期限及全量权威回库门禁保持不变。首轮未完成的组合回归在 29 项通过时主动中止，不作为最终验收；修复后的最终快照重新验证，并由同一 reviewer 一轮完成旧意见闭环和 fresh full review。
+
+**WAIT 片闭环 review：**同一独立 reviewer 对固定 9 文件 SHA256 完成 P2 闭环和修复后完整复审，未发现剩余 P1/P2/P3。确定清零出口不再读取 buffer/FIFO/位置，候选请求仍拒绝缺失位置；身份、期限、原子交接、原动作 owner、普通入口和历史清理边界均已核对。审查前后文件指纹一致、HEAD 为 `a82d4cca`、index 为空；其后仅补本文验证证据，不改变已评审可执行快照。reviewer 未重复运行测试或有状态门禁，不把未完成的最终组合或现场验收称为通过。
+
+**WAIT 片最终验证：**独占 PostgreSQL 17.11、每例干净迁移库下，WAIT/单次接续/首次 READY 读取/初始 drain 及普通入口、source owner 隔离的组合验收 131 项全部通过，含新增 WAIT 24 项，无失败、错误或 skip。插件 FAST 239 项通过（现有纯规则 owner 含 65 项），核心测试拓扑/所有权/插件安装 33 项通过；7 个变更 Python 文件的 Ruff/格式、文档结构、旧类名残留和 diff 检查通过。HEAVY selector 为 NONE，本片无 schema 或宿主变更；完整 QUALITY 留到授权提交边界。最终仅更新本文证据，HEAD/index 与其他工作区现场不变，未提交、未部署、不启用真实派发；不以离线结果代替 WMS C1/C2 或连续 READY 供架验收。
 
 ## 变更面与文件归属
 

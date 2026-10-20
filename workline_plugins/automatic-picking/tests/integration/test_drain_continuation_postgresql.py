@@ -308,9 +308,9 @@ async def test_successor_result_uses_request_scope_not_inflight_responsibility(d
     assert await processor(p, scan=p.app[1]).process_batch() == 1
     saved = await current(p)
     assert saved.response_evidence_id == eid and saved.started_operation_id != saved.operation_id
-    # 本片不执行补架 WAIT 到期续问；不能掉入初始 prepare 优先并丢弃原责任。
+    # 到期前不得进入初始 prepare；到期续问由 WAIT 事务测试拥有。
     await queued(p)
-    p.now += timedelta(seconds=2)
+    p.now = saved.retry_at - timedelta(microseconds=1) if outcome == "WAIT" else p.now + timedelta(seconds=2)
     p.app[2].inbound = None
     await advance(p, batch=p.app[0])
     assert (await current(p)).id == new.id and len(await requests(p)) == 2

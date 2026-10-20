@@ -134,6 +134,16 @@ def test_published_wait_can_exit_when_original_responsibility_is_satisfied_even_
     assert result.remaining_return_ids == result.request_return_ids == ()
 
 
+def test_satisfied_wait_exit_does_not_require_live_buffer_or_fifo():
+    result = evaluate(waiting(returned_ids=(11, 12, 13), buffer_location_code=None, fifo=(), now=1))
+    assert result.action == "EXIT_WAIT" and result.request_return_ids == ()
+
+
+def test_request_evaluation_still_requires_an_authoritative_buffer():
+    with pytest.raises(ValueError):
+        evaluate(waiting(buffer_location_code=None))
+
+
 def test_ready_with_zero_remaining_does_not_request_or_close_wait():
     result = evaluate(fact(returned_ids=(11, 12, 13), fifo=()))
     assert result.action == "WAIT"

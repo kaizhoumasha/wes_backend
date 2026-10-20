@@ -31,10 +31,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 def reader(p):
-    from automatic_picking.application.drain_replenishment_reader import FirstDrainReadyReader
+    from automatic_picking.application.drain_replenishment_reader import DrainReplenishmentReader
     from test_drain_progress_postgresql import BufferReader
 
-    return FirstDrainReadyReader(buffer_reader=BufferReader(p), location_reader=LocationReader(p))
+    return DrainReplenishmentReader(buffer_reader=BufferReader(p), location_reader=LocationReader(p))
 
 
 async def read(p, *, instance=None):
