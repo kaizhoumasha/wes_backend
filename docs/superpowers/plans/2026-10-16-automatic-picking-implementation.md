@@ -608,6 +608,14 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **successor READY 进程片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库和隔离 Redis 下，最终 READY＋原 WAIT 两文件聚焦验收 **2 passed，0 skipped**（42.71 秒）；外部设置 `TRANSPORT_TEST_POOL=solo`，实际启动仍由显式 prefork 保证。两例各留存两次 Beat 发布、消费和 runtime，结果均为 `1/0`，队列均为 `celery`；WMS 接收为空，新增 CTU01 保持 PENDING/零发送且无到位，既有记录与 current 完整快照保持不变。拓扑/测试所有权 **14 passed**，两份变更 Python 的 Ruff/格式与 diff 检查通过，HEAVY selector 为 NONE。初轮仅修正新测试把 SDK 类型名误当 Transport 正文字面量的断言，依据既有合同采用 `RACK/location_code`；未发现生产接线缺口。独立 reviewer 对固定三文件 SHA256 完成一次 scoped full review，无 P1/P2/P3，首尾 HEAD 为 `38b94db5`、index 为空；之后仅补本文证据，可执行指纹不变。未重跑已有领域矩阵或完整 QUALITY，后者留授权提交边界；未提交、未部署、不启用生产装配或真实派发。原离场义务的真实进程恢复及 C1/C2 外部补证继续保留。
 
+**9H current 退出及根清理后原离场义务的真实 worker/Beat 离线验收。**基于 `604d79cf`，沿用测试子进程组合根及既有启停/隔离/源码留证机制，新增 `integration/test_drain_departure_worker_recovery.py` 一个检查点，复用宿主入口的 successor、正常收口及根清理夹具。两个原离场 Motion/CTU03 在验收开始前作为历史检查点准备；current 已退出、两轮根及原 drain 请求已清理、没有 EXECUTING。未闭合 Motion 引用的来源 Evidence、departure READY/请求、Binding、Transport/Member 和结果证据仍属活动依据，不能随根删除。
+
+测试子进程补接既有 `DrainRotationFlow` 和 `DrainDepartureFlow`，沿真实 batch 的运动前恢复入口触达原义务；当前 drain 读取使用现有 Repository，不装配新分配、离场决定或重试端口。显式未知 buffer 返回 None，不推断 EMPTY，不依赖新位置/扫码/PkgID。三个独立 prefork worker/Beat 阶段只由既有 `celery` 计划扫描任务推进：无匹配成功事实时完整业务快照不变；夹具按原动作接收、应用并发布显式权威成功结果后，重建进程绑定原 Evidence 并归档原 Motion；再次重建后保持收口快照、不重开 current。夹具结果应用不调用 batch 收口，真实进程扫描才负责归档；这不代表 FactProcessor 或回调链的真实进程验收。
+
+每阶段留存 Beat 进程组、消费 PID、任务名/队列、扫描结果及实际 departure 源码路径；核对原 Motion 的来源/到位/决定/执行/结果引用不变，原记录集合不增长，非 Motion 数据不因扫描变化。给定成功结果只更新原 Transport/Member/Evidence，不能换身份或正文；WMS HTTP 接收为空，不启用任何外部派发，不创建新动作。恢复 owner 仍为 Beat 唤醒、宿主发现/锁、batch→drain→原 departure/Motion 收口，Transport/FactProcessor 与 WMS 容量账各守原职责。C1/C2 继续待补证；不接完成确认、已接纳后 FAILED 重决策、bin-line-common 或生产装配，不将本片扩为正常业务闭环或崩溃矩阵。
+
+**原离场进程片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库和隔离 Redis 下，新增三阶段真实 worker/Beat 检查点 **1 passed，0 skipped**（35.51 秒），共享 runtime 的 WAIT/READY 两个直接消费者 **2 passed，0 skipped**（43.24 秒）；不重跑领域矩阵。外部设置 `TRANSPORT_TEST_POOL=solo`，三个 worker 仍显式 prefork。新增案例各阶段 runtime/Beat 发布/消费/结束记录均为三次，扫描结果 `0/2/0`、队列 `celery`；无成功时完整快照不变，匹配已发布成功后仅两个原 Motion 归档，再次重建后全快照不变，WMS 接收为空、对象集合不增长。拓扑/所有权 **14 passed**，两份 Python Ruff/格式、文档结构及 diff 检查通过，HEAVY selector 为 NONE。未发现生产缺口；独立 reviewer 核对三文件固定 SHA256、真实原 owner、活动依据和进程清理后完成一次 scoped full review，无 P1/P2/P3；首尾 HEAD 为 `604d79cf`，index 为空。review 后仅追加本文证据，可执行指纹不变。完整 QUALITY 留授权提交边界，未提交、未部署、不启用生产装配或真实派发；FactProcessor/回调链真实进程、C1/C2 外部证据及完整任务 11 均未由本片宣称完成。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

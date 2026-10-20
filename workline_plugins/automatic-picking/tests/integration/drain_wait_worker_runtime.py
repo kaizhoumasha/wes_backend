@@ -62,6 +62,8 @@ def build_runtime(*, session_factory, **kwargs):
     class Buffer:
         async def read_in_session(self, db, *, workline_id):
             assert workline_id == FIXTURE["line_id"]
+            if FIXTURE["location"] is None:
+                return None
             return MatchedDrainBuffer(FIXTURE["location"], FIXTURE["capacity"])
 
     class Location:
@@ -73,7 +75,7 @@ def build_runtime(*, session_factory, **kwargs):
 
     buffer, location = Buffer(), Location()
     inbound = None
-    if "inbound" in FIXTURE:
+    if "inbound" in FIXTURE or FIXTURE.get("departure_recovery"):
         from datetime import timedelta
 
         from automatic_picking.application.drain_inbound import DrainInboundFlow, MatchedDrainInbound
@@ -116,6 +118,16 @@ def build_runtime(*, session_factory, **kwargs):
             progress_hook=window.on_transport_progress,
         )
         inbound = DrainInboundFlow(ReliableRackTransportCreator(service, inbound_window=window), InboundReader())
+        if FIXTURE.get("departure_recovery"):
+            from automatic_picking.application.drain_departure import DrainDepartureFlow
+            from automatic_picking.application.drain_rotation import DrainRotationFlow
+            from automatic_picking.application.return_allocation_flow import AutomaticPickingReturnBatchFlow
+            from automatic_picking.application.return_allocation_repository import ReturnAllocationRepository
+
+            # 只读原义务的当前 drain 依据；不装配新分配、调度或离场决定端口。
+            returns = AutomaticPickingReturnBatchFlow(ReturnAllocationRepository(), None, None, None, None)
+            inbound.rotation = DrainRotationFlow(returns, inbound.creator)
+            inbound.departure = DrainDepartureFlow(inbound.rotation)
     drain = AutomaticPickingDrainFlow(
         DrainRepository(),
         PickingTaskPrepareCoordinator(session_factory, policy=AutomaticPickingPreparePolicy(), task_queue_gateway=None),
@@ -135,6 +147,7 @@ def build_runtime(*, session_factory, **kwargs):
         version=plugin.plugin_version,
         source=inspect.getfile(DrainReplenishmentReader),
         inbound_source=inspect.getfile(type(inbound)) if inbound is not None else None,
+        departure_source=inspect.getfile(type(inbound.departure)) if inbound and inbound.departure else None,
     )
     return SimpleNamespace(
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
