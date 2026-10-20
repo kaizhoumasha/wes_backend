@@ -72,6 +72,50 @@ def build_runtime(*, session_factory, **kwargs):
             return MatchedReturnLocation(row.id, row.workline_id, row.bin_code, FIXTURE["location"])
 
     buffer, location = Buffer(), Location()
+    inbound = None
+    if "inbound" in FIXTURE:
+        from datetime import timedelta
+
+        from automatic_picking.application.drain_inbound import DrainInboundFlow, MatchedDrainInbound
+        from wes_plugin_sdk import TransportRackPosition, TransportRcsTemplateId
+
+        from src.app.execution.services.rack_inbound_window import RackInboundWindowService
+        from src.app.execution.services.reliable_rack_transport import ReliableRackTransportCreator
+        from src.app.transport.repository import TransportRepository
+        from src.app.transport.service import TransportService
+
+        class Provider:
+            async def submit(self, **kwargs):
+                raise AssertionError("offline READY must not submit Transport")
+
+        class InboundReader:
+            async def read_in_session(self, db, *, workline_id, operation_id, ready_evidence_id, rack_id):
+                values = FIXTURE["inbound"]
+                assert (workline_id, operation_id, ready_evidence_id, rack_id) == (
+                    values["workline_id"],
+                    values["operation_id"],
+                    values["ready_evidence_id"],
+                    values["rack_id"],
+                )
+                return MatchedDrainInbound(
+                    workline_id=values["workline_id"],
+                    operation_id=values["operation_id"],
+                    ready_evidence_id=values["ready_evidence_id"],
+                    rack_id=values["rack_id"],
+                    target=TransportRackPosition(values["location"]),
+                    target_face=values["face"],
+                    rcs_template_id=TransportRcsTemplateId(values["template"]),
+                )
+
+        window = RackInboundWindowService()
+        service = TransportService(
+            session_factory,
+            TransportRepository(),
+            Provider(),
+            result_timeout=timedelta(seconds=420),
+            progress_hook=window.on_transport_progress,
+        )
+        inbound = DrainInboundFlow(ReliableRackTransportCreator(service, inbound_window=window), InboundReader())
     drain = AutomaticPickingDrainFlow(
         DrainRepository(),
         PickingTaskPrepareCoordinator(session_factory, policy=AutomaticPickingPreparePolicy(), task_queue_gateway=None),
@@ -79,6 +123,7 @@ def build_runtime(*, session_factory, **kwargs):
         ReturnBufferDrainResultReader(),
         buffer,
         location,
+        inbound=inbound,
         replenishment_reader=DrainReplenishmentReader(buffer_reader=buffer, location_reader=location),
     )
     works = WorkRepository()
@@ -89,6 +134,7 @@ def build_runtime(*, session_factory, **kwargs):
         plugin=plugin.plugin_key,
         version=plugin.plugin_version,
         source=inspect.getfile(DrainReplenishmentReader),
+        inbound_source=inspect.getfile(type(inbound)) if inbound is not None else None,
     )
     return SimpleNamespace(
         picking_task_plan_activation_service=PickingTaskPlanActivationService(

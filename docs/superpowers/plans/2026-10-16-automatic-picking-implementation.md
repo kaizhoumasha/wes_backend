@@ -600,6 +600,14 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 本片验证与闭环 review：在外部刻意设置 `TRANSPORT_TEST_POOL=solo` 的条件下，真实 PostgreSQL/Redis、prefork worker 与 Beat 的单案例验收 **1 passed，0 skipped**（27.69 秒）；两次发布、消费和 runtime 均精确留证，扫描结果依次为 `1/0`。测试所有权/拓扑检查 **14 passed**，两份新增文件 Ruff 检查和格式检查通过，HEAVY selector 为 `NONE`，文档与 diff 检查通过。首轮 review 发现的 pool 环境覆盖缺口已通过两处显式参数修复；同一 reviewer 完成闭环与当前范围 fresh review，无剩余 finding。生产代码、共享 harness、schema 和生产装配均未改；本片只覆盖暂停恢复与停止后重建，不宣称事务提交/ACK 临界点崩溃矩阵、完整任务 11 或生产业务验收完成。证据对应基线 `4dd2fa5c` 与本片测试工作树；未提交、未部署。
 
+**9H successor READY 的真实 worker/Beat 离线验收。**基于 `38b94db5`，沿用 `drain_wait_worker_runtime.py` 与既有 worker/Beat 启停、源码路径留证和隔离 broker，新增 `integration/test_drain_ready_worker_recovery.py` 一个进程级检查点。复用 successor、精确进场参数及前驱根清理夹具，预置已发布 READY 和当前成员，不重演 9B–9H 业务矩阵；工作线启用且没有 EXECUTING。测试子进程在自己的 session factory 上补装现有 `DrainInboundFlow`、`ReliableRackTransportCreator`、窗口服务和真实 Repository，rotation/departure 保持未装配；只由 Beat 的既有计划扫描任务经 `celery` 队列推进，两次 worker 均显式使用 prefork。位置、面、模板及关联身份全部来自显式离线输入，不代表生产设备映射已确认。
+
+验收同时核对唯一新增的本地 CTU01、完整 source/target/face、READY Evidence/correlation、DrainRack→Binding→Transport 关联，新增 Transport 必须保持 PENDING、尝试次数为零且没有发送或到位依据。前驱根及其原请求确已删除，当前 drain/完整成员与原有义务不变；重建 worker/Beat 后按原身份恢复、不新增请求或物理动作。真实发布者进程组、消费 PID、队列和实际加载的进场源码共同留证；首次扫描产生一次本地创建，后续扫描均不新增，不对合法周期扫描次数设额外限制。WAIT 无进场参数时保持原测试装配路径，并做其聚焦回归。
+
+恢复 owner 不变：Beat 唤醒，宿主发现/加锁，batch/drain 解释当前 READY，DrainInbound 通过已有基础服务创建与关联原进场义务，既有 Transport owner 承接技术恢复。测试 provider 禁止提交，WMS HTTP 接收必须为空；不启用 WMS/Transport/Command 派发，不注入到位结果，不接换面离场、完成确认或已接纳后 FAILED 重决策，不新增模型、状态、timer 或 bin-line-common。C1/C2 仍待 WMS 容量接续与核销补证；本片不代替外部联合验收或生产装配，也不覆盖 current 退出、根清理后原离场义务的真实进程检查点。
+
+**successor READY 进程片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库和隔离 Redis 下，最终 READY＋原 WAIT 两文件聚焦验收 **2 passed，0 skipped**（42.71 秒）；外部设置 `TRANSPORT_TEST_POOL=solo`，实际启动仍由显式 prefork 保证。两例各留存两次 Beat 发布、消费和 runtime，结果均为 `1/0`，队列均为 `celery`；WMS 接收为空，新增 CTU01 保持 PENDING/零发送且无到位，既有记录与 current 完整快照保持不变。拓扑/测试所有权 **14 passed**，两份变更 Python 的 Ruff/格式与 diff 检查通过，HEAVY selector 为 NONE。初轮仅修正新测试把 SDK 类型名误当 Transport 正文字面量的断言，依据既有合同采用 `RACK/location_code`；未发现生产接线缺口。独立 reviewer 对固定三文件 SHA256 完成一次 scoped full review，无 P1/P2/P3，首尾 HEAD 为 `38b94db5`、index 为空；之后仅补本文证据，可执行指纹不变。未重跑已有领域矩阵或完整 QUALITY，后者留授权提交边界；未提交、未部署、不启用生产装配或真实派发。原离场义务的真实进程恢复及 C1/C2 外部补证继续保留。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，
