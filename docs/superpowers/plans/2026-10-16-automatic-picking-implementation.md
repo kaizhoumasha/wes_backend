@@ -10,7 +10,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`00fefedde6ed530dc2435a99b36845704df98c081c7a40506b9f3232b5777189`。
 
-**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `187950fb`。9H 的 current 接续、WAIT、连续 READY 及指定恢复检查点的真实进程离线验收已提交，当前证据归属和剩余门禁见[9H 收口索引](#task9h-offline-closure)。下文早期切片中的“本轮”“留下一片”“未提交”等保留当时实施快照，不作为当前总进度；整项任务 9、任务 11、WMS 联合及物理验收均未据此宣称完成。本轮按用户确认的人工线搬运基线补自动插件实际接线与隔离验收，见“搬运装配实施”；尚未提交，不部署、不启用生产装配或真实派发。
+**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `432a0490`。9H 历史证据见[9H 收口索引](#task9h-offline-closure)；搬运接线、正常投料到 Work、Work WAIT 扫描续问的当前归属见[任务 11 证据收口](#task11-transport-work-evidence)。用户已确认 manual-picking 货架与料箱搬运经过现场验证，自动插件沿用该基线，后续重点转到料箱到达工作位后的自动化业务。早期切片中的“本轮”“留下一片”“未提交”等只描述当时快照，当前提交状态以本段及收口索引为准。整项任务 9/11、自动插件整线和 WMS 联合验收尚未完成；本次仅整理文档，不提交、不部署、不启用生产装配或真实派发。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -535,7 +535,7 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 | 门禁 | 尚需依据/动作 | 责任及阻塞范围 |
 | --- | --- | --- |
 | WMS 容量补证 | [C1/C2](../../integration/wms-joint-confirmation-automatic-picking.md#task9h-wms-evidence-gates) 逐项给出实现/合同版本、容量关联及核销账务或等价时序证据，再联合核对正反例 | WMS 提供、双方核对；只阻塞原承诺未履约完的真实补架/核销验收，不推定必须新增字段 |
-| 生产装配 | 本轮按人工线搬运基线补齐组合根的显式搬运接线；启用配置和生产实例未变。隔离验证采用同一工厂，本线位置/冻结设备合同提供参数，未接机械臂 Handler 或完成确认；外部派发及现场验收仍待相应授权和证据 | 部署装配负责关联既有插件，batch/Confirmation/FactProcessor/原动作 owner 不变；本轮只补接线代码与隔离验收，不启用配置或生产实例 |
+| 生产装配 | 已提交 `5c42941c` 按人工线搬运基线补齐组合根的显式搬运接线；启用配置和生产实例未变。隔离验证采用同一工厂，本线位置/冻结设备合同提供参数，未接机械臂 Handler 或完成确认；外部派发及现场验收仍待相应授权和证据 | 部署装配负责关联既有插件，batch/Confirmation/FactProcessor/原动作 owner 不变；搬运接线和隔离验收已提交，不以重复搬运验收延后工位内自动化业务；启用配置和生产实例仍未变 |
 | 设备与身份输入 | 设备映射、精确扫码关联、PkgID、首批期限分别按目标路径补齐权威依据 | 只限制实际依赖该输入的路径；不阻塞已完成的显式输入离线验收，不猜值 |
 | 后续业务与最终门禁 | 完成确认、已接纳后 FAILED 重决策仍未纳入本轮；任务 11 仍需最终目标分支的迁移、全等待点与完整正常闭环及所选门禁 | 按对应业务 owner 和任务 11 范围单独授权/验收；不由 9H 的指定检查点局部通过替代 |
 
@@ -699,7 +699,7 @@ HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 T
 机械传播一次列全；不以测试失败列表代替调用点枚举。公开 typed 变化触及的宿主、插件及工具消费者都须同批迁移。
 
 
-### 搬运装配实施：复用人工线基线（本轮未提交，隔离验收）
+### 搬运装配实施：复用人工线基线（已提交 `5c42941c`，隔离验收）
 
 用户已确认货架与料箱搬运完全对照 manual-picking；相同基础端口和参数来源不再整体等待新映射合同。组合根显式调用自动插件自己的 `transport_composition.build_transport_plugin`，将已有回程、普通来源架换面/离场、return_batch 和 drain 的当前 owner 接回同一 batch/SCAN 消费者。首次来源架/目标架进场继续由现有 `PickingTaskPlanActivationService` 拥有，不新建第二个 CTU01 owner；机械臂 source/material/target flow 与 typed 单盘 Handler 仍不安装，不接完成确认或已接纳后 FAILED 重决策。
 
@@ -711,7 +711,7 @@ HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 T
 
 C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收；机械臂映射、单盘扫码关联、PkgID、首批期限各限制其路径。代码装配可用不等于已启用生产，更不等于任务 11 完成；本轮不改启用配置，不部署或启动生产实例，不真实派发。验证：插件 FAST `252 passed`，实际组合根 PostgreSQL 贯通 `3 passed`，核心安装/拓扑/所有权 `23 passed`。六文件 PostgreSQL 回归首轮为 `127 passed, 3 failed`；三项均是旧 Work-only 用例缺少新增装配所需的本线绑定，未修改生产容错或放宽断言，只补该用例的隔离配置及真实命令服务，随后该完整 Work 文件 `13 passed`。新贯通文件在最终端口快照另跑 `3 passed`；按节点身份对照，130 个不同回归节点均已有对应通过记录，不把首轮失败写成整组一次全绿。组合根既有 selector 选中 11 个核心 HEAVY 文件，最终 `75 passed`，含真实 worker；保留既有 serializer/schema cycle warning，不新增插件 HEAVY 映射。本轮无 schema 改动，复用一个独占临时 PostgreSQL，合规测试库的空库→当前 head 迁移通过。初次核心运行因入口库名不满足测试保护而中止，改用已迁移的 test 库后完整 manifest 重跑通过，未放宽保护；该失败运行不作为证据。上述通过项均无 skip。固定 16 文件快照的独立闭环 review 未发现可复现或有明确可达路径的 P1/P2/P3 问题；已核对唯一恢复 owner、原动作身份、参数来源、测试所有权及 C1/C2 边界。当前同轮历史清理有既有正面证据，不将其扩大为所有跨轮提前清理场景均已证明。末尾仅整理测试排版并校准本文 review 结论，完整 QUALITY 留获授权提交边界。
 
-### 正常投料到首个 Work 请求：实际装配离线验收（本轮未提交）
+### 正常投料到首个 Work 请求：实际装配离线验收（已提交 `7ecfc802`）
 
 以已提交搬运接线 `5c42941c` 为基线，本片仅补 `tests/integration/test_transport_composition_postgresql.py` 的组合验收，不改生产代码、schema、DTO、装配配置或恢复机制。现有来源到位→inbound_batch 与 NO_WORK→回程分别保留原测试 owner；本片填补两者之间正常投料及扫码到 Work 的接线差额，不重复 9H、共享派发或租约矩阵。
 
@@ -721,7 +721,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 最终实际装配 PostgreSQL 文件 `4 passed`（新增正常投料到 Work 1 项、既有装配 3 项），测试拓扑/所有权 `14 passed`，均无 skip；Ruff check/format 和 diff 检查通过，未暂存 selector 为 NONE。固定两文件快照的独立闭环 review 未发现有证据且可达的 P1/P2/P3 问题；仅改变插件集成测试及本文，核心 HEAVY、完整 QUALITY 和未改动 9H 矩阵不重复运行。C1/C2 容量接续与核销仍待 WMS 补证；不涉及 PkgID、机械臂映射、首批期限、完成确认或已接纳后 FAILED 重决策，不以此片证明任务 11 整体或现场闭环完成。
 
-### Work WAIT 经宿主持久扫描续问：PostgreSQL 验收（本轮未提交）
+### Work WAIT 经宿主持久扫描续问：PostgreSQL 验收（已提交 `432a0490`）
 
 以 `7ecfc802` 为基线，只在现有 `tests/integration/test_work_and_task_progress_postgresql.py` 新增一个入口验收，不改生产代码、schema、DTO、配置或共享测试 helper。起点为业务依据仍有效的 Work；用实际工厂创建原请求，以显式隔离 WAIT、既有 typed parser/Confirmation/Evidence 和 FactProcessor 建立已应用发布的确定 WAIT 检查点，不重做投料/扫码或 WMS 派发。
 
@@ -730,6 +730,41 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 恢复 owner 仍为宿主持久扫描发现工作线，自动 batch/WorkFlow 在本地事务内决定到期续问，Confirmation 负责已建请求的可靠交付，FactProcessor 负责结果应用发布；没有新 timer、队列、状态或通用恢复模型。测试复用同一生产工厂、真实本地服务和逐例隔离迁移 harness，关闭队列加速通知、禁止 Transport provider 发送；不启动 worker/Beat、WMS 派发或生产实例。
 
 新增 PostgreSQL 用例 `1 passed`，直接 Work/batch FAST `11 passed`，测试拓扑/所有权 `14 passed`，均无 skip；Ruff check/format、文档结构与 diff 检查通过，未暂存 selector 为 NONE。固定两文件快照的独立闭环 review 未发现有证据且可达的 P1/P2/P3 问题；本片只证明既有 Work 的恢复入口，不扩大为新计划准入或完整投料验收。该差额不重复既有 Work worker 响应交付/事务矩阵、9H 或共享租约/派发验收；完整 QUALITY 留获授权提交时由 hook 执行。C1/C2 仍待补证，不接机械臂、完成确认、已接纳后 FAILED 重决策或 bin-line-common，不以本片证明任务 11 或现场业务整体完成。
+
+<a id="task11-transport-work-evidence"></a>
+
+### 任务 11：已确认搬运与 Work 范围的证据收口
+
+**搬运基线与当前重点。**依据本次用户确认，manual-picking 的货架、料箱搬运已经现场验证；自动插件沿用其搬运合同、参数来源和基础能力。自动插件接线差额由下表离线证据承接，不再默认追加搬运、9H、共享派发/租约或逐层 worker/Beat/回调矩阵。后续业务重点是料箱到达工作位后：Work READY 的来源授权、单盘 decide/WAIT/ACCEPT、目标准备与报告、Work 后继接续。人工线搬运现场基线不扩大为自动插件机械臂或整线现场通过。
+
+下表测试路径相对 `workline_plugins/automatic-picking/tests/`，每项保留原主要 owner；表中数字来自对应提交记录，本次没有重跑或累计测试数量。
+
+| 已提交范围 | 提交 | 主要测试 owner | 已有证据及边界 |
+| --- | --- | --- | --- |
+| 搬运实际装配：NO_WORK 流出/回程、来源换面离场及 drain 接线 | `5c42941c` | `integration/test_transport_composition_postgresql.py`；`test_return_device_ports.py`、`test_transport_readers.py`；原 Return/Drain 域保持各自事务 owner | 当时组合根 3 项、插件 FAST 252 项、核心所选 HEAVY 75 项通过；显式权威输入、禁止外部派发。首次来源/目标进场仍归宿主计划；不证明自动插件物理或容量验收 |
+| 正常投料→SCAN1/SCAN2→首个 Work 请求 | `7ecfc802` | 同一 `integration/test_transport_composition_postgresql.py` 的正常投料用例 | 最终文件 4 项包含前行 3 项及新增 1 项，不能再相加。实际工厂创建唯一 Work/首个 work_plan，重建重扫保留身份，停在 PLAN_PENDING，不含逐盘执行 |
+| Work 确定 WAIT 经实际宿主持久扫描续问 | `432a0490` | `integration/test_work_and_task_progress_postgresql.py::test_due_work_wait_recovers_through_actual_host_scan_once`；直接规则归 `test_work_admission.py`、`test_batch_recovery.py` | 新增 PostgreSQL 1 项、直接 FAST 11 项、核心拓扑/所有权 14 项通过，无 skip；固定到期前不推进、到期唯一新请求、重建重扫防重，停在新的 PLAN_PENDING。只证明既有 Work 检查点恢复，不扩大为新计划准入 |
+
+三个提交的 hook 均记录完整 QUALITY 通过，核心 FAST 各为 `4321 passed, 5 skipped`；这些是各自提交的记录，不能相加，也不是本文整理时的新执行证据。核心拓扑/所有权测试只证明基础边界，不能替代插件业务。`5c42941c` 的 HEAVY 75 项按其已验证范围复用；后两个提交的 staged selector 均为 NONE。9H 的宿主扫描、真实进程、回调与领取后失效仍统一引用前文索引，不复制另一份矩阵。后续仅在覆盖内容/环境变化使证据失效或发现真实新缺口时补验。
+
+| 当前持久依据与出口 | 唯一业务恢复 owner／基础义务 owner | 恢复入口与既有验收归属 |
+| --- | --- | --- |
+| 原来源/目标进场及已发布到位；冻结 Feed 清单、分段原 Transport 与扫码交接 | 宿主计划激活负责首次进场；自动 batch/Feed 负责投料及交接；原 Transport 保持动作身份 | 宿主持久计划/batch 扫描；来源 revision、Feed/Work 和实际装配用例分别拥有，不从可清理历史或空查询推定到位 |
+| 当前 Work、原 work_plan 请求及结果；WAIT 固定到期或 READY/NO_WORK 出口 | 自动 batch/WorkFlow 负责业务推进；未决请求归 Confirmation，已保存未发布结果归 FactProcessor | 当前 Work 持久扫描及原 Evidence 领取/发布；Work 域与上表新入口验收拥有，不把未知当 WAIT、不从重启时间重计 |
+| 当前 Return/FIFO、分配、Motion、Drain 及其直接因果结果 | 自动 batch 与原 Return/Allocation/Motion/Drain owner；已建 Command/Transport/Confirmation 各自履约 | 既有 batch 前置恢复和 FactProcessor；任务 8–9 域及 9H 索引拥有，不因 current 退出丢掉原未终态义务 |
+| 周期触发与丢通知发现 | 宿主扫描/Beat 只发现和唤醒，不取得业务 owner | 已有核心任务接线及 9H 指定真实进程证据；不因 Work 新增一个等待点就复制共享可靠机制 |
+
+**后续门禁与工位内业务。**本片只整理证据，不实施下表路径；下一实施切片应从任务 6–7 的实际业务/接线差额中选择，复用已完成的 6A–7C 离线规则和事务，不默认再加一轮搬运证明。
+
+| 路径／门禁 | 已有基础与真正剩余范围 | 当前责任与限制 |
+| --- | --- | --- |
+| 到工作位后的 Work READY→来源授权/单盘身份→decide→后继交接 | 来源授权与原子消费、精确身份显式输入、material WAIT/ACCEPT 已有 6A–6D 离线实现；实际来源/单盘流程及权威事实读口尚未装配 | 自动插件 Work/Pickup/material owner；只按 G2/G3 的精确关联和映射补真实差额，不重新证明已有纯规则；本次不接机械臂 |
+| 目标准备、PUT/位置报告与 Work 接续 | 7A–7C 已覆盖普通目标已就绪、显式成功 PUT/PkgID、报告确认关闭及 M2 尚未创建的恢复；其余目标准备/生产读口和装配仍有差额 | 插件 target/material owner，Command/Transport/Confirmation/FactProcessor 保持原义务；G3/G5 只限制对应映射与权威身份，不猜 PkgID、不先取盘后补身份 |
+| C1/C2 | WMS 仍须提供现有容量关联、继续供架与回库核销的实现/合同版本及账务或等价时序 | WMS 提供、双方核对；只限制对应真实容量接续/核销验收，不作为工位内 Work/单盘业务的统一前置，也不预设新字段 |
+| 首批期限、完成确认及异常分支 | G6 仅约束首批期限；完成确认及已接纳后 FAILED 重决策未纳入当前授权 | 不借用技术期限，不猜值；本次不接完成确认或已接纳后 FAILED 重决策，G4/G7 仍只限制其分支 |
+| 任务 11 最终范围与现场 | 最终目标分支规定 base→head 迁移、完整正常闭环和当时必选门禁，以及自动插件生产/WMS/物理验收 | 随最终范围形成再核对差额并按授权执行；当前不启用生产配置/实例，不用人工线基线或局部离线证据勾选整项任务 11 |
+
+本次为现有计划与 C1/C2 清单的人类文档整理，不新增代码/测试，不运行 QUALITY、HEAVY、迁移、worker 或现场动作；文档只做提交/路径/结构/diff 核对及闭环 review，不把旧绿灯写成 fresh 验证。固定两文档快照的独立 review 未发现有证据支持的 P1/P2/P3 问题；末尾仅登记此结论。
 
 ## 实施切片
 
@@ -917,7 +952,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 **依赖：**目标分支所需任务与未决项闭合。**新增：**`T/integration/test_worker_recovery.py`、`T/e2e/test_normal_picking.py`；核心有状态测试只补其新基础机制的主要 owner。
 **范围：**全量需求对照、固定最终 diff/环境指纹，不扩大到未获批 NG/空取或供应商私有协议。
 
-**已覆盖与剩余差额：**9H 的真实 worker/Beat、回调分阶段交接及领取后失效已覆盖[收口索引](#task9h-offline-closure)中的指定检查点，可按可执行指纹和环境复用；不证明其余业务等待点、所有发送/投影中断点或整线端到端。最终仍需目标分支的干净迁移链、完整正常闭环（含任务 9 完成确认及其他计划内路径）、逐 owner 未覆盖等待点/历史清理，以及最终快照必选门禁。届时先列出未覆盖差额及其测试 owner，只在代码/环境变化导致证据失效、确有新接线或必要边界尚无覆盖时补验，不以本节未勾选为由重复共享机制或 9H 业务矩阵。C1/C2 只阻塞对应真实容量分支；设备映射/扫码/PkgID 等只限制依赖它们的路径。生产装配与物理验收另列证据，不由测试子进程装配替代。
+**已覆盖与剩余差额：**搬运、正常投料到 Work 和 Work WAIT 宿主扫描已提交至 `432a0490`，提交、主要测试/恢复 owner、证据计数及剩余门禁统一见[当前证据收口](#task11-transport-work-evidence)；9H 指定真实进程检查点继续引用原索引。manual-picking 搬运现场基线按用户确认复用，后续聚焦料箱到达工作位后的自动化业务，不机械追加同义运输/worker/Beat/回调矩阵。以下仍是任务 11 最终范围，需在相应业务和输入闭合后验证，不因未勾选重复已有有效证据；C1/C2 仅限制对应真实容量分支，机械臂映射/扫码/PkgID/首批期限各限制依赖路径。
 
 - [ ] 独占临时 PostgreSQL，逐片迁移按最终链在干净逻辑库完成规定 base→head；原模型、Alembic 注册/过滤和约束一致。
 - [ ] 启动真实 Redis/worker/Beat 验证既有队列、序列化、提交后唤醒和周期扫描；逐个等待点验证重启/丢通知/租约回收，不以 skipped 计通过。
@@ -968,4 +1003,4 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 | 每个非终态的确定 owner、清理历史后可运行 | 5–11 | 插件与核心各自的持久恢复证据，不以测试绿灯替代物理事实 |
 
 本计划推荐主 Agent 在同一执行现场顺序推进，避免 SDK、converter、共享接线和插件 driver 的交叉修改。
-当前交付为人工线搬运基线下的自动插件实际接线与隔离离线贯通；既有 9H 证据收口不重做。新增接线、端口及跨 flow 验收见“搬运装配实施”，不等于任务 11 或生产验收完成。本轮不提交、不部署、不启用生产装配或真实派发，不接机械臂取盘、完成确认或已接纳后 FAILED 重决策；C1/C2 仍待补证。
+当前搬运与 Work 入口验收已提交至 `432a0490`；本次仅收口其证据与剩余门禁，见[任务 11 当前索引](#task11-transport-work-evidence)。搬运沿用已确认人工线现场基线，后续重点为料箱到工作位后的自动化业务；不因任务 11 总清单未完成重复加测。C1/C2 继续待补证，本次不新增代码或测试、不提交、不部署、不启用生产装配或真实派发，不接机械臂、完成确认或已接纳后 FAILED 重决策，不做 bin-line-common 抽取。
