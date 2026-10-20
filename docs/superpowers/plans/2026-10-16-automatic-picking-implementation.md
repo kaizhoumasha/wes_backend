@@ -494,25 +494,24 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **后续边界：**不接补架、完成确认或已接纳后 FAILED 重决策，不增加通用模型、业务状态、timer、worker 或生产装配，不做 bin-line-common 抽取。设备映射、精确扫码关联、PkgID、首批期限及失败权威架面等未决项保持原阻塞范围。当前仅离线实现与验证，不提交、不部署、不启用真实派发或取盘；完整 QUALITY 留获授权 Commit hook。
 
-#### 实施切片 9H：正常补架的 reservation 接续与 current 原子交接（离线规则与首次 READY 读取已实现，完整接续未实施）
+#### 实施切片 9H：正常补架的自动插件持久接续（离线规则与首次 READY 读取已实现，完整接续未实施）
 
-**合同状态与范围：**主合同 §9.2.3 的 9H 补充和插件设计 §5.4 定义正常 READY 耗尽后的补架；新增接续语义及 `data.reservation_operation_id` 为待 WMS 双方冻结的设计稿，不能称为已确认生产合同或已有联调能力。无新 Method/Path/operation、响应 DTO 或公共 reservation API；初次请求不带新字段，补架及其 WAIT 续问必填原 reservation 首次 READY operation_id，禁止 null 或用最近响应替代。WMS 原子校验原活动身份，无引用却遇活动 reservation、引用过期/别线/新旧轮不符按所属冲突合同处理，不能自动改为新需求。冻结后才同步所属 wire、SDK typed intent、Adapter/OpenAPI 及测试，禁止插件先发裸 dict。现有已确认字段边界不重新列为未决；生产参数、设备/扫码/PkgID、首批期限及已接纳失败恢复仍只限制各自路径。真实 WMS 补架准入先取得双方冻结证据；不依赖新增 wire 的离线纯规则可先验收，完整请求交接需先完成本字段的合同对齐。
+**合同状态与范围：**沿用[主合同 §9.2.3](../../contracts/wms-outbound-picking-task-integration-requirements.md#9h-replenishment-freeze)、人工线 §5.6 的 drain 基线及自动插件设计 §5.4。撤回两类请求必须新增 `reservation_operation_id`、先改 wire/SDK/converter/Adapter/OpenAPI 和人工消费者再实施的前置链；当前 drain 仍只传工作线和数量，return_batch 使用现有架面及候选。WMS 内部容量关联不因无新增字段而被判定缺失。本片只补自动插件已有 READY 在供架耗尽、原成员尚未回库时缺少的持久接续；容量接续及核销细节需补证，不把既有基线整体重新冻结。
 
-**最小建模：**WMS 继续只有首次 READY operation 标识的一份活动 reservation，新补架 operation 只重新决定同一 reservation 的剩余供架，响应不可改写、数量不累加；READY 只返回本轮供架，WAIT 不释放原 reservation。WES 复用 `AutomaticPickingDrain` 逐请求交接，拟仅新增 `reservation_operation_id` 标量与 `request_return_ids` 冻结范围。前者首次 READY 冻结并由补架继承；现有 `return_ids` 承接全部未回库责任，后者只记录本次实际可请求的 FIFO 前缀，数量与 wire 一致；已交接的独立 BIN_MOVE 仍在责任集合中而不重复计数、不拦住其他合格成员补架。`returned_ids` 表达当前责任的回库正事实，`departure_handoffs` 表达本轮供架交接。不新增通用轮次表、授权、业务状态、timer 或历史 parent 链；实际 schema/迁移随获准代码切片另审，存量引用/范围只能由确定依据建立。
+**复用与最小建模：**复用 `AutomaticPickingDrain` 的当前请求、原成员与回库进度、供架交接正事实和 9A–9G 的可靠端口/执行链。原请求 operation、Evidence、DrainRack/Transport 关联区分本地轮次；不预设外部 reservation 新字段或新通用模型。完整剩余责任与本次实际请求 FIFO 前缀可能不同，独立已交接动作仍有责任但不重复计数量。当前进度须自含这两份范围及“已开始 READY 后续行”的本地正面依据，避免补架 WAIT 被当作初始 WAIT；具体最少持久关联及 schema 差额在实施切片首个补丁前审查，不从可清理历史或数量相等关系猜测。已有离线快照字段不是生产 schema 承诺。当前首次 READY reader/validator 以请求数量等于全部原成员数为前提，后续接线须按本次请求范围校验 intent/摘要，并单独校验完整剩余责任；不能直接将它当作 successor reader，也不通过改 wire 消除本地读取差额。
 
-**回架核销接线：**同一待冻结字段也进入 `return_batch`：普通/drain 任一入口消费原成员均携带首次 READY reservation 引用，不属于原范围则省略且不混批。冻结范围是 WES 的权威成员归属声明，WMS 不从工作线唯一活动记录、供架集合或箱码猜归属。WMS 在 READY 决定事务保存实际分配的原 operation/sequence 与完整箱码/来源/目标及 reservation，再于 BIN_MOVE 接纳前唯一匹配并冻结 Transport/member；不能唯一确定则拒绝，不扩 Transport wire。只由原权威成功与匹配终位核销一次，NO_BATCH/未分配尾部不占名额，原初次需求全部成功才关闭容量义务；普通架回库的原成员照常核销，新成员/新同箱码/旧结果不记到后来 reservation。两域 wire/typed/Adapter/OpenAPI、自动与人工消费者均须完成所有权对齐；当前无该字段，存量无精确归属不推断，不凭此文档启用请求。
+**最小下一片：单次 successor 离线事务验收。**在精确当前 READY、原成员范围、权威位置与供架交接显式给定的前提下，先恢复既有义务，再求值耗尽与正数可请求前缀；同一 WorkLine 锁事务创建现有 typed intent/Confirmation，冻结本次成员和完整剩余责任，使旧 current 退出并成立唯一新 current。旧退出是责任交接，不走“原成员全部回库”的 9G 正常完成语义，不改原 operation、动作身份或物理结果。回库事实在切换前后均按精确成员交给唯一当前责任 owner；新 current 不依赖可清理前驱。此片可以使用现有 DTO 和显式离线结果推进，不以 WMS 新字段冻结为前提；本次文档修订不授权实际实施。
 
-**首个实施切片：**先验收正常供架耗尽、剩余原成员/FIFO/权威缓冲位置，以及补架请求与 current 接续；复用 9A 的可靠端口和 9B–9G 的执行路径，不扩面为失败自动恢复。耗尽使用当前 READY 应需供架集合及 `departure_handoffs` 中精确原 CTU03 交接正事实；写入交接已覆盖冻结面序、运动前阶段及本架直接义务，不重读可清理的中间面历史、不把独立架原成员在途动作扩大为门禁。晚到 FAILED/RECONCILING 不抹已成立交接。原架 CTU03 明确接纳即可交出业务窗口；同架再用继续等待其权威成功和已知终位，独立架不等旧架终位。未知/未发布/未消费分配仍归原 owner，不能当 NO_BATCH、零剩余或供架耗尽。
+| 切片顺序 | 验收及依赖 | 恢复 owner |
+| --- | --- | --- |
+| 单次 current 原子交接 | 并发只有一个 successor；创建/冻结/旧退出/新 current 任一点失败全部回滚；重启不重复请求；回库在切换前后、两入口防重、旧结果及历史清理。复用已有首次 READY 求值，不再追加同义组合 | 自动 batch 负责准入与 current；Confirmation 负责交付；FactProcessor 负责事实应用发布；原 Allocation/Transport 保持身份 |
+| 持久补架 WAIT 与连续接续 | 前一片 current 可独立恢复后，保存固定到期点并续问；不套用初始 prepare 优先丢原业务，无可请求前缀不发零数量；未知先恢复原请求；责任清零先闭合已创建义务。覆盖连续两轮、旧响应、无 EXECUTING、普通入口消费及历史清理 | 同一 batch/Confirmation/FactProcessor，不新增 timer、worker 或业务状态 |
+| READY 接回供架执行 | 新决定精确接回 9B–9G；同架等待原动作成功及已知终位，独立架不等无关历史；原未终态 CTU03 不因 current 切换丢 owner | 现有 DrainRack、Motion/Allocation、Transport 及 batch |
+| 真实容量接续与核销验收 | 只对原 READY 承诺未履约完就耗尽的分支，取得 WMS 内部容量关联、WAIT/READY/重放和权威回库核销证据；若现有实现足够则不改 wire，只有真实歧义才另评最小合同差额 | WMS 维护容量账与关闭；WES 提供冻结请求、分配和原动作时序证据 |
 
-**原子性与出口：**同 WorkLine 锁内冻结剩余原责任/顺序、本次请求的连续合格前缀、新 operation 与 Confirmation、新 current 的原 reservation 引用，并使旧 current 退出；提交前任一步失败全回滚，提交后从新 current 独立恢复。仅按权威回库正事实扣除责任，不添加新到 Bin、不从 UNKNOWN 猜成功；在途责任不被本次请求前缀遗漏。旧进度归档是需求交接，不能冒充 9G 正常完成。补架 WAIT 固定首次接收时间加 retry_after_ms，到期重问仍只核对剩余原成员；不套用初始 WAIT 的下一任务优先而丢弃原业务。普通回架可承接 WAIT 的未分配候选，两个入口同锁防重，后续原动作事实按精确 reservation/成员登记当前责任；回库先于交接则从旧 current 扣除，后于交接则写新 current。无可请求成员但有在途责任时保留 owner、不请求零数量；全部回库且 WAIT 已发布时退出。未知请求先保留原交付义务，不为已回库成员新建 CTU01。
+**测试归属与有效证据：**纯规则仍由插件 `test_drain_replenishment.py` 拥有，读取组合仍由插件 `integration/test_drain_replenishment_postgresql.py` 拥有；新增事务场景跟随插件责任边界，不复制共享派发完整矩阵，不进入核心默认 pytest/QUALITY/HEAVY。已有 63 项纯规则、237 项插件 FAST、41 项读取 PostgreSQL 及其并发/多架结果为下文记录的历史离线快照，证明首次 READY 读取与瞬时求值，不证明持久 successor、WAIT 或 WMS 核销；后续只补未覆盖事务出口。实际生产/schema 变更时再闭合精确测试所有权、HEAVY mapping 和迁移验证，本轮纯文档不创建 pytest 或运行 QUALITY/HEAVY。
 
-**恢复 owner 与清理：**业务准入、范围与到期续问归现有自动 batch 前置入口；Confirmation、FactProcessor 和 Transport 保持原身份交付、应用/发布和物理动作 owner。旧 Motion/Allocation 继续从直接因果引用恢复，旧 READY/根不能覆盖新 current；新 current 的责任与请求恢复不查已可清理旧根、最近响应、已闭合 Return/分配或历史最大 revision。新 current 已承接后，只有不再被未闭合义务引用的前驱历史才可清理；仍为原动作直接依赖的旧数据属于当前执行，不称为可清理历史。无 EXECUTING/无新事件也能扫描，补架与普通入口不建立各自第二份状态或恢复队列。
-
-**验收与测试归属（待实施）：**插件拥有补架纯规则及 PostgreSQL 用例，覆盖首次/连续补架、部分原成员已回库、WAIT 中普通入口消费、已交接独立 BIN_MOVE 尚未终态时仍为其他合格成员补架、回库在 current 切换前后、无可请求成员但有未完责任、零剩余、并发、创建/交接各点崩溃、旧响应重放、同架新轮次/独立架、新到成员隔离及历史清理后恢复。精确检验本轮 READY 到原 CTU01/return_batch/BIN_MOVE/CTU02/CTU03 接续，不把 ACK 当物理成功。WMS 侧另验收精确原 reservation 字段、无活动/别线/另一轮拒绝、公开幂等、活动 reservation 原子关联、WAIT 不释放及 READY 不重复记容量；冻结后补齐所属 wire/typed/OpenAPI 测试，不能用 Mock 宣称外部合同已确认。只在代码/schema 变更时再确定精确核心 HEAVY mapping；本轮纯文档不创建 pytest、运行 QUALITY/HEAVY 或生产迁移。
-
-WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、后来新成员及同箱码新 execution 排除、部分 READY/NO_BATCH 名额不重复、分配到 Transport 的匹配歧义拒绝、回调先于 ACK 和旧结果只核销原归属；插件验证显式字段与成员冻结同事务，两入口防重且不混 owner。供架耗尽专项覆盖中间面历史已清理、终面交接正事实仍存，以及交接后晚到失败不重新挡住独立补架。
-
-**本轮边界：**只补合同、插件设计和本计划，完成一次文档闭环 review；不实施完成确认、已接纳后 FAILED 重决策、生产装配或真实派发，不做 bin-line-common 抽取，不提交、不部署、不推进真实取盘。
+**WMS 补证与阻塞范围：**联合确认 §9 只保留容量接续和回库核销两项证据，不要求 F1–F8 或新增字段整体冻结。既有联调的已履约轮次结束、剩余 FIFO 新申请可复用；不能升级为“原承诺未履约完的补架核销”已验收。设备映射、扫码关联、PkgID、首批期限和已接纳后 FAILED 仍只限制各自路径，不扩大阻塞上述离线事务。完成确认、失败重决策、bin-line-common 抽取、生产装配及真实派发不在本片。
 
 **9H 首片实施：离线纯规则（已实现，未接持久执行）。**插件新增 `automatic_picking/drain_replenishment.py`，仅依赖标准库和现有 SDK typed outcome；冻结局部事实快照并返回瞬时求值分类、全部剩余责任及本次 FIFO 请求前缀，不创建 intent/Confirmation、current、timer 或物理动作，不注册 Handler 或接入 batch。局部 `reservation_operation_id` 仅是显式给定的首次 READY 引用，不是 wire/SDK/schema 新字段，也不证明 WMS reservation 活动。首次 WAIT/未知请求不得伪装为补架；请求未知、结果未发布或供架尚未交接时，先交回原 owner，不要求新候选快照。已发布 WAIT 使用显式冻结到期点，原责任全部满足可结束本地 WAIT；READY 零剩余不创建补架，仍交既有正常收口路径处理。
 
@@ -520,9 +519,9 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 **首片验收与恢复所有权：**`tests/test_drain_replenishment.py` 为唯一纯规则 owner，63 项覆盖正常耗尽、多架交接、剩余范围、FIFO 阻塞/顺序、独立在途、WAIT 到期与清零、未知/未发布、旧结果身份、首次 WAIT 隔离及非法输入。先取得能力缺失 RED，并由补充反例取得“先恢复原义务再读候选”5 项 RED、原 READY 引用边界5项 RED，再完成最小实现。插件 FAST 显式排除 integration 后 237 项通过；核心安装、测试拓扑与插件所有权23项通过；两文件 Ruff/格式及 diff 检查通过；核心 HEAVY selector 为 NONE，插件规则由插件验收、不新增核心 mapping。纯规则本身无恢复 owner；未来调用/持久接续仍由现有自动 batch 负责，Confirmation、FactProcessor、Transport 和 WMS 的既有职责不变。独立 Reviewer 对固定三文件快照完成完整 review，未发现 P1/P2/P3，无代码修正；审查前后执行快照一致，闭环完成。随后仅补记本句验收结果，不使既有可执行验证证据失效。
 
-**后续准入不变：**两个 operation 的新增字段、原 reservation 关联与 WMS 核销仍待双方冻结；冻结后先同步所属 wire/typed converter/SDK/Adapter/OpenAPI、自动与人工消费者及测试，再实施新义务/旧 current 退出/新 current 成立的 PostgreSQL 原子验收。此片不修改外部合同、模型或迁移，不证明并发/崩溃持久恢复或真实 WMS 可用；未决设备映射、扫码关联、PkgID 和首批期限继续只阻塞各自真实路径。完成确认、已接纳后 FAILED 重决策、bin-line-common、部署与真实派发仍不在本片。
+**后续准入（按本次核对收窄）：**现有 wire 可用于后续单次 current 接续的离线事务验收，无需先新增字段或迁移人工消费者。已有纯规则仍只证明给定快照下的求值；WMS 原容量未履约完的接续及核销需补证后才可作为该真实分支的验收依据。本次不改实现、模型或迁移，未决设备/扫码/PkgID/期限继续只限制各自真实路径。
 
-**9H 后续片：首次 READY 的持久事实离线读取（已实现，未接运行路径）。**新增插件内 `application/drain_replenishment_reader.py` 的 `FirstDrainReadyReader`，调用方持有原 WorkLine 锁；复用 `ReturnBufferDrainResultReader.for_operation`、Drain/Return/Allocation repository，读取精确当前原请求、已应用发布且由 current 消费的 READY、成员范围、`returned_ids` 和 `departure_handoffs`。只有首次 READY 可提供 reservation 引用，直接取该请求自身 operation，不读取最近请求或历史前驱。没有 current、原决定未知/未发布/未应用、首次 WAIT 或尚未消费的 READY 返回未就绪，继续原 batch/FactProcessor owner；身份、正文摘要、成员数量及 current Evidence 漂移明确拒绝。供架未耗尽时先交回原义务，不读取新 FIFO/位置来阻塞它。
+**9H 后续片：首次 READY 的持久事实离线读取（已实现，未接运行路径）。**新增插件内 `application/drain_replenishment_reader.py` 的 `FirstDrainReadyReader`，调用方持有原 WorkLine 锁；复用 `ReturnBufferDrainResultReader.for_operation`、Drain/Return/Allocation repository，读取精确当前原请求、已应用发布且由 current 消费的 READY、成员范围、`returned_ids` 和 `departure_handoffs`。该读口只将首次 READY 请求自身 operation 作为本地快照引用，不证明 WMS 容量账身份；不能直接用于后续 successor 或 WAIT，不读取最近请求或历史前驱。没有 current、原决定未知/未发布/未应用、首次 WAIT 或尚未消费的 READY 返回未就绪，继续原 batch/FactProcessor owner；身份、正文摘要、成员数量及 current Evidence 漂移明确拒绝。供架未耗尽时先交回原义务，不读取新 FIFO/位置来阻塞它。
 
 供架耗尽后读取权威 FIFO、资格/占用和显式精确位置；原成功成员只读 current 已落地正事实，已闭合 Return/Allocation 不成为依赖。独立在途只从原 Allocation 已交接正事实、精确 typed READY、原 Transport Binding 与完整成员来源/目标证明，仍保留责任而从待派发范围排除；无交接或仅 Return 归档不推断在途。原责任总数不套用当前缓冲位容量门槛，已在独立动作中的成员不占当前缓冲位。读口返回既有纯快照，求值仍调用首片纯函数；不创建 Confirmation/current/动作、不保存求值、不注册 Handler、batch 或生产装配，不改 SDK/wire/schema。未决设备位置映射继续使用显式权威读口，不以投影或历史缺失猜位置。
 
@@ -530,19 +529,21 @@ WMS 核销专项验收还须覆盖原成员经非 reservation 普通架回库、
 
 **9H 首次 READY 读取的并发验收补片（只补测试，未接持久执行）。**沿用同一插件 PostgreSQL 测试所有者，增加三类既有 owner 推进与只读求值的两事务竞争：9C 应用已发布、精确成功的回库事实，独立 BIN_MOVE 已接纳后的 Allocation 交接，以及 9G 将原 CTU03 交接事实与正常 drain 归档一起提交。每类分别覆盖读口先持锁、owner 先提交、owner 修改后回滚；使用 `pg_blocking_pids` 观察实际 WorkLine 锁等待后才放行，不以调度延时推断互斥。读口先行时 owner 等到求值完成；owner 先行时新会话只读到提交后的完整事实；回滚不泄露 returned/handoff/归档进度，再由原 owner 重跑恢复。
 
-验收同时核对精确原 operation/reservation 身份、剩余责任和独立在途范围；接纳交接不产生回库成功，全部回库但尚未完成供架交接仍由 9G 处理，根归档后读口返回无 current 而不找历史 READY。正常收口保留原未终态 CTU03/Motion 及其恢复归属；不因本地 drain 关闭推定物理离场完成。SQL 记录与 ORM 状态检查约束读口只执行 SELECT，竞争前后 Confirmation 身份集合不变，重启式新 reader/会话求值前后全业务表指纹不变；不创建补架 Confirmation、不替换 current、不保存求值结果。读取本身不取得持久恢复 owner，继续由原 return allocation/batch、FactProcessor、Confirmation、Transport/Motion 扫描恢复。新增字段与 reservation 核销语义仍待 WMS 双方冻结；本片不进入 successor current、完成确认或已接纳后 FAILED 重决策。
+验收同时核对精确原 operation 和本地首次 READY 快照引用、剩余责任和独立在途范围；接纳交接不产生回库成功，全部回库但尚未完成供架交接仍由 9G 处理，根归档后读口返回无 current 而不找历史 READY。正常收口保留原未终态 CTU03/Motion 及其恢复归属；不因本地 drain 关闭推定物理离场完成。SQL 记录与 ORM 状态检查约束读口只执行 SELECT，竞争前后 Confirmation 身份集合不变，重启式新 reader/会话求值前后全业务表指纹不变；不创建补架 Confirmation、不替换 current、不保存求值结果。读取本身不取得持久恢复 owner，继续由原 return allocation/batch、FactProcessor、Confirmation、Transport/Motion 扫描恢复。WMS 容量接续与核销细节仍待补证，已撤回新增字段前提；本片未进入 successor current、完成确认或已接纳后 FAILED 重决策。
 
 本补片验证：独占 PostgreSQL 17.10、现有每例干净迁移 harness 下，该读口完整 PostgreSQL 38 项通过（新增竞争 9 项），插件 FAST 237 项通过；Ruff、格式和 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改本测试所有者及计划；完整 QUALITY 留到用户授权的提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，未提出生产修正；审查前后文件 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照未变。
 
 **9H 首次 READY 多架与混合成员的只读组合验收（仅测试，未接持久执行）。**在同一 PostgreSQL 测试所有者内复用既有两架 READY、return allocation、departure 与 batch 夹具，新增三项组合验收。逐架交接按 READY 正序与逆序各验证一次：零交接和仅一架交接均继续 WAIT，全部应需供架取得原 CTU03 交接正事实后才允许剩余原成员成为请求范围；其中最后一架仅 ACCEPTED，保留原 Transport/Motion 继续恢复，不推定物理离场。首架权威成功后清理其已归档 Motion，新会话、新 reader 仍读取原 current 的交接正事实，不回查可清理面历史。
 
-混合成员用例在同一首次 READY 范围内，通过既有 owner 建立一名已权威回库、一名独立普通架 BIN_MOVE、一名实际 FIFO 候选。独立动作未交接时仍按已分配队头阻止越序；接纳并由 owner 交接后，在途成员留在完整剩余责任中，但不重复计入可请求数量，实际请求仅为 FIFO 中的合格原成员。普通入口保留本地原 drain 成员归属，不表示 WMS reservation 核销已接线。删除已归档的成功/在途 Return、已完成原分配及成功离场 Motion 后重新读取，快照、原 operation/reservation 引用、责任与前缀保持一致；未终态独立 Allocation、原请求和动作直接依赖继续保留，不当作可清理历史。
+混合成员用例在同一首次 READY 范围内，通过既有 owner 建立一名已权威回库、一名独立普通架 BIN_MOVE、一名实际 FIFO 候选。独立动作未交接时仍按已分配队头阻止越序；接纳并由 owner 交接后，在途成员留在完整剩余责任中，但不重复计入可请求数量，实际请求仅为 FIFO 中的合格原成员。普通入口保留本地原 drain 成员归属，不表示 WMS reservation 核销已接线。删除已归档的成功/在途 Return、已完成原分配及成功离场 Motion 后重新读取，快照、原 operation 和本地首次 READY 快照引用、责任与前缀保持一致；未终态独立 Allocation、原请求和动作直接依赖继续保留，不当作可清理历史。
 
-每次读取与纯求值前后核对全业务表指纹，并沿用读口 ORM 无新增/修改/删除检查；不创建补架 Confirmation、不替换 current、不保存求值。只读求值无新增恢复 owner，原 batch/Allocation、FactProcessor、Confirmation、Transport/Motion 继续承担各自职责。新增字段与核销语义仍待 WMS 双方冻结；本片不启用 successor、持久补架 WAIT、完成确认、已接纳后 FAILED 重决策或真实派发。
+每次读取与纯求值前后核对全业务表指纹，并沿用读口 ORM 无新增/修改/删除检查；不创建补架 Confirmation、不替换 current、不保存求值。只读求值无新增恢复 owner，原 batch/Allocation、FactProcessor、Confirmation、Transport/Motion 继续承担各自职责。WMS 容量接续与核销细节仍待补证，已撤回新增字段前提；本片未启用 successor、持久补架 WAIT、完成确认、已接纳后 FAILED 重决策或真实派发。
 
 本组合补片验证：独占 PostgreSQL 17.10、每例干净迁移数据库下，该读取组合完整 PostgreSQL 41 项通过（新增3项），插件 FAST 237 项通过；Ruff、格式与 diff 检查通过，核心 HEAVY selector 为 NONE。未发现生产缺口，仅修改插件测试和计划，完整 QUALITY 留到提交边界。独立 Reviewer 已对固定两文件快照完成完整 review，未发现 P1/P2/P3，无需生产修正或追加测试；审查前后 SHA 一致，闭环完成。随后仅补记此结论，可执行测试快照不变。
 
-**9H 冻结确认清单（仅文档，待双方结论）。**复用[自动拣料联合确认 §9](../../integration/wms-joint-confirmation-automatic-picking.md#9-9h-正常补架的双方冻结确认清单)记录已确认基线、F1–F8 待确认项、双方证据和验收正反例；业务与 wire 真源仍为主合同 §9.2.3 的 9H 补充。既有 2026-09-23 Accepted 不覆盖新增引用和核销，草案、离线测试或收到成功响应均不升级确认状态。冻结前不再追加已覆盖的首次 READY 组合矩阵；下一最小实施片须先取得双方冻结证据，再同步两 operation 的 wire/SDK/converter/Adapter/OpenAPI 及自动/人工消费者。单次 successor 的新义务/旧退出/新 current 原子验收及持久 WAIT 在其后；现有 batch、Confirmation、FactProcessor、Transport/Motion/Allocation 所有权不变。本次只整理现有文档，不改生产代码或机器合同、不创建测试、不提交部署、不启用持久执行或真实派发。已完成讨论 JSON 解析/示例 UUIDv7 与时间戳、表格结构、新链接锚点及 diff 检查；独立文档 review 未发现 P1/P2/P3，审查前后三文件 SHA 一致，闭环完成。随后仅补记此结论，F1–F8 仍全部待双方冻结，正反例仍未执行，不作为 WMS 确认或联调通过证据。
+**9H 确认清单收窄（本轮仅文档）。**[联合确认 §9](../../integration/wms-joint-confirmation-automatic-picking.md#9-9h-正常补架的双方冻结确认清单)保留原导航，撤回旧 F1–F8 必选提案及新增字段 JSON，改为两项 WMS 补证、既有人工线基线和差额验收向量，不再要求双方确认 WES 私有 current 结构或先改两 operation 全部消费者。2026-09-23 Accepted 不自动覆盖未补证细节；已有文档 review/测试记录只证明各自当时快照，不作为外部接受证据。本次只修订主合同、插件设计、本计划和现有确认清单，不改生产代码、测试、机器合同或持久执行，不提交、不部署、不启用真实派发。
+
+**本轮文档闭环 review：**已交叉核对人工线基线、主合同/设计/计划/确认清单的状态出口、原子交接、唯一恢复 owner、测试范围及 WMS 补证门禁。修订中纠正人工线章节锚点，并补明首次 READY reader 的请求数量前提不能直接用于 successor；两点已闭合，未留文档一致性问题。既有离线快照字段仅保留实现说明，不升级为外部合同或生产字段；容量接续与核销仍为 C1/C2 待补证，不称联合验收通过。纯文档仅核对链接/锚点、表格、代码围栏、撤回提案残留及 diff，不重跑代码测试、QUALITY、HEAVY 或迁移。
 
 ## 变更面与文件归属
 
