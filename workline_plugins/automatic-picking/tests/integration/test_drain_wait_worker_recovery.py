@@ -188,7 +188,7 @@ async def checkpoint(sessions):
         }, root
 
 
-def start_worker(worker):
+def start_worker(worker, *, facts=False):
     original = subprocess.Popen
 
     def launch(command, **kwargs):
@@ -199,9 +199,14 @@ def start_worker(worker):
 
     # 只追加测试启动模块，继续使用既有真实进程、readiness 和清理机制。
     with patch.object(broker.subprocess, "Popen", launch):
-        worker.confirmation_process, worker._confirmation_log_file, worker.confirmation_log_path = (
-            worker._start_process(broker.CONFIRMATION_QUEUE, worker.hostname, "wes-drain-wait-")
-        )
+        if facts:
+            worker.process, worker._log_file, worker.log_path = worker._start_process(
+                "device-command", f"it-facts-{worker.run_id}@localhost", "wes-drain-facts-"
+            )
+        else:
+            worker.confirmation_process, worker._confirmation_log_file, worker.confirmation_log_path = (
+                worker._start_process(broker.CONFIRMATION_QUEUE, worker.hostname, "wes-drain-wait-")
+            )
     worker._capture_descendants()
 
 

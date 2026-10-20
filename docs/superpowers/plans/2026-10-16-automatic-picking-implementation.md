@@ -616,6 +616,14 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 **原离场进程片验证与闭环 review：**独占 PostgreSQL 17、每例干净迁移库和隔离 Redis 下，新增三阶段真实 worker/Beat 检查点 **1 passed，0 skipped**（35.51 秒），共享 runtime 的 WAIT/READY 两个直接消费者 **2 passed，0 skipped**（43.24 秒）；不重跑领域矩阵。外部设置 `TRANSPORT_TEST_POOL=solo`，三个 worker 仍显式 prefork。新增案例各阶段 runtime/Beat 发布/消费/结束记录均为三次，扫描结果 `0/2/0`、队列 `celery`；无成功时完整快照不变，匹配已发布成功后仅两个原 Motion 归档，再次重建后全快照不变，WMS 接收为空、对象集合不增长。拓扑/所有权 **14 passed**，两份 Python Ruff/格式、文档结构及 diff 检查通过，HEAVY selector 为 NONE。未发现生产缺口；独立 reviewer 核对三文件固定 SHA256、真实原 owner、活动依据和进程清理后完成一次 scoped full review，无 P1/P2/P3；首尾 HEAD 为 `604d79cf`，index 为空。review 后仅追加本文证据，可执行指纹不变。完整 QUALITY 留授权提交边界，未提交、未部署、不启用生产装配或真实派发；FactProcessor/回调链真实进程、C1/C2 外部证据及完整任务 11 均未由本片宣称完成。
 
+**9H FactProcessor 真实 worker/Beat 离线验收。**基于 `da68d7f2`，复用已退出 current、两轮根及原 drain 请求已清理的原离场检查点，新增 `integration/test_drain_fact_worker_recovery.py` 一个进程级用例。父进程通过既有夹具的 `process=False` 只准备原 Transport/Member 成功及已保存、尚无业务 `published_at/decision_digest` 的两个 TRANSPORT_RESULT；不直接调用 FactProcessor、插件应用或 batch 收口，不将该准备过程描述为回调链真实进程验收。
+
+测试子进程在原 departure 装配上接入真实 ScanFlow consumer、StaticPluginBinding 和 `build_execution_runtime`，暴露真实 execution 与 plugins，保留既有 worker 启动身份校验。两个独立 prefork 消费者共用隔离 broker 前缀，分别按正式路由消费 `celery` 与 `device-command`；只由既有 Beat 的计划扫描和事实扫描发布，不通过 harness.send 强行指定队列。先只运行计划消费者，核对未发布时完整快照不变；暂停其进程组后启动事实消费者，核对原 Motion 结果引用与 Evidence 摘要/发布时间持久落地、Motion 仍未归档；恢复计划消费者后才归档原 Motion。重建两类消费者及 Beat 后，两队列均实际消费而收口快照不变。子进程会话、任务身份、队列、发布进程组、消费 PID 与当前 FactProcessor 源码共同留证。
+
+`device-command` 会初始化设备 runtime，因此本用例显式沿用既有配置测试的超时输入及固定队列名，保持真实 fail-closed 初始化，不提供设备端点或业务映射。设备/WMS/Transport 派发任务均不进入 Beat 调度；测试 WMS adapter 禁止发送，HTTP 接收为空。每阶段保持原 Evidence/Action 集合不增长及原执行身份，FactProcessor 负责业务证据领取/应用/发布，batch 负责原 Motion 收口，Beat 只唤醒，原 Transport 和 WMS 容量账 owner 不变。不改生产代码、共享 harness、DTO/schema 或既有 publisher 的唤醒返回，不新增状态、timer 或 bin-line-common；不接回调链、完成确认、已接纳后 FAILED 重决策、生产装配或真实派发。C1/C2 继续待补证，领取后崩溃/租约回收及完整任务 11 未由本片宣称完成。
+
+本片最终验证：新增真实进程案例 `1 passed`（37.92 秒），共享装配的 WAIT、successor READY、原 departure 三个直接消费者回归 `3 passed`（82.51 秒），测试拓扑/所有权 `14 passed`，均无 skip；三个 Python 文件的 Ruff 检查和格式检查、`git diff --check` 通过，插件测试对应 HEAVY selector 为 NONE。新案例两轮共四个 runtime，计划任务结果为 `[0, 2, 0]`、事实任务为 `[2, 0, 0]`，两队列均有真实消费与重建防重证据。独立只读 scoped full review 无 P1/P2/P3 finding，核对期间四文件快照不变。验证基线为 `da68d7f2`，index 为空；未提交、部署或启用生产装配，完整 QUALITY 留待获准提交时由门禁执行。该结论只覆盖既有离场义务的发布与收口，不包含回调链、领取后崩溃/租约回收或完整任务 11 验收；C1/C2 继续待 WMS 补证。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

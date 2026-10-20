@@ -14,6 +14,7 @@ from tests.support import transport_broker
 
 FIXTURE = json.loads(Path(os.environ["AUTOMATIC_PICKING_WAIT_FIXTURE"]).read_text())
 TASK = "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch"
+FACT_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
 
 
 def record(kind, **values):
@@ -140,7 +141,32 @@ def build_runtime(*, session_factory, **kwargs):
     )
     works = WorkRepository()
     batch = AutomaticPickingBatchDriver(works, FeedRepository(), None, None, None, drain_flow=drain)
-    plugin = build_plugin(scan_flow=None, batch_driver=batch, works=works)
+    scan = None
+    if FIXTURE.get("fact_processing"):
+        from automatic_picking.application.scan_flow import AutomaticPickingScanFlow
+
+        scan = AutomaticPickingScanFlow(works, batch.feeds, None, kwargs["device_command_service"], batch_driver=batch)
+    plugin = build_plugin(scan_flow=scan, batch_driver=batch, works=works)
+    execution = None
+    if FIXTURE.get("fact_processing"):
+        from src.app.execution.composition import build_execution_runtime
+        from src.app.execution.plugin_binding import StaticPluginBinding
+        from src.core.task_queue_gateway import task_queue_gateway
+
+        class OfflineWms:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("offline FactProcessor must not dispatch WMS")
+
+        execution = build_execution_runtime(
+            session_factory=session_factory,
+            plugin_binding=StaticPluginBinding((plugin.runtime_binding,)),
+            device_command_service=kwargs["device_command_service"],
+            transport_service=kwargs["transport_runtime"].service,
+            position_projection_service=kwargs["transport_runtime"].position_projection_service,
+            wms_confirmation_adapter=OfflineWms(),
+            wms_confirmation_follow_up_planner=None,
+            task_queue_gateway=task_queue_gateway,
+        )
     record(
         "runtime",
         plugin=plugin.plugin_key,
@@ -148,11 +174,15 @@ def build_runtime(*, session_factory, **kwargs):
         source=inspect.getfile(DrainReplenishmentReader),
         inbound_source=inspect.getfile(type(inbound)) if inbound is not None else None,
         departure_source=inspect.getfile(type(inbound.departure)) if inbound and inbound.departure else None,
+        fact_source=inspect.getfile(type(execution.fact_processor)) if execution else None,
+        consumer_queue=os.environ["CELERY_WORKER_QUEUES"],
     )
     return SimpleNamespace(
+        execution=execution,
+        plugins=(plugin,),
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory, plugins=(plugin,), transport_creator=None
-        )
+        ),
     )
 
 
@@ -164,3 +194,6 @@ assert task_routes[TASK]["queue"] == "celery"
 celery_app.conf.beat_schedule = {
     "activate-picking-task-plans-batch": beat_schedule["activate-picking-task-plans-batch"]
 }
+if FIXTURE.get("fact_processing"):
+    assert task_routes[FACT_TASK]["queue"] == "device-command"
+    celery_app.conf.beat_schedule["process-execution-facts-batch"] = beat_schedule["process-execution-facts-batch"]
