@@ -624,6 +624,16 @@ G6 获批后再做任务 5 的首批确认小片；任务 6 的纯规则及来�
 
 本片最终验证：新增真实进程案例 `1 passed`（37.92 秒），共享装配的 WAIT、successor READY、原 departure 三个直接消费者回归 `3 passed`（82.51 秒），测试拓扑/所有权 `14 passed`，均无 skip；三个 Python 文件的 Ruff 检查和格式检查、`git diff --check` 通过，插件测试对应 HEAVY selector 为 NONE。新案例两轮共四个 runtime，计划任务结果为 `[0, 2, 0]`、事实任务为 `[2, 0, 0]`，两队列均有真实消费与重建防重证据。独立只读 scoped full review 无 P1/P2/P3 finding，核对期间四文件快照不变。验证基线为 `da68d7f2`，index 为空；未提交、部署或启用生产装配，完整 QUALITY 留待获准提交时由门禁执行。该结论只覆盖既有离场义务的发布与收口，不包含回调链、领取后崩溃/租约回收或完整任务 11 验收；C1/C2 继续待 WMS 补证。
 
+**9H 原 CTU03 回调链真实进程离线验收。**基于 `18f7ff5d`，复用 current 已退出、两轮根及原请求已清理、无 EXECUTING 的两个原 CTU03 检查点，新增一个 `integration/test_drain_callback_worker_recovery.py` 用例及仅供测试子进程加载的 `drain_callback_http_runtime.py`。父进程只准备原 ACCEPTED 动作和显式结果正文；不调用回调保存、Transport Evidence 应用、outcome 发布、FactProcessor 或 batch 业务推进。成功 wire 正文按现有 parser 省略 `position_unknown`，不把内部规范化的 false 当作合法 wire 值；初收为 `202/RECEIVED`，同身份同正文重放为 `200/DUPLICATE`。
+
+HTTP 子进程通过实际本地 TCP、Uvicorn、现有 events 路由及真实 Transport runtime 接收。先在消费者未启动时核对 Receipt/Evidence 已提交、原动作和 Motion 未提前成功/收口；重建 HTTP 子进程并重放后，原业务快照不变。随后三个独立 prefork 消费者共用隔离 broker 前缀，依正式路由分阶段启动：`wms-fulfillment` 应用原 Transport 结果并经 `InstalledPluginTransportOutcomePublisher` 形成唯一业务 Evidence，`device-command` 的真实 FactProcessor 应用并发布，最后 `celery` 经原 batch/drain/departure owner 归档 Motion。测试 runtime 补装现有 outcome publisher；只在显式 callback 测试标志下丢弃加速通知，真实 Beat 仅调度上述四类持久扫描，证明接续不依赖通知。各阶段核对业务记录集合、冻结正文及原因果身份；业务变化允许对应审计时间更新，不豁免其他业务字段。第二轮重建 HTTP、三类消费者及 Beat 后重放，要求四类任务均实际消费，闭合快照不变。
+
+恢复 owner 不变：入口事务保存原 Receipt/Transport Evidence；TransportService 负责 Evidence 应用及 outcome 发布进度；冻结插件负责形成业务 Evidence，FactProcessor 负责业务应用/发布；batch 负责原 Motion 收口，Beat 只唤醒。测试归插件 integration owner，不重跑 FIFO、多架补架、WAIT、回库竞争或供应商业务矩阵，不修改共享 harness、生产代码、DTO/schema、设备映射或生产装配。测试服务只接收显式回调，WMS mock 只检测禁止的外发；不调度 WMS/Transport/设备派发，不创建新动作，不接完成确认、已接纳后 FAILED 重决策或 bin-line-common。C1/C2 仍待 WMS 补证，本片不证明 WMS 容量账或现场物理结果，不将通知丢失/阶段重启等同领取后崩溃/租约回收或完整任务 11。
+
+本片最终聚焦验证：新增回调链真实进程用例 `1 passed`（37.48 秒），共享 runtime 的 WAIT、successor READY、原离场及 FactProcessor 四个直接消费者回归 `4 passed`（116.26 秒），拓扑/所有权 `14 passed`（1.08 秒），均无 skip。实际留证为三个 HTTP 进程、六个 worker runtime，三个正式队列，四类扫描的发布/消费/结束各八条，四类任务结果各为 `[2, 0]`；测试没有要求固定 Beat tick 数。三个 Python 文件 Ruff/格式检查、文档结构及 diff 检查通过，HEAVY selector 为 NONE。未发现生产缺口；未改 publisher 返回 false 的既有语义，业务 Evidence 继续由 FactProcessor 持久扫描接续。完整 QUALITY 留授权提交边界，WMS C1/C2 及未覆盖边界保持原状态。
+
+独立只读 scoped full review 已完成，无 P1/P2/P3 finding：核对真实 HTTP 入口、三个正式队列、原 publisher、分阶段发布/收口、额外进程清理和直接测试 owner；首尾 HEAD 均为 `18f7ff5d`、index 为空、四文件 SHA256 一致。review 后只追加本段结论，可执行指纹不变。未提交、未部署、不启用生产装配或真实派发，未把本片扩展为回调通用冲突矩阵、领取后崩溃/租约回收或完整任务 11 验收。
+
 ## 变更面与文件归属
 
 下表为计划内目标。路径缩写仅用于后续任务：`A=src/app/wms_adapter/outbound_picking/`，

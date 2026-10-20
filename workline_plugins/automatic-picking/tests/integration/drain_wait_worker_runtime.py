@@ -15,6 +15,8 @@ from tests.support import transport_broker
 FIXTURE = json.loads(Path(os.environ["AUTOMATIC_PICKING_WAIT_FIXTURE"]).read_text())
 TASK = "src.celery_app.tasks.picking_task_plan.activate_picking_task_plans_batch"
 FACT_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
+TRANSPORT_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
+OUTCOME_TASK = "src.celery_app.tasks.transport.publish_transport_outcomes_batch"
 
 
 def record(kind, **values):
@@ -167,6 +169,11 @@ def build_runtime(*, session_factory, **kwargs):
             wms_confirmation_follow_up_planner=None,
             task_queue_gateway=task_queue_gateway,
         )
+    outcome_publisher = None
+    if FIXTURE.get("callback_processing"):
+        from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher
+
+        outcome_publisher = InstalledPluginTransportOutcomePublisher(session_factory, (plugin,))
     record(
         "runtime",
         plugin=plugin.plugin_key,
@@ -175,11 +182,13 @@ def build_runtime(*, session_factory, **kwargs):
         inbound_source=inspect.getfile(type(inbound)) if inbound is not None else None,
         departure_source=inspect.getfile(type(inbound.departure)) if inbound and inbound.departure else None,
         fact_source=inspect.getfile(type(execution.fact_processor)) if execution else None,
+        outcome_source=inspect.getfile(type(outcome_publisher)) if outcome_publisher else None,
         consumer_queue=os.environ["CELERY_WORKER_QUEUES"],
     )
     return SimpleNamespace(
         execution=execution,
         plugins=(plugin,),
+        transport_outcome_publisher=outcome_publisher,
         picking_task_plan_activation_service=PickingTaskPlanActivationService(
             session_factory, plugins=(plugin,), transport_creator=None
         ),
@@ -197,3 +206,23 @@ celery_app.conf.beat_schedule = {
 if FIXTURE.get("fact_processing"):
     assert task_routes[FACT_TASK]["queue"] == "device-command"
     celery_app.conf.beat_schedule["process-execution-facts-batch"] = beat_schedule["process-execution-facts-batch"]
+if FIXTURE.get("callback_processing"):
+    from functools import partial
+
+    from src.core.task_queue_gateway import task_queue_gateway
+
+    # 显式丢弃测试子进程的加速通知，让真实 Beat 从持久记录恢复。
+    for method in (
+        "enqueue_transport_evidence",
+        "enqueue_transport_outcomes",
+        "enqueue_transport_debug",
+        "enqueue_execution_facts",
+        "enqueue_picking_task_plans",
+    ):
+        setattr(task_queue_gateway, method, partial(record, "wakeup_dropped", method=method))
+    for name, task in (
+        ("process-transport-evidence-batch", TRANSPORT_TASK),
+        ("publish-transport-outcomes-batch", OUTCOME_TASK),
+    ):
+        assert task_routes[task]["queue"] == "wms-fulfillment"
+        celery_app.conf.beat_schedule[name] = beat_schedule[name]
