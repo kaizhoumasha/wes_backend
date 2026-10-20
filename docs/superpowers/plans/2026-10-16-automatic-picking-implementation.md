@@ -721,6 +721,16 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 最终实际装配 PostgreSQL 文件 `4 passed`（新增正常投料到 Work 1 项、既有装配 3 项），测试拓扑/所有权 `14 passed`，均无 skip；Ruff check/format 和 diff 检查通过，未暂存 selector 为 NONE。固定两文件快照的独立闭环 review 未发现有证据且可达的 P1/P2/P3 问题；仅改变插件集成测试及本文，核心 HEAVY、完整 QUALITY 和未改动 9H 矩阵不重复运行。C1/C2 容量接续与核销仍待 WMS 补证；不涉及 PkgID、机械臂映射、首批期限、完成确认或已接纳后 FAILED 重决策，不以此片证明任务 11 整体或现场闭环完成。
 
+### Work WAIT 经宿主持久扫描续问：PostgreSQL 验收（本轮未提交）
+
+以 `7ecfc802` 为基线，只在现有 `tests/integration/test_work_and_task_progress_postgresql.py` 新增一个入口验收，不改生产代码、schema、DTO、配置或共享测试 helper。起点为业务依据仍有效的 Work；用实际工厂创建原请求，以显式隔离 WAIT、既有 typed parser/Confirmation/Evidence 和 FactProcessor 建立已应用发布的确定 WAIT 检查点，不重做投料/扫码或 WMS 派发。
+
+后续仅经 `picking_task_plan_activation_service.activate_batch()` 调用实际宿主持久扫描，不直接调用插件推进方法。按已有测试时钟端口验证：固定到期点前反复扫描保留原 WAIT/operation/response 引用；到期时创建唯一新请求并切换当前 Work；再次扫描、重建装配及更晚扫描不重复创建。原 task/bin/feed、首次扫码 Evidence 与 scanned_at 不变，旧确定结果保留，新请求保持 PENDING，Work 停在新的 PLAN_PENDING，不授予取盘资格、不创建 Command/Transport。
+
+恢复 owner 仍为宿主持久扫描发现工作线，自动 batch/WorkFlow 在本地事务内决定到期续问，Confirmation 负责已建请求的可靠交付，FactProcessor 负责结果应用发布；没有新 timer、队列、状态或通用恢复模型。测试复用同一生产工厂、真实本地服务和逐例隔离迁移 harness，关闭队列加速通知、禁止 Transport provider 发送；不启动 worker/Beat、WMS 派发或生产实例。
+
+新增 PostgreSQL 用例 `1 passed`，直接 Work/batch FAST `11 passed`，测试拓扑/所有权 `14 passed`，均无 skip；Ruff check/format、文档结构与 diff 检查通过，未暂存 selector 为 NONE。固定两文件快照的独立闭环 review 未发现有证据且可达的 P1/P2/P3 问题；本片只证明既有 Work 的恢复入口，不扩大为新计划准入或完整投料验收。该差额不重复既有 Work worker 响应交付/事务矩阵、9H 或共享租约/派发验收；完整 QUALITY 留获授权提交时由 hook 执行。C1/C2 仍待补证，不接机械臂、完成确认、已接纳后 FAILED 重决策或 bin-line-common，不以本片证明任务 11 或现场业务整体完成。
+
 ## 实施切片
 
 ### 任务 0：固定执行范围和证据

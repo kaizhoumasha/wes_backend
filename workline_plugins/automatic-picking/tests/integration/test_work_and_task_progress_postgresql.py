@@ -753,3 +753,148 @@ async def test_published_transport_rejection_stops_only_its_feed_without_reservi
         assert await flow.advance_in_session(db, line=line, feed=saved, ready=(await repo.inbound(db, saved))[1]) == 1
         assert saved.phase == "RECONCILING" and saved.transport_task_id == original
         assert not await repo.channel_busy(db, line.id)
+
+
+async def test_due_work_wait_recovers_through_actual_host_scan_once(database, monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+
+    from src.app.device.models.command import DeviceCommand
+    from src.app.device.services.device_command_service import DeviceCommandService
+    from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
+    from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
+    from src.app.transport.models import TransportTask
+    from src.app.transport.repository import TransportRepository
+    from src.app.transport.service import TransportService
+    from src.app.wms_adapter.outbound_picking.work_plan_wire import (
+        parse_bin_work_plan_request,
+        parse_bin_work_plan_response,
+    )
+
+    _, sessions = database
+    task, line, feed, scan, now = await seed(sessions)
+    monkeypatch.setattr("deployment.plugin_composition.task_queue_gateway", None)
+    provider = N(submit=AsyncMock(side_effect=AssertionError("offline must not dispatch")))
+    transport = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
+
+    def assembled(at):
+        app = build_deployment_runtime(
+            session_factory=sessions,
+            enabled_plugin_keys=("automatic-picking",),
+            transport_runtime=N(service=transport, position_projection_service=object(), client=object()),
+            device_command_service=DeviceCommandService(session_factory=sessions),
+        )
+        app.plugins[0].picking_task_batch_driver.clock = lambda: at
+        return app
+
+    app = assembled(now)
+    async with sessions.begin() as db:
+        live = await db.get(WorkLine, line.id)
+        live.is_active = True
+        live.position_bindings = {
+            "FIVE_RACK": {"location_type": "RACK_POSITION", "location_id": "WORK-ONLY-FIVE"},
+            "OUTLET": {"location_type": "HANDOFF_POSITION", "location_id": "WORK-ONLY-OUTLET"},
+        }
+        # 已交接的投料检查点；本片只恢复当前 Work，不重做投料/扫码。
+        (await db.get(AutomaticPickingFeed, feed.id)).archived_at = now
+        work = await app.plugins[0].picking_task_batch_driver.work_flow.admit_in_session(
+            db,
+            line_id=line.id,
+            task=task,
+            feed=feed,
+            bin_code="A123456789",
+            evidence_id=scan.id,
+            scanned_at=123,
+            now=now,
+        )
+        work_id, original_op = work.id, work.operation_id
+        request = (await db.scalars(select(WmsConfirmation))).one()
+        payload = {
+            "operation_id": original_op,
+            "code": "DECIDED",
+            "timestamp": 123,
+            "data": {"result": "WAIT", "retry_after_ms": 1000},
+        }
+        parse_bin_work_plan_response(200, payload, request=parse_bin_work_plan_request(request.request_payload))
+        accepted = await InboundEvidenceService().accept(
+            db,
+            kind="WMS_RESULT",
+            source_identity=request.operation + ":" + original_op,
+            normalized_payload=payload,
+            received_at=now,
+            picking_task_id=task.id,
+            workline_id=line.id,
+            operation=request.operation,
+            operation_id=original_op,
+            apply_status="APPLIED",
+        )
+        result_id = accepted.evidence.id
+        await WmsConfirmationLifecycleService().complete(
+            db, request, response_evidence_id=result_id, response_result="WAIT", completed_at=now
+        )
+    assert await app.execution.fact_processor.process_batch() == 1
+    async with sessions() as db:
+        saved = await db.get(AutomaticPickingWork, work_id)
+        due = saved.retry_at
+        assert saved.phase == "WAIT" and due == now + timedelta(milliseconds=1000)
+        assert saved.response_evidence_id == result_id
+        assert (await db.get(InboundEvidence, result_id)).published_at is not None
+    # 只改测试时钟，宿主扫描真实的当前工作线；不直接调用 batch/Work 的推进方法。
+    early = assembled(due - timedelta(microseconds=1))
+    assert await early.picking_task_plan_activation_service.activate_batch() == 0
+    assert await early.picking_task_plan_activation_service.activate_batch() == 0
+    async with sessions() as db:
+        saved = await db.get(AutomaticPickingWork, work_id)
+        assert (saved.phase, saved.operation_id, saved.retry_at, saved.response_evidence_id) == (
+            "WAIT",
+            original_op,
+            due,
+            result_id,
+        )
+        assert len((await db.scalars(select(WmsConfirmation))).all()) == 1
+    due_app = assembled(due)
+    assert await due_app.picking_task_plan_activation_service.activate_batch() == 1
+    async with sessions() as db:
+        saved = (await db.scalars(select(AutomaticPickingWork))).one()
+        assert saved.id == work_id and saved.operation_id != original_op
+        assert saved.phase == "PLAN_PENDING" and saved.retry_at is None and saved.response_evidence_id is None
+        assert (
+            saved.picking_task_id,
+            saved.workline_id,
+            saved.feed_id,
+            saved.bin_code,
+            saved.scan2_evidence_id,
+            saved.scanned_at,
+        ) == (task.id, line.id, feed.id, "A123456789", scan.id, 123)
+        requests = (await db.scalars(select(WmsConfirmation).order_by(WmsConfirmation.id))).all()
+        assert len(requests) == 2
+        original, current = requests
+        assert original.operation_id == original_op and original.status == "COMPLETED"
+        assert original.response_evidence_id == result_id and original.completed_at == now
+        assert current.operation_id == saved.operation_id and current.status == "PENDING"
+        assert current.picking_task_id == task.id and current.response_evidence_id is None
+        assert (
+            current.request_payload["data"]
+            == original.request_payload["data"]
+            == {"task_id": task.task_id, "bin_code": "A123456789", "scanned_at": 123}
+        )
+        current_identity = current.id, current.operation_id, current.request_digest, current.request_payload
+    assert await due_app.picking_task_plan_activation_service.activate_batch() == 0
+    restarted = assembled(due + timedelta(seconds=1))
+    assert await restarted.picking_task_plan_activation_service.activate_batch() == 0
+    assert await restarted.picking_task_plan_activation_service.activate_batch() == 0
+    async with sessions() as db:
+        saved = (await db.scalars(select(AutomaticPickingWork))).one()
+        requests = (await db.scalars(select(WmsConfirmation).order_by(WmsConfirmation.id))).all()
+        assert len(requests) == 2
+        current = requests[-1]
+        assert (current.id, current.operation_id, current.request_digest, current.request_payload) == current_identity
+        assert current.status == "PENDING" and current.response_evidence_id is None
+        assert (saved.phase, saved.operation_id, saved.scanned_at) == ("PLAN_PENDING", current.operation_id, 123)
+        assert saved.authorization_evidence_id is None and saved.retry_at is None and saved.response_evidence_id is None
+        assert (await db.get(InboundEvidence, result_id)).published_at is not None
+        assert not (await db.scalars(select(TransportTask))).all()
+        assert not (await db.scalars(select(DeviceCommand))).all()
+    provider.submit.assert_not_awaited()
+    assert not any(
+        record.name.endswith("picking_task_plan_activation") and record.levelno >= 40 for record in caplog.records
+    ), "不能把宿主吞掉异常后的返回0当作防重通过"
