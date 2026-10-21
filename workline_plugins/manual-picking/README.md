@@ -59,7 +59,7 @@
 
 双向验证的收敛结论（2026-09-19 重新对账）：
 
-- `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`），不引入新窗口表、不维护占用计数器，capacity 解释完全交给 ECS/RCS。
+- `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`）。`workline_positions.capacity` 限制 WES 本地滚动进场下发窗口；真实物理容量、车辆接纳、排队和互斥由 ECS/RCS 裁决。
 - `MANUAL_PICK_NG` 持久化已落地；Passage 保留本地准入 `admission_operation_id`，取消跨 Passage 的 `(task_id, bin_code)` 终态唯一索引；合同 §6 现场物理验收仍 `NOT ACCEPTED`。
 - 集成测试通过 `scripts/run-integration-tests.sh` + `RUN_WORKLINE_INTEGRATION=1` 统一入口接入，不依赖旧的"本机通过代表现场"假设。
 
@@ -70,7 +70,7 @@
 `TRANSFER_RACK`、`INLET`、`OUTLET`，每个插槽绑定一个本线实际资源。
 
 五层货架区对 WES 只有一个绑定工作位；运输目标使用冻结绑定的实际 `location_id`。
-`workline_positions.capacity` 不用于 CTU01 物理准入。RCS 负责 AGV 接纳、排队、互斥和自主进位；WES 只按实际到位事实推进相应货架的 SOP。实际工作位编码与货架编号是不同身份。
+`workline_positions.capacity` 用于 WES 本地滚动进场下发窗口，不用于 CTU01 物理准入。RCS 负责 AGV 接纳、排队、互斥和自主进位；WES 按窗口准入下发，并按实际到位事实推进相应货架的 SOP。实际工作位编码与货架编号是不同身份。
 
 后续业务直接引用具名对象，例如 `from manual_picking.definition import SCAN2, FIVE_RACK`；
 需要字符串的现有端口使用 `SCAN2.role_key` 或 `FIVE_RACK.slot_key`。
