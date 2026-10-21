@@ -1,8 +1,8 @@
-"""普通目标已权威就绪后的 PUT 创建；设备读口/映射必填，不安装生产入口。"""
+"""普通/ROTATE 目标已权威就绪后的 PUT 创建；仅显式装配，不接 REPLACE。"""
 
 from dataclasses import dataclass
 
-from wes_plugin_sdk import PickingBinCell, PickingMaterialAccept, PickingTargetRackSlot
+from wes_plugin_sdk import PickingBinCell, PickingMaterialAccept, PickingTargetRackSlot, PickingTargetRotate
 
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest
 
@@ -25,7 +25,8 @@ class ReadyTarget:
 
 
 class AutomaticPickingTargetFlow:
-    def __init__(self, repository, commands, material_reader, target_reader, request_factory):
+    def __init__(self, repository, commands, material_reader, target_reader, request_factory, *, rotation_flow=None):
+        self.rotation_flow = rotation_flow
         self.repository, self.commands = repository, commands
         self.material_reader, self.target_reader, self.request_factory = material_reader, target_reader, request_factory
 
@@ -82,7 +83,17 @@ class AutomaticPickingTargetFlow:
             ):
                 raise ValueError("PUT requires current published ACCEPT for this BIN_CELL material")
             accepted = snapshot.outcome.result
-            if accepted.target_preparation is not None or not await self.repository.target_allowed(db, work):
+            if not await self.repository.target_allowed(db, work):
+                continue
+            reader = self.target_reader
+            if type(accepted.target_preparation) is PickingTargetRotate:
+                if self.rotation_flow is None:
+                    continue
+                count += await self.rotation_flow.advance_in_session(
+                    db, line_id=line_id, now=now, pickup_id=pickup.pickup_id
+                )
+                reader = self.rotation_flow
+            elif accepted.target_preparation is not None:
                 continue
             # Work 当前栈顶可能已属于 M2；PUT 只核对本盘冻结来源和原 Command。
             source_fact = await self.repository.physical_reader.read_in_session(
@@ -101,7 +112,7 @@ class AutomaticPickingTargetFlow:
                 or removed.apply_status != "APPLIED"
             ):
                 raise ValueError("removed fact differs from Pickup source Command")
-            observed = await self.target_reader.read_in_session(
+            observed = await reader.read_in_session(
                 db,
                 workline_id=line_id,
                 material_execution_id=execution.id,
@@ -136,3 +147,8 @@ class AutomaticPickingTargetFlow:
             await db.flush()
             count += 1
         return count
+
+    async def apply_transport_result_in_session(self, db, *, line, evidence):
+        if self.rotation_flow is None:
+            return "WAIT_FOR_EXIT"
+        return await self.rotation_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)

@@ -78,10 +78,12 @@ class AutomaticPickingTargetRotationFlow:
             raise ValueError("target rotation requires this material's published ACCEPT identity")
         return work, pickup, execution, snapshot.outcome.result
 
-    async def advance_in_session(self, db, *, line_id, now):  # noqa: ARG002 - batch owner 的固定入口
+    async def advance_in_session(self, db, *, line_id, now, pickup_id=None):  # noqa: ARG002 - batch owner 的固定入口
         count = 0
-        for pickup_id in await self.repository.target_pending(db, line_id):
-            work, pickup, execution, accepted = await self._context(db, pickup_id, line_id)
+        for current_id in await self.repository.target_pending(db, line_id):
+            if pickup_id is not None and current_id != pickup_id:
+                continue
+            work, pickup, execution, accepted = await self._context(db, current_id, line_id)
             if pickup.target_rotation_transport_task_id is not None:
                 await self.repository.transport(db, work, pickup, accepted.target_locator)
                 continue

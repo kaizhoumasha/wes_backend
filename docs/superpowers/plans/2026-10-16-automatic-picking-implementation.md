@@ -894,9 +894,19 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 恢复仍由现有 batch 的 `target_flow` 扫描当前未闭合 Pickup；先校验原引用，再判断新建资格，不因读口消失、取消或未知结果换身份。Transport owner 负责原动作可靠履约和位置投影；插件固定目标 ROTATE step 经现有 publisher / ScanFlow / FactProcessor 留存、应用和发布结果；只读 ready 口要求原动作当前版本的已发布成功 Evidence、精确目标架/面/位置及原因果投影同时匹配。当前已准备就绪不保存另一份状态，错误、未知、未发布、旧版本或投影被后续动作覆盖均不放行。
 
-测试主 owner 为 `T/integration/test_target_rotation_postgresql.py`：20 项 PostgreSQL 验收通过（唯一创建/关联、并发、事务中断回滚、原身份重建恢复、回调早于 ACK、负向结果、Fact 发布边界、重放与直接取消、迁移往返/降级保护）；位置和结果是测试权威输入。插件 FAST 252 项、拓扑/所有权 14 项、直接消费者 PostgreSQL 回归 16 项和 selector 所选核心 HEAVY 8 项通过；不重跑 9H 或共享机制矩阵。停在 `ReadyTarget` 可读取，不创建 PUT/报告，不关闭单盘；现有普通目标 PUT 路径仍拒绝 ROTATE/REPLACE，后续需单独接续，不把此片记作目标 ROTATE→PUT 完成。生产 composition 未启用，实际位置读口仍待相应 G3 合同；扫码关联 G2、机械臂映射 G3、PkgID G5 各限制依赖路径，C1/C2 只限制对应真实容量路径，不阻塞此离线片。REPLACE、机械臂、完成确认及已接纳后 FAILED 重决策均不纳入。
+测试主 owner 为 `T/integration/test_target_rotation_postgresql.py`：20 项 PostgreSQL 验收通过（唯一创建/关联、并发、事务中断回滚、原身份重建恢复、回调早于 ACK、负向结果、Fact 发布边界、重放与直接取消、迁移往返/降级保护）；位置和结果是测试权威输入。插件 FAST 252 项、拓扑/所有权 14 项、直接消费者 PostgreSQL 回归 16 项和 selector 所选核心 HEAVY 8 项通过；不重跑 9H 或共享机制矩阵。停在 `ReadyTarget` 可读取，不创建 PUT/报告，不关闭单盘；该准备片的普通目标 PUT 路径仍拒绝 ROTATE/REPLACE，不把该片记作目标 ROTATE→PUT 完成；接续进度见下述离线接缝片。生产 composition 未启用，实际位置读口仍待相应 G3 合同；扫码关联 G2、机械臂映射 G3、PkgID G5 各限制依赖路径，C1/C2 只限制对应真实容量路径，不阻塞此离线片。REPLACE、机械臂、完成确认及已接纳后 FAILED 重决策均不纳入。
 
 本片独立只读 full review 已闭合，无 P1/P2/P3 finding；评审前后基线 HEAD 与 9 文件 SHA256 一致，未发现额外模型、闭合历史运行依赖或业务进入基础层。证据：新增 PG 20 项（72.37 秒）、直接消费者 PG 16 项（95.73 秒）、所选核心 HEAVY 8 项（69.73 秒）均 0 skipped；插件 FAST 252 项、拓扑/所有权 14 项、7 个 Python 文件 Ruff/格式及 diff 检查通过。review 后仅追加此人类文档记录，可执行快照不变。验收收口未发现生产或迁移缺陷。提交门禁补齐 `tests/scripts/test_select_heavy_tests.py` 的新增 revision 精确清单一项，保留原断言；对应清单与隔离 runner 聚焦回归 14 项通过，未修改 runner。原插件可执行快照不变，复用上述聚焦/迁移/HEAVY 证据；该机械补齐另做定向闭环审阅。本次已授权提交，暂存范围限定本片 10 文件，按 staged selector 对照，由 commit hook 执行完整 QUALITY；提交门禁结果以对应 Git 提交输出为准。暂不部署、不启用生产装配或真实派发。
+
+**ROTATE→7A PUT 离线接缝片（实施基线 `4097a29b`，本轮按授权提交）：**`P/application/target_preparation.py` 显式注入既有 rotation flow；普通目标沿原 reader，ROTATE 只沿本盘原 ROTATE reader，未装配时延期，REPLACE 仍不准入。现有 batch 的唯一 `target_flow` 同时保留 ROTATE 结果消费与 PUT 推进，原 ScanFlow/FactProcessor 路由不改。rotation 推进可限定精确 Pickup，先过滤其他盘再读取其上下文，避免恢复已有 PUT 时重新引入其他盘 ACCEPT/映射依赖；不新增通用协调器、worker 或状态。
+
+原 PUT Command 恢复分支仍先于 ACCEPT、取出和准备读口；新 PUT 仍要求本盘已发布 ACCEPT、直接来源未取消、原来源 Command 匹配的可靠取出 Evidence，以及原 ROTATE 当前版本已发布成功与当前原因果位置同时成立。Transport 成功/插件事实未发布时不放行，不将普通 reader 的 ready 当作 ROTATE 完成。继续复用 7A 的 WorkLine→Work→Pickup 事务与 DeviceCommandService，同事务创建 PUT 并保存 `put_command_code`，不改原 Command/MaterialExecution 身份，不重问 material.decide，不改变 Work 后继授权或跨臂准入规则。
+
+本片主要 PostgreSQL owner 为 `T/integration/test_rotated_target_put_postgresql.py`，仅验接缝：组合 batch/FactProcessor 发布交接、目标与可靠取出门禁、并发、创建/关联故障回滚、旧结果重放、原 Command 在读口失效/取消后恢复、错误/未知结果不得回退普通 reader、未装配消费者延期及 REPLACE 拒绝。fixture 明确提供已完成源事实与测试专用完整请求，不解释机械臂报文或生产成功条件；源事实的发布和决定摘要一并构造，避免将其空测试载荷重送其他域；FactProcessor 的处理数不等于成功发布数，延期按持久字段验收。7A/ROTATE 原矩阵仍归原 owner，只做直接回归；7B/7C 仅核对构造端口的直接消费者，不重复其报告/关闭矩阵或 9H、共享机制/worker 验收。
+
+无需新 schema、迁移、DTO、SDK 或 WMS operation，生产装配不变；只冻结本地 PUT Command，停在待执行，不应用 PUT 成功、不创建报告或关闭单盘，不接 REPLACE/机械臂/真实派发。G3 继续限制真实目标/来源映射与成功后置条件，G2 限制真实扫码/Command 关联，G5 限制新报告权威身份及不可逆取盘生产闭环；本片已给定精确身份与测试参数，不以未决值补默认。C1/C2 仍只限制容量接续与回库核销对应路径，不扩大为本片门禁。
+
+本接缝片最终验证：新增 PostgreSQL 13 passed（54.13 秒）、普通 PUT/原 ROTATE 及 7B/7C 直接消费者 PostgreSQL 17 passed（65.93 秒），均 0 skipped；插件 FAST 252 passed，拓扑/测试所有权 14 passed，3 文件 Ruff/格式与 diff 检查通过，HEAVY selector 为 NONE。初轮失败归类为测试专用源结果被重复消费及把 FactProcessor 处理数误作成功发布数，修正夹具时保留既有数据库发布约束、可靠取出/成功结果守卫；不计为业务回归通过证据。独立只读 full review 核对 HEAD 与 4 文件 SHA256、直接/间接 owner 和验收边界，无 P1/P2/P3 finding；评审后仅追加本段人类文档，可执行快照不变。本次按授权仅提交两个目标 flow、接缝 PostgreSQL owner 与本文共 4 文件；可执行快照沿用已完成闭环 review 的指纹，staged selector 对照后由 commit hook 运行完整 QUALITY，提交门禁结果以对应 Git 提交输出为准。不部署、不启用生产装配或真实派发，不创建报告或关闭单盘，不接 REPLACE/机械臂，不宣称任务 7/11 或现场完成。
 
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
