@@ -890,6 +890,14 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 **当前离线进度：**7A 普通目标已就绪后的 PUT 创建、7B 确定位置/报告义务、7C 报告确认后的关闭与 Work 续接已分别验收。以下复选框仍代表完整任务（含其余目标准备/来源分支与生产合同准入），不把本轮离线通过视为任务 7 整体完成。实际关闭验收 owner 为 `T/integration/test_material_close_postgresql.py`。
 
+**目标 ROTATE 离线准备片（实施基线 `0a3ef706`，本轮按授权提交）：**已发布本盘 BIN_CELL ACCEPT、精确位置/当前架面和完整参数显式给定时，`P/application/target_rotation.py` 经现有 `ReliableRackTransportCreator.create_rotate` 创建 CTU02。原 Transport、Binding 与 Pickup 的可空唯一 FK `target_rotation_transport_task_id` 同事务成立；迁移 `f489f59e9b22` 承接 `c094b575576f`，有当前引用时拒绝有损降级。不新增模型或业务状态，不重新 decide 已确定资格，不复用 Work 后继授权解释本盘。
+
+恢复仍由现有 batch 的 `target_flow` 扫描当前未闭合 Pickup；先校验原引用，再判断新建资格，不因读口消失、取消或未知结果换身份。Transport owner 负责原动作可靠履约和位置投影；插件固定目标 ROTATE step 经现有 publisher / ScanFlow / FactProcessor 留存、应用和发布结果；只读 ready 口要求原动作当前版本的已发布成功 Evidence、精确目标架/面/位置及原因果投影同时匹配。当前已准备就绪不保存另一份状态，错误、未知、未发布、旧版本或投影被后续动作覆盖均不放行。
+
+测试主 owner 为 `T/integration/test_target_rotation_postgresql.py`：20 项 PostgreSQL 验收通过（唯一创建/关联、并发、事务中断回滚、原身份重建恢复、回调早于 ACK、负向结果、Fact 发布边界、重放与直接取消、迁移往返/降级保护）；位置和结果是测试权威输入。插件 FAST 252 项、拓扑/所有权 14 项、直接消费者 PostgreSQL 回归 16 项和 selector 所选核心 HEAVY 8 项通过；不重跑 9H 或共享机制矩阵。停在 `ReadyTarget` 可读取，不创建 PUT/报告，不关闭单盘；现有普通目标 PUT 路径仍拒绝 ROTATE/REPLACE，后续需单独接续，不把此片记作目标 ROTATE→PUT 完成。生产 composition 未启用，实际位置读口仍待相应 G3 合同；扫码关联 G2、机械臂映射 G3、PkgID G5 各限制依赖路径，C1/C2 只限制对应真实容量路径，不阻塞此离线片。REPLACE、机械臂、完成确认及已接纳后 FAILED 重决策均不纳入。
+
+本片独立只读 full review 已闭合，无 P1/P2/P3 finding；评审前后基线 HEAD 与 9 文件 SHA256 一致，未发现额外模型、闭合历史运行依赖或业务进入基础层。证据：新增 PG 20 项（72.37 秒）、直接消费者 PG 16 项（95.73 秒）、所选核心 HEAVY 8 项（69.73 秒）均 0 skipped；插件 FAST 252 项、拓扑/所有权 14 项、7 个 Python 文件 Ruff/格式及 diff 检查通过。review 后仅追加此人类文档记录，可执行快照不变。验收收口未发现生产或迁移缺陷。提交门禁补齐 `tests/scripts/test_select_heavy_tests.py` 的新增 revision 精确清单一项，保留原断言；对应清单与隔离 runner 聚焦回归 14 项通过，未修改 runner。原插件可执行快照不变，复用上述聚焦/迁移/HEAVY 证据；该机械补齐另做定向闭环审阅。本次已授权提交，暂存范围限定本片 10 文件，按 staged selector 对照，由 commit hook 执行完整 QUALITY；提交门禁结果以对应 Git 提交输出为准。暂不部署、不启用生产装配或真实派发。
+
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
 - [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。

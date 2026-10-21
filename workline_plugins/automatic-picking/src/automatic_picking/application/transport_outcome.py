@@ -11,6 +11,7 @@ from automatic_picking.application.drain_inbound_repository import (
 from automatic_picking.application.return_motion_repository import ReturnMotionRepository
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
+from automatic_picking.application.target_rotation_repository import TARGET_ROTATION_STEP
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceConflictResult, InboundEvidenceService
@@ -46,6 +47,7 @@ class AutomaticPickingTransportOutcomePublisher:
             "PICKING_TASK_BIN_SOURCE_RACK_IN",
             "PICKING_TASK_RETURN_RACK_IN",
             ROTATION_STEP,
+            TARGET_ROTATION_STEP,
             DEPARTURE_STEP,
             DRAIN_INBOUND_STEP,
             DRAIN_ROTATION_STEP,

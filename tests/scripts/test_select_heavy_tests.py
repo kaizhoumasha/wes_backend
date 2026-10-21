@@ -1441,6 +1441,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261020_0239_588d54e9fe3e_handoff_automatic_drain_return_members.py",
         "migrations/versions/20261020_0548_77b256c269b3_handoff_automatic_drain_departures.py",
         "migrations/versions/20261020_2304_c094b575576f_continue_automatic_drain_current.py",
+        "migrations/versions/20261021_0615_f489f59e9b22_bind_automatic_target_rotation.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[
