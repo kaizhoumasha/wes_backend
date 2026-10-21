@@ -908,6 +908,16 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 本接缝片最终验证：新增 PostgreSQL 13 passed（54.13 秒）、普通 PUT/原 ROTATE 及 7B/7C 直接消费者 PostgreSQL 17 passed（65.93 秒），均 0 skipped；插件 FAST 252 passed，拓扑/测试所有权 14 passed，3 文件 Ruff/格式与 diff 检查通过，HEAVY selector 为 NONE。初轮失败归类为测试专用源结果被重复消费及把 FactProcessor 处理数误作成功发布数，修正夹具时保留既有数据库发布约束、可靠取出/成功结果守卫；不计为业务回归通过证据。独立只读 full review 核对 HEAD 与 4 文件 SHA256、直接/间接 owner 和验收边界，无 P1/P2/P3 finding；评审后仅追加本段人类文档，可执行快照不变。本次按授权仅提交两个目标 flow、接缝 PostgreSQL owner 与本文共 4 文件；可执行快照沿用已完成闭环 review 的指纹，staged selector 对照后由 commit hook 运行完整 QUALITY，提交门禁结果以对应 Git 提交输出为准。不部署、不启用生产装配或真实派发，不创建报告或关闭单盘，不接 REPLACE/机械臂，不宣称任务 7/11 或现场完成。
 
+**ROTATE 成功 PUT→7B 位置/报告离线接缝片（基线 `c9411ba4`，本轮按授权提交）：**`P/application/placement_flow.py` 的共用 ACCEPT 读取只校验冻结身份；准备类型准入留在各业务分支。PUT 事实分支允许普通目标和 ROTATE，继续拒绝 REPLACE；7C 报告确认分支保持普通目标边界，不因共用 helper 放宽而关闭 ROTATE 单盘。仍要求原 PUT Command 的精确成功 Evidence、本盘身份、已发布 ACCEPT、精确目标、显式权威 PkgID 与发生时间，不重新请求 material.decide。PUT 完成后以原成功事实确认位置，不再次要求当前架面维持原 ROTATE 就绪投影。
+
+沿原 `MaterialPutFact` / handler、FactProcessor / DecisionApplier 原子创建唯一 movement_report Confirmation，同事务保存 Pickup 的成功 Evidence / 报告成对引用与 Evidence 发布，不新增模型、状态、迁移、SDK/wire、位置账本或 timer。原 Command 及设备结果链负责物理义务，FactProcessor 负责事实应用/延期恢复，Confirmation 负责已冻结报告义务；batch 保留 PUT 创建前的原恢复职责。缺权威 PkgID 沿原 Evidence 延期，无新报告；错误身份拒绝应用，不以 ACK 或超时推定成功。
+
+主要 PostgreSQL owner 继续为 `T/integration/test_placement_report_postgresql.py`，复用已提交 ROTATE→PUT 装配及 7B 成功输入 helper，只补接缝：回调早于 ACK、并发、报告创建/关联后事务中断与重建、重放、错误 Command/Pickup/Evidence/目标、缺 PkgID、架面后续变化，以及 REPLACE 拒绝和 ROTATE 报告确认不进入 7C。原 7B/7C 机制矩阵归原 owner，只刷新直接消费者；不重复 9H、共享领取/租约或真实 worker/Beat 矩阵。故障验收为应用事务故障注入，不宣称真实进程崩溃验收。
+
+本片验证：新增正例先在原 `_accepted` 的准备类型守卫上失败，修正后新增接缝 11 项通过；最终同一可执行快照的新增接缝加普通目标/7C 直接消费者 PostgreSQL 21 passed、0 skipped（78.68 秒），插件 FAST 252 passed、拓扑/所有权 14 passed，Ruff/格式、diff 检查通过，HEAVY selector 为 NONE。数据库为本片独占 PostgreSQL 17 tmpfs，每例独立临时逻辑库；没有宿主/SDK/schema/迁移/队列装配变更，不刷新无关完整 QUALITY、迁移或真实 worker 证据。独立只读 full review 核对固定 3 文件指纹、合同、直接/间接测试 owner 和恢复链，结果无 P1/P2/P3 finding；评审后仅补本句人类文档，可执行快照未变。最终状态止于 `IMPLEMENTED - FOCUSED VERIFIED`，不计为任务 7/11 或生产验收完成。
+
+本片停在报告 PENDING，不发送 WMS 请求、不关闭单盘、不启用生产装配或真实派发，不接 REPLACE/机械臂。G2 仍约束真实扫码关联，G3 仍约束设备请求与成功事实读口，G5 仍约束新报告权威 PkgID；显式离线输入不构成现场合同确认。C1/C2 继续待补证，只限制对应容量接续/核销路径，不阻塞本片本地报告义务创建，也不由本片证明核销已完成。
+
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
 - [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。

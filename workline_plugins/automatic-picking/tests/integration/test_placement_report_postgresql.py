@@ -10,6 +10,8 @@ from automatic_picking.application.plugin import build_plugin
 from sqlalchemy import func, select
 from test_material_flow_postgresql import FixtureScanReader
 from test_pickup_identity_postgresql import TARGET, components
+from test_rotated_target_put_postgresql import combined, published_through_combined, rotating, target
+from test_rotated_target_put_postgresql import removed as rotated_source_removed
 from test_target_put_postgresql import accepted, advance, current_pickup, database, prepared
 from wes_plugin_sdk import DeviceResultReadyFact, PickingTargetRackSlot
 
@@ -81,6 +83,11 @@ def processor(p, *, app=None, confirmations=None):
 async def placed(accepted):
     p = accepted
     assert await advance(p) == 1
+    return await successful_put(p)
+
+
+async def successful_put(p):
+    """沿原 PUT 注入明确成功/PkgID；只构造既有 7B 离线输入。"""
     p.identity_available = True
     async with p.sessions.begin() as db:
         removed = await db.scalar(
@@ -125,6 +132,17 @@ async def placed(accepted):
         command.status, command.completed_at, command.result_evidence_id = "SUCCEEDED", p.now, evidence.id
         p.put_evidence_id = evidence.id
     return p
+
+
+@pytest_asyncio.fixture
+async def rotated_placed(target):
+    p = target
+    app = combined(p)
+    assert await advance(p, app) == 1
+    await published_through_combined(p, app)
+    await rotated_source_removed(p)
+    assert await advance(p, app) == 1
+    return await successful_put(p)
 
 
 async def test_success_before_ack_atomically_records_position_and_report_without_closing(placed):
@@ -174,6 +192,147 @@ async def change_fixture(p, **changes):
         evidence = await db.get(InboundEvidence, p.put_evidence_id)
         payload = {"fixture": {**evidence.normalized_payload["fixture"], **changes}}
         evidence.normalized_payload, evidence.payload_digest = payload, canonical_json_digest(payload)
+
+
+async def assert_rotated_report(p):
+    async with p.sessions() as db:
+        pickup = await current_pickup(p, db)
+        report = await db.get(WmsConfirmation, pickup.movement_confirmation_id)
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == p.put_code))
+        assert pickup.target_rotation_transport_task_id is not None
+        assert pickup.put_result_evidence_id == p.put_evidence_id
+        assert report.status == "PENDING" and report.operation_id == p.pickup_id
+        assert report.material_execution_id == p.material_id
+        assert report.request_payload["data"] == {
+            "task_id": p.task.task_id,
+            "source_locator": {
+                "type": "BIN_CELL",
+                "rack_id": "RACK-1",
+                "rack_face": "A",
+                "bin_code": "A123456789",
+                "cell_id": "CELL-7",
+            },
+            "PkgID": PKG,
+            "to_locator": {"type": "RACK_SLOT", "rack_id": "TARGET", "rack_face": "A", "slot_id": "S1"},
+            "occurred_at": 987,
+        }
+        assert command.ack_received_at is None and command.result_evidence_id == p.put_evidence_id
+        assert (await db.get(MaterialExecution, p.material_id)).status == "RUNNING"
+        fact = await db.get(InboundEvidence, p.put_evidence_id)
+        assert fact.published_at is not None and fact.decision_digest is not None
+        assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 2
+        assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 2
+
+
+async def test_rotated_success_before_ack_creates_report_without_rechecking_rotation(rotated_placed):
+    from src.app.execution.models import PositionProjection
+
+    p = rotated_placed
+    # PUT 已完成；架面后来移动不抹掉原 Command 的确定成功事实。
+    async with p.sessions.begin() as db:
+        position = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == TARGET.rack_id))
+        position.arrival_face = "B"
+    assert await processor(p).process_batch() == 1
+    await assert_rotated_report(p)
+
+
+async def test_rotated_report_concurrent_recovery_and_replay_keep_original_identity(rotated_placed):
+    p = rotated_placed
+    async with asyncio.timeout(15):
+        assert sorted(
+            await asyncio.gather(processor(p).process_batch(), processor(p).process_batch(), advance(p, combined(p)))
+        ) == [0, 0, 1]
+    first = await counts(p)
+    async with p.sessions.begin() as db:
+        (await db.get(InboundEvidence, p.put_evidence_id)).published_at = None
+    assert await processor(p).process_batch() == 1
+    assert await counts(p) == first
+    assert await advance(p, combined(p)) == 0 and await processor(p).process_batch() == 0
+    await assert_rotated_report(p)
+
+
+@pytest.mark.parametrize("point", ["after_report", "after_link"])
+async def test_rotated_report_crash_rolls_back_then_rebuilds_from_original_evidence(rotated_placed, point):
+    p = rotated_placed
+    app = application(p)
+
+    class CrashConfirmation(WmsConfirmationService):
+        async def create_or_get(self, *args, **kwargs):
+            value = await super().create_or_get(*args, **kwargs)
+            if point == "after_report":
+                raise RuntimeError("offline rotated report crash")
+            return value
+
+    if point == "after_link":
+        original = app.put_flow.apply_in_session
+
+        async def crash(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise RuntimeError("offline rotated link crash")
+
+        app.put_flow.apply_in_session = crash
+    assert await processor(p, app=app, confirmations=CrashConfirmation()).process_batch() == 0
+    assert await counts(p) == (None, None, 1, None)
+    p.now += timedelta(seconds=2)
+    assert await processor(p).process_batch() == 1
+    await assert_rotated_report(p)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"command_code": "FOREIGN-PUT"},
+        {"pickup_id": "FOREIGN-PICKUP"},
+        {"evidence_id": 999999},
+        {"target": {"rack_id": "OTHER", "rack_face": "A", "slot_id": "S1", "rack_layer": 1, "rack_column": 1}},
+    ],
+)
+async def test_rotated_wrong_success_identity_never_reports(rotated_placed, changes):
+    p = rotated_placed
+    await change_fixture(p, **changes)
+    assert await processor(p).process_batch() == 0
+    assert await counts(p) == (None, None, 1, None)
+
+
+async def test_rotated_missing_pkg_defers_original_evidence_without_report(rotated_placed):
+    p = rotated_placed
+    await change_fixture(p, pkg_id=None)
+    assert await processor(p).process_batch() == 1
+    assert await counts(p) == (None, None, 1, None)
+    async with p.sessions() as db:
+        fact = await db.get(InboundEvidence, p.put_evidence_id)
+        assert fact.decision_digest is None and fact.decision_next_attempt_at is not None
+    await change_fixture(p, pkg_id=PKG)
+    assert await processor(p).process_batch() == 1
+    await assert_rotated_report(p)
+
+
+async def test_rotated_report_confirmation_stays_outside_7c_closure(rotated_placed, caplog):
+    from test_material_close_postgresql import report_result
+
+    p = rotated_placed
+    assert await processor(p).process_batch() == 1
+    await report_result(p)
+    assert await processor(p).process_batch() == 0
+    assert "report closure requires ordinary target preparation" in caplog.text
+    async with p.sessions() as db:
+        assert (await db.get(MaterialExecution, p.material_id)).status != "CLOSED"
+        assert (await db.get(InboundEvidence, p.report_result_id)).published_at is None
+
+
+async def test_preexisting_put_with_replace_accept_still_cannot_report(placed, caplog):
+    p = placed
+    # 显式构造尚未实现的 REPLACE 分支；不能借既有 PUT 越过本片准入。
+    async with p.sessions.begin() as db:
+        accepted = await db.get(InboundEvidence, p.accept_id)
+        payload = {
+            **accepted.normalized_payload,
+            "data": {**accepted.normalized_payload["data"], "target_preparation": {"mode": "REPLACE"}},
+        }
+        accepted.normalized_payload, accepted.payload_digest = payload, canonical_json_digest(payload)
+    assert await processor(p).process_batch() == 0
+    assert "successful PUT requires ordinary or ROTATE target preparation" in caplog.text
+    assert await counts(p) == (None, None, 1, None)
 
 
 async def test_concurrent_processors_and_batch_recovery_keep_one_position_and_report(placed):

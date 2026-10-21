@@ -9,6 +9,7 @@ from wes_plugin_sdk import (
     PickingMaterialAccept,
     PickingRackSlot,
     PickingTargetRackSlot,
+    PickingTargetRotate,
     WmsResultReadyFact,
 )
 
@@ -111,6 +112,9 @@ class AutomaticPickingPlacementFlow:
         ):
             raise ValueError("successful PUT fact differs from bound material identity")
         accepted, task_id, source = await self._accepted(db, work, pickup, execution)
+        preparation = accepted.outcome.result.target_preparation
+        if preparation is not None and type(preparation) is not PickingTargetRotate:
+            raise ValueError("successful PUT requires ordinary or ROTATE target preparation")
         if accepted.outcome.result.target_locator != observed.target:
             raise ValueError("successful PUT target differs from published ACCEPT")
         if pickup.put_result_evidence_id is not None and pickup.put_result_evidence_id != evidence.id:
@@ -147,7 +151,6 @@ class AutomaticPickingPlacementFlow:
             or accepted.intent.task_id != task_id
             or type(accepted.intent.source_locator) is not PickingBinCell
             or accepted.intent.source_locator != source
-            or accepted.outcome.result.target_preparation is not None
         ):
             raise ValueError("successful PUT target/source differs from current published ACCEPT")
         return accepted, task_id, source
@@ -171,6 +174,8 @@ class AutomaticPickingPlacementFlow:
         if report.outcome != fact.outcome or type(report.outcome.result) is not FactRecorded:
             raise ValueError("closure requires exact typed RECORDED/DUPLICATE")
         accepted, task_id, source = await self._accepted(db, work, pickup, execution)
+        if accepted.outcome.result.target_preparation is not None:
+            raise ValueError("report closure requires ordinary target preparation")
         target = accepted.outcome.result.target_locator
         position = await self.repository.material_evidence(db, pickup.put_result_evidence_id)
         if (
