@@ -1,4 +1,4 @@
-"""普通/ROTATE 就绪后创建 PUT；REPLACE 仅显式装配旧目标架离场。"""
+"""本盘可靠取出且普通/ROTATE/REPLACE 目标就绪后创建原 PUT。"""
 
 from dataclasses import dataclass
 
@@ -113,12 +113,13 @@ class AutomaticPickingTargetFlow:
                     db, line_id=line_id, now=now, pickup_id=pickup.pickup_id
                 )
                 reader = self.rotation_flow
-            elif accepted.target_preparation is not None:
-                if type(accepted.target_preparation) is PickingTargetReplace and self.replacement_flow is not None:
-                    count += await self.replacement_flow.prepare_in_session(
-                        db, work=work, pickup=pickup, execution=execution, accepted=accepted
-                    )
-                continue
+            elif type(accepted.target_preparation) is PickingTargetReplace:
+                if self.replacement_flow is None:
+                    continue
+                count += await self.replacement_flow.prepare_in_session(
+                    db, work=work, pickup=pickup, execution=execution, accepted=accepted
+                )
+                reader = self.replacement_flow
             # Work 当前栈顶可能已属于 M2；PUT 只核对本盘冻结来源和原 Command。
             source_fact = await self.repository.physical_reader.read_in_session(
                 db, work=work, source=source, pickup=pickup

@@ -86,7 +86,7 @@ async def test_scan3_replay_uses_current_return_without_closed_work():
 
 async def test_scan3_matches_current_no_work_command_without_requiring_ack():
     evidence, line = scan()
-    work = N(id=4, workline_id=2, response_evidence_id=8, exit_command_code="exit-1")
+    work = N(id=4, workline_id=2, response_evidence_id=8, authorization_evidence_id=None, exit_command_code="exit-1")
     command = N(
         task_type="MOVE_FORWARD",
         device_code="SCAN2",

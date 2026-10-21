@@ -40,6 +40,11 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
     target_rotation_transport_task_id: str | None = Field(
         default=None, max_length=80, foreign_key="wes_biz.transport_tasks.transport_task_id", unique=True
     )
+    target_departure_confirmation_id: int | None = Field(
+        default=None, foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    target_departure_round_id: str | None = Field(default=None, max_length=120)
+    target_departure_retry_at: datetime | None = None
     target_departure_transport_task_id: str | None = Field(
         default=None, max_length=80, foreign_key="wes_biz.transport_tasks.transport_task_id"
     )

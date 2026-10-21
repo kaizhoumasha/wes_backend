@@ -43,8 +43,10 @@ class AutomaticPickingScanFlow:
         return_batch_flow=None,
         rack_motion_flow=None,
         rack_departure_flow=None,
+        material_flow=None,
     ):
         self.works, self.feeds, self.work_flow, self.commands = works, feeds, work_flow, commands
+        self.material_flow = material_flow
         self.exit_flow = exit_flow
         self.return_batch_flow = return_batch_flow
         self.rack_motion_flow = rack_motion_flow
@@ -64,6 +66,12 @@ class AutomaticPickingScanFlow:
             or (line.plugin_key, line.plugin_version) != (DEFINITION.plugin_key, DEFINITION.plugin_version)
         ):
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
+        if evidence.kind == "DEVICE_EVENT" and line.is_active and self.material_flow is not None:
+            scan = await self.material_flow.scan_reader.read_in_session(db, evidence_id=evidence.id)
+            if scan is not None:
+                await self.material_flow.bind_scan_in_session(db, evidence_id=evidence.id)
+                # 原 Evidence 转给 material Fact；不可在首次请求原子创建前发布。
+                return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
         if evidence.kind == "WMS_RESULT":
             if evidence.operation == "workline.return_buffer.drain_rack_decide@v1":
                 drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
@@ -118,6 +126,13 @@ class AutomaticPickingScanFlow:
         )
 
     async def _departure_result(self, db, line, evidence):
+        target = self.batch_driver.target_flow if self.batch_driver is not None else None
+        replacement = target.replacement_flow if target is not None else None
+        if (
+            replacement is not None
+            and await replacement.repository.by_decision(db, line.id, evidence.operation_id) is not None
+        ):
+            return await replacement.apply_decision_result_in_session(db, line=line, evidence=evidence)
         source = await SourceRackDepartureRepository(ReturnMotionRepository()).by_decision(
             db, line.id, evidence.operation_id
         )

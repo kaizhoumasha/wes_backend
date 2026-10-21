@@ -1,6 +1,7 @@
 """REPLACE 旧目标架 F01 离场；全部位置/READY 为离线权威输入，不派发。"""
 
 import asyncio
+import subprocess
 from dataclasses import asdict, replace
 from datetime import timedelta
 from types import SimpleNamespace as N
@@ -384,7 +385,7 @@ async def assert_no_followup_after_cleanup(p):
         assert await db.scalar(select(func.count()).select_from(TransportTask)) == 1
 
 
-async def test_existing_old_round_cannot_be_attached_to_superseded_position(replacing):
+async def test_frozen_current_restores_original_transport_after_projection_changes(replacing):
     p = replacing
     assert await advance(p, application(p)) == 1
     task = await departure(p)
@@ -393,8 +394,8 @@ async def test_existing_old_round_cannot_be_attached_to_superseded_position(repl
         position = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == OLD))
         position.source_transport_task_id = "other-authoritative-arrival"
         position.source_causal_token += 1
-    assert await advance(p, application(p)) == 0
-    assert await departure(p) is None
+    assert await advance(p, application(p)) == 1
+    assert (await departure(p)).transport_task_id == task.transport_task_id
     async with p.sessions() as db:
         assert await db.get(TransportTask, task.id) is not None
         assert await db.scalar(select(func.count()).select_from(TransportTask)) == 2
@@ -474,7 +475,8 @@ async def test_missing_consumer_defers_same_result_until_injected(replacing):
     await assert_no_followup(p)
 
 
-async def test_two_pickups_share_the_same_old_arrival_departure(replacing):
+@pytest.mark.parametrize("after_ack", [False, True])
+async def test_two_pickups_share_the_same_old_arrival_departure(replacing, after_ack):
     from test_material_flow_postgresql import bind, scan
     from test_pickup_identity_postgresql import consume
     from test_rotated_target_put_postgresql import removed
@@ -482,6 +484,8 @@ async def test_two_pickups_share_the_same_old_arrival_departure(replacing):
     p = replacing
     assert await advance(p, application(p)) == 1
     original = await departure(p)
+    if after_ack:
+        await accept(p)
     await removed(p)
     pickup_id = await consume(p, p.accept_id)
     material_id = await bind(p, await scan(p, pickup_id))
@@ -514,6 +518,11 @@ async def test_migration_preserves_pickup_and_refuses_losing_live_reference(repl
 
     p = replacing
     assert await advance(p, application(p)) == 1
+    async with p.sessions.begin() as db:
+        pickup = await current_pickup(p, db)
+        pickup.target_departure_confirmation_id = pickup.target_departure_round_id = (
+            pickup.target_departure_retry_at
+        ) = None
     url = p.sessions.kw["bind"].url.render_as_string(hide_password=False)
     with pytest.raises(subprocess.CalledProcessError) as error:
         run_alembic("downgrade", "f489f59e9b22", database_url=url)
@@ -586,3 +595,275 @@ async def test_same_arrival_round_rotation_can_depart_but_released_round_cannot(
     expected = int(not released and published)
     assert await advance(p, application(p)) == expected
     assert (await departure(p) is not None) == bool(expected)
+
+
+@pytest_asyncio.fixture
+async def first_departure(replacing):
+    p = replacing
+    async with p.sessions.begin() as db:
+        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.operation_id == p.departure_operation_id))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == p.ready_id))
+    p.observed = replace(p.observed, departure_operation_id=None)
+    return p
+
+
+async def test_first_departure_request_and_current_are_atomic_and_unique(first_departure):
+    p = first_departure
+    assert sorted(await asyncio.gather(*(advance(p, decision_application(p)) for _ in range(3)))) == [0, 0, 1]
+    async with p.sessions() as db:
+        pickup = await current_pickup(p, db)
+        current = await db.get(WmsConfirmation, pickup.target_departure_confirmation_id)
+        assert current.request_payload["data"] == {
+            "task_id": None,
+            "rack_id": OLD,
+            "current_location": {"type": "RACK_POSITION", "location_code": LOCATION},
+            "current_face": "B",
+        }
+        assert pickup.target_departure_round_id == p.inbound.client_request_id
+        assert pickup.target_departure_retry_at is None
+        assert pickup.target_departure_transport_task_id is None
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(WmsConfirmation)
+                .where(WmsConfirmation.operation == "outbound.rack.departure_decide@v1")
+            )
+            == 1
+        )
+
+
+def decision_application(p):
+    from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
+    from src.app.wms_integration.outbound_picking.services.rack_departure import RackDepartureScheduler
+    from src.app.wms_integration.outbound_picking.services.rack_departure_owner import RackDepartureOwnerService
+
+    app = application(p)
+    app.replacement_flow.scheduler = RackDepartureScheduler(
+        WmsConfirmationLifecycleService(workline_owner=RackDepartureOwnerService())
+    )
+    app.replacement_flow.clock = lambda: p.now
+    return app
+
+
+async def current_request(p):
+    async with p.sessions() as db:
+        pickup = await current_pickup(p, db)
+        return await db.get(WmsConfirmation, pickup.target_departure_confirmation_id)
+
+
+async def departure_response(p, request, result="WAIT", *, publish=False):
+    async with p.sessions.begin() as db:
+        current = await db.get(WmsConfirmation, request.id)
+        data = (
+            {"result": "WAIT", "retry_after_ms": 50}
+            if result == "WAIT"
+            else {
+                "result": "READY",
+                "rack_destination": {"type": "ZONE", "location_code": DESTINATION["location_code"]},
+            }
+        )
+        payload = {"operation_id": current.operation_id, "timestamp": 1, "code": "DECIDED", "data": data}
+        evidence = InboundEvidence(
+            kind="WMS_RESULT",
+            source_identity="departure:" + current.operation_id,
+            operation=current.operation,
+            operation_id=current.operation_id,
+            workline_id=p.line.id,
+            normalized_payload=payload,
+            payload_digest=canonical_json_digest(payload),
+            apply_status="APPLIED",
+            received_at=p.now,
+            processed_at=None,
+            published_at=p.now if publish else None,
+            decision_digest=canonical_json_digest({"fixture": result}) if publish else None,
+        )
+        db.add(evidence)
+        await db.flush()
+        current.status, current.response_evidence_id, current.response_result, current.completed_at = (
+            "COMPLETED",
+            evidence.id,
+            result,
+            p.now,
+        )
+        return evidence.id
+
+
+async def apply_departure_fact(p, evidence_id, app=None):
+    from automatic_picking.application.batch_driver import AutomaticPickingBatchDriver
+    from automatic_picking.application.scan_flow import AutomaticPickingScanFlow
+    from automatic_picking.application.work_repository import WorkRepository
+    from test_return_allocation_postgresql import processor as scan_processor
+
+    scan = AutomaticPickingScanFlow(
+        WorkRepository(),
+        None,
+        None,
+        components(p)[1],
+        batch_driver=AutomaticPickingBatchDriver(
+            None, None, None, None, None, target_flow=app or decision_application(p)
+        ),
+    )
+    assert await scan_processor(p, scan=scan).process_batch() >= 1
+    return scan
+
+
+async def test_wait_due_current_survives_restart_and_old_result_cannot_reopen(first_departure):
+    p = first_departure
+    assert await advance(p, decision_application(p)) == 1
+    original = await current_request(p)
+    evidence_id = await departure_response(p, original)
+    assert await advance(p, decision_application(p)) == 0  # 未发布不续问。
+    await apply_departure_fact(p, evidence_id)
+    async with p.sessions() as db:
+        due = (await current_pickup(p, db)).target_departure_retry_at
+        assert due == p.now + timedelta(milliseconds=50)
+    p.observed = None  # 新实例只靠持久current恢复，不再依赖外部首次发现。
+    p.now = due - timedelta(microseconds=1)
+    assert await advance(p, decision_application(p)) == 0
+    p.now = due
+    assert sorted(await asyncio.gather(*(advance(p, decision_application(p)) for _ in range(4)))) == [0, 0, 0, 1]
+    successor = await current_request(p)
+    assert successor.operation_id != original.operation_id
+    assert successor.request_payload["data"] == original.request_payload["data"]
+    async with p.sessions.begin() as db:
+        fact = await db.get(InboundEvidence, evidence_id)
+        assert (
+            await decision_application(p).replacement_flow.apply_decision_result_in_session(
+                db, line=p.line, evidence=fact
+            )
+            == "TARGET_DEPARTURE_OLD_DECISION"
+        )
+        await db.delete(await db.get(WmsConfirmation, original.id))
+        await db.flush()
+        await db.delete(fact)
+    assert await advance(p, decision_application(p)) == 0  # 当前请求未知，不制造第二次续问。
+    async with p.sessions() as db:
+        pickup = await current_pickup(p, db)
+        assert pickup.target_departure_confirmation_id == successor.id and pickup.target_departure_retry_at is None
+
+
+@pytest.mark.parametrize("point", ["created", "linked"])
+async def test_first_request_and_cursor_rollback_together(first_departure, point):
+    p = first_departure
+    app = decision_application(p)
+    if point == "created":
+        scheduler = app.replacement_flow.scheduler
+
+        class Crash:
+            async def create_in_session(self, *args, **kwargs):
+                await scheduler.create_in_session(*args, **kwargs)
+                raise RuntimeError("offline current crash")
+
+        app.replacement_flow.scheduler = Crash()
+        with pytest.raises(RuntimeError, match="current crash"):
+            await advance(p, app)
+    else:
+        async with p.sessions() as db:
+            with pytest.raises(RuntimeError, match="current crash"):
+                async with db.begin():
+                    assert await app.advance_in_session(db, line_id=p.line.id, now=p.now) == 1
+                    raise RuntimeError("offline current crash")
+    async with p.sessions() as db:
+        assert (await current_pickup(p, db)).target_departure_confirmation_id is None
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(WmsConfirmation)
+                .where(WmsConfirmation.operation == "outbound.rack.departure_decide@v1")
+            )
+            == 0
+        )
+    assert await advance(p, decision_application(p)) == 1
+
+
+async def test_wait_superseded_round_never_renews(first_departure):
+    p = first_departure
+    assert await advance(p, decision_application(p)) == 1
+    evidence_id = await departure_response(p, await current_request(p))
+    await apply_departure_fact(p, evidence_id)
+    original = await current_request(p)
+    p.now += timedelta(seconds=1)
+    async with p.sessions.begin() as db:
+        position = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == OLD))
+        position.source_causal_token += 1
+    assert await advance(p, decision_application(p)) == 0
+    assert (await current_request(p)).id == original.id
+
+
+async def test_current_migration_roundtrip_and_live_downgrade_guard(first_departure):
+    from tests.support.postgresql_heavy import run_alembic
+
+    p = first_departure
+    url = p.sessions.kw["bind"].url.render_as_string(hide_password=False)
+    run_alembic("downgrade", "b514fdcfbefc", database_url=url)
+    run_alembic("upgrade", "head", database_url=url)
+    assert await advance(p, decision_application(p)) == 1
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        run_alembic("downgrade", "b514fdcfbefc", database_url=url)
+    assert "cannot discard automatic target departure current" in error.value.stderr
+
+
+async def test_two_materials_share_one_pending_request_and_wait_successor(first_departure):
+    from test_material_flow_postgresql import bind, scan
+    from test_pickup_identity_postgresql import consume
+    from test_rotated_target_put_postgresql import removed
+
+    p = first_departure
+    assert await advance(p, decision_application(p)) == 1
+    original = await current_request(p)
+    await removed(p)
+    next_pickup = await consume(p, p.accept_id)
+    next_material = await bind(p, await scan(p, next_pickup))
+    assert await material_processor(p).process_batch() == 1
+    async with p.sessions() as db:
+        confirmation = await db.scalar(
+            select(WmsConfirmation).where(WmsConfirmation.material_execution_id == next_material)
+        )
+    accepted = await result(
+        p,
+        confirmation,
+        data={
+            "result": "ACCEPT",
+            "target_locator": {"type": "RACK_SLOT", **asdict(TARGET), "slot_id": "S2", "rack_column": 2},
+            "target_preparation": {"mode": "REPLACE"},
+        },
+    )
+    assert await material_processor(p).process_batch() == 1
+    p.observed = replace(p.observed, material_execution_id=next_material, accept_evidence_id=accepted)
+    assert await advance(p, decision_application(p)) == 0
+    evidence_id = await departure_response(p, original)
+    await apply_departure_fact(p, evidence_id)
+    p.observed = None
+    p.now += timedelta(milliseconds=50)
+    assert sorted(await asyncio.gather(*(advance(p, decision_application(p)) for _ in range(3)))) == [0, 0, 1]
+    async with p.sessions() as db:
+        rows = list(
+            (await db.scalars(select(AutomaticPickingPickup).where(AutomaticPickingPickup.work_id == p.work.id))).all()
+        )
+        assert len(rows) == 2
+        assert len({r.target_departure_confirmation_id for r in rows}) == 1
+        assert rows[0].target_departure_confirmation_id != original.id
+        assert all(r.target_departure_retry_at is None for r in rows)
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(WmsConfirmation)
+                .where(WmsConfirmation.operation == "outbound.rack.departure_decide@v1")
+            )
+            == 2
+        )
+
+
+async def test_wait_payload_drift_cannot_set_deadline_or_create_successor(first_departure):
+    p = first_departure
+    assert await advance(p, decision_application(p)) == 1
+    request = await current_request(p)
+    evidence_id = await departure_response(p, request, publish=True)
+    async with p.sessions.begin() as db:
+        fact = await db.get(InboundEvidence, evidence_id)
+        fact.normalized_payload = {**fact.normalized_payload, "data": {"result": "WAIT", "retry_after_ms": 1}}
+    with pytest.raises(ValueError, match="digest"):
+        await advance(p, decision_application(p))
+    async with p.sessions() as db:
+        pickup = await current_pickup(p, db)
+        assert pickup.target_departure_retry_at is None and pickup.target_departure_confirmation_id == request.id

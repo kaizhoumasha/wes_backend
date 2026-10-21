@@ -161,7 +161,6 @@ class ReturnScanReader:
                     AutomaticPickingWork.bin_code == code,
                     AutomaticPickingWork.phase.in_(("EXIT_PENDING", "RECONCILING")),
                     AutomaticPickingWork.archived_at.is_(None),
-                    AutomaticPickingWork.authorization_evidence_id.is_(None),
                     AutomaticPickingWork.exit_command_code.is_not(None),
                     AutomaticPickingWork.scanned_at <= event.timestamp,
                 )

@@ -307,21 +307,6 @@ async def test_rotated_missing_pkg_defers_original_evidence_without_report(rotat
     await assert_rotated_report(p)
 
 
-async def test_preexisting_put_with_replace_accept_still_cannot_report(placed, caplog):
-    p = placed
-    # 显式构造尚未实现的 REPLACE 分支；不能借既有 PUT 越过本片准入。
-    async with p.sessions.begin() as db:
-        accepted = await db.get(InboundEvidence, p.accept_id)
-        payload = {
-            **accepted.normalized_payload,
-            "data": {**accepted.normalized_payload["data"], "target_preparation": {"mode": "REPLACE"}},
-        }
-        accepted.normalized_payload, accepted.payload_digest = payload, canonical_json_digest(payload)
-    assert await processor(p).process_batch() == 0
-    assert "successful PUT requires ordinary or ROTATE target preparation" in caplog.text
-    assert await counts(p) == (None, None, 1, None)
-
-
 async def test_concurrent_processors_and_batch_recovery_keep_one_position_and_report(placed):
     p = placed
     async with asyncio.timeout(15):

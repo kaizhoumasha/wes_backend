@@ -1,4 +1,4 @@
-"""NO_WORK 点2放行和首次精确 SCAN3 交接，不解释设备私有报文。"""
+"""NO_WORK/正常逐盘结束的点2放行和首次精确 SCAN3 交接，不解释设备私有报文。"""
 
 from dataclasses import dataclass
 
@@ -94,6 +94,8 @@ class AutomaticPickingReturnFlow:
 
     @staticmethod
     def _ref(work):
+        if work.authorization_evidence_id is not None:
+            return f"automatic-picking:work:{work.id}:NORMAL:{work.authorization_evidence_id}:EXIT"
         return f"automatic-picking:work:{work.id}:NO_WORK:{work.response_evidence_id}:EXIT"
 
     def _command_matches(self, command, work):
@@ -107,7 +109,7 @@ class AutomaticPickingReturnFlow:
         )
 
     async def advance_in_session(self, db, *, line, work, task):
-        if work.phase != "EXIT_PENDING" or work.archived_at is not None or work.authorization_evidence_id is not None:
+        if work.phase not in {"READY", "EXIT_PENDING"} or work.archived_at is not None:
             return 0
         if work.exit_command_code is not None:
             command = await self.repository.command(db, work.exit_command_code)
@@ -117,22 +119,29 @@ class AutomaticPickingReturnFlow:
                 work.phase = "RECONCILING"
                 return 1
             return 0
-        snapshot = await self.work_reader.by_operation_id(
-            db, picking_task_id=work.picking_task_id, operation_id=work.operation_id
-        )
-        if (
-            snapshot is None
-            or snapshot.status != "COMPLETED"
-            or snapshot.outcome is None
-            or type(snapshot.outcome.result) is not BinWorkPlanNoWork
-            or snapshot.evidence_id != work.response_evidence_id
-            or snapshot.intent.task_id != task.task_id
-            or task.workline_id != work.workline_id
-            or snapshot.intent.operation_id != work.operation_id
-            or snapshot.intent.bin_code != work.bin_code
-            or snapshot.intent.scanned_at != work.scanned_at
-        ):
-            raise ValueError("exit requires the current exact NO_WORK result")
+        if work.authorization_evidence_id is not None:
+            if not await self.repository.normal_complete(db, work):
+                return 0
+        else:
+            if work.phase != "EXIT_PENDING":
+                return 0
+            snapshot = await self.work_reader.by_operation_id(
+                db, picking_task_id=work.picking_task_id, operation_id=work.operation_id
+            )
+            if (
+                snapshot is None
+                or snapshot.status != "COMPLETED"
+                or snapshot.outcome is None
+                or type(snapshot.outcome.result) is not BinWorkPlanNoWork
+                or snapshot.evidence_id != work.response_evidence_id
+                or snapshot.intent.task_id != task.task_id
+                or task.workline_id != work.workline_id
+                or snapshot.intent.operation_id != work.operation_id
+                or snapshot.intent.bin_code != work.bin_code
+                or snapshot.intent.scanned_at != work.scanned_at
+            ):
+                raise ValueError("exit requires the current exact NO_WORK result")
+        work.phase = "EXIT_PENDING"
         request = await self.request_mapper(db, line=line, work=work, execution_ref_id=self._ref(work))
         if (
             request.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get("SCAN2")
@@ -182,7 +191,6 @@ class AutomaticPickingReturnFlow:
             or work.exit_command_code != matched.command_code
             or work.archived_at is not None
             or work.phase not in {"EXIT_PENDING", "RECONCILING"}
-            or work.authorization_evidence_id is not None
             or matched.timestamp < work.scanned_at
         ):
             return "RECONCILING"

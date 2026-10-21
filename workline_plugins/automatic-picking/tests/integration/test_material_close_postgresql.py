@@ -122,18 +122,11 @@ async def test_rotated_report_replay_after_m2_consumed_keeps_work_identity(rotat
     await replay_after_consumed(rotated_reported)
 
 
-@pytest.mark.parametrize("drift", ["replace", "report_ref", "put_unpublished"])
+@pytest.mark.parametrize("drift", ["report_ref", "put_unpublished"])
 async def test_rotated_report_with_invalid_preparation_or_proof_never_closes(rotated_reported, drift, caplog):
     p = rotated_reported
     async with p.sessions.begin() as db:
-        if drift == "replace":
-            accepted = await db.get(InboundEvidence, p.accept_id)
-            payload = {
-                **accepted.normalized_payload,
-                "data": {**accepted.normalized_payload["data"], "target_preparation": {"mode": "REPLACE"}},
-            }
-            accepted.normalized_payload, accepted.payload_digest = payload, canonical_json_digest(payload)
-        elif drift == "report_ref":
+        if drift == "report_ref":
             pickup = await current_pickup(p, db)
             pickup.movement_confirmation_id = p.decide.id
         else:
@@ -142,8 +135,6 @@ async def test_rotated_report_with_invalid_preparation_or_proof_never_closes(rot
             position.decision_next_attempt_at = p.now + timedelta(days=1)
     assert await processor(p).process_batch() == 0
     assert (await state(p))[0] != "CLOSED" and (await state(p))[4] is None
-    if drift == "replace":
-        assert "closure requires ordinary or ROTATE target preparation" in caplog.text
 
 
 @pytest.mark.parametrize("code", ["RECORDED", "DUPLICATE"])

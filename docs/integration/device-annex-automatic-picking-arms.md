@@ -269,3 +269,22 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | O15 | 2026-09-21 联调样例的 ARM02 `target` 缺少 `location_type`；硬件文档 §8.1 要求 `FIVE_LAYER_RACK` 必填该字段，请确认是遗漏还是有意省略 | ECS 供应商 |
 | O16 | WMS 已确认 `cell_id` 保持 `BIN_ID + INDEX` 编码并单独提供料箱内定位号 `cell_index`；`cell_index` 的设备类型/值域及到 `bin_cell_location` 的映射由 WMS 与 ECS 供应商冻结 | WMS + ECS 供应商 |
 | O17 | 直接取料的 ARM01 测量字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`，如果 O13 确认 `ONE_LAYER_RACK` 需要）目前没有任何 wire 来源：`plan_delta.added_direct_picks[]` 只给 `source_locator`，直接取料没有 `work_plan` 等价物。如果确实需要，建议同 O4/变更 1 的解法，扩展 `added_direct_picks[]` 每项带上这些字段 | WMS |
+
+
+## 10. 正常业务装配与真实接口门禁（2026-10-22 核对）
+
+本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。设备读口、命令映射与 PkgID 必须由调用方显式注入；`build_picking_plugin` 不注册到生产 deployment，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
+
+REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT 到期续问，再沿原 F01 旧架离场/新架进场和共用 PUT/report/close 继续，不重新请求物料资格。首次输入只需精确旧架、原进场轮次及到位事实；当前请求、轮次和到期点保存在 Pickup，恢复不按“最新请求”猜身份。所有搬运和机械臂成功事实仍必须匹配并已发布；未知交付不创建等价新动作。这证明显式权威输入下的离线业务闭环，不代表下表接口门禁已解除。
+
+| 依赖路径 | 已确认基线 | 真正缺少的接口证据 / 阻塞范围 |
+| --- | --- | --- |
+| Cell 取盘参数 | WMS `cell_index` 为 int 1–7；`bin_type` 为 int 2/3/6；`reel_layer` 为 int，厚度/直径为 float；总厚度按既有约定计算 | O16：ECS `bin_cell_location` 的最终类型/映射；O4 的设备侧数值序列化和适用字段。只限制真实来源命令映射，不阻塞授权/持久事务 |
+| 单盘扫码关联 | barcode 原样转发，str 最长1000；本地 Pickup/原来源 Command 精确关联 | O1/O2：最终扫码设备身份及可可靠回显的来源 Command 关联字段；现有样例缺 source_command_code，不能猜“最近一条命令” |
+| 来源/目标命令统一字段与时限 | 统一 DeviceCommand / PICK_AND_PUT 包络及每条命令稳定身份 | O6/O9：business_key 最终要求、正式 timeout 与回调最长延迟；示例30000不是生产默认值 |
+| 目标臂参数 | WMS rack_layer/rack_column 已确认为 int；业务目标 rack/face/slot 冻结在 ACCEPT | O10/O11/O15：ECS 层列编码、rack_side/rack_face 映射和 location_type 最终要求；不从字符串示例反推 |
+| 成功位置与报告 | 匹配原 PUT 的确定成功才保存位置；RECORDED/DUPLICATE 后关闭 | 报告 PkgID 权威来源/关联仍缺双方合同，不解析 barcode、不用 Pickup UUID 代替；显式成功/PkgID 读口可先验业务事务 |
+| 目标架 ROTATE | 目标就绪与 PUT/report 业务接续可离线验证 | [现场搬运基线](manual-outbound-rack-transport.md)记录 CK04，现行 typed RACK_ROTATE 仅支持 CTU02；需独立合同对齐后才能真实派发，不能将来源架 CTU02 默认为目标架 CK04。F01 进出场不受此项阻塞 |
+| 直接取料与异常 | 当前正常 BIN_CELL 链不依赖这些分支 | O12/O13/O14/O17 只限制直接取料；O5/O7/O8 只限制空取、失败/不可读码等异常动作，保留对象/原身份，不替代正常确认 |
+
+C1/C2 继续只限制 drain 容量接续与回库核销。首批期限只限制准备后未到首批计划的路径，不作为已到工作位正常链的新门禁。

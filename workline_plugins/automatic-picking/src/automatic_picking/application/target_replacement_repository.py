@@ -1,6 +1,6 @@
 """REPLACE 原离场义务；创建校验当前轮次，恢复只读原 Binding/READY/Transport。"""
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, or_, select, update
 from wes_plugin_sdk import PickingMaterialAccept, PickingTargetReplace, RackDepartureReady
 
 from src.app.execution.models import InboundEvidence, PositionProjection, TransportDecisionBinding, WmsConfirmation
@@ -12,7 +12,9 @@ from src.app.wms_integration.outbound_picking.services.rack_departure import Rac
 from src.app.workline.models import WorkLine
 from src.utils.canonical_json import canonical_json_digest
 
+from .pickup_model import AutomaticPickingPickup
 from .target_rotation_repository import TARGET_ROTATION_STEP, TargetRotationRepository
+from .work_model import AutomaticPickingWork
 
 TARGET_DEPARTURE_STEP = "AUTOMATIC_PICKING_TARGET_REPLACE_OUT"
 TARGET_INBOUND_STEP = "AUTOMATIC_PICKING_TARGET_REPLACE_IN"
@@ -44,7 +46,7 @@ class TargetReplacementRepository:
             raise ValueError("target departure READY lost published owner or digest")
         return snapshot
 
-    async def current_arrival(self, db, line_id, observed, snapshot):
+    async def current_arrival(self, db, line_id, observed, snapshot=None):
         await bindings.lock_object_authority(db, object_type="RACK", object_id=observed.old_rack_id)
         arrival = await db.get(InboundEvidence, observed.arrival_evidence_id)
         task = await db.scalar(
@@ -63,7 +65,15 @@ class TargetReplacementRepository:
             .where(PositionProjection.object_type == "RACK", PositionProjection.object_id == observed.old_rack_id)
             .execution_options(populate_existing=True)
         )
-        expected = {"kind": "RACK_POSITION", "location_code": snapshot.intent.current_location.location_code}
+        expected = {
+            "kind": "RACK_POSITION",
+            "location_code": (
+                snapshot.intent.current_location.location_code
+                if snapshot is not None
+                else line.position_bindings.get("TRANSFER_RACK", {}).get("location_id")
+            ),
+        }
+        face = snapshot.intent.current_face if snapshot is not None else (position.arrival_face if position else None)
         current_task, current_binding, current_fact = task, binding, arrival
         if position is not None and task is not None and position.source_transport_task_id != task.transport_task_id:
             current_task = await db.scalar(
@@ -92,7 +102,7 @@ class TargetReplacementRepository:
                 or current_task.authority_workline_id != line_id
                 or current_task.request_json.get("rack_id") != observed.old_rack_id
                 or current_task.request_json.get("position") != expected
-                or current_task.request_json.get("target_face") != snapshot.intent.current_face
+                or current_task.request_json.get("target_face") != face
                 or current_task.outcome_version < 1
                 or current_task.published_outcome_version != current_task.outcome_version
                 or current_binding.workline_id != line_id
@@ -113,7 +123,7 @@ class TargetReplacementRepository:
             or task.status != "SUCCEEDED"
             or task.authority_workline_id != line_id
             or binding.workline_id != line_id
-            or binding.step != "PICKING_TASK_TARGET_RACK_IN"
+            or binding.step not in {"PICKING_TASK_TARGET_RACK_IN", TARGET_INBOUND_STEP}
             or binding.resource_fence_id != observed.old_rack_id
             or task.request_json.get("rcs_template_id") != "F01"
             or task.request_json.get("rack_id") != observed.old_rack_id
@@ -136,17 +146,135 @@ class TargetReplacementRepository:
             or position.workline_id != line_id
             or position.position_unknown
             or position.position_json != expected
-            or position.arrival_face != snapshot.intent.current_face
+            or position.arrival_face != face
             or binding.window_target_location_code != expected["location_code"]
             or binding.window_released_at is not None
             or position.source_transport_task_id != current_task.transport_task_id
             or position.source_causal_token != current_binding.causal_token
             or position.source_effect_phase != "FINAL_RESULT"
             or line.position_bindings.get("TRANSFER_RACK", {}).get("location_id") != expected["location_code"]
-            or snapshot.completed_at < arrival.received_at
-            or request is None
-            or request.created_at < current_fact.received_at
-            or snapshot.outcome.result.rack_destination == snapshot.intent.current_location
+            or face is None
+            or (
+                snapshot is not None
+                and (
+                    snapshot.completed_at < arrival.received_at
+                    or request is None
+                    or request.created_at < current_fact.received_at
+                    or snapshot.outcome.result.rack_destination == snapshot.intent.current_location
+                )
+            )
+        )
+
+    async def current_context(self, db, line_id, observed):
+        if not await self.current_arrival(db, line_id, observed):
+            return None
+        position = await db.scalar(
+            select(PositionProjection).where(
+                PositionProjection.object_type == "RACK", PositionProjection.object_id == observed.old_rack_id
+            )
+        )
+        from wes_plugin_sdk import TransportRackPosition
+
+        return TransportRackPosition(position.position_json["location_code"]), position.arrival_face
+
+    async def operation_request(self, db, line_id, operation_id):
+        row = await db.scalar(
+            select(WmsConfirmation).where(
+                WmsConfirmation.operation == "outbound.rack.departure_decide@v1",
+                WmsConfirmation.operation_id == operation_id,
+            )
+        )
+        if row is None:
+            raise ValueError("target departure request was not persisted")
+        return await self.request(db, line_id, row.id)
+
+    async def request(self, db, line_id, confirmation_id):
+        request = await db.get(WmsConfirmation, confirmation_id)
+        if (
+            request is None
+            or request.operation != "outbound.rack.departure_decide@v1"
+            or request.workline_id != line_id
+            or request.picking_task_id is not None
+            or canonical_json_digest(request.request_payload) != request.request_digest
+        ):
+            raise ValueError("target departure lost current request owner or identity")
+        return request
+
+    async def by_decision(self, db, line_id, operation_id):
+        return await db.scalar(
+            select(AutomaticPickingPickup)
+            .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+            .join(WmsConfirmation, WmsConfirmation.id == AutomaticPickingPickup.target_departure_confirmation_id)
+            .where(
+                AutomaticPickingWork.workline_id == line_id,
+                WmsConfirmation.operation_id == operation_id,
+                WmsConfirmation.operation == "outbound.rack.departure_decide@v1",
+            )
+            .order_by(AutomaticPickingPickup.id)
+        )
+
+    async def share_current(self, db, line_id, pickup, observed):
+        peers = list(
+            (
+                await db.scalars(
+                    select(AutomaticPickingPickup)
+                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                    .where(
+                        AutomaticPickingWork.workline_id == line_id,
+                        AutomaticPickingPickup.target_departure_round_id == observed.inbound_client_request_id,
+                        AutomaticPickingPickup.target_departure_confirmation_id.is_not(None),
+                    )
+                )
+            ).all()
+        )
+        ids = {peer.target_departure_confirmation_id for peer in peers}
+        if len(ids) > 1:
+            raise ValueError("target departure round has conflicting current requests")
+        if peers:
+            pickup.target_departure_round_id = observed.inbound_client_request_id
+            pickup.target_departure_confirmation_id = peers[0].target_departure_confirmation_id
+            pickup.target_departure_retry_at = peers[0].target_departure_retry_at
+
+    async def bind_current(self, db, line_id, pickup, round_id, confirmation_id, retry_at=None):
+        await db.execute(
+            update(AutomaticPickingPickup)
+            .where(
+                AutomaticPickingPickup.work_id.in_(
+                    select(AutomaticPickingWork.id).where(AutomaticPickingWork.workline_id == line_id)
+                ),
+                AutomaticPickingPickup.target_departure_round_id == round_id,
+            )
+            .values(target_departure_confirmation_id=confirmation_id, target_departure_retry_at=retry_at)
+        )
+        pickup.target_departure_round_id = round_id
+        pickup.target_departure_confirmation_id = confirmation_id
+        pickup.target_departure_retry_at = retry_at
+        await db.flush()
+
+    async def current_input(self, db, line_id, pickup):
+        from .target_replacement import MatchedTargetDeparture
+
+        request = await self.request(db, line_id, pickup.target_departure_confirmation_id)
+        task = await db.scalar(
+            select(TransportTask).where(TransportTask.client_request_id == pickup.target_departure_round_id)
+        )
+        if task is None:
+            return None
+        arrival = await db.scalar(
+            select(InboundEvidence).where(
+                InboundEvidence.source_identity == f"transport:{task.transport_task_id}:outcome:{task.outcome_version}"
+            )
+        )
+        if arrival is None:
+            return None
+        return MatchedTargetDeparture(
+            line_id,
+            pickup.material_execution_id,
+            pickup.accept_evidence_id,
+            request.request_payload["data"]["rack_id"],
+            pickup.target_departure_round_id,
+            arrival.id,
+            request.operation_id,
         )
 
     async def for_round(self, db, line_id, inbound_client_request_id):

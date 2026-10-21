@@ -113,3 +113,70 @@ def build_transport_plugin(*, session_factory, transport_service, commands, work
         rack_departure_flow=departure,
     )
     return build_plugin(works=works, batch_driver=batch, scan_flow=scan)
+
+
+def build_picking_plugin(
+    *,
+    transport_plugin,
+    commands,
+    physical_reader,
+    source_request_factory,
+    scan_reader,
+    target_reader,
+    target_request_factory,
+    put_reader,
+    rack_transports,
+    rotation_reader,
+    departure_reader,
+):
+    """在已装配搬运插件上接通正常逐盘链；设备参数/精确事实读口必须显式提供。"""
+    from copy import copy
+
+    from automatic_picking.definition import DEFINITION
+    from src.app.execution.services import MaterialExecutionService
+    from src.app.wms_integration.outbound_picking.services import MaterialDecideResultReader, MaterialDecideScheduler
+
+    from .material_flow import AutomaticPickingMaterialFlow
+    from .pickup_repository import PickupRepository
+    from .placement_flow import AutomaticPickingPlacementFlow
+    from .source_flow import AutomaticPickingSourceFlow
+    from .target_preparation import AutomaticPickingTargetFlow
+    from .target_replacement import AutomaticPickingTargetReplacementFlow
+    from .target_rotation import AutomaticPickingTargetRotationFlow
+    from .target_rotation_repository import TargetRotationRepository
+
+    if transport_plugin.definition != DEFINITION or transport_plugin.runtime_binding is None:
+        raise ValueError("picking assembly requires the automatic transport plugin")
+    # 保留调用方已装配搬运对象；新装配仅在显式安装返回值后生效。
+    batch = copy(transport_plugin.picking_task_batch_driver)
+    scan = copy(transport_plugin.runtime_binding.business_evidence_consumer)
+    scan.batch_driver = batch
+    repository, reader = PickupRepository(physical_reader), MaterialDecideResultReader()
+    source = AutomaticPickingSourceFlow(repository, commands, source_request_factory)
+    material = AutomaticPickingMaterialFlow(
+        repository,
+        source,
+        scan_reader,
+        MaterialExecutionService(),
+        scheduler=MaterialDecideScheduler(),
+        reader=reader,
+        put_flow=AutomaticPickingPlacementFlow(repository, reader, put_reader),
+    )
+    target = AutomaticPickingTargetFlow(
+        repository,
+        commands,
+        reader,
+        target_reader,
+        target_request_factory,
+        rotation_flow=AutomaticPickingTargetRotationFlow(
+            TargetRotationRepository(physical_reader), rack_transports, reader, rotation_reader
+        ),
+        replacement_flow=AutomaticPickingTargetReplacementFlow(
+            rack_transports, departure_reader, scheduler=batch.rack_departure_flow.scheduler
+        ),
+    )
+    batch.source_flow, batch.material_flow, batch.target_flow = source, material, target
+    scan.material_flow = material
+    return build_plugin(
+        scan_flow=scan, batch_driver=batch, works=transport_plugin.business_blocker, material_flow=material
+    )

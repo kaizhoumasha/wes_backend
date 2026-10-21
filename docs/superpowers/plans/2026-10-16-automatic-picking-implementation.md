@@ -1005,6 +1005,27 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 ### 任务 11：最终持久化、worker 与正常闭环验收
 
+
+**前轮料箱到位后正常业务装配证据（基线 `a4d25e65`，未提交；REPLACE current/schema 本轮补齐见下）：**搬运沿已验证 manual-picking 能力与本分支既有装配复用，不再把每个接缝作为独立实施片。`P/application/transport_composition.py::build_picking_plugin` 在显式提供 physical/scan/target/put 读口、源/目标请求映射与货架准备参数后，统一关联 source、material、target、placement 和原 batch/scan。复制装配对象，保留原 transport plugin 不变；deployment 仍使用搬运装配，未启用本生产入口。该轮无新增 schema、SDK/WMS DTO、公共状态、队列或通用模型。
+
+单盘扫码沿已有 business evidence consumer 精确绑定原 Pickup/来源 Command；同一 Evidence 交给 material Fact 创建首个可靠请求后才发布，不新增事件 registry。Work READY、WAIT 到期、后继授权消费与 LIFO、下一盘并行复用 6A–6D。REPLACE 的 ReadyTarget 接回共用 7A；普通/ROTATE/REPLACE 的精确成功 PUT 均接回 7B/7C，保留本盘可靠取出、原 Command 优先、权威 PkgID、报告位置/关闭原子性，不重交授权。真实设备映射未决时由读口返回未知，不构造默认值。
+
+正常流出补齐原 Work 当前明确无后继 ACCEPT、无待消费授权且本轮所有 Pickup/MaterialExecution 义务已关闭的准入；当前事实归 Work，未绑定物料或未关闭的 Pickup 继续阻止本箱流出。沿既有 EXIT_PENDING 和点2 Command，与 phase/关联同事务创建，不新增业务状态；原 Command 恢复先于重做准入。首次精确 SCAN3 复用已验证回程交接，不以 ACK 或任务状态替代到位，已有回程 FIFO/回架/drain 矩阵不重复。
+
+唯一 owner 不变：当前 Work 授权由 source/batch 扫描，来源/PUT Command 与货架 Transport 归原基础可靠机制，已保存未应用事实归 FactProcessor，位置报告归 Confirmation，报告后当前 Work 和回程各沿现有 owner。确定未知、失败及未接入异常不换身份制造成功；已闭合 M1 不是 M2 继续或本箱正常结束的查询依据，仍被当前授权引用的 Evidence 保留为当前数据。
+
+主要新增验收 owner 为 `T/integration/test_normal_picking_postgresql.py`，一次覆盖真实插件显式装配中的一/两盘循环、扫码持久交接、WAIT、下一来源与当前 PUT/report 并行、普通/ROTATE/REPLACE 目标分支、报告关闭/正常点2流出/SCAN3、原身份重建、事务中断、缺 PkgID 延期和清理已闭合 Pickup 后继续。已有 6A–7C、F01、窗口与 9H 证据复用，只刷新受影响直接消费者；新增 REPLACE 正例通过后退役原7B/7C“REPLACE尚未接入”的阶段性负例，保留缺取出、未就绪和未装配准备流程的负例。故障注入为离线事务中断，不宣称真实进程失效或现场机械臂验收。
+
+真实接口逐项门禁与已确认 WMS 字段对照集中在[机械臂附录 §10](../../integration/device-annex-automatic-picking-arms.md)。O1/O2、O6/O9、O10/O11/O15/O16、PkgID 仅限制其真实接口；目标架 CK04 与现行 typed CTU02 的差异单列为目标 ROTATE 真实派发合同门禁；不扩散到普通目标/F01换架、现有可靠机制或其他已确认路径。C1/C2、直接取料及首批期限不扩大为本轮到位后业务阻塞。REPLACE 首次 departure/WAIT 的原阶段边界由下述完整接续实施取代；普通目标、ROTATE 及既有搬运/报告证据继续复用。
+
+最终验收：统一装配 PostgreSQL 5 passed、受影响直接消费者 PostgreSQL 15 passed、插件 FAST 252 passed、测试拓扑/所有权 14 passed，均 0 skipped；11 个 Python 文件 Ruff/格式及 `git diff --check` 通过，HEAVY selector 为 NONE。独立完整只读 review 核查固定 13 文件指纹、直接/间接消费者、原身份恢复、当前事实/历史清理与测试承接，无 P1/P2/P3 finding；仅补本文及附录的边界说明后，可执行快照不变。记录位于 `reports/normal-loop-{main-final,direct-final,fast-final,ownership}.xml` 与 `reports/normal-loop-verification.json`。状态为 `IMPLEMENTED - FOCUSED VERIFIED`，不表示机械臂现场验收、完整 REPLACE 入口或任务 11 全部完成。不提交、不部署、不发 WMS 请求、不启用真实派发；未改 Celery/Beat 或生产注册，不重复 9H/共享机制的真实 worker 矩阵，也不执行仅提交所需的完整 QUALITY。
+
+**REPLACE 首次 departure 与换架拣料完整接续（承接上述未提交正常装配）：**复用 manual-picking 的 WorkLine-owned `outbound.rack.departure_decide@v1` / task_id=null、WAIT 新 operation_id 及原 destination 语义，实际请求沿现有 typed facade、RackDepartureScheduler、Confirmation 可靠机制创建。首次精确读口不给 operation_id 即表示由插件创建首次请求；已有显式已发布 READY 输入仍可作为冻结义务接入。同一原进场轮次仅有一个当前请求，同轮多个 Pickup 原子共享/推进；不查询 latest 请求作为身份。Pickup 仅增加 `target_departure_confirmation_id`、`target_departure_round_id`、`target_departure_retry_at` 三个可空持久字段，迁移 `8c9d01122445` 承接 `b514fdcfbefc`，存量均为空且有当前引用时拒绝有损降级，不新增业务状态、模型、队列或 timer。
+
+首次请求与 current/原轮次同事务，确定 WAIT 的固定到期点为原 Evidence.received_at + retry_after_ms，应用/发布交给原 FactProcessor。到期前、结果未知或未发布时不新问；到期以新身份创建 Confirmation 并同事务替换同轮所有 current，旧结果不改新游标。唯一业务恢复 owner 为原 target/batch 前置扫描，不依赖 EXECUTING；Confirmation 继续负责原请求可靠交付，既有 DeviceCommand/Transport 负责原动作技术恢复。READY 发布后以原轮次创建/关联唯一旧架 F01，ACCEPTED 交接窗口后创建新架 F01；精确新架到位后复用本盘可靠取出门禁和原 PUT、权威 PkgID 报告与关闭，物料 ACCEPT 资格和 Work 授权不重问、不重交。旧架 F01 已关联后，恢复不再读取可清理的初始进场/到位历史或旧 WAIT。 同轮原 F01 已存在时，先核实冻结 Binding/READY 并关联该原身份，不再要求旧架仍在位；第二盘晚于旧架 ACCEPTED 加入仍可共享原离场和新架进场。此前“清空关联后再以变化投影拒绝原 F01”的阶段性断言改为验证恢复同一原 Transport、绝不新建动作，首次未证明到位不得创建的负例继续保留。
+
+主要验收 owner 仍为 `T/integration/test_target_replacement_departure_postgresql.py` 与 `T/integration/test_normal_picking_postgresql.py`，前者补首次/WAIT/current 的事务与身份差异，后者从首次请求经 WAIT 到完整换架、PUT、报告和关闭；现有 F01/ReadyTarget/报告矩阵不另复制。两个旧迁移用例仅在已有 F01 交接后退役本次后加的 current 字段，继续验证各自原迁移，不扩大或放宽新迁移的活引用保护。C1/C2、扫码关联、设备参数、PkgID 与 CK04/CTU02 继续按各自路径保留门禁；不以本片解除生产装配、真实派发或现场验收限制。最终统一验收：修复后 PostgreSQL 52 passed（179.39 秒），覆盖本次 departure/current、旧架/新架和完整正常装配，0 skipped；selector 所选核心 PostgreSQL 8 passed，源/drain 路由 2 passed，插件 FAST 252 passed，selector 237 passed、测试拓扑/所有权 14 passed。18 个当前 Python 文件 Ruff/格式与 diff 检查通过。独立完整 review 发现第二盘晚于旧 F01 ACK 加入会被旧在位门禁卡住的 P1，先由精确失败用例复现，再修复为冻结义务优先恢复；原 reviewer 一轮合并闭环与 fresh full review 确认 P1 关闭、无新增 P1/P2/P3。最终 XML 为 `reports/replace-departure-{reviewed-final,core-heavy,routing,fast-final,selector-final,ownership}.xml`，指纹/环境与结果记录在 `reports/replace-departure-verification.json`。首轮测试夹具 processed_at 与迁移 selector 精确列表遗漏已分别修正，早期失败不计为通过证据。HEAD 不变、index 为空；状态止于 `IMPLEMENTED - FOCUSED VERIFIED`，不提交、不部署、不发 WMS 网络请求、不启用生产装配或真实派发。
+
 **依赖：**目标分支所需任务与未决项闭合。**新增：**`T/integration/test_worker_recovery.py`、`T/e2e/test_normal_picking.py`；核心有状态测试只补其新基础机制的主要 owner。
 **范围：**全量需求对照、固定最终 diff/环境指纹，不扩大到未获批 NG/空取或供应商私有协议。
 

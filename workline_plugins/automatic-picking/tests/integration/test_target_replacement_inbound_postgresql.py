@@ -268,6 +268,11 @@ async def test_new_reference_migration_retains_legacy_pickup_and_refuses_loss(in
     from tests.support.postgresql_heavy import run_alembic
 
     p = incoming
+    async with p.sessions.begin() as db:
+        pickup = await current_pickup(p, db)
+        pickup.target_departure_confirmation_id = pickup.target_departure_round_id = (
+            pickup.target_departure_retry_at
+        ) = None
     url = p.sessions.kw["bind"].url.render_as_string(hide_password=False)
     run_alembic("downgrade", "6a7b8c9d0112", database_url=url)
     run_alembic("upgrade", "head", database_url=url)
@@ -298,7 +303,7 @@ async def test_two_materials_share_the_same_new_arrival_round(incoming):
         confirmation = await db.scalar(
             select(WmsConfirmation).where(WmsConfirmation.material_execution_id == material_id)
         )
-    await result(
+    accepted = await result(
         p,
         confirmation,
         data={
@@ -309,9 +314,20 @@ async def test_two_materials_share_the_same_new_arrival_round(incoming):
     )
     assert await material_processor(p).process_batch() == 1
     p.pickup_id = pickup_id
-    async with p.sessions.begin() as db:
-        # 旧架共享交接归上一片；此处显式提供其已验证的原引用。
-        (await current_pickup(p, db)).target_departure_transport_task_id = p.outbound.transport_task_id
+    from automatic_picking.application.target_replacement import MatchedTargetDeparture
+
+    p.observed = MatchedTargetDeparture(
+        p.line.id,
+        material_id,
+        accepted,
+        "OLD-TARGET",
+        p.inbound.client_request_id,
+        p.arrival_id,
+        p.departure_operation_id,
+    )
+    assert await advance(p, application(p)) == 1  # 旧架已接纳后仍关联原F01。
+    async with p.sessions() as db:
+        assert (await current_pickup(p, db)).target_departure_transport_task_id == p.outbound.transport_task_id
     assert await advance(p, application(p)) == 1
     assert (await inbound(p)).transport_task_id == original.transport_task_id
 

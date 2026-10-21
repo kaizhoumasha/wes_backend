@@ -1,12 +1,15 @@
 """交接与首次事实的事务读写；写调用方先持有 WorkLine authority 锁。"""
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from wes_plugin_sdk import PickingMaterialAccept
 
 from src.app.device.contracts import EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
-from src.app.execution.models import InboundEvidence
+from src.app.execution.models import InboundEvidence, MaterialExecution
+from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome
 from src.utils.canonical_json import canonical_json_digest
 
+from .pickup_model import AutomaticPickingPickup
 from .return_model import AutomaticPickingReturn
 from .work_model import AutomaticPickingWork
 
@@ -150,3 +153,32 @@ class ReturnRepository:
     async def qualify(self, db, current, evidence_id):
         current.ready_evidence_id = evidence_id
         await db.flush()
+
+    async def normal_complete(self, db, work):
+        """当前 Work 的明确无后继决定 + 当前逐盘义务闭合；不查询已闭合前盘。"""
+        if work.authorization_evidence_id is None or work.consumed_pickup_id is not None:
+            return False
+        fact = await db.get(InboundEvidence, work.authorization_evidence_id)
+        if (
+            fact is None
+            or fact.kind != "WMS_RESULT"
+            or fact.apply_status != "APPLIED"
+            or fact.operation != "outbound.material.decide@v1"
+            or fact.workline_id != work.workline_id
+            or fact.published_at is None
+            or canonical_json_digest(fact.normalized_payload) != fact.payload_digest
+        ):
+            return False
+        result = decode_outcome(fact.normalized_payload).result
+        if type(result) is not PickingMaterialAccept or result.next_source_action is not None:
+            return False
+        pending = await db.scalar(
+            select(AutomaticPickingPickup.id)
+            .outerjoin(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
+            .where(
+                AutomaticPickingPickup.work_id == work.id,
+                or_(MaterialExecution.id.is_(None), MaterialExecution.status != "CLOSED"),
+            )
+            .limit(1)
+        )
+        return pending is None
