@@ -16,8 +16,8 @@ from wes_plugin_sdk import (
 
 from automatic_picking.handlers.placement import MaterialPlacementPendingFact, MaterialPutFact, MaterialReportedFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.wms_integration.outbound_picking.services import MaterialMovementReportResultReader
-from src.utils.canonical_json import canonical_json_digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +94,8 @@ class AutomaticPickingPlacementFlow:
             or fact.command_code != command.command_code
             or fact.device_code != command.device_code
             or fact.material_trace_id != execution.material_trace_id
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             raise ValueError("placement Evidence differs from bound PUT")
         if command.result_evidence_id != evidence.id or command.status != "SUCCEEDED":
@@ -188,7 +189,8 @@ class AutomaticPickingPlacementFlow:
             or position.material_execution_id != execution.id
             or position.command_code != command.command_code
             or position.device_code != command.device_code
-            or canonical_json_digest(position.normalized_payload) != position.payload_digest
+            or normalize_payload(position.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != position.payload_digest
             or position.published_at is None
             or position.decision_digest is None
             or command.status != "SUCCEEDED"

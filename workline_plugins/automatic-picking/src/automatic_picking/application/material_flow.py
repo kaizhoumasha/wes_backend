@@ -17,8 +17,8 @@ from wes_plugin_sdk import (
 from automatic_picking.handlers.material_flow import MaterialDecidedFact, MaterialScannedFact, material_scanned
 from automatic_picking.handlers.placement import MaterialPutFact, MaterialReportedFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.core.uuid7 import new_uuid7
-from src.utils.canonical_json import canonical_json_digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,8 +167,9 @@ class AutomaticPickingMaterialFlow:
             or evidence.kind != "DEVICE_EVENT"
             or evidence.apply_status != "APPLIED"
             or evidence.workline_id != scan.workline_id
-            or evidence.command_code != scan.command_code
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or (evidence.command_code is not None and evidence.command_code != scan.command_code)
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             raise ValueError("matched scan identity differs from persisted Evidence")
         return scan
@@ -185,10 +186,11 @@ class AutomaticPickingMaterialFlow:
             or evidence.workline_id != work.workline_id
             or scan.workline_id != work.workline_id
             or scan.command_code != pickup.command_code
-            or evidence.command_code != pickup.command_code
+            or (evidence.command_code is not None and evidence.command_code != pickup.command_code)
             or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
             or command.material_execution_id is not None
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             raise ValueError("matched scan/Work/Pickup/Command identity differs")
         execution = await self.repository.material_execution(db, pickup.material_execution_id)
@@ -204,6 +206,7 @@ class AutomaticPickingMaterialFlow:
             return execution.id
         if evidence.material_execution_id is not None or evidence.published_at is not None:
             raise ValueError("scan identity was already consumed")
+        evidence.command_code = command.command_code
         # Pickup UUID 是 WES 本地 trace/执行身份，不能充当 WMS 的 PkgID。
         execution = await self.executions.create_or_get_for_initial_evidence(
             db,

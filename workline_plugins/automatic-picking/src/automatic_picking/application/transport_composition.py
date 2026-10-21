@@ -176,7 +176,7 @@ def build_picking_plugin(
         ),
     )
     batch.source_flow, batch.material_flow, batch.target_flow = source, material, target
-    scan.material_flow = material
+    scan.source_flow, scan.material_flow = source, material
     return build_plugin(
         scan_flow=scan, batch_driver=batch, works=transport_plugin.business_blocker, material_flow=material
     )

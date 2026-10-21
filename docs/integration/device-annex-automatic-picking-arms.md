@@ -69,7 +69,7 @@ WES 的业务角色“转运货架”，在 ECS 侧的 `location_type` 就是 `F
 供应商原文还要求 `bin_type`、`reel_layer`、`reel_thickness`、`reel_totalthickness`、`reel_diameter`。
 **2026-09-21 更新**：`reel_totalthickness` 不需要 WMS 提供，WES 本地按 `reel_thickness × reel_layer` 计算。
 其余四个字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`）由 WMS 已接受的
-`work_plan.READY` 目标响应提供，见[出库主合同 §9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)；WES 接线与设备参数映射仍待实施。
+`work_plan.READY` 目标响应提供，见[出库主合同 §9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)；已确认的公共命令/事实接线见 §10.1；设备私有参数编码仍待 O4/O16 等项冻结。
 
 ### 4.3 示例
 
@@ -273,7 +273,7 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 
 ## 10. 正常业务装配与真实接口门禁（2026-10-22 核对）
 
-本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。设备读口、命令映射与 PkgID 必须由调用方显式注入；`build_picking_plugin` 不注册到生产 deployment，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
+本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与公共命令映射已实现；完整设备位置正文、精确扫码关联及权威 PkgID 仍须由调用方显式注入；`build_picking_plugin` 不注册到生产 deployment，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
 
 REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT 到期续问，再沿原 F01 旧架离场/新架进场和共用 PUT/report/close 继续，不重新请求物料资格。首次输入只需精确旧架、原进场轮次及到位事实；当前请求、轮次和到期点保存在 Pickup，恢复不按“最新请求”猜身份。所有搬运和机械臂成功事实仍必须匹配并已发布；未知交付不创建等价新动作。这证明显式权威输入下的离线业务闭环，不代表下表接口门禁已解除。
 
@@ -288,3 +288,15 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 | 直接取料与异常 | 当前正常 BIN_CELL 链不依赖这些分支 | O12/O13/O14/O17 只限制直接取料；O5/O7/O8 只限制空取、失败/不可读码等异常动作，保留对象/原身份，不替代正常确认 |
 
 C1/C2 继续只限制 drain 容量接续与回库核销。首批期限只限制准备后未到首批计划的路径，不作为已到工作位正常链的新门禁。
+
+### 10.1 已确认设备接线与隔离验收
+
+`application/picking_device_ports.py` 提供来源事实、当前目标/REPLACE 原架、PUT 成功事实读口和 `PickingArmCommandMapper`。来源准入读取本 Work 原 SCAN2 的归一化料箱编码、设备/工作线/时间和已发布 Evidence；可靠取出要求原来源 Command 的 `SUCCESS + PUT_FINISHED + actual_qty` 严格整数 `1`，结果已由 FactProcessor 发布。当前目标沿原进场轮次、已发布结果、未释放窗口和权威当前位置核对，复用既有换架读口的因果检查；第二盘晚于旧架 ACK 加入时，由原换架 owner 从相同目标架/架面、尚未闭合的换架义务恢复唯一原轮次，不查询 latest，不要求旧架重新在位。目标已权威就绪时读取现有 ReadyTarget，不重做换架；ACK、计划目标、未知位置均不构成 ReadyTarget。
+
+公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。请求工厂在同一数据库事务内异步读取，完整 `source/target` 正文由必填参数端口提供，未提供则不创建命令、不消费来源授权。这里没有实现 O4/O10/O11/O15/O16 尚未冻结的设备编码，也没有使用示例坐标、30000 或扫码样例作为生产默认值。
+
+真实设备事件入口不提供本地 `command_code` 元数据。精确语义关联显式给定后，插件核对原 Work/Pickup/Command，再将该关联与 MaterialExecution 同事务保存，不改写原始报文或其摘要。来源结果先由 DeviceEvidenceService 应用，再由插件 business consumer 发布；PUT 结果在 FactProcessor 内读取确定成功，位置确认、movement_report 义务和发布仍同事务。设备摘要复用宿主 UNIFORM_WIRE 规则；设备 Fact 的 `1.1` 与既有 WMS Fact 的 `1.0` 由相应静态 handler 明确消费，不更改 Evidence 的版本或身份。
+
+隔离装配的主要验收 owner 是 `tests/integration/test_picking_device_ports_postgresql.py`：调用真实 DeviceEvidenceService 与 FactProcessor，以明确提供的参数/扫码关联/PkgID 跑通普通目标取盘→扫码→ACCEPT→PUT→报告→关闭，并验证扫码绑定回滚、未发布来源结果、非整数单盘数量、未知/错误架面、缺参数/PkgID、并发唯一命令、重建/重放及 REPLACE 原架/轮次发现。旧换架、WAIT、报告关闭和历史清理矩阵继续引用既有测试，不另建一套。测试将“已下发但尚未 ACK”显式作为前提，不执行发送，也不宣称物理设备成功。
+
+恢复 owner 不变：Work/source 与 target/batch 推进当前业务；DeviceCommand/Transport 持有原动作；DeviceEvidenceService 应用设备 Evidence，FactProcessor 应用并发布业务事实，Confirmation 持有已冻结请求/报告。精确扫码关联、权威 PkgID 和完整参数仍是实际接入门禁；C1/C2 只限制对应 drain 容量路径，CK04 只限制目标 ROTATE 派发。本轮不改 deployment、不启动 worker 或真实派发、不发送 WMS 请求。

@@ -1,0 +1,359 @@
+"""正常机械臂的统一合同读口；未冻结的位置编码、扫码和 PkgID 由必填端口显式提供。"""
+
+from datetime import timedelta
+
+from sqlalchemy import select
+from wes_plugin_sdk import PickingMaterialAccept
+
+from automatic_picking.definition import DEFINITION
+from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
+from src.app.device.models.command import DeviceCommand
+from src.app.execution.models import InboundEvidence, MaterialExecution, PositionProjection, TransportDecisionBinding
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
+from src.app.wms_integration.outbound_picking.services import MaterialDecideResultReader
+from src.app.workline.installed_plugin import parse_device_bindings
+from src.app.workline.models import WorkLine
+from src.app.workline.repositories.workline_repository import workline_repository
+from src.utils.timezone import timezone
+
+from .pickup_model import AutomaticPickingPickup
+from .pickup_repository import SourceObservation
+from .placement_flow import MatchedPutResult
+from .scan_flow import normal_bin_code
+from .target_preparation import ReadyTarget
+from .target_replacement import MatchedTargetDeparture
+from .target_replacement_repository import TARGET_INBOUND_STEP, TargetReplacementRepository
+from .work_model import AutomaticPickingWork
+
+
+class PickingArmCommandMapper:
+    """只映射已确认包络/角色/时限；parameters 必须明确提供完整正文，无生产默认值。"""
+
+    def __init__(self, parameters, *, worklines=None, clock=timezone.now_for_db):
+        self.parameters, self.clock = parameters, clock
+        self.worklines = worklines or workline_repository
+
+    async def source_request(self, db, *, work, pickup_id):
+        params = await self.parameters.source_in_session(db, work=work, pickup_id=pickup_id)
+        return await self._request(db, work.workline_id, "SOURCE_ARM", pickup_id, None, params, self.clock())
+
+    async def put_request(self, db, *, workline_id, pickup_id, material_execution_id, target, now):
+        params = await self.parameters.put_in_session(
+            db, workline_id=workline_id, pickup_id=pickup_id, material_execution_id=material_execution_id, target=target
+        )
+        return await self._request(
+            db, workline_id, "TARGET_ARM", "put:" + pickup_id, material_execution_id, params, now
+        )
+
+    async def _request(self, db, line_id, role, ref, material_id, params, now):
+        if params is None:
+            return None
+        if type(params) is not dict or any(
+            type(params.get(key)) is not dict or not params[key] for key in ("source", "target")
+        ):
+            raise ValueError("PICK_AND_PUT requires explicit complete source/target parameters")
+        line = await self.worklines.get_for_authority_update(db, line_id, populate_existing=True)
+        if line is None or not line.is_active:
+            return None
+        code = parse_device_bindings(line.config, DEFINITION.device_roles)[role]
+        binding = await self.worklines.get_binding_for_command_creation(db, workline_id=line_id, device_code=code)
+        if binding is None:
+            raise ValueError("mechanical arm lacks its current frozen device contract")
+        return DeviceCommandRequest(
+            device_code=code,
+            workline_id=line_id,
+            execution_ref_type=WORKLINE_BUSINESS_REF_TYPE,
+            execution_ref_id=ref,
+            material_execution_id=material_id,
+            contract_key=binding.contract_key,
+            contract_version=binding.contract_version,
+            task_type="PICK_AND_PUT",
+            params=params,
+            deadline_at=now + timedelta(milliseconds=binding.command_timeout_ms),
+        )
+
+
+async def _finished_arm(db, command):
+    if (
+        command is None
+        or command.task_type != "PICK_AND_PUT"
+        or command.status != "SUCCEEDED"
+        or command.result_evidence_id is None
+    ):
+        return None
+    evidence = await db.get(InboundEvidence, command.result_evidence_id, populate_existing=True)
+    if (
+        evidence is None
+        or evidence.kind != "DEVICE_RESULT"
+        or evidence.apply_status != "APPLIED"
+        or evidence.command_code != command.command_code
+        or evidence.device_code != command.device_code
+        or evidence.workline_id != command.workline_id
+        or evidence.contract_key != command.contract_key
+        or evidence.contract_version != command.contract_version
+        or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+        != evidence.payload_digest
+    ):
+        return None
+    result = EcsCommandResult.model_validate(evidence.normalized_payload)
+    if (
+        result.command_code != command.command_code
+        or result.device_code != command.device_code
+        or result.contract_key != command.contract_key
+        or result.contract_version != command.contract_version
+        or result.source_event_id != evidence.source_identity
+        or result.result != "SUCCESS"
+        or type(result.data.get("actual_qty")) is not int
+        or result.data["actual_qty"] != 1
+        or result.data.get("pick_and_put_result") != "PUT_FINISHED"
+    ):
+        return None
+    return evidence, result
+
+
+class PickingSourceReader:
+    async def read_in_session(self, db, *, work, source, pickup):
+        line = await db.get(WorkLine, work.workline_id)
+        scan = await db.get(InboundEvidence, work.scan2_evidence_id)
+        ready = False
+        if (
+            line is not None
+            and line.is_active
+            and source is not None
+            and scan is not None
+            and scan.kind == "DEVICE_EVENT"
+            and scan.apply_status == "APPLIED"
+            and scan.published_at is not None
+            and scan.workline_id == line.id
+            and normalize_payload(scan.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            == scan.payload_digest
+        ):
+            event = EcsDeviceEvent.model_validate(scan.normalized_payload)
+            code = parse_device_bindings(line.config, DEFINITION.device_roles)["SCAN2"]
+            ready = (
+                event.event_type == "SCAN_COMPLETED"
+                and not event.is_debug
+                and event.device_code == scan.device_code == code
+                and event.contract_key == scan.contract_key
+                and event.contract_version == scan.contract_version
+                and event.source_event_id == scan.source_identity
+                and event.timestamp == work.scanned_at
+                and normal_bin_code(event.data.get("bin_code"), "SCAN2") == work.bin_code
+            )
+        removed = None
+        if pickup is not None:
+            command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
+            if (
+                command is None
+                or pickup.work_id != work.id
+                or command.workline_id != work.workline_id
+                or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+                or command.execution_ref_id != pickup.pickup_id
+                or command.material_execution_id is not None
+            ):
+                raise ValueError("source physical fact lost original Work/Pickup/Command identity")
+            finished = await _finished_arm(db, command)
+            removed = finished[0].id if finished is not None and finished[0].published_at is not None else None
+        return SourceObservation(ready, removed)
+
+
+class PickingTargetReader:
+    """只从当前已发布的原因果到位取事实；不以计划目标或缺少历史推断在位。"""
+
+    def __init__(self):
+        self.repository = TargetReplacementRepository()
+        self.materials = MaterialDecideResultReader()
+
+    async def _material(self, db, line_id, material_id, target):
+        pickup = await db.scalar(
+            select(AutomaticPickingPickup).where(AutomaticPickingPickup.material_execution_id == material_id)
+        )
+        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        if work is None or work.workline_id != line_id:
+            raise ValueError("target facts require this material's WorkLine")
+        snapshot = (
+            await self.materials.by_id(
+                db, material_execution_id=material_id, confirmation_id=pickup.material_confirmation_id
+            )
+            if pickup.material_confirmation_id is not None
+            else await self.materials.by_operation_id(
+                db, material_execution_id=material_id, operation_id=pickup.pickup_id
+            )
+        )
+        if (
+            snapshot is None
+            or snapshot.status != "COMPLETED"
+            or snapshot.published_at is None
+            or snapshot.evidence_id != pickup.accept_evidence_id
+            or type(snapshot.outcome.result) is not PickingMaterialAccept
+            or snapshot.outcome.result.target_locator != target
+        ):
+            raise ValueError("target fact input differs from this published ACCEPT")
+        return pickup
+
+    async def _current(self, db, line_id, pickup):
+        line = await db.get(WorkLine, line_id)
+        if line is None or not line.is_active:
+            return None
+        location = line.position_bindings.get("TRANSFER_RACK", {}).get("location_id")
+        if location is None:
+            return None
+        positions = list(
+            (
+                await db.scalars(
+                    select(PositionProjection).where(
+                        PositionProjection.workline_id == line_id,
+                        PositionProjection.object_type == "RACK",
+                        PositionProjection.position_unknown.is_(False),
+                        PositionProjection.position_json["location_code"].as_string() == location,
+                    )
+                )
+            ).all()
+        )
+        if len(positions) > 1:
+            raise ValueError("target working position has ambiguous authoritative racks")
+        if not positions:
+            return None
+        position = positions[0]
+        if position.source_effect_phase != "FINAL_RESULT":
+            return None
+        roots = list(
+            (
+                await db.scalars(
+                    select(TransportDecisionBinding).where(
+                        TransportDecisionBinding.workline_id == line_id,
+                        TransportDecisionBinding.resource_fence_id == position.object_id,
+                        TransportDecisionBinding.step.in_(("PICKING_TASK_TARGET_RACK_IN", TARGET_INBOUND_STEP)),
+                        TransportDecisionBinding.window_target_location_code == location,
+                        TransportDecisionBinding.window_released_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if len(roots) > 1:
+            raise ValueError("target rack has ambiguous current arrival rounds")
+        if not roots:
+            return None
+        task = await self.repository.task_for_binding(db, roots[0])
+        fact = (
+            (
+                await db.scalar(
+                    select(InboundEvidence).where(
+                        InboundEvidence.source_identity
+                        == f"transport:{task.transport_task_id}:outcome:{task.outcome_version}"
+                    )
+                )
+            )
+            if task is not None
+            else None
+        )
+        if fact is None:
+            return None
+        observed = MatchedTargetDeparture(
+            line_id,
+            pickup.material_execution_id,
+            pickup.accept_evidence_id,
+            position.object_id,
+            task.client_request_id,
+            fact.id,
+        )
+        if not await self.repository.current_arrival(db, line_id, observed):
+            return None
+        return observed, position
+
+    async def read_in_session(self, db, *, workline_id, material_execution_id, target):
+        pickup = await self._material(db, workline_id, material_execution_id, target)
+        current = await self._current(db, workline_id, pickup)
+        if (
+            current is not None
+            and current[1].object_id == target.rack_id
+            and current[1].arrival_face == target.rack_face
+        ):
+            return ReadyTarget(workline_id, material_execution_id, target)
+        return None
+
+
+class PickingDepartureReader(PickingTargetReader):
+    async def read_in_session(self, db, *, workline_id, material_execution_id, target):
+        pickup = await self._material(db, workline_id, material_execution_id, target)
+        current = await self._current(db, workline_id, pickup)
+        if (
+            current is not None
+            and current[1].object_id == target.rack_id
+            and current[1].arrival_face == target.rack_face
+        ):
+            return ReadyTarget(workline_id, material_execution_id, target)
+        return current[0] if current is not None and current[1].object_id != target.rack_id else None
+
+
+class PickingPutReader:
+    def __init__(self, pkg_ids):
+        self.pkg_ids = pkg_ids
+        self.materials = MaterialDecideResultReader()
+
+    async def read_in_session(self, db, *, evidence_id):
+        fact = await db.get(InboundEvidence, evidence_id, populate_existing=True)
+        pickup = (
+            (
+                await db.scalar(
+                    select(AutomaticPickingPickup).where(AutomaticPickingPickup.put_command_code == fact.command_code)
+                )
+            )
+            if fact
+            else None
+        )
+        if pickup is None:
+            return None
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.put_command_code))
+        finished = await _finished_arm(db, command)
+        if finished is None or finished[0].id != evidence_id:
+            return None
+        work = await db.get(AutomaticPickingWork, pickup.work_id)
+        execution = await db.get(MaterialExecution, pickup.material_execution_id)
+        if (
+            work is None
+            or execution is None
+            or command.material_execution_id != execution.id
+            or execution.workline_id != work.workline_id
+            or command.workline_id != work.workline_id
+            or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            or command.execution_ref_id != "put:" + pickup.pickup_id
+            or execution.execution_code != pickup.pickup_id
+            or execution.material_trace_id != pickup.pickup_id
+        ):
+            raise ValueError("PUT physical fact lost its original material/Command identity")
+        snapshot = (
+            await self.materials.by_id(
+                db, material_execution_id=execution.id, confirmation_id=pickup.material_confirmation_id
+            )
+            if pickup.material_confirmation_id is not None
+            else await self.materials.by_operation_id(
+                db, material_execution_id=execution.id, operation_id=pickup.pickup_id
+            )
+        )
+        if (
+            snapshot is None
+            or snapshot.published_at is None
+            or snapshot.evidence_id != pickup.accept_evidence_id
+            or type(snapshot.outcome.result) is not PickingMaterialAccept
+        ):
+            raise ValueError("PUT facts require this material's published ACCEPT")
+        pkg_id = await self.pkg_ids.read_in_session(
+            db,
+            workline_id=work.workline_id,
+            material_execution_id=execution.id,
+            scan_evidence_id=execution.admission_evidence_id,
+        )
+        if pkg_id is None:
+            return None
+        return MatchedPutResult(
+            evidence_id,
+            work.workline_id,
+            pickup.pickup_id,
+            execution.id,
+            command.command_code,
+            command.device_code,
+            snapshot.outcome.result.target_locator,
+            pkg_id,
+            finished[1].finish_time,
+        )

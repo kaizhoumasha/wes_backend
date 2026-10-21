@@ -1026,6 +1026,16 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 主要验收 owner 仍为 `T/integration/test_target_replacement_departure_postgresql.py` 与 `T/integration/test_normal_picking_postgresql.py`，前者补首次/WAIT/current 的事务与身份差异，后者从首次请求经 WAIT 到完整换架、PUT、报告和关闭；现有 F01/ReadyTarget/报告矩阵不另复制。两个旧迁移用例仅在已有 F01 交接后退役本次后加的 current 字段，继续验证各自原迁移，不扩大或放宽新迁移的活引用保护。C1/C2、扫码关联、设备参数、PkgID 与 CK04/CTU02 继续按各自路径保留门禁；不以本片解除生产装配、真实派发或现场验收限制。最终统一验收：修复后 PostgreSQL 52 passed（179.39 秒），覆盖本次 departure/current、旧架/新架和完整正常装配，0 skipped；selector 所选核心 PostgreSQL 8 passed，源/drain 路由 2 passed，插件 FAST 252 passed，selector 237 passed、测试拓扑/所有权 14 passed。18 个当前 Python 文件 Ruff/格式与 diff 检查通过。独立完整 review 发现第二盘晚于旧 F01 ACK 加入会被旧在位门禁卡住的 P1，先由精确失败用例复现，再修复为冻结义务优先恢复；原 reviewer 一轮合并闭环与 fresh full review 确认 P1 关闭、无新增 P1/P2/P3。最终 XML 为 `reports/replace-departure-{reviewed-final,core-heavy,routing,fast-final,selector-final,ownership}.xml`，指纹/环境与结果记录在 `reports/replace-departure-verification.json`。首轮测试夹具 processed_at 与迁移 selector 精确列表遗漏已分别修正，早期失败不计为通过证据。HEAD 不变、index 为空；状态止于 `IMPLEMENTED - FOCUSED VERIFIED`，不提交、不部署、不发 WMS 网络请求、不启用生产装配或真实派发。
 
+**正常机械臂已确认接线（基线 `54b034c3`，本轮未提交）：**集中补齐 `P/application/picking_device_ports.py` 的公共命令映射、来源 SCAN2/可靠取出、当前目标及 REPLACE 原架/原进场轮次、确定 PUT 成功读口。直接复用既有 Work/source、target/batch、DeviceCommand/Transport、DeviceEvidenceService、FactProcessor 和 Confirmation owner，不增加模型、业务状态、timer、迁移或生产注册。参数工厂统一为同事务 async 端口；只映射已确认角色、PICK_AND_PUT、原业务身份与冻结绑定时限，完整位置正文未给定时不创建命令。精确扫码关联核对后与单盘身份原子保存，不要求公共事件入口猜测来源命令。
+
+本轮真实入口验收发现并最小修正设备摘要与 Fact 版本的接线差异：设备 Evidence 的摘要沿宿主 UNIFORM_WIRE 规则，相关静态 handler 显式消费统一设备合同 `1.1`，保留 WMS `1.0` 的原身份。来源结果由既有 business consumer 发布后才能作为可靠取出依据；PUT 的确定结果在原 FactProcessor 内读取，报告义务与位置/发布保持原子，不提前要求本次 PUT 已发布。权威 PkgID 缺失时保留原 Evidence 及 Command，不猜 barcode 或 UUID。
+
+主要测试 owner 为 `T/integration/test_picking_device_ports_postgresql.py`，只补真实 DeviceEvidenceService/FactProcessor 与新读口的业务接线；普通目标完整离线链、显式扫码绑定的回滚/身份拒绝、来源发布门禁、严格单盘成功、未知或错误目标、完整参数/PkgID 缺失、并发/重建/重放及 REPLACE 原轮次发现。`T/test_picking_device_ports.py` 拥有公共角色/合同/时限映射。独立 review 复现并修正真实读口下第二盘晚于旧架 ACK 加入 REPLACE 的接线缺口：现有换架 owner 从精确相同目标架/架面的未闭合义务恢复唯一原 round/current；歧义报错保留身份，无论单盘自身是否已关联 incoming，都沿原 departure＋目标架的唯一 correlation 检查实际 Binding，已释放的新架窗口不冒领，原进场历史不是恢复输入。目标已权威就绪时允许读取现有 ReadyTarget，不创建额外搬运。新 owner 补 ACK 后、新架到位并关闭/清理原 Pickup 后两种加入时序，以及 peer 未保存 incoming 引用时仍排除已释放轮次。既有 6A–7C、REPLACE 完整链和历史清理证据复用，只刷新 async 调用点、摘要校验及该修复影响的直接回归，不复制 9H、租约或 worker/Beat 机制矩阵。
+
+实际接入仍需机械臂附录 §10 所列设备位置编码与数值格式、精确扫码设备/来源命令字段、PkgID 权威来源，以及仅影响目标 ROTATE 的 CK04/CTU02 合同对齐。C1/C2 不扩大阻塞正常链；O6/O9 的 business_key/正式时限仍保留确认项。隔离测试输入不是设备协议冻结或现场验收，本轮不接生产装配/真实派发，不发送 WMS 请求。
+
+本轮修复后的最终业务 PostgreSQL 验收 **58 passed、0 skipped，3 项未受本轮代码变更影响的既有迁移用例按名称 deselected**（本轮无 schema 变更）；插件 FAST **255 passed**，拓扑/所有权 **14 passed**，18 个 Python 文件 Ruff/格式、文档链接与 diff 检查通过，HEAVY selector 为 NONE。独立完整 review 及修复闭环确认 P1/P2 均关闭，无新增 finding；最终业务 XML 为 `reports/arm-ports-reviewed-final.xml`，审查与环境指纹见 `reports/arm-ports-{review-result,verification}.json`。扩展回归的旧 `test_plugin_source_models_match_migrated_schema` 发现 `target_rotation_transport_task_id` 唯一约束命名差异，使用 HEAD 原版测试副本复现同一失败；对应模型/迁移未改，作为既有基线失败单列，不把扩展回归称为全部通过，不在本轮扩大 schema 修订。早期加载修复前代码的结果仅用于未失效消费者证据，不能替代本次最终业务结果。状态止于离线实施与聚焦验证，不提交、不部署、不启用生产装配/派发、不发送 WMS 请求。
+
 **依赖：**目标分支所需任务与未决项闭合。**新增：**`T/integration/test_worker_recovery.py`、`T/e2e/test_normal_picking.py`；核心有状态测试只补其新基础机制的主要 owner。
 **范围：**全量需求对照、固定最终 diff/环境指纹，不扩大到未获批 NG/空取或供应商私有协议。
 

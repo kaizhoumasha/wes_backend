@@ -44,8 +44,10 @@ class AutomaticPickingScanFlow:
         rack_motion_flow=None,
         rack_departure_flow=None,
         material_flow=None,
+        source_flow=None,
     ):
         self.works, self.feeds, self.work_flow, self.commands = works, feeds, work_flow, commands
+        self.source_flow = source_flow
         self.material_flow = material_flow
         self.exit_flow = exit_flow
         self.return_batch_flow = return_batch_flow
@@ -92,8 +94,18 @@ class AutomaticPickingScanFlow:
                 result = await self._result(db, line, evidence)
         elif evidence.kind == "TRANSPORT_RESULT":
             result = await self._transport_result(db, line, evidence)
-        elif evidence.kind == "DEVICE_RESULT" and self.exit_flow is not None:
-            result = await self.exit_flow.direction_result_in_session(db, line=line, evidence=evidence)
+        elif evidence.kind == "DEVICE_RESULT":
+            result = (
+                await self.source_flow.observe_result_in_session(db, line=line, evidence=evidence)
+                if self.source_flow is not None
+                else None
+            )
+            if result is None:
+                result = (
+                    await self.exit_flow.direction_result_in_session(db, line=line, evidence=evidence)
+                    if self.exit_flow is not None
+                    else "IGNORED"
+                )
         elif evidence.kind == "DEVICE_EVENT" and line.is_active:
             try:
                 event = EcsDeviceEvent.model_validate(evidence.normalized_payload)

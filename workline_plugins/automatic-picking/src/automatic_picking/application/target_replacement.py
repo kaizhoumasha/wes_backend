@@ -112,15 +112,15 @@ class AutomaticPickingTargetReplacementFlow:
             return await self._inbound_in_session(db, work, pickup, accepted)
         if pickup.target_departure_confirmation_id is not None:
             request = await self.repository.request(db, work.workline_id, pickup.target_departure_confirmation_id)
-            if await self._restore_round(
-                db,
-                work,
-                pickup,
+            retained = (
                 pickup.target_departure_round_id,
                 request.request_payload["data"]["rack_id"],
                 request.operation_id,
-            ):
-                return 1
+            )
+        else:
+            retained = await self.repository.shared_target_round(db, work.workline_id, pickup, accepted.target_locator)
+        if retained is not None and await self._restore_round(db, work, pickup, *retained):
+            return 1
         observed = (
             await self.repository.current_input(db, work.workline_id, pickup)
             if pickup.target_departure_confirmation_id is not None
@@ -128,7 +128,7 @@ class AutomaticPickingTargetReplacementFlow:
                 db, workline_id=work.workline_id, material_execution_id=execution.id, target=accepted.target_locator
             )
         )
-        if observed is None:
+        if observed is None or type(observed) is ReadyTarget:
             return 0
         if (
             type(observed) is not MatchedTargetDeparture
@@ -308,9 +308,7 @@ class AutomaticPickingTargetReplacementFlow:
         target = accepted.target_locator
         if target.rack_id == old.request_json["rack_id"]:
             raise ValueError("REPLACE requires a new target rack")
-        correlation = "auto-target-in:" + canonical_json_digest(
-            {"departure": old.transport_task_id, "rack": target.rack_id}
-        )
+        correlation = self.repository.inbound_correlation(old.transport_task_id, target.rack_id)
         binding = await self.repository.inbound_binding(db, work.workline_id, correlation)
         if binding is None:
             observed = await self.repository.inbound_position(db, work.workline_id)
@@ -353,8 +351,13 @@ class AutomaticPickingTargetReplacementFlow:
         pickup = await db.scalar(
             select(AutomaticPickingPickup).where(AutomaticPickingPickup.material_execution_id == material_execution_id)
         )
-        if pickup is None or pickup.target_inbound_transport_task_id is None:
+        if pickup is None:
             return None
+        if pickup.target_inbound_transport_task_id is None:
+            observed = await self.reader.read_in_session(
+                db, workline_id=workline_id, material_execution_id=material_execution_id, target=target
+            )
+            return observed if type(observed) is ReadyTarget else None
         work = await db.get(AutomaticPickingWork, pickup.work_id)
         if work.workline_id != workline_id:
             raise ValueError("replacement ready material belongs to another WorkLine")

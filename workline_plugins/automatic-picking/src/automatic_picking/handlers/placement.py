@@ -39,7 +39,7 @@ def material_reported(fact: MaterialReportedFact) -> tuple[CompleteExecution, ..
     return (CompleteExecution(fact.material_execution_id, fact.fact_id, "MOVEMENT_RECORDED"),)
 
 
-@handler(fact_type=MaterialPutFact, name="automatic_material_put", supported_versions=("1.0",))
+@handler(fact_type=MaterialPutFact, name="automatic_material_put", supported_versions=("1.0", "1.1"))
 def material_put(fact: MaterialPutFact) -> tuple[MaterialMovementReportIntent, ...]:
     return (
         wms_operations.outbound_material_movement_report(
@@ -55,6 +55,6 @@ def material_put(fact: MaterialPutFact) -> tuple[MaterialMovementReportIntent, .
     )
 
 
-@handler(fact_type=MaterialPlacementPendingFact, name="automatic_placement_pending", supported_versions=("1.0",))
+@handler(fact_type=MaterialPlacementPendingFact, name="automatic_placement_pending", supported_versions=("1.0", "1.1"))
 def placement_pending(fact: MaterialPlacementPendingFact) -> tuple[DeferExecution, ...]:
     return (DeferExecution(fact.material_execution_id, fact.fact_id, fact.reason_code),)

@@ -29,7 +29,7 @@ class MaterialDecidedFact(FactReference):
     result: PickingMaterialAccept | PickingMaterialWait
 
 
-@handler(fact_type=MaterialScannedFact, name="automatic_material_scanned", supported_versions=("1.0",))
+@handler(fact_type=MaterialScannedFact, name="automatic_material_scanned", supported_versions=("1.0", "1.1"))
 def material_scanned(fact: MaterialScannedFact) -> tuple[PickingMaterialIntent, ...]:
     return (
         wms_operations.outbound_material_decide(

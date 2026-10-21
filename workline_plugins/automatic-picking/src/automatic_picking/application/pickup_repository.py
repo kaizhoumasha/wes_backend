@@ -9,6 +9,7 @@ from automatic_picking.handlers.source_authorization import WorkSourceFact
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
 from src.app.execution.repositories import inbound_evidence_repository
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material
 from src.app.wms_adapter.outbound_picking.movement_report_wire import MATERIAL_MOVEMENT_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.work_plan_typed import decode_outcome as decode_plan
@@ -46,6 +47,13 @@ class PickupRepository:
             raise ValueError("scan source Command identity differs from Pickup")
         return work, pickup, command
 
+    async def pickup_by_source_command(self, db, line_id, command_code):
+        return await db.scalar(
+            select(AutomaticPickingPickup.pickup_id)
+            .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+            .where(AutomaticPickingWork.workline_id == line_id, AutomaticPickingPickup.command_code == command_code)
+        )
+
     async def scan_evidence_for_update(self, db, evidence_id):
         return await inbound_evidence_repository.get_by_id_for_update(db, evidence_id)
 
@@ -71,7 +79,8 @@ class PickupRepository:
             or removed.workline_id != work.workline_id
             or removed.command_code != pickup.command_code
             or removed.apply_status != "APPLIED"
-            or canonical_json_digest(removed.normalized_payload) != removed.payload_digest
+            or normalize_payload(removed.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != removed.payload_digest
         ):
             raise ValueError("closure removed fact differs from original source Command")
         return removed.id

@@ -152,26 +152,32 @@ class AutomaticPickingTargetFlow:
                 or observed.target != accepted.target_locator
             ):
                 raise ValueError("ready target identity differs from frozen ACCEPT")
-            request = self.request_factory(
-                workline_id=line_id,
-                pickup_id=pickup.pickup_id,
-                material_execution_id=execution.id,
-                target=accepted.target_locator,
-                now=now,
-            )
-            if (
-                type(request) is not DeviceCommandRequest
-                or request.workline_id != line_id
-                or request.material_execution_id != execution.id
-                or request.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
-                or request.execution_ref_id != "put:" + pickup.pickup_id
-            ):
-                raise ValueError("PUT request must retain WorkLine/material/step identity")
-            command = await self.commands.create_command_in_session(db, request)
-            pickup.put_command_code = command.command_code
-            await db.flush()
-            count += 1
+            count += await self._create_put(db, line_id, pickup, execution, accepted, now)
         return count
+
+    async def _create_put(self, db, line_id, pickup, execution, accepted, now):
+        request = await self.request_factory(
+            db,
+            workline_id=line_id,
+            pickup_id=pickup.pickup_id,
+            material_execution_id=execution.id,
+            target=accepted.target_locator,
+            now=now,
+        )
+        if request is None:
+            return 0
+        if (
+            type(request) is not DeviceCommandRequest
+            or request.workline_id != line_id
+            or request.material_execution_id != execution.id
+            or request.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            or request.execution_ref_id != "put:" + pickup.pickup_id
+        ):
+            raise ValueError("PUT request must retain WorkLine/material/step identity")
+        command = await self.commands.create_command_in_session(db, request)
+        pickup.put_command_code = command.command_code
+        await db.flush()
+        return 1
 
     async def apply_transport_result_in_session(self, db, *, line, evidence):
         if evidence.normalized_payload.get("step") in {TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP}:

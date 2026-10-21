@@ -33,7 +33,9 @@ class AutomaticPickingSourceFlow:
         if not source_pickup_allowed(work):
             return None
         pickup_id = self.uuid_factory()
-        request = self.request_factory(work=work, pickup_id=pickup_id)
+        request = await self.request_factory(db, work=work, pickup_id=pickup_id)
+        if request is None:
+            return None
         if (
             type(request) is not DeviceCommandRequest
             or request.workline_id != work.workline_id
@@ -64,6 +66,21 @@ class AutomaticPickingSourceFlow:
             db, work_id=work_id, authorization_evidence_id=work.authorization_evidence_id
         )
         return int(pickup_id is not None)
+
+    async def observe_result_in_session(self, db, *, line, evidence):
+        pickup_id = await self.repository.pickup_by_source_command(db, line.id, evidence.command_code)
+        if pickup_id is None:
+            return None
+        _work, _pickup, command = await self.repository.material_context_for_update(db, pickup_id)
+        if (
+            evidence.kind != "DEVICE_RESULT"
+            or evidence.workline_id != line.id
+            or command.device_code != evidence.device_code
+            or command.result_evidence_id != evidence.id
+            or command.status not in {"SUCCEEDED", "FAILED"}
+        ):
+            return "RECONCILING"
+        return "SOURCE_RESULT_OBSERVED"
 
     async def handoff_in_session(self, db, *, work_id, pickup_id, material_execution_id, evidence_id, outcome):
         if type(outcome) is not PickingMaterialAccept:

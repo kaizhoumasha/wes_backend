@@ -140,7 +140,7 @@ def components(p):
 
     repository = PickupRepository(p.observations)
 
-    def request(*, work, pickup_id):
+    async def request(db, *, work, pickup_id):
         return DeviceCommandRequest(
             device_code="OFFLINE-SOURCE",
             workline_id=work.workline_id,
@@ -488,7 +488,9 @@ async def test_schema_rejects_second_pickup_for_same_authorization(prepared):
             repo, commands, flow = components(p)
             fact = await repo.source_for_update(db, p.work.id)
             other_id = new_uuid7()
-            other = await commands.create_command_in_session(db, flow.request_factory(work=fact, pickup_id=other_id))
+            other = await commands.create_command_in_session(
+                db, await flow.request_factory(db, work=fact, pickup_id=other_id)
+            )
             db.add(
                 AutomaticPickingPickup(
                     pickup_id=other_id,

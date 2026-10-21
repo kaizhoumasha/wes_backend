@@ -3,7 +3,13 @@
 from sqlalchemy import exists, or_, select, update
 from wes_plugin_sdk import PickingMaterialAccept, PickingTargetReplace, RackDepartureReady
 
-from src.app.execution.models import InboundEvidence, PositionProjection, TransportDecisionBinding, WmsConfirmation
+from src.app.execution.models import (
+    InboundEvidence,
+    MaterialExecution,
+    PositionProjection,
+    TransportDecisionBinding,
+    WmsConfirmation,
+)
 from src.app.execution.repositories import transport_decision_binding_repository as bindings
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.transport.models import TransportTask
@@ -212,6 +218,76 @@ class TargetReplacementRepository:
             )
             .order_by(AutomaticPickingPickup.id)
         )
+
+    @staticmethod
+    def inbound_correlation(departure_id, rack_id):
+        return "auto-target-in:" + canonical_json_digest({"departure": departure_id, "rack": rack_id})
+
+    async def shared_target_round(self, db, line_id, pickup, target):
+        peers = (
+            await db.scalars(
+                select(AutomaticPickingPickup)
+                .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
+                .where(
+                    AutomaticPickingWork.workline_id == line_id,
+                    AutomaticPickingPickup.pickup_id != pickup.pickup_id,
+                    AutomaticPickingPickup.target_departure_transport_task_id.is_not(None),
+                    MaterialExecution.status != "CLOSED",
+                )
+            )
+        ).all()
+        rounds = set()
+        reader = MaterialDecideResultReader()
+        for peer in peers:
+            accepted = (
+                await reader.by_id(
+                    db, material_execution_id=peer.material_execution_id, confirmation_id=peer.material_confirmation_id
+                )
+                if peer.material_confirmation_id is not None
+                else await reader.by_operation_id(
+                    db, material_execution_id=peer.material_execution_id, operation_id=peer.pickup_id
+                )
+            )
+            if (
+                accepted is None
+                or accepted.status != "COMPLETED"
+                or accepted.published_at is None
+                or accepted.evidence_id != peer.accept_evidence_id
+                or type(accepted.outcome.result) is not PickingMaterialAccept
+                or type(accepted.outcome.result.target_preparation) is not PickingTargetReplace
+            ):
+                continue
+            destination = accepted.outcome.result.target_locator
+            if (destination.rack_id, destination.rack_face) != (target.rack_id, target.rack_face):
+                continue
+            original, binding = await self.transport(db, line_id, peer.target_departure_transport_task_id)
+            incoming_binding = await self.inbound_binding(
+                db, line_id, self.inbound_correlation(original.transport_task_id, target.rack_id)
+            )
+            if incoming_binding is not None:
+                incoming = await self.task_for_binding(db, incoming_binding)
+                incoming, incoming_binding = await self.inbound(db, line_id, incoming.transport_task_id)
+                if incoming_binding.window_released_at is not None:
+                    continue
+                if (incoming.request_json["rack_id"], incoming.request_json["target_face"]) != (
+                    target.rack_id,
+                    target.rack_face,
+                ) or (
+                    peer.target_inbound_transport_task_id is not None
+                    and peer.target_inbound_transport_task_id != incoming.transport_task_id
+                ):
+                    raise ValueError("shared replacement differs from its frozen ACCEPT")
+            elif peer.target_inbound_transport_task_id is not None:
+                raise ValueError("shared replacement lost its original incoming binding")
+            round_id = binding.correlation_id.removeprefix(ROUND_PREFIX)
+            if peer.target_departure_round_id is not None and peer.target_departure_round_id != round_id:
+                raise ValueError("shared replacement lost its original round")
+            fact = await db.get(InboundEvidence, binding.source_evidence_id)
+            rounds.add((round_id, binding.resource_fence_id, fact.operation_id))
+        if len(rounds) > 1:
+            raise ValueError("target has ambiguous unfinished replacement rounds")
+        return next(iter(rounds)) if rounds else None
 
     async def share_current(self, db, line_id, pickup, observed):
         peers = list(

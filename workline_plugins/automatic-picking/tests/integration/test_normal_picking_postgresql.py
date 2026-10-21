@@ -110,7 +110,7 @@ async def application(p):
         "source_request_factory": source.request_factory,
         "scan_reader": ScanReader(),
         "target_reader": FixtureTargetReader(p),
-        "target_request_factory": lambda **kw: request(p, **kw),
+        "target_request_factory": lambda db, **kw: request(p, db, **kw),
         "put_reader": FixturePutReader(p),
         "rack_transports": ReliableRackTransportCreator(service, inbound_window=RackInboundWindowService()),
         "rotation_reader": MissingPreparation(),

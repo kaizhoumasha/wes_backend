@@ -65,7 +65,7 @@ pickup_rows = Table(
 )
 
 
-def test_only_request(*, work, pickup_id):
+async def test_only_request(db, *, work, pickup_id):
     return DeviceCommandRequest(
         device_code="TEST_ONLY_SOURCE_ARM",
         workline_id=work.workline_id,
@@ -398,8 +398,8 @@ async def test_direct_requirement_cancellation_stops_new_pickup_but_keeps_existi
 )
 @pytest.mark.asyncio
 async def test_command_mapping_must_keep_original_workline_and_prescan_pickup_identity(ports, field, value):
-    def wrong_request(**values):
-        return replace(test_only_request(**values), **{field: value})
+    async def wrong_request(db, **values):
+        return replace(await test_only_request(db, **values), **{field: value})
 
     with pytest.raises(ValueError, match="Command"):
         async with ports.transaction() as db:

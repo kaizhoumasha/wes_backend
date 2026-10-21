@@ -81,7 +81,7 @@ class FixtureTargetReader:
         )
 
 
-def request(p, *, workline_id, pickup_id, material_execution_id, target, now):
+async def request(p, db, *, workline_id, pickup_id, material_execution_id, target, now):
     return DeviceCommandRequest(
         **{
             "device_code": "OFFLINE-TARGET",
@@ -107,7 +107,7 @@ def flow(p, *, repository=None):
         DeviceCommandService(session_factory=p.sessions, clock=lambda: p.now),
         MaterialDecideResultReader(),
         FixtureTargetReader(p),
-        lambda **kw: request(p, **kw),
+        lambda db, **kw: request(p, db, **kw),
     )
 
 
@@ -313,7 +313,7 @@ async def test_existing_put_obligation_survives_direct_cancel_and_mapper_unavail
     monkeypatch.setattr(application.material_reader, "by_id", forbidden)
     monkeypatch.setattr(application.target_reader, "read_in_session", forbidden)
 
-    def forbidden_mapping(**_):
+    async def forbidden_mapping(*_, **__):
         raise AssertionError("must not remap")
 
     application.request_factory = forbidden_mapping
