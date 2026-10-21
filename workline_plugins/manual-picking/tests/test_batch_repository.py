@@ -76,7 +76,11 @@ async def _seed_gate_windows(db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["member_first", "transport_first"])
-async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_action(order) -> None:
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("result_status", ["FAILED", "SUCCEEDED"])
+async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_action(
+    order, completed, result_status
+) -> None:
     engine, sessions = await _new_sessions()
     started = datetime(2026, 10, 14)
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
@@ -133,15 +137,35 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
                 source_causal_token=100,
             )
             db.add_all([window, source, ingress, position])
+            if completed:
+                db.add(
+                    PickingTask(
+                        id=11,
+                        task_id="COMPLETED",
+                        task_type="MANUAL",
+                        status="EXECUTION_COMPLETED",
+                        workline_id=7,
+                        queue_revision=1,
+                        dispatch_sequence=1,
+                        issued_at_ms=1,
+                        issued_evidence_id=31,
+                        last_applied_plan_revision=1,
+                        initial_plan_evidence_id=31,
+                        last_plan_evidence_id=31,
+                    )
+                )
             await db.flush()
+            if completed:
+                assert await repo.release_completed_source_windows(db, workline_id=7, now=started) == 1
 
             async def contexts():
                 return await repo.cancelled_source_windows(db, workline_id=7, target_location_code="KT16")
 
             def cancelled_result():
-                ingress.status = "FAILED"
+                ingress.status = result_status
                 ingress.outcome_version = ingress.published_outcome_version = 1
                 position.position_unknown = False
+                position.source_effect_phase = "FINAL_RESULT"
                 position.position_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
 
             if order == "member_first":
@@ -197,6 +221,13 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
             window.window_departure_client_request_id = "retry"
             await db.flush()
             assert await contexts() == []
+            if completed:
+                window.window_departure_client_request_id = None
+                retry_binding.source_evidence_id = 99
+                await db.flush()
+                assert await contexts() == []
+                window.window_departure_client_request_id = "retry"
+                retry_binding.source_evidence_id = 31
             retry.status = "REJECTED"
             await db.flush()
             assert (await contexts())[0][1].transport_task_id == "retry"
@@ -254,7 +285,7 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
             position.position_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
             window.window_released_at = started + timedelta(seconds=1)
             await db.flush()
-            assert await contexts() == []
+            assert bool(await contexts()) is completed
             assert (await db.scalars(select(TransportTask))).all() == [ingress, retry, other]
     finally:
         await engine.dispose()
@@ -1605,6 +1636,7 @@ async def test_rack_return_dependency_checks_unpublished_response_before_transpo
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
     started_at = datetime(2026, 10, 13, 13, 53)
     db = SimpleNamespace(
+        execute=AsyncMock(),
         scalar=AsyncMock(return_value=19),
         scalars=AsyncMock(return_value=[SimpleNamespace(created_at=started_at)]),
     )
@@ -1626,6 +1658,7 @@ async def test_rack_return_dependency_checks_unpublished_response_before_transpo
 async def test_rack_return_dependency_checks_all_faces_without_closed_history_fence() -> None:
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
     db = SimpleNamespace(
+        execute=AsyncMock(),
         scalar=AsyncMock(side_effect=[None, 253, None, None]),
         scalars=AsyncMock(return_value=[SimpleNamespace(created_at=datetime(2026, 10, 13, 13, 53))]),
     )
@@ -1849,7 +1882,7 @@ async def test_rack_departure_filters_old_confirmation_but_keeps_current_pending
 @pytest.mark.parametrize("windows", [[], [SimpleNamespace(created_at=datetime(2026, 10, 13))] * 2])
 async def test_rack_departure_requires_unique_current_window(windows):
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
-    db = SimpleNamespace(scalars=AsyncMock(return_value=windows), scalar=AsyncMock())
+    db = SimpleNamespace(execute=AsyncMock(), scalars=AsyncMock(return_value=windows), scalar=AsyncMock())
     with pytest.raises(ValueError, match="exactly one active inbound window"):
         await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
     db.scalar.assert_not_awaited()
@@ -1971,5 +2004,322 @@ async def test_old_606_unpublished_result_does_not_block_new_round_and_current_a
             assert await repo.has_current_rack_dependency(db, 7, "510021", start)
             assert old.published_outcome_version == 0 and old.status == old_status
             assert old_binding.source_evidence_id == 101 and old_binding.causal_token == 606
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_completed_source_window_releases_admission_without_completing_old_transport():
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 10, 22)
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    try:
+        async with sessions.begin() as db:
+            for task_id, status, line_id in (
+                (11, "EXECUTION_COMPLETED", 7),
+                (12, "EXECUTING", 7),
+                (13, "CANCELLED", 7),
+                (14, "EXECUTION_COMPLETED", 8),
+            ):
+                db.add(
+                    PickingTask(
+                        id=task_id,
+                        task_id=f"PICK-{task_id}",
+                        task_type="MANUAL",
+                        status=status,
+                        workline_id=line_id,
+                        queue_revision=1,
+                        dispatch_sequence=task_id,
+                        issued_at_ms=1,
+                        issued_evidence_id=task_id,
+                        last_applied_plan_revision=0,
+                    )
+                )
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=line_id,
+                        picking_task_id=task_id,
+                        correlation_id=f"source-{task_id}",
+                        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                        resource_fence_id=f"R{task_id}",
+                        client_request_id=f"source-{task_id}",
+                        source_evidence_id=task_id,
+                        window_target_location_code="KT18",
+                        created_at=now,
+                    )
+                )
+            old = TransportTask(
+                transport_task_id="old-625",
+                client_request_id="old-625",
+                kind="BIN_MOVE",
+                authority_workline_id=7,
+                caller_json={"workline_id": "7"},
+                request_json={"bin_code": "625"},
+                request_digest="a" * 64,
+                submit_operation_id="original-operation",
+                submit_timestamp_ms=1,
+                submit_request_body="frozen-body",
+                submit_request_body_digest="b" * 64,
+                status="ACCEPTED",
+                outcome_version=0,
+                published_outcome_version=0,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(old)
+            await db.flush()
+            before = old.model_dump()
+            assert await repo.release_completed_source_windows(db, workline_id=7, now=now) == 1
+            windows = (
+                await db.scalars(select(TransportDecisionBinding).order_by(TransportDecisionBinding.picking_task_id))
+            ).all()
+            assert [row.window_released_at for row in windows] == [now, None, None, None]
+            assert windows[0].window_departure_client_request_id is None
+            assert old.model_dump() == before
+            assert await repo.release_completed_source_windows(db, workline_id=7, now=now) == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("takeover", [False, True])
+@pytest.mark.parametrize(
+    "fact",
+    ["ingress", "rotate", "missing", "unknown", "wrong_location", "wrong_transport", "wrong_token", "wrong_phase"],
+)
+async def test_completed_source_cleanup_keeps_original_causal_round_after_admission_release(takeover, fact):
+    from src.app.wms_integration.outbound_picking.repositories.plan_delta_repository import (
+        PickingTaskPlanDeltaRepository,
+    )
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 10, 22)
+    try:
+        async with sessions.begin() as db:
+            db.add(
+                PickingTask(
+                    id=11,
+                    task_id="OLD",
+                    task_type="MANUAL",
+                    status="EXECUTION_COMPLETED",
+                    workline_id=7,
+                    queue_revision=1,
+                    dispatch_sequence=1,
+                    issued_at_ms=1,
+                    issued_evidence_id=31,
+                    last_applied_plan_revision=0,
+                )
+            )
+            db.add(
+                TransportDecisionBinding(
+                    workline_id=7,
+                    picking_task_id=11,
+                    causal_token=100,
+                    correlation_id="old-source",
+                    step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                    resource_fence_id="R1",
+                    client_request_id="old-in",
+                    source_evidence_id=31,
+                    window_target_location_code="KT18",
+                    window_released_at=now,
+                    created_at=now,
+                )
+            )
+            db.add(
+                TransportTask(
+                    transport_task_id="old-arrival",
+                    client_request_id="old-in",
+                    kind="RACK_MOVE",
+                    authority_workline_id=7,
+                    caller_json={"workline_id": "7"},
+                    request_json={},
+                    request_digest="a" * 64,
+                    submit_operation_id="old-operation",
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="b" * 64,
+                    status="SUCCEEDED",
+                    outcome_version=1,
+                    published_outcome_version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                PositionProjection(
+                    object_type="RACK",
+                    object_id="R1",
+                    workline_id=7,
+                    position_json={"kind": "RACK_POSITION", "location_code": "KT18"},
+                    arrival_face="90",
+                    position_unknown=False,
+                    source_operation_id="original-fact",
+                    source_causal_token=100,
+                    source_effect_phase="FINAL_RESULT",
+                    source_transport_task_id="old-arrival",
+                )
+            )
+            await db.flush()
+            projection = await db.scalar(select(PositionProjection))
+            current_transport = "old-arrival"
+            if fact == "rotate":
+                current_transport = "rotation"
+                ingress = await db.scalar(select(TransportTask))
+                db.add(
+                    TransportTask(
+                        **{
+                            **ingress.model_dump(exclude={"id"}),
+                            "transport_task_id": "rotation",
+                            "client_request_id": "rotation",
+                            "submit_operation_id": "rotation",
+                            "kind": "RACK_ROTATE",
+                        }
+                    )
+                )
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        picking_task_id=11,
+                        causal_token=101,
+                        correlation_id="new-face",
+                        step="MANUAL_PICKING_SOURCE_RACK_ROTATE",
+                        resource_fence_id="R1",
+                        client_request_id="rotation",
+                        source_evidence_id=32,
+                        created_at=now + timedelta(minutes=1),
+                    )
+                )
+                projection.source_transport_task_id, projection.source_causal_token = "rotation", 101
+            elif fact == "missing":
+                await db.delete(projection)
+            elif fact == "unknown":
+                projection.position_unknown = True
+            elif fact == "wrong_location":
+                projection.position_json = {"kind": "RACK_POSITION", "location_code": "ELSEWHERE"}
+            elif fact == "wrong_transport":
+                projection.source_transport_task_id = "OTHER"
+            elif fact == "wrong_token":
+                projection.source_causal_token = 999
+            elif fact == "wrong_phase":
+                projection.source_effect_phase = "SUBMIT_ACCEPTED"
+            if takeover:
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        picking_task_id=12,
+                        causal_token=102,
+                        correlation_id="new-source",
+                        step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                        resource_fence_id="R1",
+                        client_request_id="new-in",
+                        source_evidence_id=32,
+                        window_target_location_code="KT18",
+                        created_at=now,
+                    )
+                )
+            await db.flush()
+            eligible = not takeover and fact in {"ingress", "rotate"}
+            assert (
+                await PickingTaskPlanDeltaRepository().source_transport_matches(db, 7, "R1", 11, current_transport)
+                is eligible
+            )
+            if eligible:
+                repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+                assert await repo.current_round_started_at(db, workline_id=7, rack_id="R1") == now
+                assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="R1")
+                confirmation = WmsConfirmation(
+                    operation="outbound.bin.return_batch@v1",
+                    operation_id="current-return",
+                    workline_id=7,
+                    request_digest="a" * 64,
+                    request_payload={"data": {"rack_id": "R1", "rack_face": "90"}},
+                    deadline_at=now + timedelta(hours=1),
+                    status="PENDING",
+                    created_at=now,
+                )
+                db.add(confirmation)
+                await db.flush()
+                assert await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="R1")
+                confirmation.status = "COMPLETED"
+                await db.flush()
+                assert not await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="R1")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "accepted",
+        "reconciling",
+        "succeeded",
+        "unpublished",
+        "other_bin",
+        "other_source",
+        "other_target",
+        "failed_unknown",
+    ],
+)
+async def test_equivalent_inbound_guard_keeps_only_its_direct_dependency(case):
+    from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
+
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 10, 22)
+    try:
+        async with sessions.begin() as db:
+            task = TransportTask(
+                transport_task_id="original-625",
+                client_request_id="original-625",
+                kind="BIN_MOVE",
+                authority_workline_id=7,
+                caller_json={"workline_id": "7"},
+                request_json={},
+                request_digest="a" * 64,
+                submit_operation_id="original-identity",
+                submit_timestamp_ms=1,
+                submit_request_body="frozen",
+                submit_request_body_digest="b" * 64,
+                status={
+                    "reconciling": "RECONCILING",
+                    "succeeded": "SUCCEEDED",
+                    "unpublished": "SUCCEEDED",
+                    "failed_unknown": "FAILED",
+                }.get(case, "ACCEPTED"),
+                outcome_version=1 if case in {"succeeded", "unpublished", "failed_unknown"} else 0,
+                published_outcome_version=1 if case in {"succeeded", "failed_unknown"} else 0,
+                created_at=now,
+                updated_at=now,
+            )
+            member = TransportMember(
+                transport_task_id=task.transport_task_id,
+                ordinal=1,
+                object_type="BIN",
+                object_id="OTHER" if case == "other_bin" else "625",
+                source_json={
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": "R1",
+                    "rack_face": "90",
+                    "slot_id": "OTHER" if case == "other_source" else "S1",
+                },
+                target_json={
+                    "kind": "HANDOFF_POSITION",
+                    "location_code": "OTHER" if case == "other_target" else "INLET",
+                },
+                position_unknown=case == "failed_unknown",
+                updated_at=now,
+            )
+            db.add_all([task, member])
+            await db.flush()
+            before = task.model_dump()
+            blocked = (
+                await import_module("manual_picking.application.batch_repository")
+                .BatchRepository()
+                .has_unclosed_equivalent_inbound(
+                    db, (BinMove("625", RackBinSlot("R1", "90", "S1"), HandoffPosition("INLET")),)
+                )
+            )
+            assert blocked is (case in {"accepted", "reconciling", "unpublished", "failed_unknown"})
+            assert task.model_dump() == before
     finally:
         await engine.dispose()

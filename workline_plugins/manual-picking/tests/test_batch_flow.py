@@ -361,7 +361,9 @@ async def test_inbound_ready_creates_one_bound_transport_only_for_confirmed_rack
             self.calls.append(kwargs)
 
     transport = Transport()
-    batches = SimpleNamespace(record_allocation=AsyncMock())
+    batches = SimpleNamespace(
+        record_allocation=AsyncMock(), has_unclosed_equivalent_inbound=AsyncMock(return_value=False)
+    )
     flow = module.ManualPickingBatchResultFlow(
         Reader(), transport, _Passages(()), batches, drain_executions=unbound_drain_executions()
     )
@@ -432,7 +434,9 @@ async def test_inbound_face_done_records_current_batch_without_transport() -> No
         read_inbound=AsyncMock(return_value=(intent, sdk.BinInboundBatchOutcome(sdk.BinInboundBatchRackFaceDone())))
     )
     transport = SimpleNamespace(create=AsyncMock())
-    batches = SimpleNamespace(record_allocation=AsyncMock())
+    batches = SimpleNamespace(
+        record_allocation=AsyncMock(), has_unclosed_equivalent_inbound=AsyncMock(return_value=False)
+    )
     flow = module.ManualPickingBatchResultFlow(
         reader, transport, _Passages(()), batches, drain_executions=unbound_drain_executions()
     )
@@ -1103,3 +1107,29 @@ async def test_drain_ready_consumes_original_return_id_instead_of_same_bin_new_r
     assert original.return_state == "RETURN_REQUESTED" and original.return_batch_evidence_id == 31
     assert new.return_state == "READY"
     transport.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_equivalent_inbound_preserves_allocation_without_new_transport():
+    from manual_picking.application.batch_result import ManualPickingBatchResultFlow
+
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="batch-625", task_id="CURRENT", plan_revision=3, rack_id="510019", rack_face="90"
+    )
+    ready = sdk.BinInboundBatchReady(
+        (sdk.BinInboundBatchMember("A000000625", sdk.TransportRackBinSlot("510019", "90", "510019A1F2C101")),)
+    )
+    batches = SimpleNamespace(has_unclosed_equivalent_inbound=AsyncMock(return_value=True))
+    transport = SimpleNamespace(create=AsyncMock())
+    flow = ManualPickingBatchResultFlow(object(), transport, object(), batches)
+    await flow.create_inbound_chunk(
+        object(),
+        workline_id=7,
+        picking_task_id=31,
+        intent=intent,
+        ready=ready,
+        evidence_id=31,
+        offset=0,
+        inlet_location="CNV0401",
+    )
+    transport.create.assert_not_awaited()

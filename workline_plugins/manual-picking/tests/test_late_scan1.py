@@ -140,6 +140,13 @@ async def test_late_scan1_refuses_missing_wrong_line_or_archived_original_owner(
         "superseded_failed",
         "superseded_failed_unknown",
         "superseded_failed_unpublished",
+        "ambiguous_current_fact",
+        "ambiguous_current_fact_unknown",
+        "ambiguous_current_fact_wrong_phase",
+        "ambiguous_current_fact_wrong_transport",
+        "ambiguous_current_fact_wrong_inlet",
+        "ambiguous_current_fact_unpublished",
+        "ambiguous_current_fact_wrong_member",
     ],
 )
 async def test_scan1_source_matches_frozen_member_without_requiring_transport_completion(change):
@@ -151,7 +158,7 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
     from sqlalchemy import select
     from test_batch_repository import _new_sessions, _seed_current_inbound
 
-    from src.app.execution.models import InboundEvidence, TransportDecisionBinding
+    from src.app.execution.models import InboundEvidence, PositionProjection, TransportDecisionBinding
     from src.app.transport.models import TransportMember, TransportTask
     from src.app.wms_integration.outbound_picking.models import PickingTask
 
@@ -243,7 +250,7 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                         workline_id=7, operation_id=intent.operation_id, bin_code=member.object_id
                     )
                 )
-            if change == "ambiguous_source":
+            if change == "ambiguous_source" or change.startswith("ambiguous_current_fact"):
                 db.add(
                     TransportTask(
                         **{
@@ -313,6 +320,40 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                 member.position_unknown = change == "superseded_failed_unknown"
                 if change == "superseded_failed_unpublished":
                     transport.published_outcome_version = 0
+            if change.startswith("ambiguous_current_fact"):
+                transport.status = "ACCEPTED"
+                transport.outcome_version = transport.published_outcome_version = 0
+                member.status, member.final_position_json = "PENDING", None
+                projection = PositionProjection(
+                    object_type="BIN",
+                    object_id=member.object_id,
+                    workline_id=7,
+                    position_json={"kind": "HANDOFF_POSITION", "location_code": "INLET"},
+                    source_operation_id="actual-new-result",
+                    source_transport_task_id="duplicate",
+                    source_causal_token=101,
+                    source_effect_phase="FINAL_RESULT",
+                    position_unknown=False,
+                )
+                db.add(projection)
+                if change.endswith("_unknown"):
+                    projection.position_unknown = True
+                elif change.endswith("_wrong_phase"):
+                    projection.source_effect_phase = "SUBMIT_ACCEPTED"
+                elif change.endswith("_wrong_transport"):
+                    projection.source_transport_task_id = "OTHER"
+                elif change.endswith("_wrong_inlet"):
+                    projection.position_json = {"kind": "HANDOFF_POSITION", "location_code": "ELSEWHERE"}
+                elif change.endswith("_unpublished"):
+                    duplicate = await db.scalar(
+                        select(TransportTask).where(TransportTask.transport_task_id == "duplicate")
+                    )
+                    duplicate.published_outcome_version = 0
+                elif change.endswith("_wrong_member"):
+                    duplicate = await db.scalar(
+                        select(TransportMember).where(TransportMember.transport_task_id == "duplicate")
+                    )
+                    duplicate.final_position_json = {"kind": "HANDOFF_POSITION", "location_code": "ELSEWHERE"}
             if change == "unpublished":
                 transport.published_outcome_version = 0
             if change == "unknown":
@@ -435,6 +476,8 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                 expected = "WAIT_FOR_RESULT"
             if change in {"superseded_rejected", "superseded_failed"}:
                 expected = (31, "next-round")
+            if change == "ambiguous_current_fact":
+                expected = (31, "duplicate")
             assert owner == expected
             assert binding.picking_task_id == 31
             assert transport.transport_task_id == "original"
@@ -442,7 +485,11 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                 assert transport.status == ("REJECTED" if change == "superseded_rejected" else "FAILED")
                 assert member.status == "FAILED"
             else:
-                assert transport.status == ("ACCEPTED" if change in {"pending", "scan_before_result"} else "SUCCEEDED")
+                assert transport.status == (
+                    "ACCEPTED"
+                    if change in {"pending", "scan_before_result"} or change.startswith("ambiguous_current_fact")
+                    else "SUCCEEDED"
+                )
             if change == "scan_before_result":
                 flow, evidences, passages, commands, admissions = _setup(missing_projection=("BIN", member.object_id))
                 flow._batch_progress = BatchRepository()

@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from itertools import batched
 from typing import Any
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models import (
@@ -69,6 +69,46 @@ class PickingTaskPlanDeltaRepository:
     ) -> bool:
         bindings = TransportDecisionBinding.__table__.c
         transports = TransportTask.__table__.c
+        original = TransportDecisionBinding.__table__.alias("completed_source_window").c
+        active = TransportDecisionBinding.__table__.alias("current_source_window").c
+        # 准入职责退出不抹去当前原因果清退；新窗口接管后旧 owner 必须让路。
+        cleanup = (
+            select(original.id)
+            .join(PickingTask, PickingTask.id == original.picking_task_id)
+            .where(
+                original.workline_id == workline_id,
+                original.picking_task_id == picking_task_id,
+                original.resource_fence_id == rack_id,
+                original.step == "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                original.causal_token <= bindings.causal_token,
+                original.window_target_location_code.is_not(None),
+                original.window_released_at.is_not(None),
+                PickingTask.status == PickingTaskStatus.EXECUTION_COMPLETED,
+                select(PositionProjection.id)
+                .where(
+                    PositionProjection.workline_id == workline_id,
+                    PositionProjection.object_type == "RACK",
+                    PositionProjection.object_id == rack_id,
+                    PositionProjection.source_transport_task_id == transport_task_id,
+                    PositionProjection.source_causal_token == bindings.causal_token,
+                    PositionProjection.source_effect_phase == "FINAL_RESULT",
+                    PositionProjection.position_unknown.is_(False),
+                    PositionProjection.position_json["kind"].as_string() == "RACK_POSITION",
+                    PositionProjection.position_json["location_code"].as_string()
+                    == original.window_target_location_code,
+                )
+                .exists(),
+                ~select(active.id)
+                .where(
+                    active.workline_id == workline_id,
+                    active.resource_fence_id == rack_id,
+                    active.window_target_location_code.is_not(None),
+                    active.window_released_at.is_(None),
+                )
+                .exists(),
+            )
+            .exists()
+        )
         return (
             await db.scalar(
                 select(bindings.id)
@@ -80,7 +120,7 @@ class PickingTaskPlanDeltaRepository:
                     bindings.step.in_(("PICKING_TASK_BIN_SOURCE_RACK_IN", "MANUAL_PICKING_SOURCE_RACK_ROTATE")),
                     transports.transport_task_id == transport_task_id,
                     transports.status == "SUCCEEDED",
-                    _active_rack_window(bindings, workline_id, picking_task_id, rack_id),
+                    or_(_active_rack_window(bindings, workline_id, picking_task_id, rack_id), cleanup),
                 )
                 .limit(1)
             )
