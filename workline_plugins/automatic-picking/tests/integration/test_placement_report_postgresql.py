@@ -307,19 +307,6 @@ async def test_rotated_missing_pkg_defers_original_evidence_without_report(rotat
     await assert_rotated_report(p)
 
 
-async def test_rotated_report_confirmation_stays_outside_7c_closure(rotated_placed, caplog):
-    from test_material_close_postgresql import report_result
-
-    p = rotated_placed
-    assert await processor(p).process_batch() == 1
-    await report_result(p)
-    assert await processor(p).process_batch() == 0
-    assert "report closure requires ordinary target preparation" in caplog.text
-    async with p.sessions() as db:
-        assert (await db.get(MaterialExecution, p.material_id)).status != "CLOSED"
-        assert (await db.get(InboundEvidence, p.report_result_id)).published_at is None
-
-
 async def test_preexisting_put_with_replace_accept_still_cannot_report(placed, caplog):
     p = placed
     # 显式构造尚未实现的 REPLACE 分支；不能借既有 PUT 越过本片准入。

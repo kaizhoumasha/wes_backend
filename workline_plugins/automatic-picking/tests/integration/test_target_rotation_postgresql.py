@@ -36,15 +36,14 @@ async def test_pickup_retains_original_target_rotation(prepared):
 async def rotating(prepared, request):
     p = prepared
     p.pickup_id, p.scan_id, p.material_id, p.decide = await initial(p)
-    p.accept_id = await result(
-        p,
-        p.decide,
-        data={
+    data = getattr(request, "param", "ROTATE")
+    if type(data) is str:
+        data = {
             "result": "ACCEPT",
             "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)},
-            "target_preparation": {"mode": getattr(request, "param", "ROTATE")},
-        },
-    )
+            "target_preparation": {"mode": data},
+        }
+    p.accept_id = await result(p, p.decide, data=data)
     assert await processor(p).process_batch() == 1
     async with p.sessions.begin() as db:
         # 为显式前置到位占用原因果序号；新动作必须分配后继 token。

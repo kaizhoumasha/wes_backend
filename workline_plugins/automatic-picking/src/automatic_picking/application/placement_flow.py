@@ -174,8 +174,9 @@ class AutomaticPickingPlacementFlow:
         if report.outcome != fact.outcome or type(report.outcome.result) is not FactRecorded:
             raise ValueError("closure requires exact typed RECORDED/DUPLICATE")
         accepted, task_id, source = await self._accepted(db, work, pickup, execution)
-        if accepted.outcome.result.target_preparation is not None:
-            raise ValueError("report closure requires ordinary target preparation")
+        preparation = accepted.outcome.result.target_preparation
+        if preparation is not None and type(preparation) is not PickingTargetRotate:
+            raise ValueError("report closure requires ordinary or ROTATE target preparation")
         target = accepted.outcome.result.target_locator
         position = await self.repository.material_evidence(db, pickup.put_result_evidence_id)
         if (

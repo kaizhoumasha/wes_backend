@@ -918,6 +918,16 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 本片停在报告 PENDING，不发送 WMS 请求、不关闭单盘、不启用生产装配或真实派发，不接 REPLACE/机械臂。G2 仍约束真实扫码关联，G3 仍约束设备请求与成功事实读口，G5 仍约束新报告权威 PkgID；显式离线输入不构成现场合同确认。C1/C2 继续待补证，只限制对应容量接续/核销路径，不阻塞本片本地报告义务创建，也不由本片证明核销已完成。
 
+**ROTATE 报告确认→7C 关闭/Work 事实续接离线片（基线 `3c8a1add`，本轮按授权提交）：**在上述 7B 接缝的报告已冻结、成功 PUT 与 ACCEPT 身份一致、当前报告有匹配 `RECORDED/DUPLICATE` 的离线前提下，`P/application/placement_flow.py::_reported` 允许普通目标或 ROTATE，继续拒绝 REPLACE。沿既有 typed report reader、`MaterialReportedFact` / CompleteExecution 与 FactProcessor 应用事务，同事务关闭本盘、发布报告结果，并按原条件保存 `Work.top_removed_evidence_id`；没有新模型、状态、迁移、SDK/wire 或基础层流程。
+
+下一来源授权仍只在 ACCEPT 原事务交接；关闭时不重新授权、不消费下一来源。Work 尚持本盘 ACCEPT 且未消费后继时，必要可靠取出事实从未闭合 M1 交给当前 Work；授权已消费或推进时，不覆盖当前游标/取出事实、不等待 M2 的取出或目标就绪。没有后继由 ACCEPT 明确表达，不因本盘 CLOSED 而关闭 Work/Bin/PickingTask。报告已冻结后不重新索取 PkgID、扫码、设备参数或原 ROTATE 就绪投影，也不要求已闭合准备历史持续存在。
+
+主 PostgreSQL owner 为 `T/integration/test_material_close_postgresql.py`，复用既有普通目标关闭断言及已提交 ROTATE→PUT→7B 装配。ROTATE fixture 可显式给定完整 ACCEPT，覆盖有/无 `next_source_action`；新增接缝验收承接后退役 7B 的“ROTATE 报告不得关闭”阶段性负例，REPLACE 负例保留。聚焦验证报告两种确认、M2 尚未创建、并发来源准入、关闭/Work 事实两侧事务故障回滚、原结果重放、授权已消费/推进、可清理 M1 历史删除后的独立 Work 恢复及错误证据不关闭；普通目标原矩阵仅刷新 helper 直接消费者，不重复 9H 或共享 worker/租约矩阵。
+
+恢复 owner 不变：未确定报告义务归 Confirmation，已保存未应用结果归 FactProcessor 领取/延期/租约恢复；关闭前必要取出事实归原来源链，关闭提交后归当前 Work 与 batch/source flow。当前引用的 ACCEPT、取出 Evidence 及必要 owner 保留为当前数据；清理已闭合 Pickup、Command、报告和不再引用的位置历史后仍可继续。故障测试为应用事务注入，不宣称真实进程失效或现场验收。C1/C2 继续待补证且不扩大为该离线关闭片门禁；G2/G3/G5 仍约束对应真实入口和新事实/报告权威来源。本片不发送 WMS 请求、不启用生产装配/真实派发，不接 REPLACE 或机械臂，不计为任务 7/11 或完整业务完成。
+
+本片验证：新增有后继正例先在原 7C 类型守卫上失败；最小修正后新增 ROTATE 接缝 15 passed，随后退役 7B 阶段性负例。最终快照 PostgreSQL 接缝/普通目标 helper 消费者/7B→7C 与 ROTATE→PUT 直接回归 29 passed（116.76 秒），修改后的 ROTATE fixture 既有 REPLACE 字符串输入回归另 1 passed，共 30 项、0 skipped；插件 FAST 252 passed，退役后的拓扑/测试所有权 14 passed，4 个 Python 文件 Ruff/格式和 diff 检查通过，HEAVY selector 为 NONE。沿本片独占 PostgreSQL 17 tmpfs、逐例独立逻辑库验证；无 schema/宿主/队列变化，不刷新无关迁移、完整 QUALITY 或真实进程矩阵。独立只读 full review 核对固定 5 文件指纹、合同、直接/间接消费者及测试 owner，结果无 P1/P2/P3 finding；评审后仅补本文记录，可执行快照未变。最终状态止于 `IMPLEMENTED - FOCUSED VERIFIED`，不提交或部署。
+
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
 - [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。

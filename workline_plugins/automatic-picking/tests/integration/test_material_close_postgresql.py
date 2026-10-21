@@ -1,6 +1,7 @@
 """7C：报告确认后关闭本盘；当前 Work 不依赖可清理的已闭合前盘。"""
 
 import asyncio
+from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace as N
 
@@ -8,7 +9,7 @@ import pytest
 import pytest_asyncio
 from automatic_picking.application.work_model import AutomaticPickingWork
 from sqlalchemy import delete, func, select
-from test_pickup_identity_postgresql import FixtureObservations, components, consume
+from test_pickup_identity_postgresql import OTHER, TARGET, FixtureObservations, components, consume
 from test_placement_report_postgresql import (
     accepted,
     application,
@@ -17,6 +18,9 @@ from test_placement_report_postgresql import (
     placed,
     prepared,
     processor,
+    rotated_placed,
+    rotating,
+    target,
 )
 from test_work_and_task_progress_postgresql import workflow
 
@@ -26,6 +30,12 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+ROTATE_ACCEPT = {
+    "result": "ACCEPT",
+    "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)},
+    "target_preparation": {"mode": "ROTATE"},
+}
+ROTATE_WITH_NEXT = {**ROTATE_ACCEPT, "next_source_action": asdict(OTHER)}
 
 
 async def report_result(p, code="RECORDED"):
@@ -67,9 +77,81 @@ async def reported(placed):
     return p
 
 
+@pytest_asyncio.fixture
+async def rotated_reported(rotated_placed):
+    p = rotated_placed
+    assert await processor(p).process_batch() == 1
+    await report_result(p)
+    return p
+
+
+@pytest.mark.parametrize("rotating", [ROTATE_ACCEPT, ROTATE_WITH_NEXT], indirect=True, ids=["no-next", "next"])
+@pytest.mark.parametrize("code", ["RECORDED", "DUPLICATE"])
+async def test_rotated_report_closes_before_m2_with_current_work_facts(rotated_placed, code):
+    await close_before_m2(rotated_placed, code)
+
+
+@pytest.mark.parametrize("rotating", [ROTATE_WITH_NEXT], indirect=True)
+@pytest.mark.parametrize("point", ["after_closed", "after_work"])
+async def test_rotated_close_and_work_roll_back_then_original_result_recovers(rotated_reported, monkeypatch, point):
+    await rollback_close(rotated_reported, monkeypatch, point)
+
+
+@pytest.mark.parametrize("rotating", [ROTATE_WITH_NEXT], indirect=True)
+async def test_rotated_close_concurrent_source_admission_keeps_new_top(rotated_reported):
+    await concurrent_close(rotated_reported)
+
+
+@pytest.mark.parametrize(
+    "next_source,rotating", [(False, ROTATE_ACCEPT), (True, ROTATE_WITH_NEXT)], indirect=["rotating"]
+)
+async def test_rotated_closed_history_cleanup_leaves_current_work_independently_recoverable(
+    rotated_placed, next_source
+):
+    await recover_current_work(rotated_placed, next_source)
+
+
+@pytest.mark.parametrize("rotating", [ROTATE_WITH_NEXT], indirect=True)
+@pytest.mark.parametrize("advanced", [False, True])
+async def test_rotated_close_does_not_rehandoff_consumed_or_advanced_authorization(rotated_placed, advanced):
+    await preserve_authorization(rotated_placed, advanced)
+
+
+@pytest.mark.parametrize("rotating", [ROTATE_WITH_NEXT], indirect=True)
+async def test_rotated_report_replay_after_m2_consumed_keeps_work_identity(rotated_reported):
+    await replay_after_consumed(rotated_reported)
+
+
+@pytest.mark.parametrize("drift", ["replace", "report_ref", "put_unpublished"])
+async def test_rotated_report_with_invalid_preparation_or_proof_never_closes(rotated_reported, drift, caplog):
+    p = rotated_reported
+    async with p.sessions.begin() as db:
+        if drift == "replace":
+            accepted = await db.get(InboundEvidence, p.accept_id)
+            payload = {
+                **accepted.normalized_payload,
+                "data": {**accepted.normalized_payload["data"], "target_preparation": {"mode": "REPLACE"}},
+            }
+            accepted.normalized_payload, accepted.payload_digest = payload, canonical_json_digest(payload)
+        elif drift == "report_ref":
+            pickup = await current_pickup(p, db)
+            pickup.movement_confirmation_id = p.decide.id
+        else:
+            position = await db.get(InboundEvidence, p.put_evidence_id)
+            position.published_at = None
+            position.decision_next_attempt_at = p.now + timedelta(days=1)
+    assert await processor(p).process_batch() == 0
+    assert (await state(p))[0] != "CLOSED" and (await state(p))[4] is None
+    if drift == "replace":
+        assert "closure requires ordinary or ROTATE target preparation" in caplog.text
+
+
 @pytest.mark.parametrize("code", ["RECORDED", "DUPLICATE"])
 async def test_close_and_work_removed_fact_commit_together_before_m2_exists(placed, code):
-    p = placed
+    await close_before_m2(placed, code)
+
+
+async def close_before_m2(p, code):
     assert await processor(p).process_batch() == 1
     async with p.sessions() as db:
         assert (await db.get(AutomaticPickingWork, p.work.id)).top_removed_evidence_id is None
@@ -106,7 +188,10 @@ async def state(p):
 
 @pytest.mark.parametrize("point", ["after_closed", "after_work"])
 async def test_close_work_and_publication_roll_back_then_recover(reported, monkeypatch, point):
-    p = reported
+    await rollback_close(reported, monkeypatch, point)
+
+
+async def rollback_close(p, monkeypatch, point):
     app = application(p)
     original = app.put_flow.apply_in_session
 
@@ -150,7 +235,10 @@ async def test_claim_crash_and_existing_7b_deferred_result_recover(reported):
 
 
 async def test_concurrent_report_consumers_and_source_admission_preserve_new_top(reported):
-    p = reported
+    await concurrent_close(reported)
+
+
+async def concurrent_close(p):
 
     async def source():
         return await consume(p, p.accept_id)
@@ -165,6 +253,10 @@ async def test_concurrent_report_consumers_and_source_admission_preserve_new_top
 
 @pytest.mark.parametrize("next_source,accepted", [(True, True), (False, "no_next_source")], indirect=["accepted"])
 async def test_restart_and_cleanable_history_removal_recover_from_current_work(placed, next_source):
+    await recover_current_work(placed, next_source)
+
+
+async def recover_current_work(p, next_source):
     from automatic_picking.application.batch_driver import AutomaticPickingBatchDriver
     from automatic_picking.application.pickup_model import AutomaticPickingPickup
     from automatic_picking.application.pickup_repository import SourceObservation
@@ -172,7 +264,6 @@ async def test_restart_and_cleanable_history_removal_recover_from_current_work(p
 
     from src.app.workline.models import WorkLine
 
-    p = placed
     assert await processor(p).process_batch() == 1
     await report_result(p)
     assert await processor(p).process_batch() == 1
@@ -234,9 +325,12 @@ async def empty(*args):
 
 @pytest.mark.parametrize("advanced", [False, True])
 async def test_report_close_does_not_rehandoff_or_overwrite_consumed_or_advanced_authorization(placed, advanced):
+    await preserve_authorization(placed, advanced)
+
+
+async def preserve_authorization(p, advanced):
     from test_material_flow_postgresql import bind, result, scan
 
-    p = placed
     assert await processor(p).process_batch() == 1
     m2 = await consume(p, p.accept_id)
     if advanced:
@@ -368,7 +462,10 @@ async def test_missing_removed_fact_waits_then_existing_fact_owner_recovers(repo
 
 
 async def test_replayed_report_after_m2_consumed_is_idempotent(reported):
-    p = reported
+    await replay_after_consumed(reported)
+
+
+async def replay_after_consumed(p):
     assert await processor(p).process_batch() == 1
     assert await consume(p, p.accept_id) is not None
     frozen = await state(p)
