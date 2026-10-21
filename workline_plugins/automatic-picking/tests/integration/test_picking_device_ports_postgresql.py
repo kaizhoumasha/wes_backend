@@ -1,15 +1,15 @@
 """真实统一设备入口＋正常插件装配；供应商参数/扫码关联/PkgID 显式离线输入。"""
 
 import asyncio
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace as N
 
 import pytest
-from automatic_picking.application.material_flow import MatchedMaterialScan
 from automatic_picking.application.picking_device_ports import (
     PickingArmCommandMapper,
     PickingDepartureReader,
+    PickingMaterialScanReader,
     PickingPutReader,
     PickingSourceReader,
     PickingTargetReader,
@@ -59,8 +59,12 @@ async def assembled(p):
         async def source_in_session(self, db, **kwargs):
             return (
                 {
-                    "source": {"explicit_offline_location": "bin-cell"},
-                    "target": {"explicit_offline_location": "handover"},
+                    "source": {
+                        "location_id": "EXPLICIT-WORK",
+                        "location_type": "BIN",
+                        "bin_cell_location": "EXPLICIT-CELL",
+                    },
+                    "target": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
                 }
                 if p.params_available
                 else None
@@ -69,14 +73,14 @@ async def assembled(p):
         async def put_in_session(self, db, **kwargs):
             return (
                 {
-                    "source": {"explicit_offline_location": "handover"},
-                    "target": {"explicit_offline_location": "rack-slot"},
+                    "source": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
+                    "target": {"location_id": "EXPLICIT-TARGET", "location_type": "FIVE_LAYER_RACK"},
                 }
                 if p.params_available
                 else None
             )
 
-    class ExactScan:
+    class SourceCommands:
         async def read_in_session(self, db, *, evidence_id):
             return p.associations.get(evidence_id)
 
@@ -93,7 +97,7 @@ async def assembled(p):
     p.picking_kwargs.update(
         physical_reader=PickingSourceReader(),
         source_request_factory=mapper.source_request,
-        scan_reader=ExactScan(),
+        scan_reader=PickingMaterialScanReader(SourceCommands()),
         target_reader=PickingTargetReader(),
         target_request_factory=mapper.put_request,
         put_reader=PickingPutReader(PkgIds()),
@@ -173,20 +177,24 @@ async def device_result(p, code, *, quantity=1):
 
 
 async def material_scan(p, code):
+    async with p.sessions.begin() as db:
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == code))
+        if command.status == "PENDING":
+            command.status = "DISPATCHING"
     ingress = DeviceEvidenceService(session_factory=p.sessions)
     receipt = await ingress.accept_event(
         EcsDeviceEventReport(
             device_code="OFFLINE-SCAN2",
             event_type="SCAN_COMPLETED",
             timestamp=457,
-            data={"explicit_offline_barcode": BARCODE},
+            data={"location": "EXPLICIT-PLATFORM", "barcode": BARCODE},
         )
     )
     assert await ingress.process_one()
     p.scan_id = receipt.evidence_id
     async with p.sessions() as db:
         assert (await db.get(InboundEvidence, p.scan_id)).command_code is None
-    p.associations[p.scan_id] = MatchedMaterialScan(p.scan_id, p.line.id, p.pickup_id, code, BARCODE, 457)
+    p.associations[p.scan_id] = code
 
 
 async def accepted(p, plugin, *, replace_target=False):
@@ -315,7 +323,7 @@ async def test_explicit_scan_correlation_is_validated_and_committed_with_materia
     await material_scan(p, code)
     original = p.associations[p.scan_id]
     material = plugin.runtime_binding.business_evidence_consumer.material_flow
-    p.associations[p.scan_id] = replace(original, command_code="WRONG-ORIGINAL-COMMAND")
+    p.associations[p.scan_id] = "WRONG-ORIGINAL-COMMAND"
     with pytest.raises(ValueError, match="identity"):
         async with p.sessions.begin() as db:
             await material.bind_scan_in_session(db, evidence_id=p.scan_id)
@@ -446,3 +454,51 @@ async def test_shared_round_rejects_released_incoming_even_without_peer_referenc
             )
             is None
         )
+
+
+async def test_raw_scan_waits_for_exact_association_pause_and_restart_without_new_owner(prepared):
+    p = prepared
+    plugin = await assembled(p)
+    await tick(p, plugin)
+    async with p.sessions() as db:
+        p.pickup_id = (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id
+        code = (await current_pickup(p, db)).command_code
+    await material_scan(p, code)
+    p.associations.clear()
+    await processor(p, plugin).process_batch()
+    async with p.sessions() as db:
+        fact = await db.get(InboundEvidence, p.scan_id)
+        assert fact.command_code is None and fact.material_execution_id is None
+        assert fact.published_at is None and fact.apply_status == "APPLIED"
+        assert await db.scalar(select(func.count()).select_from(MaterialExecution)) == 0
+    # 后续权威关联显式提供；不从条码、时间或最后一条命令反推。
+    p.associations[p.scan_id] = code
+    async with p.sessions.begin() as db:
+        (await db.get(WorkLine, p.line.id)).is_active = False
+    p.now += timedelta(seconds=2)
+    plugin = build_picking_plugin(**p.picking_kwargs)
+    await processor(p, plugin).process_batch()
+    async with p.sessions.begin() as db:
+        assert (await db.get(InboundEvidence, p.scan_id)).material_execution_id is None
+        (await db.get(WorkLine, p.line.id)).is_active = True
+    p.now += timedelta(seconds=2)
+    assert sum(await asyncio.gather(*(processor(p, plugin).process_batch() for _ in range(3)))) >= 1
+    async with p.sessions() as db:
+        fact = await db.get(InboundEvidence, p.scan_id)
+        assert fact.command_code == code and fact.material_execution_id is not None
+        p.material_id = fact.material_execution_id
+    # 绑定已持久化；重启丢失外部关联输入仍以原Evidence恢复首次decide。
+    p.associations.clear()
+    p.now += timedelta(seconds=2)
+    plugin = build_picking_plugin(**p.picking_kwargs)
+    await processor(p, plugin).process_batch()
+    await processor(p, plugin).process_batch()
+    async with p.sessions() as db:
+        requests = (
+            await db.scalars(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == p.material_id))
+        ).all()
+        assert len(requests) == 1
+        assert requests[0].request_payload["data"]["barcode"] == BARCODE
+        assert requests[0].request_payload["data"]["scanned_at"] == 457
+        assert (await db.get(InboundEvidence, p.scan_id)).published_at is not None
+        assert await db.scalar(select(func.count()).select_from(MaterialExecution)) == 1

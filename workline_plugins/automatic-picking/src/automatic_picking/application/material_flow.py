@@ -21,6 +21,10 @@ from src.app.execution.services.inbound_evidence_service import InboundEvidenceD
 from src.core.uuid7 import new_uuid7
 
 
+class MaterialScanAssociationPending(LookupError):
+    """扫码事实已知，但精确来源关联尚不能由权威输入确定。"""
+
+
 @dataclass(frozen=True, slots=True)
 class MatchedMaterialScan:
     """注入 reader 已完成设备合同的精确关联；本类型不定义或猜测供应商报文。"""

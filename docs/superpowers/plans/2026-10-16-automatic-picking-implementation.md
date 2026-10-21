@@ -1036,6 +1036,12 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 本轮修复后的最终业务 PostgreSQL 验收 **58 passed、0 skipped，3 项未受本轮代码变更影响的既有迁移用例按名称 deselected**（本轮无 schema 变更）；插件 FAST **255 passed**，拓扑/所有权 **14 passed**，18 个 Python 文件 Ruff/格式、文档链接与 diff 检查通过，HEAVY selector 为 NONE。独立完整 review 及修复闭环确认 P1/P2 均关闭，无新增 finding；最终业务 XML 为 `reports/arm-ports-reviewed-final.xml`，审查与环境指纹见 `reports/arm-ports-{review-result,verification}.json`。扩展回归的旧 `test_plugin_source_models_match_migrated_schema` 发现 `target_rotation_transport_task_id` 唯一约束命名差异，使用 HEAD 原版测试副本复现同一失败；对应模型/迁移未改，作为既有基线失败单列，不把扩展回归称为全部通过，不在本轮扩大 schema 修订。早期加载修复前代码的结果仅用于未失效消费者证据，不能替代本次最终业务结果。状态止于离线实施与聚焦验证，不提交、不部署、不启用生产装配/派发、不发送 WMS 请求。
 
+**已确认扫码适配续接（基线 `122a6f48`，本轮未提交）：**新增 `PickingMaterialScanReader`，直接读取已接收、已应用的统一 `SCAN_COMPLETED` 原文条码、平台及时间，核对 Evidence 元数据/摘要、原来源 Command/Pickup/Work 和冻结目标平台。精确来源关联必须由显式端口提供；绑定提交后沿原 Evidence 恢复，不依赖端口再次提供关联。来源尚未下发、缺关联或工作线暂停时，现有 FactProcessor 以 DEFERRED 留存重扫，避免已知扫码在取得关联前落入忽略分支；同事务绑定/首次请求仍沿原 material owner，不增加模型、状态或 timer。
+
+隔离装配改用真实扫码读口，复用普通/REPLACE 正常链证据。新增 PostgreSQL 只验证缺关联、暂停、并发绑定及移除外部关联后重建防重；FAST 验证条码原文和长度、平台/身份错误及来源未下发。主要 owner 分别为 `T/integration/test_picking_device_ports_postgresql.py` 与 `T/test_picking_device_ports.py`；`test_normal_picking_postgresql.py` 为既有语义装配的直接回归。设备最终扫码身份与来源关联 wire 字段（O1/O2）、位置参数编码、权威 PkgID、CK04/CTU02 仍按各自依赖路径阻塞真实接入；不解析未冻结字段、不添加生产默认，不以离线显式输入解除门禁。C1/C2 不扩大阻塞正常链。本次不提交、不部署、不发外部请求、不启用生产装配或真实派发。
+
+本次验证：插件 FAST **267 passed**；真实扫码读口及接线 PostgreSQL **10 passed**，既有正常业务装配 PostgreSQL **6 passed**；拓扑/所有权 **14 passed**；5 个 Python 文件 Ruff/格式、diff 检查通过，HEAVY selector 为 NONE。快照和环境索引见 `reports/known-arm-verification.json`，测试记录见 `reports/known-arm-{pg-dev,fast-final,normal-final,ownership}.log`。这些是隔离装配及事务证据，不代表真实设备、网络联调或生产装配通过。旧 schema 约束命名失败继续引用上段基线记录，本次无模型或迁移变化，不扩修、不重复该矩阵。
+
 **依赖：**目标分支所需任务与未决项闭合。**新增：**`T/integration/test_worker_recovery.py`、`T/e2e/test_normal_picking.py`；核心有状态测试只补其新基础机制的主要 owner。
 **范围：**全量需求对照、固定最终 diff/环境指纹，不扩大到未获批 NG/空取或供应商私有协议。
 

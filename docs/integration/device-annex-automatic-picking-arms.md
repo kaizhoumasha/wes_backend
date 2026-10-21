@@ -291,6 +291,10 @@ C1/C2 继续只限制 drain 容量接续与回库核销。首批期限只限制�
 
 ### 10.1 已确认设备接线与隔离验收
 
+`PickingMaterialScanReader` 已直接读取归一化 `SCAN_COMPLETED` 的原样 `data.barcode`、`data.location` 和时间，校验 Evidence 身份/摘要、本 Work 的原 Pickup/来源 Command，以及冻结命令目标平台。来源 Command 尚未下发、精确关联尚未取得或工作线暂停时，原 Evidence 保持未发布，由现有 FactProcessor 的 DEFERRED 重扫恢复；关联和单盘身份提交后，直接读取 Evidence 已存关联，不再依赖外部关联端口。O1/O2 仍未冻结：该端口必须显式提供精确原命令，不能把讨论中的 `source_command_code` 当成已确认 wire 字段，不能按条码、时间或最近命令关联。本次不新增扫码设备角色、业务状态或 timer。
+
+本次隔离装配替换原语义扫码替身，使用上述真实读口；新增验收只覆盖缺关联保留、暂停恢复、并发绑定和清空外部关联后的重建防重。主要 PostgreSQL owner 仍为 `tests/integration/test_picking_device_ports_postgresql.py`；FAST owner `tests/test_picking_device_ports.py` 负责原样条码边界、错误平台/身份和未下发命令，不复制 9H、租约或真实进程矩阵。测试平台和位置参数均为显式离线输入，不能作为设备坐标/数值格式冻结证据。
+
 `application/picking_device_ports.py` 提供来源事实、当前目标/REPLACE 原架、PUT 成功事实读口和 `PickingArmCommandMapper`。来源准入读取本 Work 原 SCAN2 的归一化料箱编码、设备/工作线/时间和已发布 Evidence；可靠取出要求原来源 Command 的 `SUCCESS + PUT_FINISHED + actual_qty` 严格整数 `1`，结果已由 FactProcessor 发布。当前目标沿原进场轮次、已发布结果、未释放窗口和权威当前位置核对，复用既有换架读口的因果检查；第二盘晚于旧架 ACK 加入时，由原换架 owner 从相同目标架/架面、尚未闭合的换架义务恢复唯一原轮次，不查询 latest，不要求旧架重新在位。目标已权威就绪时读取现有 ReadyTarget，不重做换架；ACK、计划目标、未知位置均不构成 ReadyTarget。
 
 公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。请求工厂在同一数据库事务内异步读取，完整 `source/target` 正文由必填参数端口提供，未提供则不创建命令、不消费来源授权。这里没有实现 O4/O10/O11/O15/O16 尚未冻结的设备编码，也没有使用示例坐标、30000 或扫码样例作为生产默认值。

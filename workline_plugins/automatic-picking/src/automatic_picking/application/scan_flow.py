@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from automatic_picking.application.drain_departure_repository import DRAIN_DEPARTURE_STEP, DrainDepartureRepository
 from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP
+from automatic_picking.application.material_flow import MaterialScanAssociationPending
 from automatic_picking.application.return_motion_repository import ReturnMotionRepository
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
@@ -68,12 +69,10 @@ class AutomaticPickingScanFlow:
             or (line.plugin_key, line.plugin_version) != (DEFINITION.plugin_key, DEFINITION.plugin_version)
         ):
             return BusinessEvidenceApplication(BusinessEvidenceDisposition.RECONCILING)
-        if evidence.kind == "DEVICE_EVENT" and line.is_active and self.material_flow is not None:
-            scan = await self.material_flow.scan_reader.read_in_session(db, evidence_id=evidence.id)
-            if scan is not None:
-                await self.material_flow.bind_scan_in_session(db, evidence_id=evidence.id)
-                # 原 Evidence 转给 material Fact；不可在首次请求原子创建前发布。
-                return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
+        if evidence.kind == "DEVICE_EVENT" and self.material_flow is not None:
+            material = await self._material_scan(db, line, evidence)
+            if material is not None:
+                return material
         if evidence.kind == "WMS_RESULT":
             if evidence.operation == "workline.return_buffer.drain_rack_decide@v1":
                 drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
@@ -136,6 +135,18 @@ class AutomaticPickingScanFlow:
         return BusinessEvidenceApplication(
             BusinessEvidenceDisposition.APPLIED, canonical_json_digest({"evidence_id": evidence_id, "result": result})
         )
+
+    async def _material_scan(self, db, line, evidence):
+        try:
+            scan = await self.material_flow.scan_reader.read_in_session(db, evidence_id=evidence.id)
+        except MaterialScanAssociationPending:
+            return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
+        if scan is None:
+            return None
+        if line.is_active:
+            await self.material_flow.bind_scan_in_session(db, evidence_id=evidence.id)
+        # 原 Evidence 留给 material Fact；暂停或缺关联时仍由原 FactProcessor 重扫。
+        return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
 
     async def _departure_result(self, db, line, evidence):
         target = self.batch_driver.target_flow if self.batch_driver is not None else None

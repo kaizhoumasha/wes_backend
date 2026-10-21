@@ -16,6 +16,7 @@ from src.app.workline.models import WorkLine
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.utils.timezone import timezone
 
+from .material_flow import MatchedMaterialScan, MaterialScanAssociationPending
 from .pickup_model import AutomaticPickingPickup
 from .pickup_repository import SourceObservation
 from .placement_flow import MatchedPutResult
@@ -109,6 +110,69 @@ async def _finished_arm(db, command):
     ):
         return None
     return evidence, result
+
+
+class PickingMaterialScanReader:
+    """读取统一扫码合同；原来源命令由显式关联端口提供，不猜供应商回显字段。"""
+
+    def __init__(self, source_commands):
+        self.source_commands = source_commands
+
+    async def read_in_session(self, db, *, evidence_id):
+        evidence = await db.get(InboundEvidence, evidence_id, populate_existing=True)
+        if evidence is None or evidence.kind != "DEVICE_EVENT" or evidence.apply_status != "APPLIED":
+            return None
+        event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
+        if event.event_type != "SCAN_COMPLETED" or event.is_debug or "barcode" not in event.data:
+            return None
+        if (
+            event.device_code != evidence.device_code
+            or event.contract_key != evidence.contract_key
+            or event.contract_version != evidence.contract_version
+            or event.source_event_id != evidence.source_identity
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
+            or type(event.data["barcode"]) is not str
+            or not 1 <= len(event.data["barcode"]) <= 1000
+            or type(event.data.get("location")) is not str
+            or not event.data["location"]
+        ):
+            raise ValueError("material scan differs from its admitted uniform Evidence")
+        # 已绑定关联属于当前 Evidence，恢复不再依赖外部关联端口或已闭合历史。
+        code = evidence.command_code
+        if code is None:
+            code = await self.source_commands.read_in_session(db, evidence_id=evidence_id)
+        if code is None:
+            raise MaterialScanAssociationPending("material scan needs its exact original source Command")
+        if type(code) is not str or not code:
+            raise ValueError("material scan source Command identity is invalid")
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == code))
+        pickup = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.command_code == code))
+        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        if (
+            command is None
+            or pickup is None
+            or work is None
+            or command.task_type != "PICK_AND_PUT"
+            or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            or command.execution_ref_id != pickup.pickup_id
+            or command.material_execution_id is not None
+            or command.workline_id != work.workline_id
+            or evidence.workline_id != work.workline_id
+        ):
+            raise ValueError("material scan lost original Work/Pickup/source Command identity")
+        target = command.params.get("target")
+        if (
+            type(target) is not dict
+            or target.get("location_type") != "SCAN_PLATFORM"
+            or target.get("location_id") != event.data["location"]
+        ):
+            raise ValueError("material scan platform differs from its frozen source Command")
+        if command.status == "PENDING":
+            raise MaterialScanAssociationPending("material scan source Command has not been dispatched")
+        return MatchedMaterialScan(
+            evidence_id, work.workline_id, pickup.pickup_id, code, event.data["barcode"], event.timestamp
+        )
 
 
 class PickingSourceReader:

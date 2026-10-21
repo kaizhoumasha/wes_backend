@@ -64,3 +64,122 @@ async def test_missing_complete_parameters_never_manufactures_command_defaults()
     mapper = PickingArmCommandMapper(N(source_in_session=AsyncMock(return_value=None)))
     work = WorkSourceFact(11, 1, 31, SOURCE, None, True, None, True, True, True)
     assert await mapper.source_request(N(), work=work, pickup_id="P1") is None
+
+
+def scan_fixture(*, code="SOURCE-1", data=None):
+    from src.app.device.contracts import EcsDeviceEvent
+    from src.app.execution.models import InboundEvidence
+    from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
+
+    event = EcsDeviceEvent(
+        device_code="EXPLICIT-SCANNER",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        event_type="SCAN_COMPLETED",
+        timestamp=457,
+        source_event_id="scan:original",
+        is_debug=False,
+        data=data if data is not None else {"location": "EXPLICIT-PLATFORM", "barcode": " 原样,条码\n "},
+    )
+    payload, digest = normalize_payload(
+        event.model_dump(mode="json", exclude_unset=True), digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE
+    )
+    evidence = N(
+        id=21,
+        kind="DEVICE_EVENT",
+        apply_status="APPLIED",
+        normalized_payload=payload,
+        payload_digest=digest,
+        device_code=event.device_code,
+        contract_key=event.contract_key,
+        contract_version=event.contract_version,
+        source_identity=event.source_event_id,
+        workline_id=1,
+        command_code=code,
+    )
+    command = N(
+        command_code="SOURCE-1",
+        task_type="PICK_AND_PUT",
+        workline_id=1,
+        execution_ref_type="WORKLINE_BUSINESS",
+        execution_ref_id="P1",
+        material_execution_id=None,
+        status="DISPATCHING",
+        params={"target": {"location_type": "SCAN_PLATFORM", "location_id": "EXPLICIT-PLATFORM"}},
+    )
+    pickup = N(pickup_id="P1", work_id=11)
+    work = N(id=11, workline_id=1)
+    db = N(
+        get=AsyncMock(side_effect=lambda model, key, **kw: evidence if model is InboundEvidence else work),
+        scalar=AsyncMock(side_effect=[command, pickup]),
+    )
+    association = N(read_in_session=AsyncMock(return_value="SOURCE-1"))
+    return db, evidence, command, association
+
+
+@pytest.mark.asyncio
+async def test_real_scan_reader_preserves_raw_text_and_frozen_command_platform():
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, _command, association = scan_fixture()
+    matched = await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+    assert (matched.pickup_id, matched.command_code, matched.workline_id) == ("P1", "SOURCE-1", 1)
+    assert matched.barcode == " 原样,条码\n " and matched.scanned_at == 457
+    association.read_in_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_known_scan_without_authoritative_association_stays_pending():
+    from automatic_picking.application.material_flow import MaterialScanAssociationPending
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, _command, association = scan_fixture(code=None)
+    association.read_in_session.return_value = None
+    with pytest.raises(MaterialScanAssociationPending):
+        await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+    db.scalar.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [{"location": "OTHER"}, {"barcode": ""}, {"barcode": 123}, {"barcode": "x" * 1001}])
+async def test_scan_reader_rejects_wrong_platform_or_invalid_raw_barcode(changes):
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, _command, association = scan_fixture(data={"location": "EXPLICIT-PLATFORM", "barcode": "raw", **changes})
+    with pytest.raises(ValueError):
+        await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+
+
+@pytest.mark.asyncio
+async def test_bin_scan_does_not_become_a_material_scan():
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, _command, association = scan_fixture(data={"bin_code": "A123456789-C"})
+    assert await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id) is None
+    db.scalar.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [("workline_id", 2), ("execution_ref_id", "OTHER"), ("material_execution_id", 9), ("task_type", "OTHER")],
+)
+async def test_scan_reader_rejects_a_command_outside_its_original_source_identity(field, value):
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, command, association = scan_fixture()
+    setattr(command, field, value)
+    with pytest.raises(ValueError, match="identity"):
+        await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+
+
+@pytest.mark.asyncio
+async def test_scan_reader_uses_explicit_association_but_never_assumes_pending_command_was_sent():
+    from automatic_picking.application.material_flow import MaterialScanAssociationPending
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, command, association = scan_fixture(code=None)
+    command.status = "PENDING"
+    with pytest.raises(MaterialScanAssociationPending):
+        await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+    association.read_in_session.assert_awaited_once_with(db, evidence_id=fact.id)
