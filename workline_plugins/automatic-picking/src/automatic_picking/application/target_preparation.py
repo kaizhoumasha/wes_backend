@@ -13,7 +13,7 @@ from wes_plugin_sdk import (
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest
 
 from .pickup_repository import SourceObservation
-from .target_replacement_repository import TARGET_DEPARTURE_STEP
+from .target_replacement_repository import TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +173,7 @@ class AutomaticPickingTargetFlow:
         return count
 
     async def apply_transport_result_in_session(self, db, *, line, evidence):
-        if evidence.normalized_payload.get("step") == TARGET_DEPARTURE_STEP:
+        if evidence.normalized_payload.get("step") in {TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP}:
             if self.replacement_flow is None:
                 return "WAIT_FOR_EXIT"
             return await self.replacement_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)

@@ -13,6 +13,7 @@ from automatic_picking.application.source_rack_departure_repository import DEPAR
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.application.target_replacement_repository import (
     TARGET_DEPARTURE_STEP,
+    TARGET_INBOUND_STEP,
     TargetReplacementRepository,
 )
 from automatic_picking.application.target_rotation_repository import TARGET_ROTATION_STEP
@@ -43,6 +44,7 @@ class AutomaticPickingTransportOutcomePublisher:
                     DRAIN_ROTATION_STEP,
                     DRAIN_DEPARTURE_STEP,
                     TARGET_DEPARTURE_STEP,
+                    TARGET_INBOUND_STEP,
                 }
             )
         ):
@@ -54,6 +56,7 @@ class AutomaticPickingTransportOutcomePublisher:
             ROTATION_STEP,
             TARGET_ROTATION_STEP,
             TARGET_DEPARTURE_STEP,
+            TARGET_INBOUND_STEP,
             DEPARTURE_STEP,
             DRAIN_INBOUND_STEP,
             DRAIN_ROTATION_STEP,
@@ -72,7 +75,7 @@ class AutomaticPickingTransportOutcomePublisher:
             await SourceRackDepartureRepository(ReturnMotionRepository()).validate_outcome(db, outcome, binding)
         if binding.step == DRAIN_DEPARTURE_STEP:
             await DrainDepartureRepository().validate_outcome(db, outcome, binding)
-        if binding.step == TARGET_DEPARTURE_STEP:
+        if binding.step in {TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP}:
             await TargetReplacementRepository().validate_outcome(db, outcome, binding)
         accepted = await self.evidences.accept(
             db,

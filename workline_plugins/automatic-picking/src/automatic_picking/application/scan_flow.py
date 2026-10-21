@@ -8,7 +8,7 @@ from automatic_picking.application.drain_inbound_repository import DRAIN_INBOUND
 from automatic_picking.application.return_motion_repository import ReturnMotionRepository
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
-from automatic_picking.application.target_replacement_repository import TARGET_DEPARTURE_STEP
+from automatic_picking.application.target_replacement_repository import TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP
 from automatic_picking.application.target_rotation_repository import TARGET_ROTATION_STEP
 from automatic_picking.definition import DEFINITION
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsDeviceEvent
@@ -142,7 +142,7 @@ class AutomaticPickingScanFlow:
                 flow = flow.departure if flow is not None else None
         elif step == DEPARTURE_STEP:
             flow = self.rack_departure_flow
-        elif step in {TARGET_ROTATION_STEP, TARGET_DEPARTURE_STEP}:
+        elif step in {TARGET_ROTATION_STEP, TARGET_DEPARTURE_STEP, TARGET_INBOUND_STEP}:
             flow = self.batch_driver.target_flow if self.batch_driver is not None else None
         elif step == ROTATION_STEP:
             flow = self.rack_motion_flow

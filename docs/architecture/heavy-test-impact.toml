@@ -3354,3 +3354,7 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261022_0040_6a7b8c9d0112_bind_automatic_target_departure.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261022_0107_b514fdcfbefc_bind_automatic_replacement_target_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

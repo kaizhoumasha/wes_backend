@@ -936,6 +936,16 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 最终验证：本片 PostgreSQL 19 passed（68.26 秒）、直接边界回归 4 passed、插件 FAST 252 passed、selector/拓扑/测试所有权 250 passed，迁移 mapping 所选核心 PostgreSQL 8 passed，均无 skipped；Ruff/格式、diff 检查通过。独立 full review 发现同轮合法换面被初次进场因果守卫误拒的 1 项 P2，补齐当前原因果读取及三项接缝验收后，原 reviewer 一轮合并闭环与 fresh full review 确认已修复，当前 11 文件范围无 P1/P2/P3 finding。初轮集成失败先定位为离线夹具合同/装配缺失，修正中复用 matcher 的构造遗漏亦已修复，均不算通过证据；最终快照以上述 XML 为准。隔离 PostgreSQL/Redis 已清理，HEAD 不变、index 为空，状态止于 `IMPLEMENTED - FOCUSED VERIFIED`；本轮不跑提交用完整 QUALITY，不重复 9H 或共享 worker 矩阵。本片不接首次 departure 决定/WAIT、新架进场、PUT、报告、关闭或机械臂；不发送 WMS 请求、不启用生产装配/真实派发、不提交或部署。G2/G3/G5 继续只约束依赖真实扫码关联、设备映射和权威 PkgID 的路径；C1/C2 继续待补证且不扩大为本片离线门禁。既有目标 ROTATE 的角色模板问题另按原计划处理，本片只复用已确认 F01，不顺带改旋转协议。
 
+**REPLACE 新目标架 F01 进场→ReadyTarget 最小离线片（基线 `947a979f`，未提交）：**沿原 replacement flow，在本盘已发布 REPLACE ACCEPT、精确旧架离场已正常 ACCEPTED 交接或已发布成功、TRANSFER_RACK 精确工作位与完整搬运参数显式给定时，复用 manual-picking 的 F01 / RACK→RACK_POSITION / 目标面与 `create_windowed_inbound`。新架/面/储位来自本盘原 ACCEPT，不重问物料资格、不修改初始 plan.target_rack。既有窗口负责下发节拍，不等价物理到位；旧架发送未知、未接纳及已接纳后 FAILED 均不在本片新建准入内，不自动换身份重试。
+
+只新增 Pickup 可空非唯一 `target_inbound_transport_task_id`；迁移 `b514fdcfbefc` 由 Alembic 生成，承接 `6a7b8c9d0112`，有当前引用时拒绝有损降级。原旧架离场身份与新架构成稳定 round correlation，Transport/Binding/本盘引用同事务落地；同轮同新架的多个本盘引用共享原动作。窗口 PENDING 由原 batch 重扫，REUSED 只有找到本轮原绑定才关联，不冒领其它轮次。已有新架引用优先校验恢复，不重新读取旧进场、旧离场、位置绑定或映射作为恢复条件。
+
+唯一恢复 owner：尚未建进场的当前 Pickup/ACCEPT 归 batch 的 replacement flow；已建原 Transport 归 Transport 可靠机制；已保存未发布结果归现有 FactProcessor；已发布成功后由 replacement flow 只读计算现有 `ReadyTarget`。新增固定目标进场 step 沿原 publisher→scan→target flow 消费，不另建 worker、timer、授权模型或 READY 状态。ready 要求本盘冻结目标、原新架当前版本成功且结果已发布、精确成员终位/面、当前 PositionProjection 的原 Transport/causal token/FINAL_RESULT 同时匹配，窗口已释放、位置未知、旧轮次或未发布均不放行。结果接收与业务发布、ACCEPTED 与物理成功继续分开；无需依赖旧架已闭合历史。
+
+主要测试 owner 为 `T/integration/test_target_replacement_inbound_postgresql.py`，复用旧架离场、当前 material 与 Transport 夹具，只补本片接缝：唯一/共享创建、原子关联、并发、事务故障回滚与重建、窗口等待、旧架正常交接准入、回调早于 ACK、消费者缺席延期/恢复、重放、错误事实/旧轮隔离、无 EXECUTING 与可清理前驱历史删除后的独立恢复，以及迁移往返/降级保护。保留当前未闭合 Pickup、ACCEPT、其必要 Confirmation 与原新架 Transport/Binding/Evidence，清理不再被当前引用的旧进场/离场 Transport 及到位历史；不宣称删除仍被引用的当前数据。仅刷新旧架离场、普通 PUT、ROTATE 直接消费者；不重复 9H、共享租约或真实 worker 矩阵，事务中断不宣称真实进程故障验收。
+
+最终验证：本片 PostgreSQL 18 passed（74.39 秒），直接消费者 PostgreSQL 8 passed（31.77 秒），迁移 mapping 所选核心 PostgreSQL 8 passed（33.54 秒），插件 FAST 252 passed、selector/拓扑/测试所有权 250 passed，均 0 skipped；10 个 Python 文件 Ruff/格式及 diff 检查通过。首个正常接续用例先在旧 flow 未创建新架处失败；实现后首轮 16 项中的 1 项失败属于测试夹具误写重试字段，改为推进既有 FactProcessor 时钟后，回调恢复/共享/FAILED 三项及最终 18 项均通过，没有放宽业务断言。最终 publisher 同一 set 去重不改变可观察语义；独立只读完整 review 核对 12 文件指纹、调用/测试 owner、当前轮次、结果门禁和历史清理，无 P1/P2/P3 finding。评审后仅补本文记录，可执行快照不变；HEAD 不变、index 为空，隔离测试资源清理后保留工作区改动。状态止于 `IMPLEMENTED - FOCUSED VERIFIED`。不接 PUT、报告、关闭、机械臂、首次 departure/WAIT 或失败重决策，不改生产装配、不发送 WMS 请求、不启用真实派发、不提交或部署。C1/C2 只限制对应真实容量接续与核销，不扩大为本片门禁；G2/G3/G5 只限制依赖真实扫码、设备参数及权威 PkgID 的路径。离线完整搬运参数不是对未决设备值的默认推断。
+
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
 - [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。

@@ -71,7 +71,7 @@ async def callback(p, task, *, publish=True, status="SUCCEEDED"):
         "transport_task_id": task.transport_task_id,
         "kind": task.kind,
         "outcome_revision": 1,
-        "rack_id": OLD,
+        "rack_id": task.request_json["rack_id"],
         "status": status,
     }
     if status == "SUCCEEDED":
