@@ -199,6 +199,8 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 
 人工拣料的 `workline_positions.capacity` 是 WES 针对每个目标点维护的滚动进场 Transport 下发窗口。进场创建后，一个物理货架占一个名额；到位继续占用，业务完成且对应离场 Transport 获得 `ACCEPTED` 后释放并补发 pending。同架跨 revision 或面向复用仍在占窗的进场生命周期，不重复下发 CTU01/F01。明确未接纳的进场任务，或失败且权威终位在目标点外的任务，释放名额；失败终位仍在目标点的业务重试沿用该名额。发送结果、位置或离场接纳未知时保留原身份等待权威 API 结果。RCS 负责 AGV 排队、物理工作位、自动补位与实际进位顺序，WES 不维护其 queue slot。新架只有原 Transport、成功成员与精确工作位 rack/face 事实共同证明到位才可作业。
 
+已完成（`EXECUTION_COMPLETED`）的人工任务不再持有来源架的本地准入名额：插件持久工作线扫描只退出原来源进架窗口的准入职责，保留窗口身份、原进场轮次、operation_id、冻结正文、Transport 和全部 Evidence。该退出不证明离场、物理完成、CTU 空闲或 WMS reservation 释放；原未决搬运继续由 Transport owner 等待终态，只约束其直接因果步骤。若当前权威货架事实仍属于原 owner 且尚无新窗口接管，原轮次清退继续由持久扫描承接；新实际动作/窗口接管后旧清退让路。新的有效任务与独立 drain 经既有原子容量准入创建自身动作，不继承旧到位事实；drain 插缝只检查当前活动任务自己的来源窗口。已完成任务的全取消来源架仍由持久扫描承接原清退，不因准入释放失去 Next Owner；当前面由同 owner 的后续 revision 换面到位时，仍解析该面所属原进场轮次，不要求换面 Evidence 与进场计划 Evidence 相同。
+
 货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
 人工出库的转运货架和直接取料退料架进出场均使用 `F01`；五层来源架和 drain 架使用 `CTU01` 进场、`CTU03` 离场，不混用模板。已确认的货架规则及各入口实现范围见
 [人工出库货架搬运规则](../integration/manual-outbound-rack-transport.md)。

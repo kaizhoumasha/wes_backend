@@ -50,10 +50,15 @@ def _flow(*, current=None, rows=(), active_task=False, five_rack_window_active=T
 
     executions.latest_return_evidence_for_execution = AsyncMock(side_effect=original_return)
     history.read_return = AsyncMock(side_effect=lambda _db, outcome, *, workline_id: (None, outcome))
-    tasks = SimpleNamespace(has_active_for_workline=AsyncMock(return_value=active_task))
+    tasks = SimpleNamespace(
+        has_active_for_workline=AsyncMock(return_value=active_task),
+        get_active_for_workline=AsyncMock(return_value=SimpleNamespace(id=31) if active_task else None),
+    )
     bindings = SimpleNamespace(
         list_active_window_for_target=AsyncMock(
-            return_value=[SimpleNamespace(step="PICKING_TASK_BIN_SOURCE_RACK_IN")] if five_rack_window_active else []
+            return_value=[SimpleNamespace(step="PICKING_TASK_BIN_SOURCE_RACK_IN", picking_task_id=31)]
+            if five_rack_window_active
+            else []
         )
     )
     flow = ManualPickingDrainFlow(
@@ -589,3 +594,13 @@ async def test_matching_final_evidence_is_replayed_before_any_retirement_reason(
     flow._drain_executions.retirement_actions.return_value = ((binding, action, True), (binding, terminal, False))
     assert not await flow.retire_exception_in_session(object(), _line(), NOW)
     flow._drain_executions.close_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_task_window_does_not_block_independent_drain():
+    flow, scheduler, _, _ = _flow(rows=(SimpleNamespace(id=41, bin_code="B1"),), active_task=True)
+    old = SimpleNamespace(step="PICKING_TASK_BIN_SOURCE_RACK_IN", picking_task_id=12, window_released_at=None)
+    flow._bindings.list_active_window_for_target.return_value = [old]
+    assert await flow.decide_in_session(object(), _line(), NOW) == (1, None)
+    scheduler.create_in_session.assert_awaited_once()
+    assert old.window_released_at is None

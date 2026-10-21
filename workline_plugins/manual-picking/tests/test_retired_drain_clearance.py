@@ -141,8 +141,9 @@ async def test_retired_clearance_tracks_current_fact_and_yields_to_new_owner(rac
                 rack_id=rack_id,
                 round_started_at=root.created_at,
             )
-            with pytest.raises(ValueError, match="exactly one active"):
-                await BatchRepository().has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id=rack_id)
+            assert not await BatchRepository().has_unclosed_return_dependency_for_rack(
+                db, workline_id=7, rack_id=rack_id
+            )
 
             successor = TransportDecisionBinding(
                 workline_id=7,

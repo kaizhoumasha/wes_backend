@@ -88,6 +88,8 @@ class ManualPickingBatchResultFlow:
         moves = inbound_moves(intent, ready, inlet_location=inlet_location)[offset : offset + 4]
         if not moves:
             raise ValueError("inbound chunk offset exceeds frozen face allocation")
+        if await self._batches.has_unclosed_equivalent_inbound(db, moves):
+            return
         await self._transport.create(
             db,
             workline_id=workline_id,
