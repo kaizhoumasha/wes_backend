@@ -40,6 +40,9 @@ class AutomaticPickingPickup(EnterpriseMixin, DataTableMixin, table=True):
     target_rotation_transport_task_id: str | None = Field(
         default=None, max_length=80, foreign_key="wes_biz.transport_tasks.transport_task_id", unique=True
     )
+    target_departure_transport_task_id: str | None = Field(
+        default=None, max_length=80, foreign_key="wes_biz.transport_tasks.transport_task_id"
+    )
     put_command_code: str | None = Field(
         default=None, max_length=80, foreign_key="wes_biz.device_commands.command_code", unique=True
     )

@@ -928,6 +928,14 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 本片验证：新增有后继正例先在原 7C 类型守卫上失败；最小修正后新增 ROTATE 接缝 15 passed，随后退役 7B 阶段性负例。最终快照 PostgreSQL 接缝/普通目标 helper 消费者/7B→7C 与 ROTATE→PUT 直接回归 29 passed（116.76 秒），修改后的 ROTATE fixture 既有 REPLACE 字符串输入回归另 1 passed，共 30 项、0 skipped；插件 FAST 252 passed，退役后的拓扑/测试所有权 14 passed，4 个 Python 文件 Ruff/格式和 diff 检查通过，HEAVY selector 为 NONE。沿本片独占 PostgreSQL 17 tmpfs、逐例独立逻辑库验证；无 schema/宿主/队列变化，不刷新无关迁移、完整 QUALITY 或真实进程矩阵。独立只读 full review 核对固定 5 文件指纹、合同、直接/间接消费者及测试 owner，结果无 P1/P2/P3 finding；评审后仅补本文记录，可执行快照未变。最终状态止于 `IMPLEMENTED - FOCUSED VERIFIED`，不提交或部署。
 
+**REPLACE 旧目标架离场最小离线片（实施基线 `92b79281`，未提交）：**仅在本盘已发布 ACCEPT、精确旧架及原进场轮次、当前原因果到位、已发布 departure READY 和完整目的参数显式给定时，沿 manual-picking 的 TRANSFER_RACK / F01 搬运基线创建旧架离场。新增 `P/application/target_replacement.py` 与其 repository，经既有 target flow 显式注入；使用原进场 client_request_id 派生稳定的旧轮次关联，同一旧架轮次的多个 Pickup 共享原 F01。Transport、Binding 及 Pickup 的可空非唯一 FK `target_departure_transport_task_id` 同事务成立。迁移 `6a7b8c9d0112` 承接 `f489f59e9b22`，存在当前引用时拒绝有损降级；不新增业务模型、状态、DTO 或 WMS operation。
+
+恢复 owner 不变：Transport 保存冻结请求、接纳/未知/终态与原身份，既有窗口机制在 ACCEPTED 后交接；WorkLine 绑定与原 READY 继续承担该离场义务。batch 先恢复原义务，FactProcessor 经静态目标离场 step 应用发布匹配结果，未装配消费者时持久延期。已关联原动作不重新读取旧进场或设备映射；新关联必须校验当前旧轮次；同轮合法目标 ROTATE 后按当前投影精确读取成功 Transport/Binding/已发布结果，要求原进场窗口未释放、因果顺序及当前架面/位置一致，不能误绑旧轮次或使用未发布换面结果。迟到旧结果不能覆盖新轮次。原 Transport/Binding/当前必要 Evidence 的恢复代码不读取 Pickup；本片实际清理验收删除旧进场及到位历史，保留尚未闭合 Pickup，不将“无 Pickup”写作已实测项；不将已闭合历史当运行围栏。初始目标进场的插件通知可能合法 IGNORED，须依原成功 Transport 与当前原因果投影证明到位，不伪造插件发布。
+
+主要验收 owner 为 `T/integration/test_target_replacement_departure_postgresql.py`，覆盖唯一创建/关联、共享同轮离场、并发、创建/关联事务故障回滚、未发布 READY 或未知位置不建动作、回调早于 ACK、接纳窗口释放、原结果重放、错误身份、旧轮次隔离、清理后恢复、未装配消费者延期及迁移往返保护。故障为离线事务注入，不宣称真实进程崩溃或现场通过。仅刷新普通 PUT、ROTATE 接缝与 REPLACE 报告拒绝的直接消费者；不重复 9H、共享租约/worker 矩阵。
+
+最终验证：本片 PostgreSQL 19 passed（68.26 秒）、直接边界回归 4 passed、插件 FAST 252 passed、selector/拓扑/测试所有权 250 passed，迁移 mapping 所选核心 PostgreSQL 8 passed，均无 skipped；Ruff/格式、diff 检查通过。独立 full review 发现同轮合法换面被初次进场因果守卫误拒的 1 项 P2，补齐当前原因果读取及三项接缝验收后，原 reviewer 一轮合并闭环与 fresh full review 确认已修复，当前 11 文件范围无 P1/P2/P3 finding。初轮集成失败先定位为离线夹具合同/装配缺失，修正中复用 matcher 的构造遗漏亦已修复，均不算通过证据；最终快照以上述 XML 为准。隔离 PostgreSQL/Redis 已清理，HEAD 不变、index 为空，状态止于 `IMPLEMENTED - FOCUSED VERIFIED`；本轮不跑提交用完整 QUALITY，不重复 9H 或共享 worker 矩阵。本片不接首次 departure 决定/WAIT、新架进场、PUT、报告、关闭或机械臂；不发送 WMS 请求、不启用生产装配/真实派发、不提交或部署。G2/G3/G5 继续只约束依赖真实扫码关联、设备映射和权威 PkgID 的路径；C1/C2 继续待补证且不扩大为本片离线门禁。既有目标 ROTATE 的角色模板问题另按原计划处理，本片只复用已确认 F01，不顺带改旋转协议。
+
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
 - [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。

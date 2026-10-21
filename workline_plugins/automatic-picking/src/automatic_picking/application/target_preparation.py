@@ -1,12 +1,19 @@
-"""普通/ROTATE 目标已权威就绪后的 PUT 创建；仅显式装配，不接 REPLACE。"""
+"""普通/ROTATE 就绪后创建 PUT；REPLACE 仅显式装配旧目标架离场。"""
 
 from dataclasses import dataclass
 
-from wes_plugin_sdk import PickingBinCell, PickingMaterialAccept, PickingTargetRackSlot, PickingTargetRotate
+from wes_plugin_sdk import (
+    PickingBinCell,
+    PickingMaterialAccept,
+    PickingTargetRackSlot,
+    PickingTargetReplace,
+    PickingTargetRotate,
+)
 
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest
 
 from .pickup_repository import SourceObservation
+from .target_replacement_repository import TARGET_DEPARTURE_STEP
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,13 +32,26 @@ class ReadyTarget:
 
 
 class AutomaticPickingTargetFlow:
-    def __init__(self, repository, commands, material_reader, target_reader, request_factory, *, rotation_flow=None):
+    def __init__(
+        self,
+        repository,
+        commands,
+        material_reader,
+        target_reader,
+        request_factory,
+        *,
+        rotation_flow=None,
+        replacement_flow=None,
+    ):
         self.rotation_flow = rotation_flow
+        self.replacement_flow = replacement_flow
         self.repository, self.commands = repository, commands
         self.material_reader, self.target_reader, self.request_factory = material_reader, target_reader, request_factory
 
     async def advance_in_session(self, db, *, line_id, now):
         count = 0
+        if self.replacement_flow is not None:
+            await self.replacement_flow.recover_in_session(db, line_id=line_id)
         for pickup_id in await self.repository.target_pending(db, line_id):
             work, pickup, _ = await self.repository.material_context_for_update(db, pickup_id)
             execution = await self.repository.material_execution(db, pickup.material_execution_id)
@@ -94,6 +114,10 @@ class AutomaticPickingTargetFlow:
                 )
                 reader = self.rotation_flow
             elif accepted.target_preparation is not None:
+                if type(accepted.target_preparation) is PickingTargetReplace and self.replacement_flow is not None:
+                    count += await self.replacement_flow.prepare_in_session(
+                        db, work=work, pickup=pickup, execution=execution, accepted=accepted
+                    )
                 continue
             # Work 当前栈顶可能已属于 M2；PUT 只核对本盘冻结来源和原 Command。
             source_fact = await self.repository.physical_reader.read_in_session(
@@ -149,6 +173,10 @@ class AutomaticPickingTargetFlow:
         return count
 
     async def apply_transport_result_in_session(self, db, *, line, evidence):
+        if evidence.normalized_payload.get("step") == TARGET_DEPARTURE_STEP:
+            if self.replacement_flow is None:
+                return "WAIT_FOR_EXIT"
+            return await self.replacement_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
         if self.rotation_flow is None:
             return "WAIT_FOR_EXIT"
         return await self.rotation_flow.apply_transport_result_in_session(db, line=line, evidence=evidence)
