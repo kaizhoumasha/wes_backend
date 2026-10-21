@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter
 
 from src.app.wms_adapter.outbound_picking.material_decide_wire import NgZone, PickingSourceData, ScanText
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PlanRackSlot
@@ -23,7 +23,8 @@ MATERIAL_MOVEMENT_REPORT_OPERATION = "outbound.material.movement_report@v1"
 
 
 class MaterialMovementReportData(PickingSourceData):
-    PkgID: ScanText
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    barcode: ScanText
     to_locator: Annotated[PlanRackSlot | NgZone, Field(discriminator="type")]
     occurred_at: NonnegativeMilliseconds
 

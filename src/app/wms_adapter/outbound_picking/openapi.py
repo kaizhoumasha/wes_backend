@@ -639,7 +639,7 @@ PICKING_TASK_WMS_REQUEST_EXAMPLES = {
         "outbound.material.decide@v1": {"barcode": "原始,扫码,条码", "scanned_at": 1786060799900},
         "outbound.source.empty_decide@v1": {"observed_at": 1786060799900},
         "outbound.material.movement_report@v1": {
-            "PkgID": "PKG-001",
+            "barcode": "原始,条码",
             "to_locator": {"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "B-01"},
             "occurred_at": 1786060799900,
         },

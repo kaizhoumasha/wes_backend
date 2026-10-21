@@ -18,7 +18,7 @@ FACTORIES = (
     (wms_operations.outbound_source_empty_decide, {"observed_at": 123}),
     (
         wms_operations.outbound_material_movement_report,
-        {"pkg_id": "P", "to_locator": sdk.PickingRackSlot("TARGET", "B", "S-2"), "occurred_at": 123},
+        {"barcode": "P", "to_locator": sdk.PickingRackSlot("TARGET", "B", "S-2"), "occurred_at": 123},
     ),
 )
 

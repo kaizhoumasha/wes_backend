@@ -147,7 +147,7 @@ async def close_before_m2(p, code):
     async with p.sessions() as db:
         assert (await db.get(AutomaticPickingWork, p.work.id)).top_removed_evidence_id is None
     await report_result(p, code)
-    p.identity_available = False  # 已冻结报告不重新索取设备映射或 PkgID。
+    p.identity_available = False  # 已冻结报告不重新索取设备映射。
     assert await processor(p).process_batch() == 1
     async with p.sessions() as db:
         work = await db.get(AutomaticPickingWork, p.work.id)
@@ -371,6 +371,7 @@ async def test_next_source_admission_does_not_block_closing_real_report(reported
         "handoff_missing",
         "source",
         "target",
+        "barcode",
         "removed_command",
         "removed_digest",
     ],
@@ -402,6 +403,12 @@ async def test_mismatched_report_or_placement_proof_never_closes(reported, drift
             accept.decision_next_attempt_at = p.now + timedelta(days=1)
         elif drift == "handoff_missing":
             work.authorization_evidence_id = pickup.authorization_evidence_id
+        elif drift == "barcode":
+            report.request_payload = {
+                **report.request_payload,
+                "data": {**report.request_payload["data"], "barcode": "OTHER-SCAN"},
+            }
+            report.request_digest = canonical_json_digest(report.request_payload)
         elif drift in ("source", "target"):
             data = {**report.request_payload["data"]}
             field, key = ("source_locator", "cell_id") if drift == "source" else ("to_locator", "slot_id")

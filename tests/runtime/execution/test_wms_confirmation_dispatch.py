@@ -475,7 +475,7 @@ async def test_frozen_picking_fact_retries_original_request_after_owner_changes(
         else {
             "task_id": "PICK-1",
             "source_locator": {"type": "RACK_SLOT", "rack_id": "SOURCE-1", "rack_face": "A", "slot_id": "1"},
-            "PkgID": "PKG-1",
+            "barcode": "原始,条码",
             "to_locator": {"type": "NG_ZONE", "zone_code": "NG-1"},
             "occurred_at": 1,
         }

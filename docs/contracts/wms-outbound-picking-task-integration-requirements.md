@@ -192,7 +192,7 @@ WMS 不创建 TransportTask，也不向设备发送 DeviceCommand。
 既有 outbound operation 的合法消息先过滤冗余字段，再持久化业务模型并计算幂等摘要。同一 identity 仅冗余字段不同，按同一有效消息处理；已定义字段变化仍按原合同冲突。非法消息保留既有拒绝留痕，原始报文由诊断收据保存。此规则同样适用于 WMS 入库与 Transport 接收边界。
 
 字段表中的“条件”表示：条件成立时必须发送，条件不成立时不要发送。既有 outbound operation 按当前结果分支读取已定义字段并忽略冗余字段；
-独立 drain operation 按 §9.2.3 逐层拒绝额外字段。发送方均按字段表构造消息。所有接口还要遵守以下规则：
+独立 drain operation 按 §9.2.3 逐层拒绝额外字段；movement_report 的请求 data 按 §10.4 拒绝额外字段，不接受旧物料编号字段。发送方均按字段表构造消息。所有接口还要遵守以下规则：
 
 - HTTP Body 使用 UTF-8 `application/json`。字段名和枚举大小写敏感；已定义字段缺失、重复 JSON key、错误类型和枚举外值返回
   `422 / REJECTED + INVALID_DATA`。
@@ -288,7 +288,7 @@ PickingTask。
 | `queue_revision` | WMS | 从 1 开始连续递增，只用于尚未准备任务的队列更新 |
 | `plan_revision` | WMS | 同一 `task_id` 从 1 开始连续递增；同时构成该版本新增来源成员的业务身份 |
 | `last_applied_plan_revision` | WES 引用已接收版本 | WES 已连续应用到哪个计划版本；尚无计划时为 `0`，只作计划流接收游标，不表示成员完成或旧成员失效 |
-| `PkgID` | 扫码设备，WMS 判断业务唯一性 | 完整料盘的唯一业务编号；同一料盘重新请求时保持不变 |
+| `barcode` | 扫码设备，WMS 判断业务唯一性 | 本盘完整扫码原文，非空、最多1000字符；重新请求时保持原文，不由 WES 拆分或推导全局唯一性 |
 | `transport_task_id` | WES Transport | 一个搬运任务的编号 |
 
 WMS/WES 接口不传 WES 内部的 PickingTask、Bin、Material 或 DeviceCommand 执行 ID。WMS 按下面的组合查找业务明细：
@@ -298,7 +298,7 @@ WMS/WES 接口不传 WES 内部的 PickingTask、Bin、Material 或 DeviceComman
 - 物理 Bin：`bin_code` 可重复使用；WES 用本地 Passage/准入 Action 身份关联本次经过与完成结果，WMS 完成通知只需提供 `task_id + bin_code + result + completed_at`，由 WES 匹配当前唯一开放 Passage
 - Cell：本次 WES Passage/Work + WMS 编码 `cell_id`；WMS 按每次请求的实际来源和当前业务事实决定
 - 当前接料货架面：`task_id + rack_id + rack_face`
-- 一盘直接取料物料：`task_id + plan_revision + source_locator + PkgID`；`BIN_CELL` 物料由 WMS 按来源、扫码与逐盘事实处理，WES 本地关联 Passage/Action
+- 一盘直接取料物料：`task_id + plan_revision + source_locator + barcode`；`BIN_CELL` 物料由 WMS 按来源、扫码与逐盘事实处理，WES 本地关联 Passage/Action
 
 来源成员在同一 revision 内不得重复；同一物理货架、货架面或储位可以由更高 revision 再次安排，形成新的成员。已接收成员本身不被改写；更高 revision 也不自动取消旧成员。
 
@@ -1624,14 +1624,14 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 `ng_locator` 必须是 WMS 批准的 `NG_ZONE`。`source_disposition` 只决定料盘确认进入 NG 区后的来源业务状态，不是设备命令。
 `CONTINUE` 允许当前 Cell 继续取下一盘，`CLOSE` 在当前盘 NG 结果确认后关闭当前来源。WMS 尚不能形成这两个最终结果时必须返回
 `WAIT`，不能先返回 `REJECT` 再让 WES 等待未定义的恢复动作。
-相关已确认结果变化时立即以新 `operation_id` 对同一来源成员或 Passage/Work 与 `PkgID` 重新判断，没有新业务数据时才等待
+相关已确认结果变化时立即以新 `operation_id` 对同一来源成员或 Passage/Work 与 `barcode` 重新判断，没有新业务数据时才等待
 `retry_after_ms`。
 
 `target_preparation` 只有三种写法：无动作时省略、同架换面时 `mode=ROTATE`、换架时 `mode=REPLACE`。
 `REPLACE` 固定按“当前架 departure 决定与离场 → 新架进场 → PUT”执行。`ACCEPT` 冻结当前盘资格、目标储位与新架要求；WES 取得独立
 departure `READY` 并等待相关 Transport 到位后直接 PUT，不重新请求物料资格。
 
-`next_source_action` 授权下一来源，可以是同 Cell 下一盘或另一 Cell；其省略表示本次授权范围内无后续来源。当前栈顶可靠取出且后继授权有效后，WES 可按 §10.3 在当前盘 PUT 或位置报告尚未完成时下发下一条来源命令；下一盘实际离开来源仍由 ECS/PLC 硬件交接许可裁决。依赖当前盘位置报告的业务完成、容量释放或后继步骤仍等待该报告确认，不把这些直接依赖扩大为跨臂统一等待。同一来源成员或 Passage/Work 与 `PkgID` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带同一业务事实重新判断。`RACK_SLOT` 以 `task_id + plan_revision + source_locator` 识别成员；`BIN_CELL` 由 WMS 按当前请求的来源、扫码原文和业务事实决定，WES 本地关联 Passage 与 Action。
+`next_source_action` 授权下一来源，可以是同 Cell 下一盘或另一 Cell；其省略表示本次授权范围内无后续来源。当前栈顶可靠取出且后继授权有效后，WES 可按 §10.3 在当前盘 PUT 或位置报告尚未完成时下发下一条来源命令；下一盘实际离开来源仍由 ECS/PLC 硬件交接许可裁决。依赖当前盘位置报告的业务完成、容量释放或后继步骤仍等待该报告确认，不把这些直接依赖扩大为跨臂统一等待。同一来源成员或 Passage/Work 与 `barcode` 只能形成一个最终 `ACCEPT | REJECT`；`WAIT` 后使用新 `operation_id` 携带同一业务事实重新判断。`RACK_SLOT` 以 `task_id + plan_revision + source_locator` 识别成员；`BIN_CELL` 由 WMS 按当前请求的来源、扫码原文和业务事实决定，WES 本地关联 Passage 与 Action。
 
 ### 10.3 两个机械臂并发
 
@@ -1807,7 +1807,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
       "bin_code": "BIN-001",
       "cell_id": "BIN-0013"
     },
-    "PkgID": "PKG-001",
+    "barcode": "P032-0561-000HF,Q3000,M0805S106K160CT,D260505,L100R028291,S72052872716100149602",
     "to_locator": {
       "type": "RACK_SLOT",
       "rack_id": "TRANSFER-RACK-01",
@@ -1835,7 +1835,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
       "rack_face": "A",
       "slot_id": "A-03"
     },
-    "PkgID": "PKG-001",
+    "barcode": "P032-0561-000HF,Q3000,M0805S106K160CT,D260505,L100R028291,S72052872716100149602",
     "to_locator": {
       "type": "RACK_SLOT",
       "rack_id": "TRANSFER-RACK-01",
@@ -1863,7 +1863,7 @@ MATERIAL NG 放置结果示例：
       "bin_code": "BIN-001",
       "cell_id": "BIN-0014"
     },
-    "PkgID": "PKG-NG-001",
+    "barcode": "P032-0561-000HF,Q3000,M0805S106K160CT,D260505,L100R028291,S72052872716100149602",
     "to_locator": {
       "type": "NG_ZONE",
       "zone_code": "MATERIAL_NG_01"
@@ -1889,7 +1889,7 @@ CELL NG 放置结果示例（与上面的 MATERIAL NG 示例是独立分支）�
       "bin_code": "BIN-001",
       "cell_id": "CELL-05"
     },
-    "PkgID": "PKG-NG-002",
+    "barcode": "P032-0561-000HF,Q3000,M0805S106K160CT,D260505,L100R028291,S72052872716100149602",
     "to_locator": {
       "type": "NG_ZONE",
       "zone_code": "CELL_NG_01"
@@ -1901,16 +1901,18 @@ CELL NG 放置结果示例（与上面的 MATERIAL NG 示例是独立分支）�
 
 字段约束如下：
 
+`movement_report.data.barcode` 与本盘 `material.decide.data.barcode` 必须逐字符相同，均为原始扫码 Evidence 的原文。旧物料编号字段已取消，请求不得同时携带旧字段；不拆分、不截断、不做双字段兼容。WMS 结合来源和已保存的决定识别业务，WES 不给 barcode 建立全局唯一约束。既有已冻结义务不改写正文或换身份；旧格式存量保留原文并按现有对账处理，不自动改字段重建请求。
+
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
 | `data.plan_revision` | `source_locator.type=RACK_SLOT` 时是 | positive integer / 原直接取料成员 | 必须与前序 `material.decide` 的来源成员 revision 一致 |
 | `data.source_locator` | 是 | `RACK_SLOT \| BIN_CELL` / WMS 原值 | 必须与前序物料决定中的来源完全一致 |
-| `data.PkgID` | 是 | string[1..256] / 扫码设备原文 | 与本盘扫码事实及 WMS 已保存的最终物料决定对应 |
+| `data.barcode` | 是 | string[1..1000] / 扫码设备原文 | 与本盘扫码事实及 WMS 已保存的最终物料决定对应 |
 | `data.to_locator` | 是 | `RACK_SLOT \| NG_ZONE` / WMS 决定 | 必须与前序决定的精确目标或 NG 去向一致 |
 | `data.occurred_at` | 是 | UTC Unix 毫秒 / 设备结果 | 实际放置完成时间 |
 
-- WMS 根据直接取料的 `task_id + plan_revision + source_locator + PkgID` 找到前面的最终物料决定；`BIN_CELL` 按来源、`PkgID` 和已保存的最终物料决定核对本次位置事实。位置上报沿用本盘身份和准确去向。
+- WMS 根据直接取料的 `task_id + plan_revision + source_locator + barcode` 找到前面的最终物料决定；`BIN_CELL` 按来源、`barcode` 和已保存的最终物料决定核对本次位置事实。位置上报沿用本盘身份和准确去向。
 - 正常 PUT 的相同业务字段必须已经得到最终 `ACCEPT`，并使用其 `RACK_SLOT`；MATERIAL/CELL NG 必须已经得到最终 `REJECT`，
   并使用其 `NG_ZONE`。
   WMS 根据前面的业务决定判断 NG 影响范围，不接受本次上报再传一套业务异常分类。
@@ -2160,7 +2162,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 场景 | 预期结果 |
 | --- | --- |
 | 请求内容含 `//` 注释或不是标准 JSON | 返回空 Body `400`；请求正文必须是标准 JSON |
-| WMS 请求或响应带冗余字段 | 既有 outbound operation 忽略冗余字段；独立 drain operation 按 §9.2.3 逐层拒绝 |
+| WMS 请求或响应带冗余字段 | 既有 outbound operation 忽略冗余字段；独立 drain operation 按 §9.2.3 逐层拒绝，movement_report 请求 data 拒绝额外字段 |
 | 已定义字段出现非法 `null`、空条件数组或错误类型 | 返回 `422 / REJECTED + INVALID_DATA`，不做部分接收 |
 | `barcode` 使用非字符串或空值 | 返回 `422 / REJECTED + INVALID_DATA`；完整条码原文按字符串提交 |
 | 位置对象的 `type` 与字段、来源类型或目标用途不一致 | JSON 结构错误返回 `422`；与 WMS 已保存的业务数据冲突返回 `409` |

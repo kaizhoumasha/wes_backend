@@ -89,7 +89,7 @@ async def test_existing_movement_report_dispatches_without_plugins_and_replays_w
                     operation_id=operation_id,
                     task_id=task.task_id,
                     source_locator=PickingBinCell("RACK-1", "A", "BIN-1", "CELL-1"),
-                    pkg_id=" 原始扫码 ",
+                    barcode=" 原始扫码 ",
                     to_locator=PickingNgZone("NG-1") if ng else PickingRackSlot("TARGET-1", "B", "SLOT-1"),
                     occurred_at=123,
                 ),
@@ -123,7 +123,7 @@ async def test_existing_movement_report_dispatches_without_plugins_and_replays_w
                     material_execution_id=material_id,
                     confirmation_id=confirmation.id,
                 )
-                assert snapshot.intent.pkg_id == " 原始扫码 " and snapshot.intent.occurred_at == 123
+                assert snapshot.intent.barcode == " 原始扫码 " and snapshot.intent.occurred_at == 123
                 assert snapshot.evidence_id == evidence.id and snapshot.outcome.result.duplicate is ng
                 assert (await db.get(MaterialExecution, material_id)).status == "RUNNING"
             persisted = await db.get(PickingTask, task.id)

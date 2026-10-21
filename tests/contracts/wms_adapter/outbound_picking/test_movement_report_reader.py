@@ -34,7 +34,7 @@ async def test_reader_requires_exact_current_report_and_typed_result(monkeypatch
         operation_id="019f3405-2200-7b01-8b01-000000000001",
         task_id="TASK-1",
         source_locator=PickingBinCell("RACK", "A", "BIN", "CELL"),
-        pkg_id=" 原文-PkgID ",
+        barcode=" 原文-barcode ",
         to_locator=PickingRackSlot("TARGET", "A", "S1"),
         occurred_at=123,
     )

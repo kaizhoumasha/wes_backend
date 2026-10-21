@@ -707,7 +707,7 @@ class MaterialMovementReportIntent:
     operation_id: str
     task_id: str
     source_locator: PickingRackSlot | PickingBinCell
-    pkg_id: str
+    barcode: str
     to_locator: PickingRackSlot | PickingNgZone
     occurred_at: int
     plan_revision: int | None = None
@@ -726,8 +726,8 @@ class MaterialMovementReportIntent:
         _validate_picking_source_revision(self.source_locator, self.plan_revision)
         if type(self.to_locator) not in (PickingRackSlot, PickingNgZone):
             raise TypeError("to_locator requires PickingRackSlot or PickingNgZone")
-        if type(self.pkg_id) is not str or not 1 <= len(self.pkg_id) <= 256:
-            raise ValueError("pkg_id must be original scan text of 1..256 characters")
+        if type(self.barcode) is not str or not 1 <= len(self.barcode) <= 1000:
+            raise ValueError("barcode must be original scan text of 1..1000 characters")
         if type(self.occurred_at) is not int or not 0 <= self.occurred_at <= 2**63 - 1:
             raise ValueError("occurred_at must be nonnegative int64 milliseconds")
 

@@ -17,7 +17,7 @@ from src.app.wms_diagnostics.observation import WmsCallObservation, observed_con
 
 MATERIAL_DECIDE_OPERATION = "outbound.material.decide@v1"
 Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
-ScanText = Annotated[str, StringConstraints(min_length=1, max_length=256)]
+ScanText = Annotated[str, StringConstraints(min_length=1, max_length=1000)]
 
 
 class PickingBinCell(PlanRackFace):
@@ -42,7 +42,7 @@ class PickingSourceData(StrictWireModel):
 
 
 class MaterialDecideData(PickingSourceData):
-    barcode: Annotated[str, StringConstraints(min_length=1, max_length=1000)]
+    barcode: ScanText
     scanned_at: NonnegativeMilliseconds
 
 

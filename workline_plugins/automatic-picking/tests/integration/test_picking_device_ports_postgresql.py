@@ -1,4 +1,4 @@
-"""真实统一设备入口＋正常插件装配；供应商参数/扫码关联/PkgID 显式离线输入。"""
+"""真实统一设备入口＋正常插件装配；供应商参数/扫码关联 显式离线输入。"""
 
 import asyncio
 from dataclasses import asdict
@@ -53,7 +53,7 @@ async def assembled(p):
     )
     p.creator = ReliableRackTransportCreator(p.service, inbound_window=window)
     await application(p)
-    p.params_available, p.pkg_id, p.associations, p.observed = True, None, {}, None
+    p.params_available, p.associations, p.observed = True, {}, None
 
     class Parameters:
         async def source_in_session(self, db, **kwargs):
@@ -84,15 +84,6 @@ async def assembled(p):
         async def read_in_session(self, db, *, evidence_id):
             return p.associations.get(evidence_id)
 
-    class PkgIds:
-        async def read_in_session(self, db, **kwargs):
-            assert kwargs == {
-                "workline_id": p.line.id,
-                "material_execution_id": p.material_id,
-                "scan_evidence_id": p.scan_id,
-            }
-            return p.pkg_id
-
     mapper = PickingArmCommandMapper(Parameters(), clock=lambda: p.now)
     p.picking_kwargs.update(
         physical_reader=PickingSourceReader(),
@@ -100,7 +91,7 @@ async def assembled(p):
         scan_reader=PickingMaterialScanReader(SourceCommands()),
         target_reader=PickingTargetReader(),
         target_request_factory=mapper.put_request,
-        put_reader=PickingPutReader(PkgIds()),
+        put_reader=PickingPutReader(),
         departure_reader=PickingDepartureReader(),
     )
     async with p.sessions.begin() as db:
@@ -176,7 +167,7 @@ async def device_result(p, code, *, quantity=1):
     return receipt, report
 
 
-async def material_scan(p, code):
+async def material_scan(p, code, *, barcode=BARCODE):
     async with p.sessions.begin() as db:
         command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == code))
         if command.status == "PENDING":
@@ -187,7 +178,7 @@ async def material_scan(p, code):
             device_code="OFFLINE-SCAN2",
             event_type="SCAN_COMPLETED",
             timestamp=457,
-            data={"location": "EXPLICIT-PLATFORM", "barcode": BARCODE},
+            data={"location": "EXPLICIT-PLATFORM", "barcode": barcode},
         )
     )
     assert await ingress.process_one()
@@ -215,6 +206,7 @@ async def accepted(p, plugin, *, replace_target=False):
 
 
 async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared):
+    raw = " 原文\n" + "条" * 996
     p = prepared
     plugin = await assembled(p)
     p.params_available = False
@@ -229,7 +221,7 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
         source_code = (await current_pickup(p, db)).command_code
         source = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
         assert source.task_type == "PICK_AND_PUT" and source.device_code == "OFFLINE-SOURCE"
-    await material_scan(p, source_code)
+    await material_scan(p, source_code, barcode=raw)
     await accepted(p, plugin)
     await arrived(p)
     async with p.sessions.begin() as db:
@@ -275,12 +267,10 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
     p.put_evidence_id = (await device_result(p, put_code))[0].evidence_id
     await processor(p, plugin).process_batch()
     async with p.sessions() as db:
-        assert (await current_pickup(p, db)).movement_confirmation_id is None
-        assert (await db.get(InboundEvidence, p.put_evidence_id)).published_at is None
-    p.pkg_id = "EXPLICIT-OFFLINE-PKG"
-    p.now += timedelta(seconds=2)
+        confirmation = await db.get(WmsConfirmation, (await current_pickup(p, db)).movement_confirmation_id)
+        assert confirmation.request_payload["data"]["barcode"] == raw
+        assert (await db.get(InboundEvidence, p.put_evidence_id)).published_at is not None
     plugin = build_picking_plugin(**p.picking_kwargs)
-    await processor(p, plugin).process_batch()
     await report_result(p, "RECORDED")
     await processor(p, plugin).process_batch()
     async with p.sessions() as db:
@@ -382,9 +372,34 @@ async def test_real_ports_late_replace_accept_uses_existing_target_obligation(in
     original_pickup, original_material = p.pickup_id, p.material_id
     async with p.sessions.begin() as db:
         source_code = (await current_pickup(p, db)).command_code
-        (
-            await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
-        ).task_type = "PICK_AND_PUT"
+        command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
+        command.task_type = "PICK_AND_PUT"
+        command.params = {
+            **command.params,
+            "target": {"location_type": "SCAN_PLATFORM", "location_id": "EXPLICIT-PLATFORM"},
+        }
+        # 原 6C fixture 在此改用真实读口，保留同一盘扫码时间、原文和绑定身份。
+        scan = await db.get(InboundEvidence, p.scan_id)
+        value = scan.normalized_payload["fixture"]
+        event = EcsDeviceEvent(
+            device_code="OFFLINE-SCAN2",
+            event_type="SCAN_COMPLETED",
+            timestamp=value["scanned_at"],
+            data={"barcode": value["barcode"], "location": "EXPLICIT-PLATFORM"},
+            source_event_id=scan.source_identity,
+            contract_key="third_party_integration",
+            contract_version="1.1",
+            is_debug=False,
+        )
+        scan.normalized_payload = event.model_dump(mode="json", exclude_none=True)
+        scan.device_code, scan.contract_key, scan.contract_version = (
+            event.device_code,
+            event.contract_key,
+            event.contract_version,
+        )
+        scan.payload_digest = normalize_payload(
+            scan.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE
+        )[1]
     await device_result(p, source_code)
     await processor(p, plugin).process_batch()
     await tick(p, plugin)
@@ -395,7 +410,6 @@ async def test_real_ports_late_replace_accept_uses_existing_target_obligation(in
         await tick(p, plugin)
         async with p.sessions() as db:
             put_code = (await current_pickup(p, db)).put_command_code
-        p.pkg_id = "EXPLICIT-OLD-PKG"
         await device_result(p, put_code)
         await processor(p, plugin).process_batch()
         await report_result(p)

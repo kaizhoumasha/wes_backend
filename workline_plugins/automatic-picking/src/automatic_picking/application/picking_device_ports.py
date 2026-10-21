@@ -1,4 +1,4 @@
-"""正常机械臂的统一合同读口；未冻结的位置编码、扫码和 PkgID 由必填端口显式提供。"""
+"""正常机械臂的统一合同读口；未冻结的位置编码、扫码关联由必填端口显式提供。"""
 
 from datetime import timedelta
 
@@ -351,8 +351,7 @@ class PickingDepartureReader(PickingTargetReader):
 
 
 class PickingPutReader:
-    def __init__(self, pkg_ids):
-        self.pkg_ids = pkg_ids
+    def __init__(self):
         self.materials = MaterialDecideResultReader()
 
     async def read_in_session(self, db, *, evidence_id):
@@ -402,14 +401,6 @@ class PickingPutReader:
             or type(snapshot.outcome.result) is not PickingMaterialAccept
         ):
             raise ValueError("PUT facts require this material's published ACCEPT")
-        pkg_id = await self.pkg_ids.read_in_session(
-            db,
-            workline_id=work.workline_id,
-            material_execution_id=execution.id,
-            scan_evidence_id=execution.admission_evidence_id,
-        )
-        if pkg_id is None:
-            return None
         return MatchedPutResult(
             evidence_id,
             work.workline_id,
@@ -418,6 +409,5 @@ class PickingPutReader:
             command.command_code,
             command.device_code,
             snapshot.outcome.result.target_locator,
-            pkg_id,
             finished[1].finish_time,
         )

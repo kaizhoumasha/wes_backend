@@ -1386,7 +1386,7 @@ async def test_outbound_material_typed_decisions_persist_with_only_execution_own
                 wms_operations.outbound_material_movement_report(
                     **common,
                     operation_id=new_uuid7(),
-                    pkg_id="PKG-1",
+                    barcode="raw,原文",
                     to_locator=PickingRackSlot("RACK-2", "B", "S-2"),
                     occurred_at=124,
                 ),

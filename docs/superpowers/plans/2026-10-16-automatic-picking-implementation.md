@@ -1,5 +1,7 @@
 # 自动拣料插件实施计划
 
+> 2026-10-22 当前基线：出库物料统一使用 `barcode` 原文（非空、最多1000字符），decide、报告与关闭沿本盘同一扫码 Evidence；G5 独立 PkgID 来源门禁与读取端口已撤销，不做双字段兼容。下文既往实施/验收记录中的 PkgID、缺编号延期和外部编号 fixture 仅保留为历史说明，已由本轮扫码原文规则承接，不是当前待办或可复用的新合同证据。扫码精确关联、设备映射及 CK04 各自门禁不变，C1/C2 不扩大。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 使用 `superpowers:executing-plans` 按切片执行，使用复选框记录进度。推荐主 Agent 顺序实施；本计划不授权自动派生 Subagent、Commit、Push、Merge 或 Deploy。
 
 **Goal:** 先完整对齐已确认的 WMS DTO、SDK、typed converter、OpenAPI 与测试，再交付独立 `automatic-picking` 插件的正常业务闭环及其持久恢复。
@@ -47,7 +49,7 @@
 | G2 扫码关联 | O1/O2 的事件设备及来源 Command 精确关联、O6 business_key 必要性未定 | 限制任务 6 的生产扫码/命令接线；须有获批附录和可匹配的结果、事件样例，禁止用最近命令或平台容量推断 |
 | G3 Bin 与目标设备映射 | O9/O10/O11/O15/O16 涉及时限、层列/面、cell_index、必填位置字段及设备值域 | 限制任务 6、7 对应命令生成；须冻结映射、成功后置条件和合法边界。不能用编码 cell_id 充当 bin_cell_location |
 | G4 DirectPick 映射 | O12/O13/O17 的退料架位置类型、slot 到设备字段及测量参数来源未定 | 限制任务 10 的直接取料设备路径；若需扩展 plan_delta，先批准具体 wire，再同步全部消费者，不反推 bin_* 参数 |
-| G5 PkgID | decide 只传原始 barcode，已确认目标响应未提供 PkgID，而 movement_report 仍必填 | 任务 7 的正常生产闭环须先确认已有权威来源或修订所属合同；不拆条码、不伪造 ID、不私加响应字段，也不先做不可逆取盘再补猜报告身份 |
+| G5 barcode 统一（已收敛） | decide、movement_report 均为本盘扫码原文，1–1000字符 | 删除独立编号来源与读取端口；报告和关闭校验本盘原扫码及已发布决定，不再阻塞真实接入 |
 | G6 首批期限 | 业务超期规则已确认，插件配置入口、双方期限值及合法范围待落定 | 任务 5 建立插件唯一配置入口并冻结每次等待；不复用 30 秒技术派发窗口，未明确值不猜默认值 |
 | G7 异常分支 | REJECT、空取和 NG 协议保留，设备失败/空取语义及恢复动作仍有未决 | 正常切片只可靠留证并保留依赖；这些分支另做实施切片，不能因此删 DTO 或宣布整线业务验收 |
 
@@ -81,7 +83,7 @@
 | 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
 | 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；6C 补齐明确关联输入后的单盘应用；真实事实 reader、设备映射与生产扫码汇合仍未启用，不能以持久适配或离线接线代表生产取盘闭环 |
 | 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
-| 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 除来源映射/关联外，还须闭合 G3 的目标映射及 G5 权威 PkgID 来源；不能先取盘再补猜报告身份 |
+| 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 来源映射/关联及 G3 目标映射仍须闭合；G5 已统一为本盘 barcode 原文，不再等待独立编号 |
 
 G1 的 WMS 字段类型和已确认枚举不重新列为阻塞：`cell_index=1..7`、`bin_type=2/3/6`、层列/层数整型、厚度/直径浮点及原始 barcode 长度已接通；这些不等于设备字段映射已经验收。G4 只限制任务 10 的直接取料设备路径；G7 只限制对应异常分支，不扩大成投料、Work 或纯规则测试的停工条件。
 
@@ -948,12 +950,12 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 - [ ] RED：普通目标、ROTATE、REPLACE 顺序、目标未知、PUT 回调早于 ACK，以及 M1 报告先确认但 M2 尚未创建时重启。
 - [ ] 按被冻结目标和当前权威位置准备货架；REPLACE 执行 departure 决定→旧架离场→新架进场→PUT，已确定物料资格不重问。
-- [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；PkgID 只来自 G5 已批准来源，不从本地 trace 或 barcode 推导。
+- [ ] 匹配成功 PUT 后保存位置并同事务形成报告义务；沿本盘原始 barcode 核对已发布决定，独立物料编号门禁已撤销。
 - [ ] 仅报告 RECORDED/DUPLICATE 且授权交接完成后闭合 M1；M2 不必已创建，当前 Work 继续拥有授权；RACK_SLOT 无 Work 交接条件。
 - [ ] GREEN：可靠取出且获后继授权即可与 M1 PUT/报告并行下发 M2；未知栈顶不越过，无平台锁、释放事件或跨臂统一等待。
 
 **恢复 owner：**目标准备 Transport、PUT Command、报告 Confirmation 各由原基础对象恢复；插件 driver 根据其 typed 事实推进当前盘。
-**验收：**本盘物理完成、WMS 记录、后继授权三个条件分别可追溯；真实接口闭环等待 G5，测试中的权威 PkgID 输入不构成合同修订。
+**验收：**本盘物理完成、WMS 记录、后继授权三个条件分别可追溯；G5 已由 barcode 统一收敛；真实接口仍需 G2/G3 及目标 ROTATE 的 CK04 合同。
 
 ### 任务 8：正常流出、回程 FIFO 与回架分配门禁
 
@@ -1008,7 +1010,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 **前轮料箱到位后正常业务装配证据（基线 `a4d25e65`，未提交；REPLACE current/schema 本轮补齐见下）：**搬运沿已验证 manual-picking 能力与本分支既有装配复用，不再把每个接缝作为独立实施片。`P/application/transport_composition.py::build_picking_plugin` 在显式提供 physical/scan/target/put 读口、源/目标请求映射与货架准备参数后，统一关联 source、material、target、placement 和原 batch/scan。复制装配对象，保留原 transport plugin 不变；deployment 仍使用搬运装配，未启用本生产入口。该轮无新增 schema、SDK/WMS DTO、公共状态、队列或通用模型。
 
-单盘扫码沿已有 business evidence consumer 精确绑定原 Pickup/来源 Command；同一 Evidence 交给 material Fact 创建首个可靠请求后才发布，不新增事件 registry。Work READY、WAIT 到期、后继授权消费与 LIFO、下一盘并行复用 6A–6D。REPLACE 的 ReadyTarget 接回共用 7A；普通/ROTATE/REPLACE 的精确成功 PUT 均接回 7B/7C，保留本盘可靠取出、原 Command 优先、权威 PkgID、报告位置/关闭原子性，不重交授权。真实设备映射未决时由读口返回未知，不构造默认值。
+单盘扫码沿已有 business evidence consumer 精确绑定原 Pickup/来源 Command；同一 Evidence 交给 material Fact 创建首个可靠请求后才发布，不新增事件 registry。Work READY、WAIT 到期、后继授权消费与 LIFO、下一盘并行复用 6A–6D。REPLACE 的 ReadyTarget 接回共用 7A；普通/ROTATE/REPLACE 的精确成功 PUT 均接回 7B/7C，保留本盘可靠取出、原 Command 优先、本盘扫码原文、报告位置/关闭原子性，不重交授权。真实设备映射未决时由读口返回未知，不构造默认值。
 
 正常流出补齐原 Work 当前明确无后继 ACCEPT、无待消费授权且本轮所有 Pickup/MaterialExecution 义务已关闭的准入；当前事实归 Work，未绑定物料或未关闭的 Pickup 继续阻止本箱流出。沿既有 EXIT_PENDING 和点2 Command，与 phase/关联同事务创建，不新增业务状态；原 Command 恢复先于重做准入。首次精确 SCAN3 复用已验证回程交接，不以 ACK 或任务状态替代到位，已有回程 FIFO/回架/drain 矩阵不重复。
 
@@ -1016,7 +1018,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 主要新增验收 owner 为 `T/integration/test_normal_picking_postgresql.py`，一次覆盖真实插件显式装配中的一/两盘循环、扫码持久交接、WAIT、下一来源与当前 PUT/report 并行、普通/ROTATE/REPLACE 目标分支、报告关闭/正常点2流出/SCAN3、原身份重建、事务中断、缺 PkgID 延期和清理已闭合 Pickup 后继续。已有 6A–7C、F01、窗口与 9H 证据复用，只刷新受影响直接消费者；新增 REPLACE 正例通过后退役原7B/7C“REPLACE尚未接入”的阶段性负例，保留缺取出、未就绪和未装配准备流程的负例。故障注入为离线事务中断，不宣称真实进程失效或现场机械臂验收。
 
-真实接口逐项门禁与已确认 WMS 字段对照集中在[机械臂附录 §10](../../integration/device-annex-automatic-picking-arms.md)。O1/O2、O6/O9、O10/O11/O15/O16、PkgID 仅限制其真实接口；目标架 CK04 与现行 typed CTU02 的差异单列为目标 ROTATE 真实派发合同门禁；不扩散到普通目标/F01换架、现有可靠机制或其他已确认路径。C1/C2、直接取料及首批期限不扩大为本轮到位后业务阻塞。REPLACE 首次 departure/WAIT 的原阶段边界由下述完整接续实施取代；普通目标、ROTATE 及既有搬运/报告证据继续复用。
+真实接口逐项门禁与已确认 WMS 字段对照集中在[机械臂附录 §10](../../integration/device-annex-automatic-picking-arms.md)。O1/O2、O6/O9、O10/O11/O15/O16 仅限制其真实接口，独立物料编号门禁已撤销；目标架 CK04 与现行 typed CTU02 的差异单列为目标 ROTATE 真实派发合同门禁；不扩散到普通目标/F01换架、现有可靠机制或其他已确认路径。C1/C2、直接取料及首批期限不扩大为本轮到位后业务阻塞。REPLACE 首次 departure/WAIT 的原阶段边界由下述完整接续实施取代；普通目标、ROTATE 及既有搬运/报告证据继续复用。
 
 最终验收：统一装配 PostgreSQL 5 passed、受影响直接消费者 PostgreSQL 15 passed、插件 FAST 252 passed、测试拓扑/所有权 14 passed，均 0 skipped；11 个 Python 文件 Ruff/格式及 `git diff --check` 通过，HEAVY selector 为 NONE。独立完整只读 review 核查固定 13 文件指纹、直接/间接消费者、原身份恢复、当前事实/历史清理与测试承接，无 P1/P2/P3 finding；仅补本文及附录的边界说明后，可执行快照不变。记录位于 `reports/normal-loop-{main-final,direct-final,fast-final,ownership}.xml` 与 `reports/normal-loop-verification.json`。状态为 `IMPLEMENTED - FOCUSED VERIFIED`，不表示机械臂现场验收、完整 REPLACE 入口或任务 11 全部完成。不提交、不部署、不发 WMS 请求、不启用真实派发；未改 Celery/Beat 或生产注册，不重复 9H/共享机制的真实 worker 矩阵，也不执行仅提交所需的完整 QUALITY。
 
@@ -1032,20 +1034,20 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 主要测试 owner 为 `T/integration/test_picking_device_ports_postgresql.py`，只补真实 DeviceEvidenceService/FactProcessor 与新读口的业务接线；普通目标完整离线链、显式扫码绑定的回滚/身份拒绝、来源发布门禁、严格单盘成功、未知或错误目标、完整参数/PkgID 缺失、并发/重建/重放及 REPLACE 原轮次发现。`T/test_picking_device_ports.py` 拥有公共角色/合同/时限映射。独立 review 复现并修正真实读口下第二盘晚于旧架 ACK 加入 REPLACE 的接线缺口：现有换架 owner 从精确相同目标架/架面的未闭合义务恢复唯一原 round/current；歧义报错保留身份，无论单盘自身是否已关联 incoming，都沿原 departure＋目标架的唯一 correlation 检查实际 Binding，已释放的新架窗口不冒领，原进场历史不是恢复输入。目标已权威就绪时允许读取现有 ReadyTarget，不创建额外搬运。新 owner 补 ACK 后、新架到位并关闭/清理原 Pickup 后两种加入时序，以及 peer 未保存 incoming 引用时仍排除已释放轮次。既有 6A–7C、REPLACE 完整链和历史清理证据复用，只刷新 async 调用点、摘要校验及该修复影响的直接回归，不复制 9H、租约或 worker/Beat 机制矩阵。
 
-实际接入仍需机械臂附录 §10 所列设备位置编码与数值格式、精确扫码设备/来源命令字段、PkgID 权威来源，以及仅影响目标 ROTATE 的 CK04/CTU02 合同对齐。C1/C2 不扩大阻塞正常链；O6/O9 的 business_key/正式时限仍保留确认项。隔离测试输入不是设备协议冻结或现场验收，本轮不接生产装配/真实派发，不发送 WMS 请求。
+实际接入仍需机械臂附录 §10 所列设备位置编码与数值格式、精确扫码设备/来源命令字段，以及仅影响目标 ROTATE 的 CK04/CTU02 合同对齐。C1/C2 不扩大阻塞正常链；O6/O9 的 business_key/正式时限仍保留确认项。隔离测试输入不是设备协议冻结或现场验收，本轮不接生产装配/真实派发，不发送 WMS 请求。
 
 本轮修复后的最终业务 PostgreSQL 验收 **58 passed、0 skipped，3 项未受本轮代码变更影响的既有迁移用例按名称 deselected**（本轮无 schema 变更）；插件 FAST **255 passed**，拓扑/所有权 **14 passed**，18 个 Python 文件 Ruff/格式、文档链接与 diff 检查通过，HEAVY selector 为 NONE。独立完整 review 及修复闭环确认 P1/P2 均关闭，无新增 finding；最终业务 XML 为 `reports/arm-ports-reviewed-final.xml`，审查与环境指纹见 `reports/arm-ports-{review-result,verification}.json`。扩展回归的旧 `test_plugin_source_models_match_migrated_schema` 发现 `target_rotation_transport_task_id` 唯一约束命名差异，使用 HEAD 原版测试副本复现同一失败；对应模型/迁移未改，作为既有基线失败单列，不把扩展回归称为全部通过，不在本轮扩大 schema 修订。早期加载修复前代码的结果仅用于未失效消费者证据，不能替代本次最终业务结果。状态止于离线实施与聚焦验证，不提交、不部署、不启用生产装配/派发、不发送 WMS 请求。
 
 **已确认扫码适配续接（基线 `122a6f48`，本轮未提交）：**新增 `PickingMaterialScanReader`，直接读取已接收、已应用的统一 `SCAN_COMPLETED` 原文条码、平台及时间，核对 Evidence 元数据/摘要、原来源 Command/Pickup/Work 和冻结目标平台。精确来源关联必须由显式端口提供；绑定提交后沿原 Evidence 恢复，不依赖端口再次提供关联。来源尚未下发、缺关联或工作线暂停时，现有 FactProcessor 以 DEFERRED 留存重扫，避免已知扫码在取得关联前落入忽略分支；同事务绑定/首次请求仍沿原 material owner，不增加模型、状态或 timer。
 
-隔离装配改用真实扫码读口，复用普通/REPLACE 正常链证据。新增 PostgreSQL 只验证缺关联、暂停、并发绑定及移除外部关联后重建防重；FAST 验证条码原文和长度、平台/身份错误及来源未下发。主要 owner 分别为 `T/integration/test_picking_device_ports_postgresql.py` 与 `T/test_picking_device_ports.py`；`test_normal_picking_postgresql.py` 为既有语义装配的直接回归。设备最终扫码身份与来源关联 wire 字段（O1/O2）、位置参数编码、权威 PkgID、CK04/CTU02 仍按各自依赖路径阻塞真实接入；不解析未冻结字段、不添加生产默认，不以离线显式输入解除门禁。C1/C2 不扩大阻塞正常链。本次不提交、不部署、不发外部请求、不启用生产装配或真实派发。
+隔离装配改用真实扫码读口，复用普通/REPLACE 正常链证据。新增 PostgreSQL 只验证缺关联、暂停、并发绑定及移除外部关联后重建防重；FAST 验证条码原文和长度、平台/身份错误及来源未下发。主要 owner 分别为 `T/integration/test_picking_device_ports_postgresql.py` 与 `T/test_picking_device_ports.py`；`test_normal_picking_postgresql.py` 为既有语义装配的直接回归。设备最终扫码身份与来源关联 wire 字段（O1/O2）、位置参数编码、CK04/CTU02 仍按各自依赖路径阻塞真实接入；不解析未冻结字段、不添加生产默认，不以离线显式输入解除门禁。C1/C2 不扩大阻塞正常链。本次不提交、不部署、不发外部请求、不启用生产装配或真实派发。
 
 本次验证：插件 FAST **267 passed**；真实扫码读口及接线 PostgreSQL **10 passed**，既有正常业务装配 PostgreSQL **6 passed**；拓扑/所有权 **14 passed**；5 个 Python 文件 Ruff/格式、diff 检查通过，HEAVY selector 为 NONE。快照和环境索引见 `reports/known-arm-verification.json`，测试记录见 `reports/known-arm-{pg-dev,fast-final,normal-final,ownership}.log`。这些是隔离装配及事务证据，不代表真实设备、网络联调或生产装配通过。旧 schema 约束命名失败继续引用上段基线记录，本次无模型或迁移变化，不扩修、不重复该矩阵。
 
 **依赖：**目标分支所需任务与未决项闭合。**新增：**`T/integration/test_worker_recovery.py`、`T/e2e/test_normal_picking.py`；核心有状态测试只补其新基础机制的主要 owner。
 **范围：**全量需求对照、固定最终 diff/环境指纹，不扩大到未获批 NG/空取或供应商私有协议。
 
-**已覆盖与剩余差额：**搬运、正常投料到 Work 和 Work WAIT 宿主扫描已提交至 `432a0490`，提交、主要测试/恢复 owner、证据计数及剩余门禁统一见[当前证据收口](#task11-transport-work-evidence)；9H 指定真实进程检查点继续引用原索引。manual-picking 搬运现场基线按用户确认复用，后续聚焦料箱到达工作位后的自动化业务，不机械追加同义运输/worker/Beat/回调矩阵。以下仍是任务 11 最终范围，需在相应业务和输入闭合后验证，不因未勾选重复已有有效证据；C1/C2 仅限制对应真实容量分支，机械臂映射/扫码/PkgID/首批期限各限制依赖路径。
+**已覆盖与剩余差额：**搬运、正常投料到 Work 和 Work WAIT 宿主扫描已提交至 `432a0490`，提交、主要测试/恢复 owner、证据计数及剩余门禁统一见[当前证据收口](#task11-transport-work-evidence)；9H 指定真实进程检查点继续引用原索引。manual-picking 搬运现场基线按用户确认复用，后续聚焦料箱到达工作位后的自动化业务，不机械追加同义运输/worker/Beat/回调矩阵。以下仍是任务 11 最终范围，需在相应业务和输入闭合后验证，不因未勾选重复已有有效证据；C1/C2 仅限制对应真实容量分支，机械臂映射/扫码/首批期限各限制依赖路径。
 
 - [ ] 独占临时 PostgreSQL，逐片迁移按最终链在干净逻辑库完成规定 base→head；原模型、Alembic 注册/过滤和约束一致。
 - [ ] 启动真实 Redis/worker/Beat 验证既有队列、序列化、提交后唤醒和周期扫描；逐个等待点验证重启/丢通知/租约回收，不以 skipped 计通过。
@@ -1097,3 +1099,11 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 
 本计划推荐主 Agent 在同一执行现场顺序推进，避免 SDK、converter、共享接线和插件 driver 的交叉修改。
 当前搬运与 Work 入口验收已提交至 `432a0490`；本次仅收口其证据与剩余门禁，见[任务 11 当前索引](#task11-transport-work-evidence)。搬运沿用已确认人工线现场基线，后续重点为料箱到工作位后的自动化业务；不因任务 11 总清单未完成重复加测。C1/C2 继续待补证，本次不新增代码或测试、不提交、不部署、不启用生产装配或真实派发，不接机械臂、完成确认或已接纳后 FAILED 重决策，不做 bin-line-common 抽取。
+
+### 本轮 barcode 统一实施（基线 bf7f4111，未提交）
+
+主合同、出库 DTO、SDK、typed converter、OpenAPI 与插件报告/关闭链一次性切换为 barcode。报告数据拒绝旧字段，不设别名或兼容路径；长度与 decide 一致为1–1000字符。PickingPutReader 仅解释确定的物理成功，不再读取独立编号；placement 复用现有 scan_reader，从本盘 admission Evidence 读取原文并核对原 Pickup/Command、decide 的 barcode 与扫码时间，报告确认关闭再核对冻结报告原文。当前执行与 Work 授权仍用原本地身份，条码不成为全局唯一键。
+
+主要验收 owner：核心 movement_report 合同（原文/长度/拒绝旧字段/typed 往返与 OpenAPI）、SDK 出库合同；插件 placement/close 与正常装配 PostgreSQL（同盘原文、错误扫码身份/冻结报告、并发/崩溃/重放/历史清理）。旧缺 PkgID 负例由原扫码/决定不一致拒绝及无需独立编号的正例承接，不复制搬运、9H 或共享恢复矩阵。既有已冻结义务不改写请求正文，不新增迁移、状态、timer 或生产注册。入库/上架的独立合同不在本轮替换范围。
+
+本轮聚焦验证：插件/SDK FAST **308 passed**，插件报告、关闭及正常装配 PostgreSQL **103 passed、0 skipped**（普通/ROTATE/REPLACE、1000字符原文、不同执行同 barcode、并发/崩溃/重放及历史清理恢复）；完整 QUALITY 通过，核心 FAST **4323 passed、5 skipped**，拓扑/所有权14通过。独立评审与 selector 所选19文件核心 HEAVY 的最终结果、快照和环境统一记录在 `reports/barcode-verification.json`；不把测试本机 Mock HTTP 或早期环境/fixture诊断结果当作真实 WMS/ECS 联调通过。状态止于离线实施与验证，未提交、未部署、未启用生产装配或真实派发。

@@ -1,4 +1,4 @@
-"""确定放置事实的纯业务决定；不解释设备报文或 PkgID 来源。"""
+"""确定放置事实的纯业务决定；不解释设备报文或 扫码原文 来源。"""
 
 from dataclasses import dataclass
 
@@ -20,7 +20,7 @@ class MaterialPutFact(FactReference):
     task_id: str
     source: PickingBinCell
     target: PickingTargetRackSlot
-    pkg_id: str
+    barcode: str
     occurred_at: int
 
 
@@ -46,7 +46,7 @@ def material_put(fact: MaterialPutFact) -> tuple[MaterialMovementReportIntent, .
             operation_id=fact.material_execution_id,
             task_id=fact.task_id,
             source_locator=fact.source,
-            pkg_id=fact.pkg_id,
+            barcode=fact.barcode,
             to_locator=PickingRackSlot(fact.target.rack_id, fact.target.rack_face, fact.target.slot_id),
             occurred_at=fact.occurred_at,
             material_execution_id=fact.material_execution_id,

@@ -29,7 +29,7 @@ def request_data(domain, source="RACK_SLOT"):
         data["observed_at"] = 123
     else:
         data.update(
-            PkgID="P",
+            barcode="P",
             to_locator={"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "SLOT-2"},
             occurred_at=123,
         )
@@ -83,7 +83,7 @@ def test_typed_request_preserves_member_revision_in_frozen_payload(domain, _pars
     elif domain == "source_empty":
         values["observed_at"] = 123
     else:
-        values.update(pkg_id="P", to_locator=sdk.PickingRackSlot("TARGET-1", "B", "SLOT-2"), occurred_at=123)
+        values.update(barcode="P", to_locator=sdk.PickingRackSlot("TARGET-1", "B", "SLOT-2"), occurred_at=123)
     encode = import_module(f"src.app.wms_adapter.outbound_picking.{domain}_typed").encode_request
     intent = getattr(wms_operations, factory_name)(**values)
     payload = encode(intent, timestamp=0)

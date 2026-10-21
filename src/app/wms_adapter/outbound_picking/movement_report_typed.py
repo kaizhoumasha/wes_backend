@@ -19,7 +19,7 @@ def decode_request(payload: object) -> sdk.MaterialMovementReportIntent:
             if source.type == "BIN_CELL"
             else sdk.PickingRackSlot(source.rack_id, source.rack_face, source.slot_id)
         ),
-        pkg_id=request.data.PkgID,
+        barcode=request.data.barcode,
         to_locator=(
             sdk.PickingRackSlot(target.rack_id, target.rack_face, target.slot_id)
             if target.type == "RACK_SLOT"
@@ -45,7 +45,7 @@ def encode_request(intent: sdk.MaterialMovementReportIntent, *, timestamp: int) 
                     "type": "RACK_SLOT" if type(intent.source_locator) is sdk.PickingRackSlot else "BIN_CELL",
                     **asdict(intent.source_locator),
                 },
-                "PkgID": intent.pkg_id,
+                "barcode": intent.barcode,
                 "to_locator": {
                     "type": "RACK_SLOT" if type(intent.to_locator) is sdk.PickingRackSlot else "NG_ZONE",
                     **asdict(intent.to_locator),

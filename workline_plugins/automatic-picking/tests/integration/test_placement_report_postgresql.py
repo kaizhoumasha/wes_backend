@@ -1,4 +1,4 @@
-"""7B：成功 PUT 和权威 PkgID 仅由离线输入给定，无设备/WMS 派发。"""
+"""7B：成功 PUT 明确给定，报告沿本盘原扫码，无设备/WMS 派发。"""
 
 import asyncio
 from dataclasses import asdict
@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from automatic_picking.application.plugin import build_plugin
 from sqlalchemy import func, select
-from test_material_flow_postgresql import FixtureScanReader
+from test_material_flow_postgresql import BARCODE, FixtureScanReader
 from test_pickup_identity_postgresql import TARGET, components
 from test_rotated_target_put_postgresql import combined, published_through_combined, rotating, target
 from test_rotated_target_put_postgresql import removed as rotated_source_removed
@@ -24,11 +24,10 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-PKG = "权威-PKG-7B"
 
 
 class FixturePutReader:
-    """只解释 fixture；生产未提供该读口，不定义设备报文或 PkgID 来源。"""
+    """只解释 fixture；生产未提供该读口，不定义设备报文。"""
 
     def __init__(self, p):
         self.p = p
@@ -40,8 +39,6 @@ class FixturePutReader:
             return None
         evidence = await db.get(InboundEvidence, evidence_id)
         value = evidence.normalized_payload["fixture"]
-        if value["pkg_id"] is None:
-            return None
         return MatchedPutResult(**{**value, "target": PickingTargetRackSlot(**value["target"])})
 
 
@@ -58,7 +55,9 @@ def application(p, *, repository=None):
         MaterialExecutionService(),
         scheduler=MaterialDecideScheduler(),
         reader=MaterialDecideResultReader(),
-        put_flow=AutomaticPickingPlacementFlow(repo, MaterialDecideResultReader(), FixturePutReader(p)),
+        put_flow=AutomaticPickingPlacementFlow(
+            repo, MaterialDecideResultReader(), FixturePutReader(p), scan_reader=FixtureScanReader()
+        ),
     )
 
 
@@ -87,7 +86,7 @@ async def placed(accepted):
 
 
 async def successful_put(p):
-    """沿原 PUT 注入明确成功/PkgID；只构造既有 7B 离线输入。"""
+    """沿原 PUT 注入明确成功；只构造既有 7B 离线输入。"""
     p.identity_available = True
     async with p.sessions.begin() as db:
         removed = await db.scalar(
@@ -107,7 +106,6 @@ async def successful_put(p):
                 "command_code": command.command_code,
                 "device_code": command.device_code,
                 "target": asdict(TARGET),
-                "pkg_id": PKG,
                 "occurred_at": 987,
             }
         }
@@ -163,7 +161,7 @@ async def test_success_before_ack_atomically_records_position_and_report_without
                 "bin_code": "A123456789",
                 "cell_id": "CELL-7",
             },
-            "PkgID": PKG,
+            "barcode": BARCODE,
             "to_locator": {"type": "RACK_SLOT", "rack_id": "TARGET", "rack_face": "A", "slot_id": "S1"},
             "occurred_at": 987,
         }
@@ -212,7 +210,7 @@ async def assert_rotated_report(p):
                 "bin_code": "A123456789",
                 "cell_id": "CELL-7",
             },
-            "PkgID": PKG,
+            "barcode": BARCODE,
             "to_locator": {"type": "RACK_SLOT", "rack_id": "TARGET", "rack_face": "A", "slot_id": "S1"},
             "occurred_at": 987,
         }
@@ -294,15 +292,8 @@ async def test_rotated_wrong_success_identity_never_reports(rotated_placed, chan
     assert await counts(p) == (None, None, 1, None)
 
 
-async def test_rotated_missing_pkg_defers_original_evidence_without_report(rotated_placed):
+async def test_rotated_report_uses_original_scan_without_independent_identity(rotated_placed):
     p = rotated_placed
-    await change_fixture(p, pkg_id=None)
-    assert await processor(p).process_batch() == 1
-    assert await counts(p) == (None, None, 1, None)
-    async with p.sessions() as db:
-        fact = await db.get(InboundEvidence, p.put_evidence_id)
-        assert fact.decision_digest is None and fact.decision_next_attempt_at is not None
-    await change_fixture(p, pkg_id=PKG)
     assert await processor(p).process_batch() == 1
     await assert_rotated_report(p)
 
@@ -381,18 +372,12 @@ async def test_non_success_command_never_reports_a_position(placed, state):
         assert evidence.decision_digest is None and evidence.decision_next_attempt_at is not None
 
 
-@pytest.mark.parametrize("missing", ["reader_fact", "pkg_id"])
-async def test_missing_authority_is_durably_deferred_then_same_evidence_recovers(placed, missing):
+async def test_missing_physical_fact_is_durably_deferred_then_same_evidence_recovers(placed):
     p = placed
-    if missing == "reader_fact":
-        p.identity_available = False
-    else:
-        await change_fixture(p, pkg_id=None)
+    p.identity_available = False
     assert await processor(p).process_batch() == 1
     assert await counts(p) == (None, None, 1, None)
     p.identity_available = True
-    if missing == "pkg_id":
-        await change_fixture(p, pkg_id=PKG)
     assert await processor(p).process_batch() == 1
     assert (await counts(p))[0] == p.put_evidence_id
 
@@ -407,9 +392,6 @@ async def test_missing_authority_is_durably_deferred_then_same_evidence_recovers
         {"command_code": "FOREIGN-COMMAND"},
         {"device_code": "FOREIGN-DEVICE"},
         {"target": {"rack_id": "OTHER", "rack_face": "A", "slot_id": "S1", "rack_layer": 1, "rack_column": 1}},
-        {"pkg_id": ""},
-        {"pkg_id": "X" * 257},
-        {"pkg_id": 123},
         {"occurred_at": -1},
         {"occurred_at": True},
     ],
@@ -459,16 +441,17 @@ async def test_old_result_identity_drift_cannot_overwrite_confirmed_position_or_
     first = await counts(p)
     async with p.sessions.begin() as db:
         (await db.get(InboundEvidence, p.put_evidence_id)).published_at = None
-    await change_fixture(p, pkg_id="DIFFERENT-AUTHORITY")
-    # 内核已处理该 Evidence 并识别 Decision 摘要冲突，计数不代表业务发布成功。
-    assert await processor(p).process_batch() == 1
+    async with p.sessions.begin() as db:
+        scan = await db.get(InboundEvidence, p.scan_id)
+        scan.normalized_payload = {"fixture": {**scan.normalized_payload["fixture"], "barcode": "DIFFERENT-SCAN"}}
+        scan.payload_digest = canonical_json_digest(scan.normalized_payload)
+    assert await processor(p).process_batch() == 0
     current = await counts(p)
     assert current[:3] == first[:3] and current[3] is None
     async with p.sessions() as db:
         report = await db.get(WmsConfirmation, first[1])
-        assert report.request_payload["data"]["PkgID"] == PKG
-        assert (await db.get(InboundEvidence, p.put_evidence_id)).apply_status == "RECONCILING"
-        assert (await db.get(MaterialExecution, p.material_id)).status == "RECONCILING"
+        assert report.request_payload["data"]["barcode"] == BARCODE
+        assert (await db.get(InboundEvidence, p.put_evidence_id)).published_at is None
 
 
 async def test_late_physical_result_is_reported_after_member_cancel_and_parent_terminal(placed):

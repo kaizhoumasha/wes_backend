@@ -1,4 +1,4 @@
-"""6C 纯规则只依赖 SDK；设备、PkgID 和 WAIT 续问不在这里推断。"""
+"""6C 纯规则只依赖 SDK；设备和 WAIT 续问不在这里推断。"""
 
 from dataclasses import FrozenInstanceError
 

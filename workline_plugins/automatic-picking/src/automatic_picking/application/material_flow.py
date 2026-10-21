@@ -211,7 +211,7 @@ class AutomaticPickingMaterialFlow:
         if evidence.material_execution_id is not None or evidence.published_at is not None:
             raise ValueError("scan identity was already consumed")
         evidence.command_code = command.command_code
-        # Pickup UUID 是 WES 本地 trace/执行身份，不能充当 WMS 的 PkgID。
+        # Pickup UUID 是本地执行身份；物料业务数据始终沿本盘原始 barcode。
         execution = await self.executions.create_or_get_for_initial_evidence(
             db,
             execution_code=pickup.pickup_id,

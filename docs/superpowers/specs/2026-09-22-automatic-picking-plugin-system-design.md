@@ -82,7 +82,7 @@ src / wes_plugin_sdk         ──×→ automatic-picking / manual-picking
 | 整架完成 | 已有 `return_rack_task_completion` wire、OpenAPI、持久接收和人工消费 | 复用基础接收，新增自动插件的范围应用，不能导入人工消费者 |
 | MaterialExecution 物料 Fact 路径 | 当前 FactBuilder/DecisionApplier 有入库专属 outcome 与 intent 接线 | 补齐固定出库 typed 接口，不把 AUTO 业务分支、裸 JSON 或兼容 fallback 放进通用内核 |
 | 机械臂附录 | 仍为 `Draft`，含未决身份、参数映射和结果语义 | 未确认字段不猜测、不接生产设备，可先做不依赖这些值的纯 Decision 与基础接线 |
-| 报告所需 PkgID | 已确认 decide 请求仅传 barcode，目标响应未声明 PkgID；movement_report 仍必填 PkgID | 权威来源须联合补齐，不能恢复旧 six_in_one 或自行拆条码填充 |
+| 物料扫码原文 | decide 与 movement_report 统一使用 barcode，非空、最多1000字符 | 直接沿本盘原始扫码 Evidence；不设独立物料编号读口或双字段兼容 |
 
 源码导航：[插件装配端口](../../../src/app/workline/installed_plugin.py)、[FactProcessor](../../../src/app/execution/services/fact_processor.py)、
 [周期激活入口](../../../src/app/wms_integration/outbound_picking/services/picking_task_plan_activation.py)、
@@ -98,7 +98,7 @@ src / wes_plugin_sdk         ──×→ automatic-picking / manual-picking
 | 来源成员 | 五层架：`task_id + plan_revision + rack_id + rack_face`；直接取料增加精确 `source_locator` |
 | Bin 工作轮次（本文称 Work） | 本箱本次经过的本地 ID，关联当前冻结批次成员和 SCAN2 Evidence；同任务同箱可多次经过 |
 | 单次取盘（本文称 Pickup） | 扫码前即存在的本地身份，关联本次 Work 或 DirectPick 成员、来源授权与来源 Command |
-| 单盘执行 | 关联到 Pickup 的 `MaterialExecution`；`PkgID` 由 WMS 从扫码原文判断，WES 不解析或编造 |
+| 单盘执行 | 关联到 Pickup 的 `MaterialExecution`；barcode 沿原始扫码 Evidence 保留，WES 不解析或编造物料编号 |
 | Action | 本次 execution + 逻辑动作角色 + 触发 Evidence；技术重试复用原身份及正文 |
 | WMS 消息 | `(operation, operation_id)`；新业务决定使用新身份，不能改写原请求 |
 
@@ -142,8 +142,7 @@ Cell 当前栈顶归当前 Work/Pickup，待消费的后继授权只归 Work；�
 
 关联优先依赖附录确认的来源 Command 引用；O1/O2 未闭合前，不用平台单盘容量、当前设备或“最近命令”推断关联。
 附录 O6 的 `business_key` 不能据旧稿强制为取盘前尚不存在的 MaterialExecution ID，其必要性、回显与关联规则须随附录确认。
-本地 execution/trace 身份与 PkgID 分离，不能因条码稍后识别而换执行身份。movement_report 的 PkgID 来源尚未闭合，
-实施前须确认已有权威字段或修订所属外部合同；本设计不新增响应字段、不定义条码解析器，也不允许先做不可逆动作再补猜报告身份。
+本地 execution/trace 身份与 barcode 业务原文分离，不因扫码或后续决定换执行身份。decide、位置报告与关闭沿本盘同一原始扫码 Evidence 核对 barcode（1–1000字符）；报告不再等待独立物料编号，不增加响应字段或条码解析器。设备来源命令关联、位置映射及真实结果门禁仍保留。
 
 ## 5. 自动线状态流
 
@@ -463,7 +462,7 @@ Celery 注册、队列、序列化、重试或定时接线变化必须用真实 
 | 设备 O1/O2 扫码来源和 Command 精确关联 | 来源取盘、扫码与单盘生产接线 | 纯身份/乱序决定、基础可靠接收及已确认 WMS 接口 |
 | O11–O17 层列、面、cell_index、直接取料位置和测量参数映射 | 相关设备参数及命令生成，不能从示例反推 | 不依赖映射的业务模型、typed 结果及状态决定 |
 | barcode 边界、数值类型/范围等字段联合项 | 对应严格 parser 的最终值域，不得猜默认值 | 已确定字段结构及正反例整理，未决部分明确保留待确认 |
-| barcode 原文与报告 PkgID 的权威关联来源 | 正常逐盘结果报告及其生产闭环，不得自行解析或添加字段 | 状态、恢复和 typed 接口设计；联合确认补齐后再启用依赖该字段的不可逆动作 |
+| barcode 原文 | 已统一为决定与报告共同的本盘原始扫码原文，不再是外部待确认项 | 保留原扫码、来源及 Command 的精确关联；不新增全局唯一假设 |
 | 未获确认的设备失败/空取语义、恢复动作 | 对应不可逆自动动作，一期不假装接通 | 保存原事实，维持对象依赖，完成已批准正常链路 |
 | 主合同整体 ReviewRequired、设备附录 Draft | 整线及物理验收声明 | 已批准范围内的本地实现与独立验证不被其他未决项整体阻塞 |
 

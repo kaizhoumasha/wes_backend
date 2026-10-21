@@ -1,4 +1,4 @@
-"""料箱 Work READY 后正常循环的统一离线装配；设备参数/关联/PkgID 显式注入，不派发。"""
+"""料箱 Work READY 后正常循环的统一离线装配；设备参数/关联 显式注入，不派发。"""
 
 from dataclasses import asdict
 from datetime import timedelta
@@ -7,7 +7,7 @@ from types import SimpleNamespace as N
 import pytest
 from sqlalchemy import delete, select
 from test_material_close_postgresql import report_result
-from test_material_flow_postgresql import FixtureScanReader, result, scan
+from test_material_flow_postgresql import BARCODE, FixtureScanReader, result, scan
 from test_pickup_identity_postgresql import TARGET, components, database, prepared
 from test_placement_report_postgresql import FixturePutReader, successful_put
 from test_rotated_target_put_postgresql import removed, target
@@ -103,6 +103,7 @@ async def application(p):
         workline_owner=RackDepartureOwnerService(),
         task_queue_gateway=None,
     )
+    base.picking_task_batch_driver.exit_flow.request_mapper.__self__.clock = lambda: p.now
     p.picking_kwargs = {
         "transport_plugin": base,
         "commands": commands,
@@ -197,13 +198,6 @@ async def test_work_ready_through_scan_decide_put_report_close_and_normal_exit(p
                 assert work.consumed_pickup_id != p.pickup_id
             assert work.phase == "READY" and work.exit_command_code is None
         await successful_put(p)
-        if number:
-            async with p.sessions.begin() as db:
-                fact = await db.get(InboundEvidence, p.put_evidence_id)
-                fact.normalized_payload = {
-                    "fixture": {**fact.normalized_payload["fixture"], "pkg_id": "OFFLINE-PKG-M2"}
-                }
-                fact.payload_digest = canonical_json_digest(fact.normalized_payload)
         await processor(p, plugin).process_batch()
         await tick(p, plugin)
         async with p.sessions() as db:
@@ -218,6 +212,15 @@ async def test_work_ready_through_scan_decide_put_report_close_and_normal_exit(p
             from automatic_picking.application.transport_composition import build_picking_plugin
 
             plugin = build_picking_plugin(**p.picking_kwargs)
+    async with p.sessions() as db:
+        reports = (
+            await db.scalars(
+                select(WmsConfirmation).where(WmsConfirmation.operation == "outbound.material.movement_report@v1")
+            )
+        ).all()
+        assert len(reports) == (2 if with_next else 1)
+        assert all(report.request_payload["data"]["barcode"] == BARCODE for report in reports)
+        assert len({report.material_execution_id for report in reports}) == len(reports)
     exit_flow = plugin.picking_task_batch_driver.exit_flow
     original = exit_flow.commands
 

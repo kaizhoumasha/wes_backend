@@ -160,7 +160,7 @@ def build_picking_plugin(
         MaterialExecutionService(),
         scheduler=MaterialDecideScheduler(),
         reader=reader,
-        put_flow=AutomaticPickingPlacementFlow(repository, reader, put_reader),
+        put_flow=AutomaticPickingPlacementFlow(repository, reader, put_reader, scan_reader=scan_reader),
     )
     target = AutomaticPickingTargetFlow(
         repository,

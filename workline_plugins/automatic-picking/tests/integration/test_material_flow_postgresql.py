@@ -33,7 +33,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-BARCODE = " 原样条码\n—not-PkgID "
+BARCODE = " 原样条码\n—完整原文 "
 
 
 class FixtureScanReader:

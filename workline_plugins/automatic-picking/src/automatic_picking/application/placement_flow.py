@@ -1,4 +1,4 @@
-"""7B：显式读口给定成功 PUT 与权威 PkgID，沿现有 FactProcessor 事务形成位置/报告义务。"""
+"""成功 PUT 沿本盘原始扫码形成报告，复用 FactProcessor 的位置/报告原子事务。"""
 
 from dataclasses import dataclass
 
@@ -14,6 +14,7 @@ from wes_plugin_sdk import (
     WmsResultReadyFact,
 )
 
+from automatic_picking.application.material_flow import MatchedMaterialScan
 from automatic_picking.handlers.placement import MaterialPlacementPendingFact, MaterialPutFact, MaterialReportedFact
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
@@ -22,7 +23,7 @@ from src.app.wms_integration.outbound_picking.services import MaterialMovementRe
 
 @dataclass(frozen=True, slots=True)
 class MatchedPutResult:
-    """注入读口已核对成功结果与本盘权威 PkgID；未知返回 None，未提供生产读口。"""
+    """读口只提供匹配原 Command 的确定成功、精确目标和实际完成时间。"""
 
     evidence_id: int
     workline_id: int
@@ -31,7 +32,6 @@ class MatchedPutResult:
     command_code: str
     device_code: str
     target: PickingTargetRackSlot
-    pkg_id: str
     occurred_at: int
 
     def __post_init__(self):
@@ -44,9 +44,10 @@ class MatchedPutResult:
 
 
 class AutomaticPickingPlacementFlow:
-    def __init__(self, repository, material_reader, put_reader):
+    def __init__(self, repository, material_reader, put_reader, *, scan_reader):
         self.repository, self.material_reader, self.put_reader = repository, material_reader, put_reader
         self.report_reader = MaterialMovementReportResultReader()
+        self.scan_reader = scan_reader
 
     async def _context(self, db, execution_code):
         work, pickup, _ = await self.repository.material_context_for_update(db, execution_code)
@@ -126,7 +127,7 @@ class AutomaticPickingPlacementFlow:
             task_id=task_id,
             source=source,
             target=observed.target,
-            pkg_id=observed.pkg_id,
+            barcode=accepted.intent.barcode,
             occurred_at=observed.occurred_at,
         )
 
@@ -155,6 +156,17 @@ class AutomaticPickingPlacementFlow:
             or accepted.intent.source_locator != source
         ):
             raise ValueError("successful PUT target/source differs from current published ACCEPT")
+        scan = await self.scan_reader.read_in_session(db, evidence_id=execution.admission_evidence_id)
+        if (
+            type(scan) is not MatchedMaterialScan
+            or scan.evidence_id != execution.admission_evidence_id
+            or scan.workline_id != work.workline_id
+            or scan.pickup_id != pickup.pickup_id
+            or scan.command_code != pickup.command_code
+            or scan.barcode != accepted.intent.barcode
+            or scan.scanned_at != accepted.intent.scanned_at
+        ):
+            raise ValueError("placement barcode differs from original scan/ACCEPT identity")
         return accepted, task_id, source
 
     async def _reported(self, db, fact, work, pickup, execution, command):
@@ -195,6 +207,7 @@ class AutomaticPickingPlacementFlow:
             or position.decision_digest is None
             or command.status != "SUCCEEDED"
             or command.result_evidence_id != position.id
+            or report.intent.barcode != accepted.intent.barcode
             or report.intent.task_id != task_id
             or report.intent.source_locator != source
             or report.intent.to_locator != PickingRackSlot(target.rack_id, target.rack_face, target.slot_id)

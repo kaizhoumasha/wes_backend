@@ -15,11 +15,11 @@ def test_put_fact_creates_typed_report_with_original_identity():
         task_id="TASK-7B",
         source=PickingBinCell("SOURCE", "A", "BIN", "CELL"),
         target=PickingTargetRackSlot("TARGET", "A", "S1", 1, 1),
-        pkg_id="权威原文",
+        barcode="权威原文",
         occurred_at=987,
     )
     (report,) = material_put(fact)
-    assert (report.operation_id, report.task_id, report.pkg_id, report.occurred_at) == (
+    assert (report.operation_id, report.task_id, report.barcode, report.occurred_at) == (
         "pickup-7b",
         "TASK-7B",
         "权威原文",

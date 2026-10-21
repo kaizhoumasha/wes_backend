@@ -438,7 +438,7 @@ async def test_outbound_material_decision_freezes_only_execution_owner(report):
     }
     if report:
         decision = wms_operations.outbound_material_movement_report(
-            **common, pkg_id="PKG-1", to_locator=PickingRackSlot("RACK-2", "B", "S-2"), occurred_at=123
+            **common, barcode="原始,条码", to_locator=PickingRackSlot("RACK-2", "B", "S-2"), occurred_at=123
         )
         operation = "outbound.material.movement_report@v1"
     else:
@@ -456,7 +456,7 @@ async def test_outbound_material_decision_freezes_only_execution_owner(report):
     assert payload["operation_id"] == decision.operation_id
     assert payload["data"]["plan_revision"] == 2
     assert "fact_id" not in payload["data"] and "material_execution_id" not in payload["data"]
-    assert payload["data"].get("PkgID" if report else "barcode") == ("PKG-1" if report else "原始,条码")
+    assert payload["data"]["barcode"] == "原始,条码"
 
 
 @pytest.mark.asyncio
