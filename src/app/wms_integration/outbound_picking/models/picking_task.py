@@ -135,6 +135,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     plan_blocked_evidence_id: int | None = Field(
         default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
+    cancelled_at: datetime | None = Field(default=None, description="已应用的 WMS 整单取消事实；归档后保留")
     archived_at: datetime | None = Field(default=None, description="运维清线归档时间；不代表 WMS 或设备完成")
 
 

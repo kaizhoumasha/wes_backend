@@ -48,7 +48,16 @@ class PickingTaskConfirmationOwnerService:
         if operation in {RETURN_RACK_ARRIVAL_REPORT_OPERATION, MATERIAL_MOVEMENT_REPORT_OPERATION}:
             # 仅续送已冻结的事实义务；响应后的业务应用仍独立校验原 owner。
             return True
-        return await self.validate_response_owner(db, picking_task_id=picking_task_id, operation=operation)
+        return await self.validate_response_owner(
+            db, picking_task_id=picking_task_id, operation=operation
+        ) and not await self.is_dispatch_cancelled(db, picking_task_id=picking_task_id, operation=operation)
+
+    async def is_dispatch_cancelled(self, db: object, *, picking_task_id: int, operation: str) -> bool:
+        # 已应用的整单取消是终止依据；成员取消和后续归档不重新解释该事实。
+        return operation == PICKING_TASK_PREPARE_OPERATION and await self._tasks.has_applied_task_cancel(
+            db,
+            picking_task_id,  # type: ignore[arg-type]
+        )
 
     async def validate_response_owner(
         self,

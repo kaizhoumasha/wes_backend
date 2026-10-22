@@ -197,7 +197,12 @@ class PositionProjectionService:
             relation = compare_projection_sources(incoming_source, self._projection_source(projection))
             if relation is ProjectionCausalRelation.INCOMPARABLE:
                 raise PositionProjectionInvariantViolation("projection sources are not causally comparable")
-            if relation in {ProjectionCausalRelation.SAME, ProjectionCausalRelation.BEFORE}:
+            if relation is ProjectionCausalRelation.BEFORE:
+                return projection
+            # 同一来源的未知位置仍可由权威事实收敛；已知终位不因重放改写。
+            if relation is ProjectionCausalRelation.SAME and (
+                not projection.position_unknown or position_unknown or position is None
+            ):
                 return projection
         if projection is None:
             if authority_line is None:

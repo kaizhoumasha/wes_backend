@@ -1664,6 +1664,16 @@ class TransportService:
         outcome_revision = _applicable_outcome_revision(evidence, task)
         if outcome_revision is None:
             return True
+        if task.status == "SUCCEEDED" and task.reason_code == "SCAN_TARGET_CONFIRMED":
+            validated = _validated_member_results(members, results, task)
+            if any(
+                result["status"] != "SUCCEEDED" or result.get("final_position") != member.final_position_json
+                for member, result, _, _ in validated
+            ):
+                raise TransportContractError("WMS result contradicts confirmed scan arrival")
+            # 留存迟到回执并推进 WMS 自身游标，不重发本地已发布的成功结果或回写旧位置。
+            task.last_applied_wms_outcome_revision = outcome_revision
+            return True
         if task.status in {TransportTaskStatus.SUCCEEDED.value, TransportTaskStatus.FAILED.value}:
             raise TransportContractError("result evidence cannot revise a definite terminal fact")
 
@@ -1680,6 +1690,13 @@ class TransportService:
 
         now = timezone.now_for_db()
         validated_results = _validated_member_results(members, results, task)
+        if any(
+            member.last_operation_id is not None
+            and member.last_operation_id.startswith("scan:")
+            and (result["status"] != "SUCCEEDED" or result.get("final_position") != member.final_position_json)
+            for member, result, _, _ in validated_results
+        ):
+            raise TransportContractError("WMS result contradicts confirmed scan arrival")
         any_unknown = any(outcome.position_unknown for _, _, outcome, _ in validated_results)
         any_failed = any(result["status"] in {"FAILED", "CANCELLED"} for _, result, _, _ in validated_results)
 
@@ -1688,6 +1705,10 @@ class TransportService:
         for member in sorted(members, key=lambda item: (item.object_type, item.object_id)):
             await self._repository.lock_position_result(db, member.object_type, member.object_id)
         for member, result, outcome, cancelled in validated_results:
+            if member.last_operation_id is not None and member.last_operation_id.startswith("scan:"):
+                # 一致回执补齐其余成员；已确认扫码事实及投影继续引用原 Evidence。
+                outcomes.append(outcome)
+                continue
             status = "FAILED" if cancelled else result["status"]
             final_position = result.get("final_position")
             position_unknown = result.get("position_unknown") is True
@@ -1741,6 +1762,99 @@ class TransportService:
             )
         )
         return True
+
+    async def confirm_bin_arrival_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        transport_task_id: str,
+        bin_code: str,
+        target: HandoffPosition,
+        source_evidence_id: int,
+    ) -> None:
+        """插件匹配本点箱码和冻结批次；宿主据真实扫码闭合原成员及整笔投料。"""
+        from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
+
+        task = await self._get_task_for_projection_update(db, transport_task_id)
+        source = await inbound_evidence_repository.get_by_id(db, source_evidence_id)
+        if (
+            task is None
+            or task.kind != "BIN_MOVE"
+            or task.authority_workline_id is None
+            or source is None
+            or source.kind != "DEVICE_EVENT"
+            or source.apply_status != "APPLIED"
+            or source.workline_id != task.authority_workline_id
+            or source.received_at < task.created_at
+            or type(source.normalized_payload.get("timestamp")) is not int
+            or source.normalized_payload["timestamp"] < int(timezone.to_utc(task.created_at).timestamp() * 1000)
+            or source.normalized_payload.get("event_type") != "SCAN_COMPLETED"
+            or source.normalized_payload.get("is_debug") is not False
+        ):
+            raise TransportContractError("scan arrival does not match transport authority")
+        members = await self._repository.list_members(db, transport_task_id)
+        member = next((m for m in members if m.object_type == "BIN" and m.object_id == bin_code), None)
+        origin = f"scan:{source_evidence_id}"
+        position = _json_value(target)
+        if (
+            member is None
+            or member.target_json != position
+            or any(m.last_operation_id == origin and m.object_id != bin_code for m in members)
+        ):
+            raise TransportContractError("scan arrival differs from frozen transport member")
+        if task.status in {"SUCCEEDED", "FAILED", "REJECTED"} or (
+            member.status in {"SUCCEEDED", "FAILED"} and not member.position_unknown
+        ):
+            return
+        now = timezone.now_for_db()
+        await self._repository.lock_position_result(db, "BIN", bin_code)
+        member.status = "SUCCEEDED"
+        member.final_position_json = position
+        member.position_unknown = False
+        member.failure_code = None
+        member.last_operation_id = origin
+        member.updated_at = now
+        projection = await self._position_projections.apply_transport_result(
+            db,
+            authority=_execution_authority_from_task(task),
+            object_type="BIN",
+            object_id=bin_code,
+            client_request_id=task.client_request_id,
+            position=position,
+            position_unknown=False,
+            arrival_face=None,
+            operation_id=origin,
+            transport_task_id=transport_task_id,
+            updated_at=now,
+        )
+        await _record_superseded_projection(projection, transport_task_id)
+        if not all(
+            m.status == "SUCCEEDED" and not m.position_unknown and m.final_position_json == m.target_json
+            for m in members
+        ):
+            return
+        task.status = "SUCCEEDED"
+        task.reason_code = "SCAN_TARGET_CONFIRMED"
+        task.next_submit_at = None
+        _clear_submit_claim(task)
+        task.outcome_version += 1
+        task.updated_at = now
+        task.outcome_json = _json_value(
+            TransportOutcome(
+                transport_task_id=task.transport_task_id,
+                client_request_id=task.client_request_id,
+                outcome_version=task.outcome_version,
+                caller=TransportCaller(**task.caller_json),
+                status=TransportOutcomeStatus.SUCCEEDED,
+                reason_code=task.reason_code,
+                members=tuple(
+                    TransportMemberOutcome(
+                        object_id=m.object_id, final_position=_contract_position(m.final_position_json)
+                    )
+                    for m in members
+                ),
+            )
+        )
 
 
 def _members_for(request: TransportRequest, task_id: str, now: Any) -> list[TransportMember]:

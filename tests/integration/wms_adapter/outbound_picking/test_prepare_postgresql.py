@@ -535,3 +535,188 @@ class _Policy:
 
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType:
         return PrepareTaskType.MANUAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_timing",
+    [
+        "before_http",
+        "during_http",
+        "after_lease_reclaim",
+        "after_lease_retirement",
+        "history_pruned",
+        "history_pruned_during_http",
+    ],
+)
+async def test_applied_task_cancel_retires_prepare_and_preserves_late_response(
+    integration_session_factory,
+    cancel_timing,
+) -> None:
+    from copy import deepcopy
+
+    from src.app.execution.services import InboundEvidenceService
+    from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelEvent
+    from src.app.wms_integration.outbound_picking.repositories.picking_task_repository import PickingTaskRepository
+    from src.app.wms_integration.outbound_picking.services.picking_task_cancel import PickingTaskCancelService
+
+    factory = integration_session_factory
+    now = timezone.now_for_db()
+    operation_id = new_uuid7()
+    async with factory.begin() as db:
+        line, device = await _seed_ready_workline(db, now=now)
+        task = await _seed_task(
+            db,
+            workline_id=line.id,
+            suffix="c",
+            task_type=PickingTaskType.MANUAL,
+            dispatch_sequence=9_100_000_099,
+            not_before_ms=None,
+        )
+        task.status = PickingTaskStatus.PREPARING
+        task_name, task_id = task.task_id, task.id
+        ids = (line.id, device.id, task_id, task.issued_evidence_id)
+        payload = {
+            "operation": "outbound.picking_task.prepare@v1",
+            "operation_id": operation_id,
+            "timestamp": 1,
+            "data": {"task_id": task_name, "workline_code": line.line_code},
+        }
+        acceptance = await WmsConfirmationService().create_or_get(
+            db,
+            operation=payload["operation"],
+            operation_id=operation_id,
+            picking_task_id=task_id,
+            request_payload=payload,
+            deadline_at=now + timedelta(minutes=5),
+            created_at=now,
+        )
+        confirmation_id = acceptance.confirmation.id
+        original_digest = acceptance.confirmation.request_digest
+        frozen = deepcopy(acceptance.confirmation.request_payload)
+        # 未应用整单取消及已应用成员取消都不能终止 prepare。
+        for status, scope in [
+            (InboundEvidenceApplyStatus.RECONCILING, "TASK"),
+            (InboundEvidenceApplyStatus.APPLIED, "PLAN_MEMBERS"),
+        ]:
+            proof_id = new_uuid7()
+            proof = await InboundEvidenceService().accept(
+                db,
+                kind=InboundEvidenceKind.WMS_EVENT,
+                operation="outbound.picking_task.cancel@v1",
+                operation_id=proof_id,
+                source_identity=f"outbound.picking_task.cancel@v1:{proof_id}",
+                normalized_payload={"data": {"task_id": task_name, "cancel_scope": scope}},
+                picking_task_id=task_id,
+                received_at=now,
+                apply_status=status,
+            )
+            assert proof.evidence.id is not None
+        assert not await PickingTaskRepository().has_applied_task_cancel(db, task_id)
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Adapter(_Adapter):
+        calls = 0
+
+        async def dispatch(self, **kwargs):
+            self.calls += 1
+            entered.set()
+            await release.wait()
+            return await super().dispatch(**kwargs)
+
+    adapter = Adapter()
+    service = WmsConfirmationService(
+        session_factory=factory, adapter=adapter, picking_task_owner=PickingTaskConfirmationOwnerService()
+    )
+    pending = None
+    try:
+        if cancel_timing not in {"before_http", "history_pruned"}:
+            pending = asyncio.create_task(service.dispatch_batch(now=now, limit=1))
+            await asyncio.wait_for(entered.wait(), timeout=10)
+        cancel = PickingTaskCancelEvent.model_validate(
+            {
+                "operation": "outbound.picking_task.cancel@v1",
+                "operation_id": new_uuid7(),
+                "timestamp": 2,
+                "data": {"task_id": task_name, "cancel_scope": "TASK"},
+            }
+        )
+        receipt = await PickingTaskCancelService(factory).record(cancel, received_at=now + timedelta(seconds=1))
+        assert receipt.code == "RECEIVED"
+        async with factory() as db:
+            assert await PickingTaskRepository().has_applied_task_cancel(db, task_id)
+        if cancel_timing.startswith("history_pruned"):
+            async with factory.begin() as db:
+                archived = await db.get(PickingTask, task_id)
+                await PickingTaskRepository().archive_single(db, task=archived, archived_at=now)
+                await db.execute(
+                    delete(InboundEvidence).where(
+                        InboundEvidence.picking_task_id == task_id,
+                        InboundEvidence.operation == "outbound.picking_task.cancel@v1",
+                    )
+                )
+            async with factory() as db:
+                assert await PickingTaskRepository().has_applied_task_cancel(db, task_id)
+        if cancel_timing == "after_lease_retirement":
+            assert await service.dispatch_batch(now=now + timedelta(minutes=2), limit=1) == 1
+        if cancel_timing == "after_lease_reclaim":
+            from src.app.execution.repositories.wms_confirmation_repository import WmsConfirmationRepository
+
+            async with factory.begin() as db:
+                claimed = await WmsConfirmationRepository().claim_eligible(
+                    db,
+                    now=now + timedelta(minutes=2),
+                    claim_token=new_uuid7(),
+                    claim_expires_at=now + timedelta(minutes=3),
+                    limit=1,
+                )
+                assert [row.id for row in claimed] == [confirmation_id]
+        if pending is None:
+            assert await service.dispatch_batch(now=now + timedelta(seconds=2), limit=1) == 1
+        else:
+            release.set()
+            assert await asyncio.wait_for(pending, timeout=10) == 1
+        async with factory() as db:
+            stored = await db.get(WmsConfirmation, confirmation_id)
+            stored_task = await db.get(PickingTask, task_id)
+            assert stored.status == WmsConfirmationStatus.SUPERSEDED
+            assert not stored.retry_eligible and stored.next_attempt_at is None
+            assert stored.response_evidence_id is stored.response_result is stored.completed_at is None
+            assert stored.operation_id == operation_id
+            assert stored.request_payload == frozen and stored.request_digest == original_digest
+            assert stored_task.status == (
+                PickingTaskStatus.ARCHIVED
+                if cancel_timing.startswith("history_pruned")
+                else PickingTaskStatus.CANCELLED
+            )
+            evidence = await db.scalar(
+                select(InboundEvidence).where(
+                    InboundEvidence.operation_id == operation_id, InboundEvidence.kind == InboundEvidenceKind.WMS_RESULT
+                )
+            )
+            if cancel_timing in {"before_http", "history_pruned"}:
+                assert adapter.calls == 0 and evidence is None
+            else:
+                assert adapter.calls == 1
+                assert evidence.normalized_payload["code"] == "PREPARE_ACCEPTED"
+                assert evidence.picking_task_id == task_id
+            cancelled = await db.scalar(
+                select(InboundEvidence).where(InboundEvidence.operation_id == cancel.operation_id)
+            )
+            if cancel_timing.startswith("history_pruned"):
+                assert cancelled is None
+            else:
+                assert cancelled.apply_status == InboundEvidenceApplyStatus.APPLIED
+        assert await service.dispatch_batch(now=now + timedelta(minutes=3), limit=1) == 0
+    finally:
+        release.set()
+        if pending is not None and not pending.done():
+            await asyncio.wait_for(pending, timeout=10)
+        async with factory.begin() as db:
+            await db.execute(delete(WmsConfirmation).where(WmsConfirmation.picking_task_id == ids[2]))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.picking_task_id == ids[2]))
+            await db.execute(delete(PickingTask).where(PickingTask.id == ids[2]))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.id == ids[3]))
+            await db.execute(delete(Device).where(Device.id == ids[1]))
+            await db.execute(delete(WorkLine).where(WorkLine.id == ids[0]))

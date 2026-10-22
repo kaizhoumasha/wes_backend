@@ -104,6 +104,8 @@ class PickingTaskConfirmationOwnerPort(Protocol):
         operation: str,
     ) -> bool: ...
 
+    async def is_dispatch_cancelled(self, db: AsyncSession, *, picking_task_id: int, operation: str) -> bool: ...
+
     async def validate_response_owner(
         self,
         db: AsyncSession,
@@ -424,6 +426,22 @@ class WmsConfirmationLifecycleService:
         await self._repository.flush(db)
         return confirmation
 
+    async def supersede_after_owner_cancel(
+        self, db: AsyncSession, confirmation: WmsConfirmation, *, changed_at: datetime
+    ) -> WmsConfirmation:
+        """owner 已确认权威取消后停止派发，不构造响应或改写既有成功。"""
+        if confirmation.status in {WmsConfirmationStatus.COMPLETED, WmsConfirmationStatus.SUPERSEDED}:
+            return confirmation
+        confirmation.status = WmsConfirmationStatus.SUPERSEDED
+        confirmation.retry_eligible = False
+        confirmation.next_attempt_at = None
+        confirmation.claim_token = None
+        confirmation.claimed_at = None
+        confirmation.claim_expires_at = None
+        confirmation.updated_at = changed_at
+        await self._repository.flush(db)
+        return confirmation
+
 
 class WmsConfirmationService(WmsConfirmationLifecycleService):
     """短事务 claim、无锁 HTTP 和独立短事务结果回写 dispatcher。"""
@@ -558,7 +576,12 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     picking_task_id=confirmation.picking_task_id,
                     operation=confirmation.operation,
                 ):
-                    _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
+                    if owner is not None and await owner.is_dispatch_cancelled(
+                        db, picking_task_id=confirmation.picking_task_id, operation=confirmation.operation
+                    ):
+                        _ = await self.supersede_after_owner_cancel(db, confirmation, changed_at=checked_at)
+                    else:
+                        _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
                     return
             if confirmation.workline_id is not None and not await self._validate_workline_owner(db, confirmation):
                 _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
@@ -605,11 +628,50 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             authority_root_valid = await self._lock_workline_confirmation_root(db, confirmation_id)
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
+                # 旧 HTTP 可晚于租约接管及取消终止；只接收同一冻结请求的真实响应。
+                confirmation = await self._repository.get_by_identity_for_update(db, operation, operation_id)
+                if (
+                    confirmation is None
+                    or confirmation.id != confirmation_id
+                    or confirmation.request_digest != request_digest
+                    or confirmation.picking_task_id is None
+                    or self._picking_task_owner is None
+                    or not await self._picking_task_owner.is_dispatch_cancelled(
+                        db, picking_task_id=confirmation.picking_task_id, operation=operation
+                    )
+                ):
+                    return
+            code = getattr(result.code, "value", result.code)
+            if (
+                confirmation.picking_task_id is not None
+                and self._picking_task_owner is not None
+                and await self._picking_task_owner.is_dispatch_cancelled(
+                    db, picking_task_id=confirmation.picking_task_id, operation=operation
+                )
+            ):
+                if result.normalized_response is not None:
+                    _ = await self._evidence.accept(
+                        db,
+                        kind=InboundEvidenceKind.WMS_RESULT,
+                        source_identity=f"{operation}:{operation_id}",
+                        normalized_payload=result.normalized_response,
+                        received_at=changed_at,
+                        picking_task_id=confirmation.picking_task_id,
+                        contract_key=operation,
+                        contract_version="1.0",
+                        operation=operation,
+                        operation_id=operation_id,
+                        apply_status=(
+                            InboundEvidenceApplyStatus.RECONCILING
+                            if code == "RECONCILING"
+                            else InboundEvidenceApplyStatus.APPLIED
+                        ),
+                    )
+                _ = await self.supersede_after_owner_cancel(db, confirmation, changed_at=changed_at)
                 return
             if not authority_root_valid:
                 _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                 return
-            code = getattr(result.code, "value", result.code)
             if code in {"DETERMINATE", "RECONCILING"} and result.normalized_response is not None:
                 owner_count = sum(
                     owner is not None

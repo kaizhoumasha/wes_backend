@@ -154,6 +154,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
     batches = SimpleNamespace(
         has_newer_rack_action=AsyncMock(return_value=False),
         current_rack_arrival_at=AsyncMock(return_value=timezone.now_for_db()),
+        release_completed_source_windows=AsyncMock(return_value=0),
         cancelled_source_windows=AsyncMock(return_value=[]),
         cancelled_return_windows=AsyncMock(return_value=[]),
         current_round_started_at=AsyncMock(return_value=timezone.now_for_db()),
@@ -1480,3 +1481,14 @@ async def test_drain_departure_phase_does_not_reopen_service_for_new_fifo():
     driver._drain.return_in_session.assert_not_awaited()
     scheduler.create_in_session.assert_not_awaited()
     assert creator.rotate == [] and creator.depart == []
+
+
+@pytest.mark.asyncio
+async def test_scan_releases_completed_admission_before_current_task_progress():
+    driver, line, task, *_ = setup_driver()
+    driver._batches.release_completed_source_windows.return_value = 1
+    assert await driver.project_exits_in_session(object(), line) == 1
+    driver._batches.release_completed_source_windows.assert_awaited_once()
+    call = driver._batches.release_completed_source_windows.await_args.kwargs
+    assert call["workline_id"] == line.id
+    assert task.status == "EXECUTING"

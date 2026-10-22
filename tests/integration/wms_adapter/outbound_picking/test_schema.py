@@ -338,6 +338,7 @@ async def test_business_type_migration_preserves_existing_outbound_and_checks_ne
 
     async with temporary_database() as (_database, database_url):
         run_alembic("upgrade", "a8c5e2107b94", database_url=database_url)
+        run_alembic("upgrade", "f0c2423ac98a", database_url=database_url)
         engine = create_async_engine(database_url)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -465,3 +466,117 @@ async def test_picking_task_merge_converges_heads_without_rewriting_existing_dat
             assert before[:3] == after[:3]
         run_alembic("upgrade", "head", database_url=database_url)
         assert await inspect_database() == after
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_projection_migration_preserves_only_confirmed_cancellation() -> None:
+    now = timezone.now_for_db()
+    cases = [
+        ("CANCELLED", None, None, True),
+        ("ARCHIVED", "APPLIED", "TASK", True),
+        ("ARCHIVED", "RECONCILING", "TASK", False),
+        ("ARCHIVED", "APPLIED", "PLAN_MEMBERS", False),
+        ("ARCHIVED", None, None, False),
+        ("EXECUTION_COMPLETED", None, None, False),
+    ]
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "f72bd038e915", database_url=database_url)
+        engine = create_async_engine(database_url)
+        try:
+            async with async_sessionmaker(engine).begin() as db:
+                db.add(WorkLine(id=42, line_code="CANCEL-MIGRATION", line_name="Cancel", line_type="MANUAL"))
+            async with engine.begin() as conn:
+
+                def reflect(sync_conn: Connection) -> tuple[sa.Table, sa.Table]:
+                    metadata = sa.MetaData()
+                    return (
+                        sa.Table("inbound_evidences", metadata, autoload_with=sync_conn, schema="wes_biz"),
+                        sa.Table("picking_tasks", metadata, autoload_with=sync_conn, schema="wes_biz"),
+                    )
+
+                evidences, tasks = await conn.run_sync(reflect)
+                for index, (status, apply_status, scope, _expected) in enumerate(cases, 1):
+                    await conn.execute(
+                        evidences.insert().values(
+                            id=index,
+                            created_at=now,
+                            kind="WMS_EVENT",
+                            source_identity=f"issued-{index}",
+                            operation="outbound.picking_task.issued@v1",
+                            operation_id=f"issued-{index}",
+                            normalized_payload={},
+                            payload_digest="a" * 64,
+                            received_at=now,
+                            apply_status="APPLIED",
+                            decision_attempt_count=0,
+                        )
+                    )
+                    await conn.execute(
+                        tasks.insert().values(
+                            id=10 + index,
+                            created_at=now,
+                            updated_at=now,
+                            task_id=f"PICK-{index}",
+                            task_type="MANUAL",
+                            status=status,
+                            queue_revision=1,
+                            dispatch_sequence=index,
+                            issued_at_ms=1,
+                            issued_evidence_id=index,
+                            workline_id=42,
+                            archived_at=now if status == "ARCHIVED" else None,
+                        )
+                    )
+                    if apply_status is not None:
+                        await conn.execute(
+                            evidences.insert().values(
+                                id=100 + index,
+                                created_at=now,
+                                kind="WMS_EVENT",
+                                source_identity=f"cancel-{index}",
+                                operation="outbound.picking_task.cancel@v1",
+                                operation_id=f"cancel-{index}",
+                                normalized_payload={"data": {"cancel_scope": scope}},
+                                payload_digest="b" * 64,
+                                received_at=now,
+                                processed_at=now,
+                                apply_status=apply_status,
+                                picking_task_id=10 + index,
+                                decision_attempt_count=0,
+                            )
+                        )
+        finally:
+            await engine.dispose()
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            original_tasks = await connection.fetch(
+                "SELECT to_jsonb(t) AS row FROM wes_biz.picking_tasks t ORDER BY id"
+            )
+            original_evidence = await connection.fetch(
+                "SELECT to_jsonb(e) AS row FROM wes_biz.inbound_evidences e ORDER BY id"
+            )
+        finally:
+            await connection.close()
+        run_alembic("upgrade", "f0c2423ac98a", database_url=database_url)
+        run_alembic("downgrade", "f72bd038e915", database_url=database_url)
+        run_alembic("upgrade", "f0c2423ac98a", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            assert (
+                await connection.fetch(
+                    "SELECT to_jsonb(t) - 'cancelled_at' AS row FROM wes_biz.picking_tasks t ORDER BY id"
+                )
+                == original_tasks
+            )
+            assert (
+                await connection.fetch("SELECT to_jsonb(e) AS row FROM wes_biz.inbound_evidences e ORDER BY id")
+                == original_evidence
+            )
+            assert [
+                row["cancelled_at"]
+                for row in await connection.fetch("SELECT cancelled_at FROM wes_biz.picking_tasks ORDER BY id")
+            ] == [now if expected else None for _status, _apply, _scope, expected in cases]
+            await connection.execute("DELETE FROM wes_biz.inbound_evidences WHERE id > 100")
+            assert await connection.fetchval("SELECT cancelled_at FROM wes_biz.picking_tasks WHERE id=12") == now
+        finally:
+            await connection.close()

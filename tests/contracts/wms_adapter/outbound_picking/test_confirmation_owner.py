@@ -100,18 +100,36 @@ async def test_arrival_obligation_survives_business_progress(state, accepted):
         ("CANCELLED", True),
     ],
 )
-async def test_prepare_keeps_reliable_owner_after_preparing_task_is_cancelled(state, accepted):
+async def test_prepare_retains_response_owner_but_stops_dispatch_after_task_cancel(state, accepted):
     repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1)),
+        has_applied_task_cancel=AsyncMock(return_value=state == "CANCELLED"),
     )
     service = PickingTaskConfirmationOwnerService(repository)
     assert (
         await service.validate_response_owner(object(), picking_task_id=1, operation="outbound.picking_task.prepare@v1")
         is accepted
     )
-    assert (
-        await service.validate_dispatch_owner(object(), picking_task_id=1, operation="outbound.picking_task.prepare@v1")
-        is accepted
+    assert await service.validate_dispatch_owner(
+        object(), picking_task_id=1, operation="outbound.picking_task.prepare@v1"
+    ) is (accepted and state != "CANCELLED")
+
+
+@pytest.mark.asyncio
+async def test_applied_task_cancel_still_stops_prepare_after_task_archival():
+    repository = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status="ARCHIVED", workline_id=1)),
+        has_applied_task_cancel=AsyncMock(return_value=True),
+    )
+    service = PickingTaskConfirmationOwnerService(repository)
+    assert not await service.validate_dispatch_owner(
+        object(), picking_task_id=1, operation="outbound.picking_task.prepare@v1"
+    )
+    assert await service.validate_response_owner(
+        object(), picking_task_id=1, operation="outbound.picking_task.prepare@v1"
+    )
+    assert not await service.is_dispatch_cancelled(
+        object(), picking_task_id=1, operation="outbound.bin.inbound_batch@v1"
     )
 
 

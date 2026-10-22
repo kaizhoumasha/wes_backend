@@ -135,6 +135,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
             current_rack_arrival_at=AsyncMock(return_value=timezone.now_for_db()),
             has_current_rack_dependency=AsyncMock(return_value=False),
             has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
+            release_completed_source_windows=AsyncMock(return_value=0),
             cancelled_source_windows=AsyncMock(return_value=[]),
             cancelled_return_windows=AsyncMock(return_value=[]),
             current_round_started_at=AsyncMock(return_value=timezone.now_for_db()),

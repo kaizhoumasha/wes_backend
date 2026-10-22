@@ -42,7 +42,12 @@ class PickingTaskCancelRepository:
         requested_picks = {
             (source.plan_revision, source.rack_id, source.rack_face, slot_id)
             for source in data.direct_pick_sources or ()
-            for slot_id in source.slot_ids
+            for slot_id in source.slot_ids or ()
+        }
+        requested_faces = {
+            (source.plan_revision, source.rack_id, source.rack_face)
+            for source in data.direct_pick_sources or ()
+            if source.slot_ids is None
         }
         requested_racks = {
             (source.plan_revision, source.rack_id, rack_face)
@@ -53,22 +58,24 @@ class PickingTaskCancelRepository:
         rack_rows: list[PickingTaskBinSourceRack] = []
         direct = DirectPickExecution.__table__.c
         racks = PickingTaskBinSourceRack.__table__.c
-        for batch in batched(requested_picks, MEMBER_BATCH_SIZE, strict=False):
-            direct_rows.extend(
-                (
-                    await db.scalars(
-                        select(DirectPickExecution)
-                        .where(
-                            direct.picking_task_id == task_id,
-                            direct.cancelled_evidence_id.is_(None),
-                            tuple_(direct.plan_revision, direct.rack_id, direct.rack_face, direct.slot_id).in_(
-                                list(batch)
-                            ),
+        for selector, requested in (
+            (tuple_(direct.plan_revision, direct.rack_id, direct.rack_face, direct.slot_id), requested_picks),
+            (tuple_(direct.plan_revision, direct.rack_id, direct.rack_face), requested_faces),
+        ):
+            for batch in batched(requested, MEMBER_BATCH_SIZE, strict=False):
+                direct_rows.extend(
+                    (
+                        await db.scalars(
+                            select(DirectPickExecution)
+                            .where(
+                                direct.picking_task_id == task_id,
+                                direct.cancelled_evidence_id.is_(None),
+                                selector.in_(list(batch)),
+                            )
+                            .with_for_update()
                         )
-                        .with_for_update()
-                    )
-                ).all()
-            )
+                    ).all()
+                )
         for batch in batched(requested_racks, MEMBER_BATCH_SIZE, strict=False):
             rack_rows.extend(
                 (

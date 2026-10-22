@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-23
+updated_at: 2026-10-16
 contract_version: 0.4.0
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
@@ -198,6 +198,8 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 仅接纳或中途旋转不能当作当前架到位。插件按 transport-only `feed_complete` 决定换面时机，Transport 不等待后续扫码或业务完成。
 
 人工拣料的 `workline_positions.capacity` 是 WES 针对每个目标点维护的滚动进场 Transport 下发窗口。进场创建后，一个物理货架占一个名额；到位继续占用，业务完成且对应离场 Transport 获得 `ACCEPTED` 后释放并补发 pending。同架跨 revision 或面向复用仍在占窗的进场生命周期，不重复下发 CTU01/F01。明确未接纳的进场任务，或失败且权威终位在目标点外的任务，释放名额；失败终位仍在目标点的业务重试沿用该名额。发送结果、位置或离场接纳未知时保留原身份等待权威 API 结果。RCS 负责 AGV 排队、物理工作位、自动补位与实际进位顺序，WES 不维护其 queue slot。新架只有原 Transport、成功成员与精确工作位 rack/face 事实共同证明到位才可作业。
+
+已完成（`EXECUTION_COMPLETED`）的人工任务不再持有来源架的本地准入名额：插件持久工作线扫描只退出原来源进架窗口的准入职责，保留窗口身份、原进场轮次、operation_id、冻结正文、Transport 和全部 Evidence。该退出不证明离场、物理完成、CTU 空闲或 WMS reservation 释放；原未决搬运继续由 Transport owner 等待终态，只约束其直接因果步骤。若当前权威货架事实仍属于原 owner 且尚无新窗口接管，原轮次清退继续由持久扫描承接；新实际动作/窗口接管后旧清退让路。新的有效任务与独立 drain 经既有原子容量准入创建自身动作，不继承旧到位事实；drain 插缝只检查当前活动任务自己的来源窗口。已完成任务的全取消来源架仍由持久扫描承接原清退，不因准入释放失去 Next Owner；当前面由同 owner 的后续 revision 换面到位时，仍解析该面所属原进场轮次，不要求换面 Evidence 与进场计划 Evidence 相同。
 
 货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
 人工出库的转运货架和直接取料退料架进出场均使用 `F01`；五层来源架和 drain 架使用 `CTU01` 进场、`CTU03` 离场，不混用模板。已确认的货架规则及各入口实现范围见
@@ -741,7 +743,7 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 
 | `TransportOutcome.status` | 形成条件 | 插件语义 |
 | --- | --- | --- |
-| `SUCCEEDED` | 匹配权威成功结果且最终位置完整 | 可以继续依赖该搬运的业务步骤 |
+| `SUCCEEDED` | 匹配权威成功结果且最终位置完整，或本节规定的扫码投箱交付事实完整 | 可以继续依赖该搬运的业务步骤 |
 | `FAILED` | 匹配权威失败结果且相关位置完整 | 搬运失败，但资源位置可判断 |
 | `REJECTED` | WMS/RCS 明确未接纳 | 原任务不可修改；修正业务输入或重新分配后，以新的 `client_request_id` 创建新任务 |
 | `UNKNOWN` | 交付、结果或任一对象位置不确定 | 停止依赖动作，等待核验 |
@@ -749,7 +751,11 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 结果携带 `transport_task_id`、`client_request_id`、单调递增的 `outcome_version`、`TransportCaller`、稳定结果码和最终位置。
 只有 `SUCCEEDED` 可以触发依赖动作。
 
-任务首次进入 `ACCEPTED` 时可冻结观察期限 `result_deadline_at`，供等待时长监控。期限到达不产生 `UNKNOWN` 搬运结果，不改变任务的物理结果或位置事实。RCS 保证已接纳任务最终有明确终态，并经可靠 Response 链路送达；WES 保留原任务身份和证据，等待该权威终态。真实 `POSITION_UNKNOWN` 或证据冲突仍按其专属事实处理。
+人工线入站 `BIN_MOVE` 增加已批准的本地扫码完成依据：插件将真实 SCAN1、当前冻结 READY 成员、原 Transport 和精确 HANDOFF_POSITION 目标唯一关联，宿主同事务保存该成员成功及原 InboundEvidence 引用（`last_operation_id=scan:<id>`）。扫码事件的 ECS `timestamp` 不得早于原 Transport 创建时间（按 UTC Unix 毫秒比较）；WES `received_at` 仅表示接收时间，迟到的旧轮次扫码不能确认新 Transport。全部冻结成员成功且终位与冻结目标一致后，原任务成为 `SUCCEEDED`，`reason_code=SCAN_TARGET_CONFIRMED`，递增一次本地 `outcome_version`，由既有可靠发布扫描接管；成员未齐不发布整笔成功。任务仍为 `RECONCILING` 且成员仅因 `POSITION_UNKNOWN` 标为 `FAILED` 时，匹配的真实扫码可将原成员从未知收敛为目标到位；同一因果来源的未知投影同步收敛并保留扫码身份。位置已知的成员终态及原任务的确定终态仍不改写。该事务不构造 TransportEvidence/CallbackReceipt，不增加 WMS operation、WMS outcome_revision、表或状态，不修改原提交身份及请求。扫码成员的本地最终位置只在原因果来源仍有效时应用，不覆盖后继 Transport 的位置。
+
+部分成员已扫码、整笔尚未完成时，一致的 WMS 完整结果只补齐其余成员，已确认扫码成员的 `last_operation_id`、终位及对应投影来源保持原身份；恢复扫描不因回执覆盖扫码身份而反复选中。真实 WMS 结果仍可靠接收：与扫码完成事实一致时应用原始 Evidence 并推进 `last_applied_wms_outcome_revision`，不重复本地成功发布；与已确认扫码成员或整笔终态矛盾时保留 CONFLICT，不改写原事实。此规则不适用于 RACK_MOVE、RACK_ROTATE、BIN_EXCHANGE 或 RACK_BIN_SLOT 目标。它释放的是 WES 依赖门禁，RCS 内部任务与车辆调度仍由 RCS 拥有。
+
+任务首次进入 `ACCEPTED` 时可冻结观察期限 `result_deadline_at`，供等待时长监控。期限到达不产生 `UNKNOWN` 搬运结果，不改变任务的物理结果或位置事实。RCS 保证已接纳任务最终有明确终态，并经可靠 Response 链路送达；WES 保留原任务身份和证据，等待该权威终态；本节扫码已确认整笔交付时按扫码规则闭合本地任务并继续接收迟到结果。真实 `POSITION_UNKNOWN` 或证据冲突仍按其专属事实处理。
 
 等待窗口的唯一默认值与合法范围由 `src/core/conf.py` 的 Settings 定义；配置变更须重启消费进程，
 仅影响之后首次接纳且尚未冻结 deadline 的任务，不重算已保存期限。

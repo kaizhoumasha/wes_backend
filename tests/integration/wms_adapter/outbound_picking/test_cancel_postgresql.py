@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
@@ -19,12 +20,17 @@ from src.app.execution.models import (
     InboundEvidenceApplyStatus as Status,
 )
 from src.app.execution.services import InboundEvidenceService
-from src.app.wms_adapter.outbound_picking.cancel_wire import PickingTaskCancelEvent, PickingTaskCancelMembersData
+from src.app.wms_adapter.outbound_picking.cancel_wire import (
+    PickingTaskCancelEvent,
+    PickingTaskCancelInvalidData,
+    PickingTaskCancelMembersData,
+)
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PickingTaskPlanDeltaEvent
 from src.app.wms_adapter.outbound_picking.typed import encode_request
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import (
     DirectPickExecution,
+    DirectPickFaceCompletion,
     PickingTask,
     PickingTaskBinSourceRack,
     PickingTaskStatus,
@@ -195,7 +201,7 @@ async def _cancel_evidence_id(db, *, task_name: str, operation_id: str) -> int:
 
 
 @pytest.mark.parametrize("task_status", tuple(PickingTaskStatus))
-async def test_plan_members_cancel_respects_task_state(
+async def test_plan_members_cancel_preserves_any_parent_task_state(
     integration_session_factory,
     executing_task_with_members,
     task_status: PickingTaskStatus,
@@ -224,9 +230,7 @@ async def test_plan_members_cancel_respects_task_state(
         received_at=NOW,
     )
 
-    assert (result.code, result.reason_code) == (
-        ("RECEIVED", None) if task_status is PickingTaskStatus.EXECUTING else ("CONFLICT", "STATE_CONFLICT")
-    )
+    assert (result.code, result.reason_code) == ("RECEIVED", None)
     async with integration_session_factory() as db:
         rack = await db.scalar(
             select(PickingTaskBinSourceRack).where(
@@ -237,12 +241,85 @@ async def test_plan_members_cancel_respects_task_state(
         )
         evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.operation_id == operation_id))
     assert rack is not None and evidence is not None
-    if task_status is PickingTaskStatus.EXECUTING:
-        assert rack.cancelled_evidence_id == evidence.id
+    assert rack.cancelled_evidence_id == evidence.id
+    assert evidence.apply_status == Status.APPLIED
+    async with integration_session_factory() as db:
+        task = await db.get(PickingTask, task_id)
+        assert task.status == task_status
+        assert task.last_applied_plan_revision == 1
+        assert task.archived_at == (NOW if task_status is PickingTaskStatus.ARCHIVED else None)
+
+
+async def test_replay_state_rejected_member_cancel_preserves_original_evidence_and_conflict(
+    integration_session_factory, executing_task_with_members
+) -> None:
+    task_id, task_name = executing_task_with_members
+    operation_id = new_uuid7()
+    event = PickingTaskCancelEvent.model_validate(
+        {
+            "operation": "outbound.picking_task.cancel@v1",
+            "operation_id": operation_id,
+            "timestamp": 1,
+            "data": {
+                "task_id": task_name,
+                "cancel_scope": "PLAN_MEMBERS",
+                "bin_source_racks": [{"plan_revision": 1, "rack_id": "RACK-5F-001", "rack_face": ["90"]}],
+            },
+        }
+    )
+    payload = event.model_dump(mode="json", exclude_none=True)
+    async with integration_session_factory.begin() as db:
+        task = await db.get(PickingTask, task_id)
+        task.status = PickingTaskStatus.EXECUTION_COMPLETED
+        service = InboundEvidenceService()
+        accepted = await service.accept(
+            db,
+            kind=InboundEvidenceKind.WMS_EVENT,
+            source_identity=f"{event.operation}:{operation_id}",
+            operation=event.operation,
+            operation_id=operation_id,
+            normalized_payload=payload,
+            received_at=NOW,
+            contract_key=event.operation,
+            contract_version="1.0",
+            apply_status=Status.RECONCILING,
+        )
+        evidence_id = accepted.evidence.id
+        original_digest = accepted.evidence.payload_digest
+        accepted.evidence.picking_task_id = task_id
+        conflict = await service.record_conflict(
+            db,
+            first=accepted.evidence,
+            source_identity=accepted.evidence.source_identity,
+            normalized_payload=payload,
+            reason_code="STATE_CONFLICT",
+            received_at=NOW,
+        )
+        conflict_id = conflict.id
+
+    cancel = PickingTaskCancelService(integration_session_factory)
+    results = await asyncio.gather(*(cancel.record(event, received_at=NOW + timedelta(days=1)) for _ in range(2)))
+    assert sorted(result.code for result in results) == ["DUPLICATE", "RECEIVED"]
+    async with integration_session_factory() as db:
+        evidence = await db.get(InboundEvidence, evidence_id)
+        conflict = await db.get(InboundEvidenceConflict, conflict_id)
+        task = await db.get(PickingTask, task_id)
+        members = (
+            await db.scalars(
+                select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == task_id)
+            )
+        ).all()
+        assert evidence.operation_id == operation_id
+        assert evidence.normalized_payload == payload
+        assert evidence.payload_digest == original_digest
+        assert evidence.received_at == NOW
         assert evidence.apply_status == Status.APPLIED
-    else:
-        assert rack.cancelled_evidence_id is None
-        assert evidence.apply_status == Status.RECONCILING
+        assert conflict.reason_code == "STATE_CONFLICT"
+        assert conflict.normalized_payload == payload
+        assert conflict.first_evidence_id == evidence_id
+        assert task.status == PickingTaskStatus.EXECUTION_COMPLETED
+        assert task.last_applied_plan_revision == 1
+        assert {m.rack_face: m.cancelled_evidence_id for m in members} == {"90": evidence_id, "270": None}
 
 
 async def test_cancel_members_matches_selectors_and_marks_rows(
@@ -409,3 +486,184 @@ async def test_first_rejection_returns_state_and_reference_conflict_reasons(
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id == evidence.evidence.id)
         )
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence.evidence.id))
+
+
+@pytest.mark.parametrize(("slots", "previously_rejected"), [(None, False), (None, True), (["A-03"], False)])
+async def test_direct_pick_cancel_whole_face_and_slots_preserve_scope_identity_and_completed_fact(
+    integration_session_factory, executing_task_with_members, slots, previously_rejected
+) -> None:
+    task_id, task_name = executing_task_with_members
+    other_name = f"OTHER-{new_uuid7()}"
+    other_task_id = other_evidence_id = completion_id = None
+    try:
+        async with integration_session_factory.begin() as db:
+            task = await db.get(PickingTask, task_id)
+            task.status = PickingTaskStatus.EXECUTION_COMPLETED
+            original = await db.scalar(
+                select(DirectPickExecution).where(DirectPickExecution.picking_task_id == task_id)
+            )
+            original_source = original.source_evidence_id
+            old_cancel_id = await _cancel_evidence_id(db, task_name=task_name, operation_id=new_uuid7())
+            other_operation_id = new_uuid7()
+            other_operation = "outbound.picking_task.issued@v1"
+            other_evidence = await InboundEvidenceService().accept(
+                db,
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"{other_operation}:{other_operation_id}",
+                operation=other_operation,
+                operation_id=other_operation_id,
+                normalized_payload={"data": {"task_id": other_name}},
+                received_at=NOW,
+                apply_status=Status.APPLIED,
+            )
+            other_evidence_id = other_evidence.evidence.id
+            other = PickingTask(
+                task_id=other_name,
+                task_type="MANUAL",
+                status="EXECUTING",
+                queue_revision=1,
+                dispatch_sequence=2,
+                issued_at_ms=1,
+                issued_evidence_id=other_evidence_id,
+                workline_id=task.workline_id,
+            )
+            db.add(other)
+            await db.flush()
+            other_task_id = other.id
+            specs = [
+                (task_id, 1, "RETURN-RACK-01", "A", "A-04", None),
+                (task_id, 1, "RETURN-RACK-01", "A", "OLD", old_cancel_id),
+                (task_id, 1, "RETURN-RACK-01", "B", "A-03", None),
+                (task_id, 2, "RETURN-RACK-01", "A", "A-03", None),
+                (task_id, 1, "OTHER-RACK", "A", "A-03", None),
+                (task_id, 1, "MIX", "A", "S1", None),
+                (task_id, 1, "MIX", "A", "S2", None),
+                (other_task_id, 1, "RETURN-RACK-01", "A", "A-03", None),
+            ]
+            for owner, revision, rack, face, slot, cancelled in specs:
+                db.add(
+                    DirectPickExecution(
+                        picking_task_id=owner,
+                        plan_revision=revision,
+                        rack_id=rack,
+                        rack_face=face,
+                        slot_id=slot,
+                        source_evidence_id=original_source if owner == task_id else other_evidence_id,
+                        cancelled_evidence_id=cancelled,
+                    )
+                )
+            completed = DirectPickFaceCompletion(
+                picking_task_id=task_id,
+                plan_revision=1,
+                rack_id="RETURN-RACK-01",
+                rack_face="A",
+                completed_at=NOW,
+                source_evidence_id=original_source,
+            )
+            db.add(completed)
+            await db.flush()
+            completion_id = completed.id
+            completed_before = completed.model_dump()
+            before = {
+                row.id: row.model_dump()
+                for row in (
+                    await db.scalars(
+                        select(DirectPickExecution).where(
+                            DirectPickExecution.picking_task_id.in_([task_id, other_task_id])
+                        )
+                    )
+                ).all()
+            }
+        selector = {"plan_revision": 1, "rack_id": "RETURN-RACK-01", "rack_face": "A"}
+        if slots is not None:
+            selector["slot_ids"] = slots
+        payload = {
+            "operation": "outbound.picking_task.cancel@v1",
+            "operation_id": new_uuid7(),
+            "timestamp": 1,
+            "data": {
+                "task_id": task_name,
+                "cancel_scope": "PLAN_MEMBERS",
+                "direct_pick_sources": [
+                    selector,
+                    {"plan_revision": 1, "rack_id": "MIX", "rack_face": "A", "slot_ids": ["S1"]},
+                ],
+            },
+        }
+        service = PickingTaskCancelService(integration_session_factory)
+        if previously_rejected:
+            rejected = await service.record(
+                PickingTaskCancelInvalidData(payload, ValueError("slot_ids required")), received_at=NOW
+            )
+            assert (rejected.code, rejected.reason_code) == ("REJECTED", "INVALID_DATA")
+            async with integration_session_factory() as db:
+                old = await db.scalar(
+                    select(InboundEvidence).where(
+                        InboundEvidence.operation_id == payload["operation_id"],
+                        InboundEvidence.operation == payload["operation"],
+                    )
+                )
+                old_identity = (old.id, old.source_identity, old.payload_digest, old.received_at)
+        event = PickingTaskCancelEvent.model_validate(payload)
+        assert (await service.record(event, received_at=NOW + timedelta(seconds=1))).code == "RECEIVED"
+        assert (await service.record(event, received_at=NOW + timedelta(seconds=2))).code == "DUPLICATE"
+        drift = event.model_dump(mode="json", exclude_none=True)
+        drift["data"]["direct_pick_sources"][0]["slot_ids"] = ["A-04"]
+        conflict = await service.record(
+            PickingTaskCancelEvent.model_validate(drift), received_at=NOW + timedelta(seconds=3)
+        )
+        assert (conflict.code, conflict.reason_code) == ("CONFLICT", "IDEMPOTENCY_CONFLICT")
+        async with integration_session_factory() as db:
+            evidence = await db.scalar(
+                select(InboundEvidence).where(
+                    InboundEvidence.operation == event.operation, InboundEvidence.operation_id == event.operation_id
+                )
+            )
+            assert evidence.normalized_payload == payload and evidence.apply_status == Status.APPLIED
+            if previously_rejected:
+                assert (
+                    evidence.id,
+                    evidence.source_identity,
+                    evidence.payload_digest,
+                    evidence.received_at,
+                ) == old_identity
+            assert evidence.received_at == (NOW if previously_rejected else NOW + timedelta(seconds=1))
+            assert (await db.get(PickingTask, task_id)).status == PickingTaskStatus.EXECUTION_COMPLETED
+            assert (await db.get(DirectPickFaceCompletion, completion_id)).model_dump() == completed_before
+            after = (
+                await db.scalars(
+                    select(DirectPickExecution).where(DirectPickExecution.picking_task_id.in_([task_id, other_task_id]))
+                )
+            ).all()
+            for row in after:
+                frozen = before[row.id]
+                expected = frozen["cancelled_evidence_id"]
+                if (
+                    row.picking_task_id == task_id
+                    and row.plan_revision == 1
+                    and row.rack_face == "A"
+                    and expected is None
+                ):
+                    if row.rack_id == "RETURN-RACK-01" and (slots is None or row.slot_id in slots):
+                        expected = evidence.id
+                    if row.rack_id == "MIX" and row.slot_id == "S1":
+                        expected = evidence.id
+                assert row.cancelled_evidence_id == expected
+                changed_fields = {"cancelled_evidence_id"}
+                if expected != frozen["cancelled_evidence_id"]:
+                    changed_fields.add("updated_at")
+                    assert row.updated_at is not None
+                assert row.model_dump(exclude=changed_fields) == {
+                    k: v for k, v in frozen.items() if k not in changed_fields
+                }
+    finally:
+        async with integration_session_factory.begin() as db:
+            if completion_id:
+                await db.execute(delete(DirectPickFaceCompletion).where(DirectPickFaceCompletion.id == completion_id))
+            if other_task_id:
+                await db.execute(
+                    delete(DirectPickExecution).where(DirectPickExecution.picking_task_id == other_task_id)
+                )
+                await db.execute(delete(PickingTask).where(PickingTask.id == other_task_id))
+            if other_evidence_id:
+                await db.execute(delete(InboundEvidence).where(InboundEvidence.id == other_evidence_id))

@@ -136,7 +136,8 @@ class ManualPickingBatchDriver:
 
     async def project_exits_in_session(self, db: Any, line: Any) -> int:
         """扫描持久离场义务；原 Transport 接纳只完成交接，不声明物理取走。"""
-        count = await self._advance_cancelled_source_windows(db, line)
+        count = await self._batches.release_completed_source_windows(db, workline_id=line.id, now=timezone.now_for_db())
+        count += await self._advance_cancelled_source_windows(db, line)
         count += await self._advance_retired_drain_clearance(db, line) if self._drain is not None else 0
         outlet = line.position_bindings[OUTLET.slot_key]["location_id"]
         for row in await self._passages.requested_for_update(db, line.id):
