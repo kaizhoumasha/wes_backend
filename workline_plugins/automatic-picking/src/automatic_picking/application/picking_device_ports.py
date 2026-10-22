@@ -1,6 +1,5 @@
 """正常机械臂的统一合同读口；未冻结的位置编码、扫码关联由必填端口显式提供。"""
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, localcontext
@@ -32,13 +31,11 @@ from .work_model import AutomaticPickingWork
 
 @dataclass(frozen=True, slots=True)
 class PickingArmBinding:
-    """调用方显式给定的当前工作线绑定；不推断箱型、面向或现场位置。"""
+    """调用方显式给定的当前工作线位置；箱型编码和 rack_face 直接沿授权传递。"""
 
     work_location: str | None
     scan_location: str | None
     target_location: str | None
-    bin_types: Mapping[int, str]
-    rack_sides: Mapping[str, str]
 
     def __post_init__(self):
         if any(
@@ -46,13 +43,6 @@ class PickingArmBinding:
             for value in (self.work_location, self.scan_location, self.target_location)
         ):
             raise ValueError("arm locations require explicit nonempty binding")
-        if any(
-            type(key) is not int or key not in (2, 3, 6) or type(value) is not str or not value
-            for key, value in self.bin_types.items()
-        ):
-            raise ValueError("bin types require an explicit WMS to device mapping")
-        if any(type(key) is not str or not key or value not in ("A", "B") for key, value in self.rack_sides.items()):
-            raise ValueError("rack faces require an explicit WMS to A/B mapping")
 
 
 def _device_number(value):
@@ -72,9 +62,6 @@ class PickingArmCommandMapper:
         if binding is None or binding.work_location is None or binding.scan_location is None or work.source is None:
             return None
         source = work.source
-        bin_type = binding.bin_types.get(source.bin_type)
-        if bin_type is None:
-            return None
         thickness = Decimal(str(source.reel_thickness))
         # 精度由输入位数限定，避免 0.1×3 的浮点尾差或 Decimal 默认精度截断。
         if thickness.is_zero() or source.reel_layer == 0:
@@ -87,7 +74,7 @@ class PickingArmCommandMapper:
             "source": {
                 "location_id": binding.work_location,
                 "location_type": "BIN",
-                "bin_type": bin_type,
+                "bin_type": str(source.bin_type),
                 "bin_cell_location": str(source.cell_index),
                 "reel_layer": str(source.reel_layer),
                 "reel_thickness": _device_number(source.reel_thickness),
@@ -100,12 +87,7 @@ class PickingArmCommandMapper:
 
     async def put_request(self, db, *, workline_id, pickup_id, material_execution_id, target, now):
         binding = await self._binding(db, workline_id)
-        if (
-            binding is None
-            or binding.scan_location is None
-            or binding.target_location is None
-            or target.rack_face not in binding.rack_sides
-        ):
+        if binding is None or binding.scan_location is None or binding.target_location is None:
             return None
         if target.rack_layer not in range(1, 6):
             raise ValueError("target rack layer is outside hardware range 1 through 5")
@@ -145,7 +127,7 @@ class PickingArmCommandMapper:
                 "location_id": binding.target_location,
                 "location_type": "FIVE_LAYER_RACK",
                 "rack_id": target.rack_id,
-                "rack_side": binding.rack_sides[target.rack_face],
+                "rack_face": target.rack_face,
                 "rack_layer": str(target.rack_layer),
                 "rack_column": str(target.rack_column),
                 "reel_thickness": source["reel_thickness"],
@@ -274,6 +256,7 @@ class PickingMaterialScanReader:
             or command.execution_ref_id != pickup.pickup_id
             or command.material_execution_id is not None
             or command.workline_id != work.workline_id
+            or event.device_code != command.device_code
             or evidence.workline_id != work.workline_id
         ):
             raise ValueError("material scan lost original Work/Pickup/source Command identity")

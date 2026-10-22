@@ -14,7 +14,7 @@ SOURCE = PickingCellSource("CELL-7", 7, 2, 1, 20.0, 15.0)
 TARGET = PickingTargetRackSlot("TARGET", "A", "S1", 1, 1)
 
 
-def arm_mapping(*, available=True, bin_types=None, rack_sides=None):
+def arm_mapping(*, available=True):
     line = N(
         id=1,
         is_active=True,
@@ -24,8 +24,8 @@ def arm_mapping(*, available=True, bin_types=None, rack_sides=None):
                 "SCAN2": "S2",
                 "SCAN3": "S3",
                 "SCAN4": "S4",
-                "SOURCE_ARM": "ARM-X",
-                "TARGET_ARM": "ARM-Y",
+                "SOURCE_ARM": "ARM01",
+                "TARGET_ARM": "ARM02",
             }
         },
     )
@@ -57,8 +57,6 @@ def arm_mapping(*, available=True, bin_types=None, rack_sides=None):
         "EXPLICIT-WORK",
         "EXPLICIT-PLATFORM",
         "EXPLICIT-TARGET",
-        {2: "TEST-BIN-TYPE"} if bin_types is None else bin_types,
-        {"A": "B"} if rack_sides is None else rack_sides,
     )
     provider = N(read_in_session=AsyncMock(return_value=binding if available else None))
     db.scalar.side_effect = [pickup, command]
@@ -78,7 +76,7 @@ async def test_mapping_uses_current_role_binding_identity_and_configured_deadlin
             "source": {
                 "location_id": "EXPLICIT-WORK",
                 "location_type": "BIN",
-                "bin_type": "TEST-BIN-TYPE",
+                "bin_type": "2",
                 "bin_cell_location": "7",
                 "reel_layer": "3",
                 "reel_thickness": "0.1",
@@ -98,14 +96,14 @@ async def test_mapping_uses_current_role_binding_identity_and_configured_deadlin
                 "location_id": "EXPLICIT-TARGET",
                 "location_type": "FIVE_LAYER_RACK",
                 "rack_id": "TARGET",
-                "rack_side": "B",
+                "rack_face": "A",
                 "rack_layer": "1",
                 "rack_column": "1",
                 "reel_thickness": "0.1",
                 "reel_diameter": "15",
             },
         }
-    assert request.device_code == ("ARM-X" if role == "source" else "ARM-Y")
+    assert request.device_code == ("ARM01" if role == "source" else "ARM02")
     assert request.task_type == "PICK_AND_PUT"
     assert request.contract_key == "third_party_integration" and request.contract_version == "1.1"
     assert request.deadline_at == NOW + timedelta(milliseconds=1234)
@@ -124,33 +122,16 @@ async def test_missing_complete_parameters_never_manufactures_command_defaults()
 
 
 @pytest.mark.asyncio
-async def test_missing_bin_type_or_face_mapping_blocks_only_its_command():
-    mapper, db, _ = arm_mapping(bin_types={}, rack_sides={})
-    work = WorkSourceFact(11, 1, 31, SOURCE, None, True, None, True, True, True)
-    assert await mapper.source_request(db, work=work, pickup_id="P1") is None
-    assert (
-        await mapper.put_request(db, workline_id=1, pickup_id="P1", material_execution_id=22, target=TARGET, now=NOW)
-        is None
-    )
-    mapper, db, _ = arm_mapping(rack_sides={})
-    assert await mapper.source_request(db, work=work, pickup_id="P1") is not None
-
-
-@pytest.mark.asyncio
 async def test_partial_locations_block_only_the_command_that_needs_them():
     mapper, db, _ = arm_mapping()
-    mapper.bindings.read_in_session.return_value = PickingArmBinding(
-        "EXPLICIT-WORK", "EXPLICIT-PLATFORM", None, {2: "TEST-TYPE"}, {}
-    )
+    mapper.bindings.read_in_session.return_value = PickingArmBinding("EXPLICIT-WORK", "EXPLICIT-PLATFORM", None)
     work = WorkSourceFact(11, 1, 31, SOURCE, None, True, None, True, True, True)
     assert await mapper.source_request(db, work=work, pickup_id="P1") is not None
     assert (
         await mapper.put_request(db, workline_id=1, pickup_id="P1", material_execution_id=22, target=TARGET, now=NOW)
         is None
     )
-    mapper.bindings.read_in_session.return_value = PickingArmBinding(
-        None, "EXPLICIT-PLATFORM", "EXPLICIT-TARGET", {}, {"A": "A"}
-    )
+    mapper.bindings.read_in_session.return_value = PickingArmBinding(None, "EXPLICIT-PLATFORM", "EXPLICIT-TARGET")
     assert await mapper.source_request(db, work=work, pickup_id="P1") is None
     assert (
         await mapper.put_request(db, workline_id=1, pickup_id="P1", material_execution_id=22, target=TARGET, now=NOW)
@@ -188,14 +169,12 @@ async def test_target_layer_outside_hardware_range_never_creates_put():
         )
 
 
-@pytest.mark.parametrize("field,value", [("work_location", ""), ("bin_types", {2: ""}), ("rack_sides", {"A": "90"})])
+@pytest.mark.parametrize("field,value", [("work_location", ""), ("scan_location", ""), ("target_location", "")])
 def test_binding_never_turns_unknown_or_invalid_values_into_defaults(field, value):
     values = {
         "work_location": "WORK",
         "scan_location": "SCAN",
         "target_location": "TARGET",
-        "bin_types": {},
-        "rack_sides": {},
     }
     values[field] = value
     with pytest.raises(ValueError):
@@ -208,7 +187,7 @@ def scan_fixture(*, code="SOURCE-1", data=None):
     from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 
     event = EcsDeviceEvent(
-        device_code="EXPLICIT-SCANNER",
+        device_code="ARM01",
         contract_key="third_party_integration",
         contract_version="1.1",
         event_type="SCAN_COMPLETED",
@@ -235,6 +214,7 @@ def scan_fixture(*, code="SOURCE-1", data=None):
     )
     command = N(
         command_code="SOURCE-1",
+        device_code="ARM01",
         task_type="PICK_AND_PUT",
         workline_id=1,
         execution_ref_type="WORKLINE_BUSINESS",
@@ -251,6 +231,40 @@ def scan_fixture(*, code="SOURCE-1", data=None):
     )
     association = N(read_in_session=AsyncMock(return_value="SOURCE-1"))
     return db, evidence, command, association
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bin_type", [2, 3, 6])
+async def test_confirmed_bin_codes_do_not_need_a_mapping_table(bin_type):
+    mapper, db, _ = arm_mapping()
+    source = PickingCellSource("CELL-7", 7, bin_type, 3, 0.1, 15.0)
+    work = WorkSourceFact(11, 1, 31, source, None, True, None, True, True, True)
+    request = await mapper.source_request(db, work=work, pickup_id="P1")
+    assert request is not None
+    assert request.params["source"]["bin_type"] == str(bin_type)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("face", ["A", "B", "90", "270", " 90 "])
+async def test_confirmed_target_face_is_preserved_without_side_conversion(face):
+    mapper, db, _ = arm_mapping()
+    target = PickingTargetRackSlot("TARGET", face, "S1", 1, 1)
+    request = await mapper.put_request(
+        db, workline_id=1, pickup_id="P1", material_execution_id=22, target=target, now=NOW
+    )
+    assert request is not None
+    assert request.params["target"]["rack_face"] == face
+    assert "rack_side" not in request.params["target"]
+
+
+@pytest.mark.asyncio
+async def test_scan_from_the_other_arm_cannot_bind_the_normal_source_command():
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, command, association = scan_fixture()
+    command.device_code = "ARM02"
+    with pytest.raises(ValueError, match="identity"):
+        await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
 
 
 @pytest.mark.asyncio

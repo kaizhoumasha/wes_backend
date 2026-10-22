@@ -652,21 +652,21 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 
 | 修订项 | Current Wire → Target Wire | 待决语义 | Compatibility Impact | WMS Decision |
 | --- | --- | --- | --- | --- |
-| A1 `work_plan.READY` | `cell_ids[]` → 单个 `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `cell_id` 保持业务编码，`cell_index` 为 int 1–7；设备同编号转字符串，剩余箱型/面向和实际绑定各自补证 | 一次性替换 READY DTO | WMS Accepted |
+| A1 `work_plan.READY` | `cell_ids[]` → 单个 `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `cell_id` 保持业务编码，`cell_index` 为 int 1–7；设备同编号转字符串；箱型直接使用2/3/6，rack_face 原样传递，实际位置绑定按各自输入核对 | 一次性替换 READY DTO | WMS Accepted |
 | A2 `material.decide` 请求 | `six_in_one` 六字段 → `barcode` 原文 | 非空 UTF-8 原文，最多 1000 字符；超界按 `INVALID_DATA` 拒绝 | 一次性替换请求 DTO | WMS Accepted |
 | A3 `material.decide.ACCEPT.target_locator` | 增加 `rack_layer`、`rack_column` | WMS 直接给出，`ROTATE/REPLACE` 后同样提供 | 一次性替换 ACCEPT 目标 DTO | WMS Accepted |
 | A4 `material.decide.ACCEPT.next_source_action` | `CONTINUE/SOURCE_DONE` → 下一盘/下一 Cell 对象，含编码 `cell_id` 与独立 `cell_index`；无后续时省略 | 同 Cell 参数及换 Cell 决定由 WMS 按当次业务事实提供 | 一次性替换 ACCEPT 结果 DTO | WMS Accepted |
 
 A4 的 `RACK_SLOT` 来源是单盘储位，目标响应省略 `next_source_action`，其余直接取料来源由插件按当前有效 plan member 继续编排。`BIN_CELL` 的对象可表示同 Cell 下一盘或另一个 Cell；在当前授权和获批后继来源合同范围内，同一 Passage 是否继续取其他 revision 涉及的物料由 WMS 决定，WES 不按 revision 切断当前 Bin 工作。当前栈顶可靠取出且后继授权有效后，WES 可按主合同 §10.3 在当前盘 PUT 或报告尚未完成时下发下一条来源命令，实际交接由 ECS/PLC 硬件锁裁决；依赖当前盘位置报告的完成条件仍等待 WMS 确认。`REJECT` 继续使用 `business_exception_code + ng_locator + source_disposition`；`WAIT` 继续携带 `retry_after_ms`。自动插件 MVP 暂不执行 NG，不得据此删除长期合同中的 NG 协议。
 
-设备映射按[机械臂附录](device-annex-automatic-picking-arms.md)收窄：说明书已明确设备字符串格式、单元格1–7、层1–5、毫米/寸与必填位置字段，不再重复确认。正常链只补 WMS 数字箱型到设备箱型、`rack_face` 到 A/B、WMS 尺寸单位对齐和实际绑定，未给定时只停对应命令。O1/O2 精确扫码关联仍未闭合；CK04 仅限制目标 ROTATE；C1/C2 不扩大。DirectPick 的 O13/O17 仍只限制该路径，不反推 `bin_*` 或新增 wire 字段。
+设备映射按[机械臂附录](device-annex-automatic-picking-arms.md)收窄：说明书已明确设备字符串格式、单元格1–7、层1–5、毫米/寸与必填位置字段，不再重复确认。最新确认已取消箱型/面向转换表：`bin_type` 2/3/6 直接转设备字符串，统一 `rack_face` 并原样传递。正常来源 ARM01 取料到扫码平台并触发扫码，ARM02 将本盘放入转运货架；扫码必须与原来源 Command 的设备一致，精确关联字段仍待明确，不猜时间或最近命令。实际位置/时限及 WMS 尺寸单位仍按对应输入核对。ARM02 退料取出整箱还是单盘未明确，仅限制该退料设备路径，不反推 `bin_*` 或新增 wire 字段。CK04 仅限制目标 ROTATE；退箱补架容量接续与回库分配核销只限制相应 drain 路径。
 
 ### 6.0 字段类型确认（2026-10-16）
 
 WMS 已补充确认：`cell_index` 为 int，值为 1–7；`bin_type` 为 int，值为 2、3、6；
 `reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float；
 `barcode` 为原始 str，最多 1000 字符（沿用主合同非空 UTF-8，不裁剪、不拆分）。
-WMS DTO 不反向套用设备字符串类型或新增物理枚举；插件设备边界按说明书转换并校验已明确范围，其余范围不推定。设备箱型/面向、实际绑定及业务编码对应按各自关口处理；报告 barcode 已统一为本盘扫码原文，不再另取物料编号，不阻塞共享 DTO 与 typed 接线。
+WMS DTO 不反向套用设备字符串类型或新增物理枚举；插件设备边界按说明书转换并校验已明确范围，其余范围不推定。箱型直接传编码、rack_face 原样传递；实际位置绑定及精确扫码关联按各自关口处理；报告 barcode 已统一为本盘扫码原文，不再另取物料编号，不阻塞共享 DTO 与 typed 接线。
 
 ### 6.1 退料货架整架任务完成 API（WMS 已确认，WES 待实施）
 

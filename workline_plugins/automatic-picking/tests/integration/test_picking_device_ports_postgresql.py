@@ -29,6 +29,7 @@ from wes_plugin_sdk import TransportRackPosition, TransportRackReference, Transp
 
 from src.app.device.contracts import EcsCommandResultReport, EcsDeviceEvent, EcsDeviceEventReport
 from src.app.device.models.command import DeviceCommand
+from src.app.device.models.device import Device
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
 from src.app.execution.models import InboundEvidence, MaterialExecution, TransportDecisionBinding, WmsConfirmation
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
@@ -56,13 +57,13 @@ async def assembled(p):
     await application(p)
     p.params_available, p.associations, p.observed = True, {}, None
 
-    p.bin_types, p.rack_sides = {2: "TEST-TWO", 3: "TEST-THREE", 6: "TEST-SIX"}, {"A": "A", "B": "B"}
+    p.work_location, p.target_location = "EXPLICIT-WORK", "EXPLICIT-TARGET"
 
     class Bindings:
         async def read_in_session(self, db, *, workline_id):
             assert workline_id == p.line.id
             return (
-                PickingArmBinding("EXPLICIT-WORK", "EXPLICIT-PLATFORM", "EXPLICIT-TARGET", p.bin_types, p.rack_sides)
+                PickingArmBinding(p.work_location, "EXPLICIT-PLATFORM", p.target_location)
                 if p.params_available
                 else None
             )
@@ -82,6 +83,23 @@ async def assembled(p):
     )
     async with p.sessions.begin() as db:
         line = await db.get(WorkLine, p.line.id)
+        # 只在隔离库显式装配已确认分工，不创建生产绑定或派发。
+        for role, code in (("SOURCE_ARM", "ARM01"), ("TARGET_ARM", "ARM02")):
+            device = Device(device_code=code, device_name="offline confirmed arm", work_line_id=line.id)
+            db.add(device)
+            await db.flush()
+            line.config = {**line.config, "device_bindings": {**line.config["device_bindings"], role: code}}
+            line.device_contracts = {
+                **line.device_contracts,
+                code: {
+                    "device_id": device.id,
+                    "endpoint_base_url": "http://127.0.0.1:1",
+                    "contract_key": "third_party_integration",
+                    "contract_version": "1.1",
+                    "command_timeout_ms": 30000,
+                    "status_max_age_ms": 30000,
+                },
+            }
         line.device_contracts = {
             code: {**binding, "contract_key": "third_party_integration", "contract_version": "1.1"}
             for code, binding in line.device_contracts.items()
@@ -161,7 +179,7 @@ async def material_scan(p, code, *, barcode=BARCODE):
     ingress = DeviceEvidenceService(session_factory=p.sessions)
     receipt = await ingress.accept_event(
         EcsDeviceEventReport(
-            device_code="OFFLINE-SCAN2",
+            device_code="ARM01",
             event_type="SCAN_COMPLETED",
             timestamp=457,
             data={"location": "EXPLICIT-PLATFORM", "barcode": barcode},
@@ -204,23 +222,23 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
         assert (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id is None
         assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
     p.params_available = True
-    original_types, p.bin_types = p.bin_types, {}
+    p.work_location = None
     await tick(p, plugin)
     async with p.sessions() as db:
         assert (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id is None
         assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
-    p.bin_types = original_types
+    p.work_location = "EXPLICIT-WORK"
     await asyncio.gather(*(tick(p, plugin) for _ in range(3)))
     async with p.sessions() as db:
         p.pickup_id = (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id
         source_code = (await current_pickup(p, db)).command_code
         source = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
-        assert source.task_type == "PICK_AND_PUT" and source.device_code == "OFFLINE-SOURCE"
+        assert source.task_type == "PICK_AND_PUT" and source.device_code == "ARM01"
         assert source.params == {
             "source": {
                 "location_id": "EXPLICIT-WORK",
                 "location_type": "BIN",
-                "bin_type": "TEST-TWO",
+                "bin_type": "2",
                 "bin_cell_location": "7",
                 "reel_layer": "1",
                 "reel_thickness": "20",
@@ -265,24 +283,24 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
         )
         assert observation.removed_evidence_id is None  # 宿主应用完成，尚未发布。
     await processor(p, plugin).process_batch()
-    original_sides, p.rack_sides = p.rack_sides, {}
+    p.target_location = None
     await tick(p, plugin)
     async with p.sessions() as db:
         assert (await current_pickup(p, db)).put_command_code is None
-    p.rack_sides = original_sides
+    p.target_location = "EXPLICIT-TARGET"
     await asyncio.gather(*(tick(p, plugin) for _ in range(3)))
     async with p.sessions() as db:
         assert (await db.get(InboundEvidence, receipt.evidence_id)).published_at is not None
         put_code = (await current_pickup(p, db)).put_command_code
         put = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == put_code))
-        assert put.device_code == "OFFLINE-TARGET" and put.task_type == "PICK_AND_PUT"
+        assert put.device_code == "ARM02" and put.task_type == "PICK_AND_PUT"
         assert put.params == {
             "source": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
             "target": {
                 "location_id": "EXPLICIT-TARGET",
                 "location_type": "FIVE_LAYER_RACK",
                 "rack_id": TARGET.rack_id,
-                "rack_side": "A",
+                "rack_face": "A",
                 "rack_layer": "1",
                 "rack_column": "1",
                 "reel_thickness": "20",
@@ -400,6 +418,7 @@ async def test_real_ports_late_replace_accept_uses_existing_target_obligation(in
         source_code = (await current_pickup(p, db)).command_code
         command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
         command.task_type = "PICK_AND_PUT"
+        command.device_code = "ARM01"
         command.params = {
             **command.params,
             "source": {
@@ -414,7 +433,7 @@ async def test_real_ports_late_replace_accept_uses_existing_target_obligation(in
         scan = await db.get(InboundEvidence, p.scan_id)
         value = scan.normalized_payload["fixture"]
         event = EcsDeviceEvent(
-            device_code="OFFLINE-SCAN2",
+            device_code="ARM01",
             event_type="SCAN_COMPLETED",
             timestamp=value["scanned_at"],
             data={"barcode": value["barcode"], "location": "EXPLICIT-PLATFORM"},
