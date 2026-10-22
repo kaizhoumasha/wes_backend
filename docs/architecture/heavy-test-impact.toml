@@ -3247,3 +3247,11 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/versions/20261023_0000_a8c5e2107b94_新增人工任务业务类型.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]

@@ -381,3 +381,87 @@ async def test_business_type_migration_preserves_existing_outbound_and_checks_ne
             await assert_database_head(connection, "a8c5e2107b94")
         finally:
             await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "starting_revisions", [(), ("a8c5e2107b94",), ("f0c2423ac98a",), ("a8c5e2107b94", "f0c2423ac98a")]
+)
+async def test_picking_task_merge_converges_heads_without_rewriting_existing_data(starting_revisions) -> None:
+    from datetime import datetime
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from src.app.execution.models import InboundEvidence, InboundEvidenceKind
+    from src.app.workline.models import LineType
+
+    merge_revision = "c6e209af714b"
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert scripts.get_heads() == [merge_revision]
+    assert set(scripts.get_revision(merge_revision).down_revision) == {"a8c5e2107b94", "f0c2423ac98a"}
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "f72bd038e915", database_url=database_url)
+        engine = create_async_engine(database_url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        created_at = datetime(2026, 10, 19, 10)
+        try:
+            async with sessions.begin() as db:
+                line = WorkLine(line_code="MERGE-HEADS", line_name="迁移合并验证", line_type=LineType.MANUAL)
+                evidence = InboundEvidence(
+                    kind=InboundEvidenceKind.WMS_EVENT,
+                    source_identity="MERGE-HEADS-ISSUED",
+                    operation="outbound.picking_task.issued@v1",
+                    operation_id="019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+                    payload_digest="a" * 64,
+                    normalized_payload={"data": {}},
+                    received_at=created_at,
+                )
+                db.add_all([line, evidence])
+                await db.flush()
+                await db.execute(
+                    sa.text(
+                        "INSERT INTO wes_biz.picking_tasks "
+                        "(id, task_id, task_type, status, queue_revision, dispatch_sequence, issued_at_ms, "
+                        "issued_evidence_id, workline_id, created_at) "
+                        "VALUES (1, 'MERGE-HEADS', 'MANUAL', 'CANCELLED', 1, 1, 1, :evidence, :line, :created)"
+                    ),
+                    {"evidence": evidence.id, "line": line.id, "created": created_at},
+                )
+        finally:
+            await engine.dispose()
+
+        async def inspect_database():
+            connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+            try:
+                row = dict(await connection.fetchrow("SELECT * FROM wes_biz.picking_tasks WHERE id=1"))
+                columns = await connection.fetch(
+                    "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                    "WHERE table_schema='wes_biz' AND table_name='picking_tasks' ORDER BY ordinal_position"
+                )
+                constraints = await connection.fetch(
+                    "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conrelid='wes_biz.picking_tasks'::regclass ORDER BY conname"
+                )
+                versions = await connection.fetch(
+                    "SELECT version_num FROM wes_sys.alembic_version ORDER BY version_num"
+                )
+                return row, columns, constraints, [v[0] for v in versions]
+            finally:
+                await connection.close()
+
+        original_row = (await inspect_database())[0]
+        for revision in starting_revisions:
+            run_alembic("upgrade", revision, database_url=database_url)
+        before = await inspect_database()
+        run_alembic("upgrade", "head", database_url=database_url)
+        after = await inspect_database()
+        assert after[3] == [merge_revision]
+        assert after[0]["business_type"] == "outbound"
+        assert after[0]["cancelled_at"] == created_at
+        assert {k: v for k, v in after[0].items() if k not in {"business_type", "cancelled_at"}} == original_row
+        if len(starting_revisions) == 2:
+            assert before[3] == ["a8c5e2107b94", "f0c2423ac98a"]
+            assert before[:3] == after[:3]
+        run_alembic("upgrade", "head", database_url=database_url)
+        assert await inspect_database() == after
