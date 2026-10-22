@@ -1014,6 +1014,7 @@
       "data": {
         "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
         "task_type": "MANUAL",
+        "business_type": "outbound",
         "workline_code": "KT16",
         "queue_revision": 1,
         "dispatch_sequence": 100

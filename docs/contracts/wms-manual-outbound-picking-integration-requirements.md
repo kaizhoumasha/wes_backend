@@ -5,7 +5,7 @@ related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: ReviewRequired
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-10-16
+updated_at: 2026-10-23
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -170,6 +170,86 @@ driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建
 
 上述接口的字段、条件必填、响应联合、错误码、幂等和重试语义完全以出库合同为准，本文不重复摘录，也不允许出现与出库合同
 不一致的实现。
+
+### 2.1.1 manual-picking 任务业务类型 {#211-business-type}
+
+> 状态：已按 2026-10-23 实施指令确认。人工线 issued 通过 `business_type` 区分上架、出库；其余流程、operation 和字段全部沿用现有出库任务合同。
+> 代码与数据库迁移须一同部署后再联调，文档确认不代表现场已上线。
+
+`manual-picking` 接收 WMS 主动下发的上架、出库任务，沿用唯一入口 `POST /api/v1/wms/events` 和
+`outbound.picking_task.issued@v1`。本次不新增拉取接口或另一条任务发布 operation；operation 名中的 `outbound`
+沿用既有字面量，业务方向由明确字段表达，不从任务编号或来源货架推导。
+
+现有 `data.task_type=MANUAL|AUTO` 表示工作线执行方式，不能改成 `inbound|outbound`。为人工线 issued
+增加独立字段 `data.business_type`：
+
+| JSON Path | 人工线 issued 要求 | 取值与语义 |
+| --- | --- | --- |
+| `data.task_type` | 必填，固定 `MANUAL` | 匹配人工 WorkLine 与 `manual-picking` 插件 |
+| `data.business_type` | 必填，发布后不可变 | 严格小写枚举：`inbound` 为上架任务，`outbound` 为出库任务 |
+| `data.task_id` | 沿用 §7.1 | WMS 提供的唯一任务编号；两类业务共享身份空间，不按业务类型拆分幂等键 |
+| `data.workline_code` | 沿用 §7.1，发布后不可变 | WMS 指定承接任务的人工 WorkLine |
+| 队列字段 | 沿用 §7.1 | `queue_revision=1`、`dispatch_sequence` 及可选 `not_before`，不新增方向专用队列 |
+
+人工线缺少 `business_type`、传 `null` 或未知枚举应按既有 `INVALID_DATA` 拒绝，不默认出库。
+自动线不携带该字段，现有 AUTO 请求保持不变；显式携带则拒绝。`queue_changed` 不携带也不能修改业务类型；取消仍引用原 `task_id`。
+公开幂等身份仍为 `(operation, operation_id)`，规范化正文须包含 `business_type`，同 identity 改变业务类型属于正文漂移冲突；
+不能通过更换 `operation_id` 把已有任务改为另一类型。
+
+上架任务下发示例（模拟数据）：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+  "operation": "outbound.picking_task.issued@v1",
+  "timestamp": 1792713600000,
+  "data": {
+    "task_id": "PUTAWAY-20261023-001",
+    "task_type": "MANUAL",
+    "business_type": "inbound",
+    "workline_code": "KT16",
+    "queue_revision": 1,
+    "dispatch_sequence": 101
+  }
+}
+```
+
+出库任务使用相同结构，明确发送 `business_type="outbound"`，例如：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4475",
+  "operation": "outbound.picking_task.issued@v1",
+  "timestamp": 1792713600000,
+  "data": {
+    "task_id": "PICK-20261023-001",
+    "task_type": "MANUAL",
+    "business_type": "outbound",
+    "workline_code": "KT16",
+    "queue_revision": 1,
+    "dispatch_sequence": 102
+  }
+}
+```
+
+成功响应继续使用公共回调信封，示例（模拟数据）：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+  "code": "RECEIVED",
+  "timestamp": 1792713600100,
+  "data": {}
+}
+```
+
+HTTP `202 / RECEIVED` 仅表示 Evidence、任务及初始队列事实同事务可靠保存，重放沿用 `200 / DUPLICATE`；
+不代表已上架、已准备资源或已完成物理搬运。issued 仍禁止携带来源货架、Bin/Cell、目标货架、SLOT 或物理命令。
+
+**后续流程：** 两类任务使用同一 PickingTask 队列、prepare、plan_delta、人工操作与完成事实、回箱/货架离场和任务完成条件，
+不因 `business_type` 增加不同执行分支；WMS 负责按任务业务类型处理其业务内容。既有数据库任务均为出库，迁移回填 `outbound`，
+新 MANUAL 请求必须明确传值，不以数据库默认值代替接收边界校验。下文端到端出库示例的操作顺序同样适用于上架任务，
+任务编号和业务类型由 WMS 下发；代码验证不等于 WMS 联调或物理上架验收。
 
 ### 2\.2 人工出库线独有的部分（本文新增） {#22}
 

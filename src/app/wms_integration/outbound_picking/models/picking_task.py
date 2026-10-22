@@ -41,6 +41,8 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             name="picking_task_status_valid",
         ),
         CheckConstraint("task_type IN ('MANUAL', 'AUTO')", name="picking_task_type_valid"),
+        CheckConstraint("business_type IN ('inbound', 'outbound')", name="picking_task_business_type_valid"),
+        CheckConstraint("task_type = 'MANUAL' OR business_type = 'outbound'", name="picking_task_auto_outbound"),
         CheckConstraint("queue_revision >= 1", name="picking_task_queue_revision_positive"),
         CheckConstraint("dispatch_sequence >= 1", name="picking_task_dispatch_sequence_positive"),
         CheckConstraint("issued_at_ms > 0", name="picking_task_issued_at_positive"),
@@ -97,6 +99,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             SQLAEnum(PickingTaskType, native_enum=False, create_constraint=False, length=6),
         ),
     )
+    business_type: str = Field(default="outbound", max_length=8, sa_column_kwargs={"server_default": "outbound"})
     status: PickingTaskStatus = Field(
         default=PickingTaskStatus.QUEUED,
         sa_type=cast(

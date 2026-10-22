@@ -35,10 +35,21 @@ class RackPosition(StrictWireModel):
 class PickingTaskIssuedData(StrictWireModel):
     task_id: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
     task_type: Literal["MANUAL", "AUTO"]
+    business_type: Literal["inbound", "outbound"] | None = None
     workline_code: Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
     queue_revision: InitialQueueRevision
     dispatch_sequence: PositiveInteger
     not_before: NonnegativeMilliseconds | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_business_type(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            if value.get("task_type") == "MANUAL" and value.get("business_type") is None:
+                raise ValueError("MANUAL issued 必须指定 business_type")
+            if value.get("task_type") == "AUTO" and "business_type" in value:
+                raise ValueError("AUTO issued 不接受 business_type")
+        return value
 
     @model_validator(mode="before")
     @classmethod

@@ -170,3 +170,9 @@ SCAN2 按实际 `-C` 箱码匹配当前有效 PickingTask 的已应用、已发�
 已完成（`EXECUTION_COMPLETED`）的人工任务不再持有来源架的本地准入名额：插件持久工作线扫描只退出原来源进架窗口的准入职责，保留窗口身份、原进场轮次、operation_id、冻结正文、Transport 和全部 Evidence。该退出不证明离场、物理完成、CTU 空闲或 WMS reservation 释放；原未决搬运继续由 Transport owner 等待终态，只约束其直接因果步骤。若当前权威货架事实仍属于原 owner 且尚无新窗口接管，原轮次清退继续由持久扫描承接；新实际动作/窗口接管后旧清退让路。新的有效任务与独立 drain 经既有原子容量准入创建自身动作，不继承旧到位事实；drain 插缝只检查当前活动任务自己的来源窗口。已完成任务的全取消来源架仍由持久扫描承接原清退，不因准入释放失去 Next Owner；当前面由同 owner 的后续 revision 换面到位时，仍解析该面所属原进场轮次，不要求换面 Evidence 与进场计划 Evidence 相同。
 
 清退依赖查询统一通过当前进场轮次解析：活动窗口已释放但当前终态位置与因果绑定仍承接原轮次时，沿用原窗口创建时间继续清退，不重开准入窗口。当前轮次未决搬运、未知终位和未发布结果仍是直接依赖；旧轮次动作保留原身份等待结果，不作为其他轮次或独立 drain 的围栏。
+
+### WMS 下发上架与出库任务
+
+`outbound.picking_task.issued@v1` 在 `task_type=MANUAL` 时必须携带 `business_type=inbound|outbound`，分别表示上架、出库。
+两类任务共用现有队列、prepare、计划、人工作业、回箱和离场流程，不增加插件执行分支；任务与 Evidence 保存原业务类型。
+请求示例与接收规则见[人工线对接合同 §2.1.1](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md#211-business-type)。
