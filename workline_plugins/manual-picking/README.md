@@ -162,3 +162,9 @@ MANUAL 首批计划可省略 `target_rack` 并提供来源。省略时，人工�
 ### SCAN2 当前批次准入
 
 SCAN2 按实际 `-C` 箱码匹配当前有效 PickingTask 的已应用、已发布 inbound_batch 成员，不校验 SCAN1 队首、前序命令或位置投影。直达 SCAN2 时保存本箱 Passage，SCAN1 字段为空，不伪造前序事实；SCAN2 同时记录批次入线进度。来源成员取消仅停止尚未入线的新投箱；原批次已有入线记录，或匹配的投箱已成功、结果已发布且到达冻结交接位的箱仍继续准入，由 WMS 判断是否还有取料需求。重复扫码不重复准入，未知/失效批次成员留异常证据且不自动放行；SCAN4 返料 FIFO 不变。
+
+### WMS 下发上架与出库任务
+
+`outbound.picking_task.issued@v1` 在 `task_type=MANUAL` 时必须携带 `business_type=inbound|outbound`，分别表示上架、出库。
+两类任务共用现有队列、prepare、计划、人工作业、回箱和离场流程，不增加插件执行分支；任务与 Evidence 保存原业务类型。
+请求示例与接收规则见[人工线对接合同 §2.1.1](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md#211-business-type)。

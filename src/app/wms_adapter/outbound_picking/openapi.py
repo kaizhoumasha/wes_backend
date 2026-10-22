@@ -47,12 +47,19 @@ PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA = _closed(
             {
                 "task_id": _BUSINESS_IDENTIFIER,
                 "task_type": {"type": "string", "enum": ["MANUAL", "AUTO"]},
+                "business_type": {"type": "string", "enum": ["inbound", "outbound"]},
                 "workline_code": _BUSINESS_IDENTIFIER,
                 "queue_revision": {"type": "integer", "minimum": 1, "maximum": 1},
                 "dispatch_sequence": _POSITIVE_INTEGER,
                 "not_before": _NONNEGATIVE_TIMESTAMP,
             },
-        ),
+        )
+        | {
+            "oneOf": [
+                {"properties": {"task_type": {"const": "MANUAL"}}, "required": ["business_type"]},
+                {"properties": {"task_type": {"const": "AUTO"}}, "not": {"required": ["business_type"]}},
+            ],
+        },
     },
 )
 
@@ -377,6 +384,7 @@ PICKING_TASK_EVENT_EXAMPLES = {
             "data": {
                 "task_id": "PICK-SWAGGER-001",
                 "task_type": "MANUAL",
+                "business_type": "outbound",
                 "workline_code": "LINE3",
                 "queue_revision": 1,
                 "dispatch_sequence": 10,

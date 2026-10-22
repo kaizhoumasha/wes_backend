@@ -328,3 +328,56 @@ async def test_evidence_workline_id_migration_preserves_rows_and_rejects_lossy_d
             await connection.close()
         run_alembic("downgrade", "3abf401aebaa", database_url=database_url)
         run_alembic("upgrade", HEAD_REVISION, database_url=database_url)
+
+
+@pytest.mark.asyncio
+async def test_business_type_migration_preserves_existing_outbound_and_checks_new_values() -> None:
+    from src.app.execution.models import InboundEvidence, InboundEvidenceKind
+    from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
+    from src.app.workline.models import LineType
+
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "a8c5e2107b94", database_url=database_url)
+        engine = create_async_engine(database_url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessions.begin() as db:
+                line = WorkLine(line_code="BUSINESS-TYPE", line_name="任务类型迁移", line_type=LineType.MANUAL)
+                evidence = InboundEvidence(
+                    kind=InboundEvidenceKind.WMS_EVENT,
+                    source_identity="BUSINESS-TYPE-MIGRATION",
+                    operation="outbound.picking_task.issued@v1",
+                    operation_id="019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+                    payload_digest="a" * 64,
+                    normalized_payload={"data": {}},
+                    received_at=timezone.now_for_db(),
+                )
+                db.add_all([line, evidence])
+                await db.flush()
+                db.add(
+                    PickingTask(
+                        task_id="BUSINESS-TYPE",
+                        task_type=PickingTaskType.MANUAL,
+                        queue_revision=1,
+                        dispatch_sequence=1,
+                        issued_at_ms=1,
+                        issued_evidence_id=evidence.id,
+                        workline_id=line.id,
+                    )
+                )
+        finally:
+            await engine.dispose()
+        run_alembic("downgrade", "f72bd038e915", database_url=database_url)
+        run_alembic("upgrade", "a8c5e2107b94", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            assert await connection.fetchval("SELECT business_type FROM wes_biz.picking_tasks") == "outbound"
+            await connection.execute("UPDATE wes_biz.picking_tasks SET business_type = 'inbound'")
+            for value in ("unknown", "INBOUND", None):
+                with pytest.raises((asyncpg.CheckViolationError, asyncpg.NotNullViolationError)):
+                    await connection.execute("UPDATE wes_biz.picking_tasks SET business_type = $1", value)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await connection.execute("UPDATE wes_biz.picking_tasks SET task_type = 'AUTO'")
+            await assert_database_head(connection, "a8c5e2107b94")
+        finally:
+            await connection.close()

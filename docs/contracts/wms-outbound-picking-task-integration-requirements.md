@@ -389,6 +389,10 @@ WES 在现有 `task_id + rack_id` 完成记录中保存已应用的最大截止�
 
 ### 7.1 任务发布
 
+> **manual-picking 任务业务类型（2026-10-23 确认）：** 保留 `task_type=MANUAL|AUTO`；MANUAL issued 必须增加
+> `business_type=inbound|outbound` 区分上架与出库，AUTO 不携带。详见[人工线对接文档 §2.1.1](wms-manual-outbound-picking-integration-requirements.md#211-business-type)。
+> 上架后续流程与现有出库任务一致；operation 字面量、响应、队列与物理执行规则保持不变。
+
 WMS 发布任务：
 
 ```json
@@ -433,6 +437,7 @@ DeviceCommand。`queue_changed@v1` 只允许在任务尚未进入 `PREPARING` �
 | --- | --- | --- | --- | --- |
 | `data.task_id` | 必填 | 必填 | string / WMS | PickingTask 的唯一编号；不要求等于上游拣料单号，WES 不得推导或重建 |
 | `data.task_type` | 必填 | 禁止 | enum / WMS | `MANUAL \| AUTO`；发布后不可变，只用于把任务匹配到人工或自动 Picking WorkLine，不拆分业务实体或任务表 |
+| `data.business_type` | MANUAL 必填，AUTO 禁止 | 禁止 | enum / WMS | 严格小写 `inbound \| outbound`；上架或出库，发布后不可变；人工任务其余流程一致 |
 | `data.workline_code` | 必填 | 禁止 | code / WMS | 指定唯一工作 WorkLine；必须存在、启用且插件与 `task_type` 匹配，发布后不得改派 |
 | `data.queue_revision` | 必填且固定为 `1` | 必填且为当前值 `+1` | positive integer / WMS | 只排序队列更新；不能代替 `plan_revision` |
 | `data.dispatch_sequence` | 必填 | 条件 | positive integer / WMS | 统一出库任务池内唯一业务优先序，值越小优先级越高；更新至少改变本字段或 `not_before` |

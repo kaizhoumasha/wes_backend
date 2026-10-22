@@ -21,6 +21,7 @@ def _valid_event() -> dict[str, object]:
         "data": {
             "task_id": "PICK-20260811-001",
             "task_type": "MANUAL",
+            "business_type": "outbound",
             "workline_code": "LINE-3",
             "queue_revision": 1,
             "dispatch_sequence": 100,
@@ -110,3 +111,55 @@ def test_picking_task_issued_openapi_schema_is_closed_and_exact() -> None:
         "maximum": 1,
     }
     assert data_schema["properties"]["not_before"]["minimum"] == 0
+
+
+@pytest.mark.parametrize("business_type", ["inbound", "outbound"])
+def test_manual_issued_preserves_business_type(business_type: str) -> None:
+    payload = _valid_event()
+    payload["data"]["business_type"] = business_type
+    event = parse_picking_task_issued_event(payload)
+    assert event.data.business_type == business_type
+    assert event.model_dump(mode="json")["data"]["business_type"] == business_type
+
+
+@pytest.mark.parametrize("value", [None, "INBOUND", "unknown", 1, True])
+def test_manual_issued_rejects_invalid_business_type(value: object) -> None:
+    payload = _valid_event()
+    payload["data"]["business_type"] = value
+    with pytest.raises(ValidationError):
+        parse_picking_task_issued_event(payload)
+
+
+def test_manual_issued_requires_business_type() -> None:
+    payload = _valid_event()
+    del payload["data"]["business_type"]
+    with pytest.raises(ValidationError):
+        parse_picking_task_issued_event(payload)
+
+
+def test_auto_issued_keeps_existing_contract() -> None:
+    payload = _valid_event()
+    payload["data"]["task_type"] = "AUTO"
+    del payload["data"]["business_type"]
+    assert (
+        "business_type"
+        not in parse_picking_task_issued_event(payload).model_dump(mode="json", exclude_none=True)["data"]
+    )
+
+
+@pytest.mark.parametrize("value", ["inbound", "outbound", None])
+def test_auto_issued_rejects_manual_business_type(value: object) -> None:
+    payload = _valid_event()
+    payload["data"]["task_type"] = "AUTO"
+    payload["data"]["business_type"] = value
+    with pytest.raises(ValidationError):
+        parse_picking_task_issued_event(payload)
+
+
+def test_issued_openapi_matches_conditional_business_type_contract() -> None:
+    data = PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA["properties"]["data"]
+    assert data["properties"]["business_type"] == {"type": "string", "enum": ["inbound", "outbound"]}
+    assert data["oneOf"] == [
+        {"properties": {"task_type": {"const": "MANUAL"}}, "required": ["business_type"]},
+        {"properties": {"task_type": {"const": "AUTO"}}, "not": {"required": ["business_type"]}},
+    ]
