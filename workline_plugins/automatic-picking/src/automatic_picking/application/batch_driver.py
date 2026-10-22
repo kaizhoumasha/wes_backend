@@ -44,6 +44,7 @@ class AutomaticPickingBatchDriver:
         self.rack_departure_flow = rack_departure_flow
         self.drain_flow = drain_flow
         self.return_rack_flow = return_rack_flow
+        self.final_target_flow = None
         self.uuid_factory, self.clock = uuid_factory, clock
 
     async def filter_return_racks_in_session(self, db, _line, task, candidates):
@@ -78,6 +79,7 @@ class AutomaticPickingBatchDriver:
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
+        final_count = await self.final_target_flow.advance_in_session(db, line) if self.final_target_flow else 0
         rack_count = await self.return_rack_flow.advance_in_session(db, line) if self.return_rack_flow else 0
         direct_count = await self.direct_pick_flow.advance_in_session(db, line=line) if self.direct_pick_flow else 0
         drain_phase_count = (
@@ -92,7 +94,15 @@ class AutomaticPickingBatchDriver:
             if self.exit_flow is not None
             else 0
         )
-        count += rack_count + direct_count + drain_phase_count + allocation_count + motion_count + departure_count
+        count += (
+            final_count
+            + rack_count
+            + direct_count
+            + drain_phase_count
+            + allocation_count
+            + motion_count
+            + departure_count
+        )
         if self.material_flow is not None:
             count += await self.material_flow.advance_in_session(db, line_id=line.id, now=now)
         if self.target_flow is not None:

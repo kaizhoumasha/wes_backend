@@ -11,6 +11,7 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
             AutomaticPickingFeed,
             AutomaticPickingFeedScan,
         )
+        from automatic_picking.application.final_target_model import AutomaticPickingFinalTargetRack  # noqa: F401
         from automatic_picking.application.pickup_model import (  # noqa: F401
             AutomaticPickingDirectPick,
             AutomaticPickingPickup,
@@ -39,6 +40,7 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
 
 def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) -> bool:
     if table_name in {
+        "automatic_picking_final_target_racks",
         "automatic_picking_return_racks",
         "automatic_picking_task_completions",
         "automatic_picking_works",

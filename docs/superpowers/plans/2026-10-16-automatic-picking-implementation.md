@@ -16,7 +16,7 @@
 
 **Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`850182fc063f6813c64ba1c3b7c5ff9a7103d9bb4c92f91caf6360b78207a62f`。
 
-**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `432a0490`。9H 历史证据见[9H 收口索引](#task9h-offline-closure)；搬运接线、正常投料到 Work、Work WAIT 扫描续问的当前归属见[任务 11 证据收口](#task11-transport-work-evidence)。用户已确认 manual-picking 货架与料箱搬运经过现场验证，自动插件沿用该基线，后续重点转到料箱到达工作位后的自动化业务。早期切片中的“本轮”“留下一片”“未提交”等只描述当时快照，当前提交状态以本段及收口索引为准。整项任务 9/11、自动插件整线和 WMS 联合验收尚未完成；本次仅整理文档，不提交、不部署、不启用生产装配或真实派发。
+**状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-23，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `7251bd7b`；本轮最终转运架正常离场位于工作区，未提交。9H 历史证据见[9H 收口索引](#task9h-offline-closure)；搬运接线、正常投料到 Work、Work WAIT 扫描续问的当前归属见[任务 11 证据收口](#task11-transport-work-evidence)。用户已确认 manual-picking 货架与料箱搬运经过现场验证，自动插件沿用该基线，后续重点转到料箱到达工作位后的自动化业务。早期切片中的“本轮”“留下一片”“未提交”等只描述当时快照，当前提交状态以本段及收口索引为准。整项任务 9/11、自动插件整线和 WMS 联合验收尚未完成；本轮业务交付及验证边界以文末“最终转运架正常离场”记录为准；不提交、不部署、不启用生产装配或真实派发。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
 
 ## 全局约束
@@ -84,7 +84,7 @@
 | 任务 5 普通 prepare、投料、SCAN2/Work | 已实现并提交，Work 的 READY/WAIT/NO_WORK、结果应用/发布及持久恢复已有验收 | 不受 G2/G3/G5/G6 阻塞；后续只补本业务缺口，不重复实现共享可靠机制 |
 | 任务 5 跨 revision 来源接续 | 切片 5A 的 6 项 PostgreSQL 验收已通过：当前进场复用原 Transport，各 revision 成员独立申请，重启/并发扫描防重、事务回滚、取消及闭合历史清理均已覆盖；未改生产代码 | 本项已闭合，不依赖首批期限或机械臂参数；首批确认和任务 6 按各自条件继续 |
 | 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
-| 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
+| 任务 5 正常完成确认的共用协调器 | 普通完成的业务发起、持久 current 与确定重问已由退料架级收口/正常完成交付；revision 0 首批分支仍待期限冻结 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
 | 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；6C 补齐明确关联输入后的单盘应用；真实事实 reader、设备映射与生产扫码汇合仍未启用，不能以持久适配或离线接线代表生产取盘闭环 |
 | 任务 6 Pickup/来源 Command 与扫码关联 | 同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | G2 只保留实际事件设备和精确原 Command 引用，G3 只保留对应未知映射/绑定；不要求 business_key，不先建无 Command 的 Pickup 或仅先扣减授权 |
 | 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 来源映射/关联及 G3 目标映射仍须闭合；G5 已统一为本盘 barcode 原文，不再等待独立编号 |
@@ -1188,3 +1188,14 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 
 
 本轮最终验收：插件 PostgreSQL 整段及受影响正常链 **27 passed**（新架级/完成 owner 13项，原退料/正常链14项，勿与前轮重复计数）；插件 FAST **287 passed**；完整 QUALITY **4324 passed / 5 skipped**。核心精确 reader/selector 聚焦 **256 passed**、宿主候选过滤及原宿主合同 **18 passed**、人工 completion 直接消费者 **16 passed**；所选5文件 HEAVY **33 passed**，含隔离 PostgreSQL/真实 worker 的已有可靠机制回归。迁移空表往返和有当前义务禁止降级随本轮PG owner通过。同一 Reviewer 完成三项修复闭环及 fresh full review，无新增明确问题；只补本条人类验收记录，不改变已评审可执行树。全部为本地隔离证据，不等于设备/WMS实际联调；未提交、未部署、未启用生产装配或真实派发。
+
+
+### 最终转运架正常离场：本轮集中实施（2026-10-23，未提交）
+
+- 范围：任务正常完成后首次 departure、持久 current、确定 WAIT 到期续问、READY 到唯一 F01 及结果关闭，一次接通；REPLACE 新架接续时持久记录真实任务与实际目标架，不再从已关闭 Pickup 或原计划旧架追溯。
+- owner：既有 batch completed 前缀发现和恢复当前实际目标/请求/动作，无 EXECUTING 也推进；Confirmation 交付原请求，Transport 及原窗口处理 ACCEPTED 交接，FactProcessor 应用并发布原 F01 结果。任务完成驱动继续独立，完成不等待清场。
+- 验收所有权：`T/integration/test_final_target_departure_postgresql.py` 拥有最终转运架业务接续，复用正常/REPLACE/退料架既有证据，不复制共享派发与单盘矩阵；核心精确 task-owned departure reader 只验证原请求/响应身份及摘要。迁移 `f5c962df755c` 新建插件当前表，持有现有义务时禁止降级。
+- 正常出口：WAIT 固定到期、未知保留原身份、READY 原子创建关联 F01、接纳释放原窗口但不等于成功，已发布匹配成功后关闭。任务完成和可清理单盘/完成确认历史不作为新轮次围栏，原 F01 恢复不依赖已闭合进场根。
+- 剩余条件：扫码可靠归属字段/稳定性保证、ARM02 退料单盘定位及首批期限仍待确认；CK04 仅限制目标 ROTATE，退箱补架容量接续与核销补证仅限制对应 drain 实际容量路径。本轮不猜参数、不接异常终态重新决定、不抽取 bin-line-common；不提交、不部署、不发外部请求、不启用生产装配或真实派发。
+- 最终验证：新增最终目标架 PostgreSQL owner 11 项，加原正常链/REPLACE 进场/退料架相关 37 项共 48 项闭合。统一执行先为 47 passed、1 项旧迁移 fixture 被新表保护提前拦截；仅隔离该 fixture 的上层门禁后原项复验 1 passed，未重跑已绿色业务矩阵，也未改变生产逻辑或旧断言。插件 FAST 287 passed；完整 QUALITY 4330 passed / 5 skipped；所选 23 文件 HEAVY 122 passed / 0 skipped。新表空库迁移往返及持有义务禁止降级已验证。核心 reader/selector/架构聚焦 282 项属于上述 QUALITY 覆盖，不另累计。
+- 闭环 review：固定 21 文件首次完整独立评审无 actionable finding；旧迁移 fixture 的第 22 文件调整随后定向复核，确认测试所有权、旧断言及生产可观察语义不变，无未关闭问题。相关生产代码未在完整评审后变化；最后仅补本文档验收记录。离线证据见 `reports/final-target-{review-manifest,verification}.json` 及对应 PG/QUALITY/HEAVY 日志；不代表现场设备/WMS 联调或部署。

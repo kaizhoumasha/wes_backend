@@ -13,6 +13,9 @@ from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_O
 
 
 class RackDepartureRepository:
+    async def by_id(self, db: AsyncSession, confirmation_id: int) -> WmsConfirmation | None:
+        return await db.get(WmsConfirmation, confirmation_id, populate_existing=True)
+
     async def by_operation_id(self, db: AsyncSession, operation_id: str) -> WmsConfirmation | None:
         return await wms_confirmation_repository.get_by_identity(db, RACK_DEPARTURE_OPERATION, operation_id)
 

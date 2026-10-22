@@ -341,6 +341,11 @@ class AutomaticPickingTargetReplacementFlow:
             return 0
         if task.request_json["target_face"] != target.rack_face:
             raise ValueError("shared replacement arrival face differs from ACCEPT")
+        from .final_target_repository import FinalTargetRepository
+
+        await FinalTargetRepository().bind(
+            db, line_id=work.workline_id, task_id=work.picking_task_id, transport=task, binding=binding
+        )
         pickup.target_inbound_transport_task_id = task.transport_task_id
         await db.flush()
         return 1

@@ -113,7 +113,7 @@ async def callback(p, task, *, publish=True, status="SUCCEEDED"):
 
 
 @pytest_asyncio.fixture
-async def replacing(prepared):
+async def replacing(prepared, request):
     from automatic_picking.application.target_replacement import MatchedTargetDeparture
 
     p = prepared
@@ -125,7 +125,7 @@ async def replacing(prepared):
             "result": "ACCEPT",
             "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)},
             "target_preparation": {"mode": "REPLACE"},
-            "next_source_action": asdict(OTHER),
+            **({} if getattr(request, "param", None) == "no_next_source" else {"next_source_action": asdict(OTHER)}),
         },
     )
     assert await material_processor(p).process_batch() == 1

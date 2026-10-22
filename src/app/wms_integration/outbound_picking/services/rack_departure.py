@@ -75,6 +75,31 @@ class RackDepartureResultReader:
     def __init__(self, repository: RackDepartureRepository | None = None) -> None:
         self._repository = repository or RackDepartureRepository()
 
+    async def by_id(self, db: AsyncSession, *, picking_task_id: int, confirmation_id: int) -> RackDepartureSnapshot:
+        confirmation = await self._repository.by_id(db, confirmation_id)
+        if (
+            confirmation is None
+            or confirmation.operation != RACK_DEPARTURE_OPERATION
+            or confirmation.picking_task_id != picking_task_id
+            or confirmation.workline_id is not None
+            or canonical_json_digest(confirmation.request_payload) != confirmation.request_digest
+        ):
+            raise ValueError("departure current request owner or digest differs")
+        request = parse_rack_departure_request(confirmation.request_payload)
+        snapshot = await self._snapshot(db, confirmation, request.data.rack_id)
+        if snapshot.intent.task_id is None:
+            raise ValueError("task departure requires real task_id")
+        if snapshot.evidence_id is not None:
+            evidence = await self._repository.evidence(db, snapshot.evidence_id)
+            if (
+                evidence is None
+                or evidence.picking_task_id != picking_task_id
+                or evidence.workline_id is not None
+                or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            ):
+                raise ValueError("departure current response owner or digest differs")
+        return snapshot
+
     async def by_operation_id(
         self, db: AsyncSession, *, workline_id: int, operation_id: str, rack_id: str
     ) -> RackDepartureSnapshot | None:

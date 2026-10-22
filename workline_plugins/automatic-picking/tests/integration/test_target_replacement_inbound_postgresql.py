@@ -277,6 +277,14 @@ async def test_new_reference_migration_retains_legacy_pickup_and_refuses_loss(in
     run_alembic("downgrade", "6a7b8c9d0112", database_url=url)
     run_alembic("upgrade", "head", database_url=url)
     assert await advance(p, application(p)) == 1
+    from automatic_picking.application.final_target_model import AutomaticPickingFinalTargetRack
+
+    # 此夹具只验收旧 Pickup 列保护；新表防损失由 final-target owner 单独验收。
+    async with p.sessions.begin() as db:
+        current = await db.scalar(
+            select(AutomaticPickingFinalTargetRack).where(AutomaticPickingFinalTargetRack.picking_task_id == p.task.id)
+        )
+        await db.delete(current)
     with pytest.raises(subprocess.CalledProcessError) as error:
         run_alembic("downgrade", "6a7b8c9d0112", database_url=url)
     assert "cannot discard automatic target inbound handoff" in error.value.stderr

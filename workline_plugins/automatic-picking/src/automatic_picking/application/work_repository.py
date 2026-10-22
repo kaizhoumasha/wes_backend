@@ -9,6 +9,7 @@ from src.app.wms_integration.outbound_picking.models import DirectPickExecution
 from .drain_model import AutomaticPickingDrain
 from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
+from .final_target_model import AutomaticPickingFinalTargetRack
 from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .return_allocation_model import AutomaticPickingReturnAllocation
 from .return_model import AutomaticPickingReturn
@@ -115,6 +116,16 @@ class WorkRepository:
                     .where(
                         AutomaticPickingReturnRack.workline_id == workline_id,
                         AutomaticPickingReturnRack.closed_evidence_id.is_(None),
+                    )
+                )
+            )
+            + (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(AutomaticPickingFinalTargetRack)
+                    .where(
+                        AutomaticPickingFinalTargetRack.workline_id == workline_id,
+                        AutomaticPickingFinalTargetRack.closed_evidence_id.is_(None),
                     )
                 )
             )

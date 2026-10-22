@@ -179,9 +179,12 @@ class AutomaticPickingScanFlow:
 
     async def _transport_result(self, db, line, evidence):
         step = evidence.normalized_payload.get("step")
+        from .final_target_repository import FINAL_TARGET_OUT
         from .return_rack_repository import RETURN_RACK_IN, RETURN_RACK_OUT, RETURN_RACK_ROTATE
 
-        if (
+        if step == FINAL_TARGET_OUT:
+            flow = self.batch_driver.final_target_flow
+        elif (
             step in {RETURN_RACK_IN, RETURN_RACK_ROTATE, RETURN_RACK_OUT}
             and self.batch_driver.return_rack_flow is not None
         ):

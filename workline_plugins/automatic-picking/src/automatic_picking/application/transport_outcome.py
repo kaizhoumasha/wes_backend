@@ -23,6 +23,8 @@ from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceConflictResult, InboundEvidenceService
 from src.utils.timezone import timezone
 
+from .final_target_repository import FINAL_TARGET_OUT, FinalTargetRepository
+
 
 class AutomaticPickingTransportOutcomePublisher:
     def __init__(self, *, bindings=None, evidence_service=None):
@@ -53,6 +55,7 @@ class AutomaticPickingTransportOutcomePublisher:
             raise ValueError("automatic Transport outcome differs from its frozen owner")
         rack_steps = {
             "PICKING_TASK_TARGET_RACK_IN",
+            FINAL_TARGET_OUT,
             "PICKING_TASK_BIN_SOURCE_RACK_IN",
             "PICKING_TASK_RETURN_RACK_IN",
             "AUTOMATIC_PICKING_RETURN_RACK_ROTATE",
@@ -75,6 +78,10 @@ class AutomaticPickingTransportOutcomePublisher:
             raise ValueError("unsupported automatic Transport binding step")
         if binding.step in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}:
             await DrainInboundRepository().validate_outcome(db, outcome, binding)
+        if binding.step == FINAL_TARGET_OUT:
+            await FinalTargetRepository().validate_transport(
+                db, outcome.transport_task_id, outcome.client_request_id, binding
+            )
         if binding.step == RETURN_RACK_OUT:
             await ReturnRackRepository().validate_outcome(db, outcome, binding)
         if binding.step == DEPARTURE_STEP:
