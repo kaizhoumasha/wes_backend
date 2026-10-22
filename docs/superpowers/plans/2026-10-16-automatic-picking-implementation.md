@@ -1,8 +1,10 @@
 # 自动拣料插件实施计划
 
+> 2026-10-23 最新接线基线：扫码已选原取料 `command_code` 回显；ARM02 从退料架取出的是单盘物料，与既有 `RACK_SLOT` 合同一致。“取出对象未明确”不再是门禁。仅设备回显字段/稳定性保证及 ARM02 单盘定位参数待确认；历史记录中的旧待决措辞由本段和末尾接线收口覆盖，不代表这些设备字段已经冻结。
+
 > 2026-10-22 当前基线：出库物料统一使用 `barcode` 原文（非空、最多1000字符），decide、报告与关闭沿本盘同一扫码 Evidence；G5 独立 PkgID 来源门禁与读取端口已撤销，不做双字段兼容。下文既往实施/验收记录中的 PkgID、缺编号延期和外部编号 fixture 仅保留为历史说明，已由本轮扫码原文规则承接，不是当前待办或可复用的新合同证据。扫码精确关联、设备映射及 CK04 各自门禁不变，C1/C2 不扩大。
 
-> 硬件说明书收敛：位置/料盘字符串、单元格1–7、层1–5、毫米/寸和必填字段已明确，business_key 不再是前置条件。下文旧阶段“完整参数由外部工厂给定”、O4/O10/O15/O16 整体未定的说明已由本文末尾本轮映射实施与机械臂附录 §10 承接；最新确认箱型直接为2/3/6、rack_face 原样传递，ARM01 正常取料并触发扫码、ARM02 入架；旧箱型/面向映射表已撤销。仅扫码精确关联、实际位置绑定/时限及 WMS 尺寸单位对齐限制各自真实路径；ARM02 退料对象未明确只限制退料路径，CK04 只限制目标 ROTATE。
+> 硬件说明书收敛：位置/料盘字符串、单元格1–7、层1–5、毫米/寸和必填字段已明确，business_key 不再是前置条件。下文旧阶段“完整参数由外部工厂给定”、O4/O10/O15/O16 整体未定的说明已由本文末尾本轮映射实施与机械臂附录 §10 承接；最新确认箱型直接为2/3/6、rack_face 原样传递，ARM01 正常取料并触发扫码、ARM02 入架；旧箱型/面向映射表已撤销。仅扫码精确关联、实际位置绑定/时限及 WMS 尺寸单位对齐限制各自真实路径；ARM02 退料单盘已确认，其设备定位参数及业务装配只限制退料路径，CK04 只限制目标 ROTATE。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 使用 `superpowers:executing-plans` 按切片执行，使用复选框记录进度。推荐主 Agent 顺序实施；本计划不授权自动派生 Subagent、Commit、Push、Merge 或 Deploy。
 
@@ -12,7 +14,7 @@
 
 **Tech Stack:** Python 3.13、现有 Pydantic/SQLModel/SQLAlchemy、PostgreSQL、Celery、pytest、`uv`；不增加依赖来替代既有基础能力。
 
-**Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`23d1d3033cb1a4efdd222828e71548b912dbfa4cde8cb6f8ba47e59b084d7e2b`。
+**Spec:** [修订后的自动拣料插件设计](../specs/2026-09-22-automatic-picking-plugin-system-design.md)，SHA-256：`bad45962e55fff4adb8af3001fbe17cc20ce6205c328b819932b442a200edcbe`。
 
 **状态与基线:** 原始计划基线为 `develop / d38cced4201e0a09e46ceff5fe7b9f84dce20f13`；截至 2026-10-21，当前工作分支 `codex/automatic-picking-workflow` 已提交至 `432a0490`。9H 历史证据见[9H 收口索引](#task9h-offline-closure)；搬运接线、正常投料到 Work、Work WAIT 扫描续问的当前归属见[任务 11 证据收口](#task11-transport-work-evidence)。用户已确认 manual-picking 货架与料箱搬运经过现场验证，自动插件沿用该基线，后续重点转到料箱到达工作位后的自动化业务。早期切片中的“本轮”“留下一片”“未提交”等只描述当时快照，当前提交状态以本段及收口索引为准。整项任务 9/11、自动插件整线和 WMS 联合验收尚未完成；本次仅整理文档，不提交、不部署、不启用生产装配或真实派发。
 进入实施前核对设计指纹；授权设计修订后同步更新计划对应切片，不能在执行中自行解释合同。
@@ -48,9 +50,9 @@
 | 编号 | 已明确 / 尚未明确 | 影响与解除证据 |
 | --- | --- | --- |
 | G1 字段结构与边界 | WMS 已确认数字类型/枚举与 barcode ≤1000；硬件说明书已明确设备侧字符串、单元格1–7、层1–5、毫米/寸及必填字段 | DTO 不变，插件设备边界转换；不再要求已明确字段重新冻结，不猜列数上限或其它物理范围 |
-| G2 扫码关联 | ARM01 正常取料后触发扫码已明确；来源 Command 精确关联字段未定，business_key 不再是门禁 | 仅限制真实扫码汇合；原样 barcode 与持久绑定已有实现，禁止最近命令/时间/平台容量推断 |
+| G2 扫码关联 | 已选原取料 command_code 原样回显；仅设备字段名称/路径、完整报文及延迟/重放/重启补报稳定性待确认，business_key 不再是门禁 | 仅限制真实扫码汇合；原样 barcode 与持久绑定已有实现，禁止最近命令/时间/平台容量推断 |
 | G3 Bin 与目标设备映射 | 箱型直接使用2/3/6、统一 rack_face 原样传递，已删除转换表；正常链显式绑定 ARM01 来源、ARM02 目标。剩余为实际位置绑定与时限、WMS 尺寸单位对齐 | 缺哪个输入只停对应命令，原 Work/target owner 负责重扫。CK04 只限制目标 ROTATE；普通目标、F01 REPLACE 不等 CK04 或 C1/C2 |
-| G4 DirectPick 映射 | ARM02 退料取出已确认，但整箱还是单盘、退料架位置类型、slot 到设备字段及测量参数来源未定 | 限制任务 10 的直接取料设备路径；若需扩展 plan_delta，先批准具体 wire，再同步全部消费者，不反推 bin_* 参数 |
+| G4 DirectPick 映射 | ARM02 从退料架取出单盘已确认；退料架设备位置类型、slot 到设备定位字段及确需尺寸参数的来源未定，生产 driver 尚未装配 | 限制任务 10 的直接取料设备路径；若需扩展 plan_delta，先批准具体 wire，再同步全部消费者，不反推 bin_* 参数 |
 | G5 barcode 统一（已收敛） | decide、movement_report 均为本盘扫码原文，1–1000字符 | 删除独立编号来源与读取端口；报告和关闭校验本盘原扫码及已发布决定，不再阻塞真实接入 |
 | G6 首批期限 | 业务超期规则已确认，插件配置入口、双方期限值及合法范围待落定 | 任务 5 建立插件唯一配置入口并冻结每次等待；不复用 30 秒技术派发窗口，未明确值不猜默认值 |
 | G7 异常分支 | REJECT、空取和 NG 协议保留，设备失败/空取语义及恢复动作仍有未决 | 正常切片只可靠留证并保留依赖；这些分支另做实施切片，不能因此删 DTO 或宣布整线业务验收 |
@@ -995,12 +997,12 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 ### 任务 10：直接取料、取消与 revision 范围完成
 
-**依赖：**取消/范围完成依赖任务 4–5 的计划事实、成员关联及既有接收；设备动作复用任务 6–7 的 Pickup/单盘链并受 G4 约束，不要求任务 8–9 全部完成。**新增：**`P/application/direct_pick_flow.py`；扩展本插件 handler、flow、completion/batch driver。
+**依赖：**取消/范围完成依赖任务 4–5 的计划事实、成员关联及既有接收；设备动作复用任务 6–7 的原 Command/单盘机制并受 G4 约束，不要求任务 8–9 全部完成。2026-10-23 已确认 ARM02 退料单盘与现有 RACK_SLOT 一致，不能把当前只接受 Work 的生产读口直接称为 DirectPick 已接通。**新增：**`P/application/direct_pick_flow.py`；扩展本插件 handler、flow、completion/batch driver。
 **测试：**新增 `T/{test_direct_pick_flow,test_cancellation,test_return_rack_completion}.py`、`T/integration/test_direct_pick_progress_postgresql.py`。
 **接口：**沿用现有 DirectPick 成员、arrival_report、direct_pick_completed、return_rack.task_completed 的基础接收及 typed reader；不导入人工结果消费者。
 
 - [ ] RED：同架跨 revision 成员、单成员取消、through_plan_revision 范围完成、完成后追加、迟到结果与新的因果位置。
-- [ ] 为有效直接成员复用 Pickup/MaterialExecution 正常路径，来源臂竞争时直接取料优先，不抢占已建动作、不停止无冲突 CTU/Bin 流；不创建虚构 Work。
+- [ ] 为有效直接成员复用 Pickup/MaterialExecution 正常路径，沿当前成员与精确到位授权；退料取盘复用 ARM02 实际绑定，正常来源仍为 ARM01。直接取料优先仅作用于同一物理臂的可执行工作，不抢占已有 PUT/取盘 Command、不停止独立 ARM01 或 CTU/Bin 流；不创建虚构 Work。
 - [ ] 到位报告独立可靠交付，整架完成先等连续版本齐全，只关闭覆盖范围，不补造逐面证据；取消停止无依据新动作，已发生事实和已有报告继续收口。
 - [ ] GREEN：直接取料不会等待不存在的 Work 授权交接，不使用父任务状态代替成员取消事实；G4 未闭合只阻塞该设备分支，单独报告验收状态。
 
@@ -1125,12 +1127,29 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 
 本节覆盖上文旧阶段“箱型映射表”“rack_face→A/B”和“扫码设备身份未定”的前提。正常链 SOURCE_ARM 显式绑定 ARM01：滚筒线料箱→扫码平台并触发 SCAN_COMPLETED；TARGET_ARM 显式绑定 ARM02：扫码平台→转运货架。角色仍通过现有工作线绑定读取，隔离测试明确给出设备、位置与时限，不写生产配置或默认坐标。
 
-设备 `bin_type` 直接为 `"2"`/`"3"`/`"6"`，WMS 的 int DTO 不变；目标仅发送 `rack_face`，沿 ACCEPT 授权原样传递，不 trim、不转换角度、不兼容旧字段。删除 PickingArmBinding 的 bin_types/rack_sides，保留三个实际位置输入及局部缺失门禁。扫码读口核对事件设备与原来源 Command 一致，精确命令仍必须由显式关联提供；不解析未冻结字段，不按最新命令、条码或平台状态推断。ARM02 退料取出整箱还是单盘未明确，不创建该路径或猜测字段，不阻塞正常链。
+设备 `bin_type` 直接为 `"2"`/`"3"`/`"6"`，WMS 的 int DTO 不变；目标仅发送 `rack_face`，沿 ACCEPT 授权原样传递，不 trim、不转换角度、不兼容旧字段。删除 PickingArmBinding 的 bin_types/rack_sides，保留三个实际位置输入及局部缺失门禁。扫码读口核对事件设备与原来源 Command 一致，精确命令仍必须由显式关联提供；不解析未冻结字段，不按最新命令、条码或平台状态推断。该轮退料对象待决现已由2026-10-23单盘确认取代；实际退料设备参数和业务装配仍见下节，不猜字段、不阻塞正常链。
 
 恢复 owner 不变：Work/source 持有来源授权与本盘取出，target/batch 负责目标准备和 PUT；DeviceCommand/Transport 持有原动作，FactProcessor 持有事实应用与发布，Confirmation 持有 decide/报告可靠义务。已创建 Command 优先按原身份和冻结正文恢复，本次不重写旧命令、不换身份补发。没有新增模型、状态、timer、迁移、共享基础代码或生产装配。
 
 主要测试 owner 为 `T/test_picking_device_ports.py`（直接编码、原样货架面、两臂分工及扫码设备身份）和 `T/integration/test_picking_device_ports_postgresql.py`（实际装配参数、事务关联及普通/REPLACE 完整离线正常链）；`T/integration/test_normal_picking_postgresql.py` 为不改动的直接消费者回归。复用已有并发、崩溃、重放、回调早于 ACK 及历史清理矩阵，不复制共享恢复或退箱补架验收。设备说明书原文保持原样，本附录和主合同记录最新确认的替代字段。
 
-退箱补架容量接续与回库分配核销仍待 WMS 补证，仅限制对应 drain 路径；CK04 只限制目标 ROTATE。实际位置/时限和 WMS 尺寸单位按各自输入核对，精确扫码关联只限制真实扫码汇合，退料对象只限制退料取出。本轮不提交、不部署、不发外部请求、不启用生产装配或真实派发，不以隔离参数宣布现场联调完成。
+退箱补架容量接续与回库分配核销仍待 WMS 补证，仅限制对应 drain 路径；CK04 只限制目标 ROTATE。实际位置/时限和 WMS 尺寸单位按各自输入核对，精确扫码字段只限制真实扫码汇合；退料单盘已明确，设备定位和业务装配只限制退料路径。本轮不提交、不部署、不发外部请求、不启用生产装配或真实派发，不以隔离参数宣布现场联调完成。
 
 统一离线验证：新行为先在旧实现上9项失败，再完成实现；最终插件 FAST 285 passed（1038 项 PostgreSQL 显式排除）、实际装配及直接消费者 PostgreSQL 17 passed、0 skipped。三个变更 Python 文件 Ruff/格式与 diff 检查通过；核心 HEAVY selector 输出为空，本次插件 PostgreSQL 由上述主要 owner 显式执行。未改 schema，不重复迁移/共享 worker 矩阵；既有 target_rotation_transport_task_id 约束命名失败继续保留，本轮未触及也不宣称修复。完整 QUALITY 留给获准提交时的门禁；本轮不提交。报告与快照见 `reports/arm-normal-contract-{fast-final,pg-final}.xml` 和 `reports/arm-normal-contract-verification.json`。独立完整只读 review 已核对8文件指纹、固定 diff、直接/间接测试 owner、原命令恢复及未决项范围，无 P1/P2/P3 finding。评审后只补本文结论，可执行快照不变，无需重复运行已有效的验收。HEAD 保持 `5f998aa9`、index 为空。
+
+
+## 原命令回显与退料单盘接线收口（2026-10-23，基线 `2961d792`）
+
+**确认结论：**扫码采用把本盘放上扫码台的原取料 command_code 原样回显，退料架取出的是单盘，负责机械臂为 ARM02。继续复用现有 WMS RACK_SLOT 与 plan_revision 成员合同，不增加整箱路径、独立物料编号、设备字段别名、通用关联模型或 timer。正常箱型2/3/6、rack_face 和 ARM01→ARM02 分工保持已提交实现。
+
+**已有与实际缺口：**正常 BIN_CELL 的 PickingMaterialScanReader 已经具备原 Work/Pickup/Command/平台与设备校验，优先读取已持久 Evidence.command_code，缺精确关联时延期；持久化后重建不再依赖外部关联。真实字段尚未冻结，目前 source_commands provider 仅在隔离装配显式提供，不能称为真实回显已接通。DirectPick 单盘业务合同已确认，但当前来源协调器和扫码上下文只处理 Work，DirectPick 的生产 driver 仍属任务 10 未完成项，不用虚构 Work 或仅将 SOURCE_ARM 改到 ARM02 来绕过。
+
+**剩余接线一次性完成的条件与范围：**
+
+1. 设备提供完整 SCAN_COMPLETED 报文，明确回显字段名称/层级/字符串类型，承诺等于原取料 command_code，延迟、重复及重启补报不改为当前新命令。字段冻结后只实现既有 source_commands 端口的静态真实适配；缺编号继续留存 Evidence，不解析讨论字段、不按 barcode/时间/最新命令补造。
+2. 设备提供 ARM02 从单盘储位到扫码台的完整 PICK_AND_PUT 参数和 rack_id/rack_face/slot_id 的定位对应；只在它确需未提供尺寸等数据时，再与 WMS 对齐权威来源，不预先扩展 DTO。明确后整体装配 DirectPick 当前成员授权→原取盘 Command→精确扫码→decide→目标准备/PUT→报告关闭；不建立 Work、不消费或推进 BIN_CELL 的来源授权。面级/整架完成、完成确认与失败重决策仍沿原任务边界，不提前宣称已实现。
+3. 恢复 owner 保持分层：原 Command 与 Transport 负责技术履约；FactProcessor 负责可靠应用、延期/发布；Confirmation 负责原 decide/报告交付。正常 BIN_CELL 的业务 owner 仍为 Work/source、target/batch；DirectPick 接线由任务 10 的当前成员与插件 driver 拥有，先补齐其持久身份和原子关联再装配。不能以现有 Work 恢复证据替代未实施 DirectPick 的验收。
+
+**测试所有权与不重复范围：**正常回显适配沿 `T/test_picking_device_ports.py`、`T/integration/test_picking_device_ports_postgresql.py` 承接，只验证实际字段差异、原编号稳定性和已有身份拒绝；复用已提交的缺关联、暂停、并发、重建及发布证据。DirectPick 的成员/原 Command/单盘接续归任务 10 的既有规划 owner，不复制共享租约、搬运和退箱补架矩阵。本轮仅收敛5份人类文档，不新增解析器、生产 driver、schema 或测试；只做文档 diff、引用路径及设计指纹检查，不能把原17项 PostgreSQL绿灯算作退料单盘已经验收。
+
+**范围：**退箱补架容量接续与回库分配核销只限制对应 drain，CK04 只限制目标 ROTATE。设备未确认的扫码字段与单盘定位分别限制其真实接入；不阻塞已确认正常业务。不提交、不部署、不发外部请求、不启用生产装配或真实派发，不做 bin-line-common 抽取。

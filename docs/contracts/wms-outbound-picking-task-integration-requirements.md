@@ -1249,7 +1249,7 @@ SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、�
 `reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float（JSON number）；
 `barcode` 为非空 UTF-8 原始字符串、最多 1000 字符。WMS DTO 不额外推定物理范围；设备映射按机械臂附录校验，不能反向改变本表 wire 类型。
 
-`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；设备 `bin_cell_location` 为同一定位号的字符串（1–7），不使用编码 `cell_id`。设备说明书已明确位置参数使用字符串、货架层1–5、厚度/总厚度为毫米、直径按寸；转换仅在插件设备边界进行，WMS 参数须按对应物理单位提供，不猜测单位或换算。`reel_totalthickness` 由 WES 本地按厚度×层数计算。最新确认：`bin_type` int 2/3/6 直接转设备字符串 `"2"`/`"3"`/`"6"`，货架面统一使用 `rack_face` 并沿授权原样传递，不保留 `rack_side` 或 A/B 转换。正常链由 ARM01 从滚筒线料箱取料到扫码平台并触发扫码，ARM02 从平台放入转运货架；实际位置与命令时限沿当前显式工作线绑定读取。精确来源 Command 关联字段仍待明确，只限制真实扫码汇合，不猜最近命令；ARM02 退料取出对象未明确只限制退料路径。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
+`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；设备 `bin_cell_location` 为同一定位号的字符串（1–7），不使用编码 `cell_id`。设备说明书已明确位置参数使用字符串、货架层1–5、厚度/总厚度为毫米、直径按寸；转换仅在插件设备边界进行，WMS 参数须按对应物理单位提供，不猜测单位或换算。`reel_totalthickness` 由 WES 本地按厚度×层数计算。最新确认：`bin_type` int 2/3/6 直接转设备字符串 `"2"`/`"3"`/`"6"`，货架面统一使用 `rack_face` 并沿授权原样传递，不保留 `rack_side` 或 A/B 转换。正常链由 ARM01 从滚筒线料箱取料到扫码平台并触发扫码，ARM02 从平台放入转运货架；实际位置与命令时限沿当前显式工作线绑定读取。2026-10-23 用户确认扫码采用原取料 `command_code` 回显，设备字段名称/层级及稳定回显保证仍待确认，只限制真实扫码汇合，不猜最近命令。ARM02 从退料架取出单盘，与既有 `RACK_SLOT` / `added_direct_picks` 语义一致，不增加整箱分支；剩余设备定位参数及 DirectPick 业务装配只限制退料路径。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
 
 WES 以每次真实 SCAN2 建立本地 Passage，并将各次 `work_plan` 请求及结果关联到该 Passage。WMS 可在首次决定中纳入多个 revision 指向同一 Bin 的物料，根据当前业务事实决定 `READY | NO_WORK | WAIT`；同箱实际再次经过时重新决定。后续 `BIN_CELL` 决定与上报分别携带来源、扫码或逐盘事实，由 WMS 决定和记录，WES 在本地按 Passage 与 Action 身份编排。
 
