@@ -182,7 +182,22 @@ def build_picking_plugin(
         if direct_pick_requests is not None
         else None
     )
+    from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionScheduler
+    from src.app.wms_integration.outbound_picking.services.return_rack_arrival import ReturnRackArrivalScheduler
+
+    from .completion_flow import AutomaticPickingCompletionFlow
+    from .return_rack_flow import AutomaticPickingReturnRackFlow
+
+    confirmations = batch.rack_departure_flow.scheduler._confirmations
+    completion = AutomaticPickingCompletionFlow(PickingTaskCompletionScheduler(confirmations))
+    batch.return_rack_flow = AutomaticPickingReturnRackFlow(
+        rack_transports, ReturnRackArrivalScheduler(confirmations), batch.rack_departure_flow.scheduler
+    )
     scan.source_flow, scan.material_flow = source, material
     return build_plugin(
-        scan_flow=scan, batch_driver=batch, works=transport_plugin.business_blocker, material_flow=material
+        scan_flow=scan,
+        batch_driver=batch,
+        works=transport_plugin.business_blocker,
+        material_flow=material,
+        completion_driver=completion,
     )

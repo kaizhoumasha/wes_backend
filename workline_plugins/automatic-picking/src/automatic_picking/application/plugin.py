@@ -10,7 +10,7 @@ from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 
 
-def build_plugin(*, scan_flow, batch_driver, works, material_flow=None):
+def build_plugin(*, scan_flow, batch_driver, works, material_flow=None, completion_driver=None):
     return InstalledWorkLinePlugin(
         definition=DEFINITION,
         runtime_binding=PluginRuntimeBinding(
@@ -28,11 +28,13 @@ def build_plugin(*, scan_flow, batch_driver, works, material_flow=None):
                 "outbound.bin.return_batch@v1",
                 "outbound.rack.departure_decide@v1",
                 "workline.return_buffer.drain_rack_decide@v1",
-            ),
+            )
+            + (("outbound.return_rack.task_completed@v1",) if completion_driver is not None else ()),
         ),
         picking_task_prepare_policy=AutomaticPickingPreparePolicy(),
         picking_task_plan_applied_handler=PickingTaskPlanAppliedHandler(),
         picking_task_batch_driver=batch_driver,
+        picking_task_completion_driver=completion_driver,
         transport_outcome_publisher=AutomaticPickingTransportOutcomePublisher(),
         business_blocker=works,
         business_archiver=works,

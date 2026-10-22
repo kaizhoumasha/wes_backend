@@ -1972,6 +1972,10 @@ PickingTask 状态确认的条件。
 准备请求已经取得 `PREPARE_ACCEPTED`、但超过双方配置的首批期限仍未收到任何计划增量时，WES 同样满足本节本地条件，并以
 `last_applied_plan_revision=0` 请求状态确认。`0` 只表示尚无计划，不创建虚构的 plan revision。
 
+自动拣料以当前单盘已确认报告并关闭的完成事实直接结清其 DirectPick 成员，不再等待同盘的额外面级或整架完成通知。面级/整架事实仍可结清其明确覆盖范围，但不能伪造已经创建的取盘、PUT 或报告的物理完成；原在途单盘义务继续恢复，未闭合前不能确认任务完成。后续 revision 的新成员独立判断。
+
+正常完成确认由原 PickingTask owner 可靠保存响应，自动插件 completion driver 通过持久 current Confirmation 引用和 typed reader 核对当前计划版本后应用；它不依赖工作线结果的第二次发布。到位报告同样沿既有 task-owned 确认结果读取；报告原义务的成功确认是任务必报条件，不作为换面/离场的统一门禁。已明确 NO_WORK 且逐盘义务结清的 Work 可以交回独立退箱路径，不等待 SCAN3、退箱、换面或货架离场完成。
+
 ### 13.2 确认请求与结果
 
 ```json

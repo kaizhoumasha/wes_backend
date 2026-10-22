@@ -26,6 +26,7 @@ class AutomaticPickingBatchDriver:
         rack_motion_flow=None,
         rack_departure_flow=None,
         drain_flow=None,
+        return_rack_flow=None,
         uuid_factory=new_uuid7,
         clock=timezone.now_for_db,
     ):
@@ -42,10 +43,42 @@ class AutomaticPickingBatchDriver:
         self.rack_motion_flow = rack_motion_flow
         self.rack_departure_flow = rack_departure_flow
         self.drain_flow = drain_flow
+        self.return_rack_flow = return_rack_flow
         self.uuid_factory, self.clock = uuid_factory, clock
+
+    async def filter_return_racks_in_session(self, db, _line, task, candidates):
+        if self.return_rack_flow is None:
+            return candidates
+        from dataclasses import replace
+
+        from sqlalchemy import select
+
+        from src.app.wms_integration.outbound_picking.models import DirectPickExecution
+
+        from .return_rack_repository import member_done_clause
+
+        pending = (
+            await db.scalars(
+                select(DirectPickExecution).where(
+                    DirectPickExecution.picking_task_id == task.id, ~member_done_clause(DirectPickExecution)
+                )
+            )
+        ).all()
+        identities = {(str(member.source_evidence_id), member.rack_id, member.rack_face) for member in pending}
+        result = []
+        for candidate in candidates:
+            faces = tuple(
+                face
+                for face in candidate.rack_faces
+                if (candidate.source_evidence_id, candidate.rack_id, face) in identities
+            )
+            if faces:
+                result.append(replace(candidate, rack_faces=faces))
+        return tuple(result)
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
+        rack_count = await self.return_rack_flow.advance_in_session(db, line) if self.return_rack_flow else 0
         direct_count = await self.direct_pick_flow.advance_in_session(db, line=line) if self.direct_pick_flow else 0
         drain_phase_count = (
             await self.drain_flow.prepare_return_motion_in_session(db, line) if self.drain_flow is not None else 0
@@ -59,7 +92,7 @@ class AutomaticPickingBatchDriver:
             if self.exit_flow is not None
             else 0
         )
-        count += direct_count + drain_phase_count + allocation_count + motion_count + departure_count
+        count += rack_count + direct_count + drain_phase_count + allocation_count + motion_count + departure_count
         if self.material_flow is not None:
             count += await self.material_flow.advance_in_session(db, line_id=line.id, now=now)
         if self.target_flow is not None:

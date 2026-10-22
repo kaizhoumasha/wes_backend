@@ -18,6 +18,10 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
         from automatic_picking.application.return_allocation_model import AutomaticPickingReturnAllocation  # noqa: F401
         from automatic_picking.application.return_model import AutomaticPickingReturn  # noqa: F401
         from automatic_picking.application.return_motion_model import AutomaticPickingReturnMotion  # noqa: F401
+        from automatic_picking.application.return_rack_model import (  # noqa: F401
+            AutomaticPickingReturnRack,
+            AutomaticPickingTaskCompletion,
+        )
         from automatic_picking.application.work_model import AutomaticPickingWork  # noqa: F401
 
     if "manual-picking" in enabled_plugin_keys:
@@ -35,6 +39,8 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
 
 def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) -> bool:
     if table_name in {
+        "automatic_picking_return_racks",
+        "automatic_picking_task_completions",
         "automatic_picking_works",
         "automatic_picking_feeds",
         "automatic_picking_feed_scans",

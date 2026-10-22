@@ -9,6 +9,7 @@ from automatic_picking.application.drain_inbound_repository import (
     DrainInboundRepository,
 )
 from automatic_picking.application.return_motion_repository import ReturnMotionRepository
+from automatic_picking.application.return_rack_repository import RETURN_RACK_OUT, ReturnRackRepository
 from automatic_picking.application.source_rack_departure_repository import DEPARTURE_STEP, SourceRackDepartureRepository
 from automatic_picking.application.source_rack_motion_repository import ROTATION_STEP
 from automatic_picking.application.target_replacement_repository import (
@@ -39,6 +40,7 @@ class AutomaticPickingTransportOutcomePublisher:
                 and binding.step
                 not in {
                     "AUTOMATIC_PICKING_RETURN",
+                    "AUTOMATIC_PICKING_RETURN_RACK_OUT",
                     DEPARTURE_STEP,
                     DRAIN_INBOUND_STEP,
                     DRAIN_ROTATION_STEP,
@@ -53,6 +55,8 @@ class AutomaticPickingTransportOutcomePublisher:
             "PICKING_TASK_TARGET_RACK_IN",
             "PICKING_TASK_BIN_SOURCE_RACK_IN",
             "PICKING_TASK_RETURN_RACK_IN",
+            "AUTOMATIC_PICKING_RETURN_RACK_ROTATE",
+            "AUTOMATIC_PICKING_RETURN_RACK_OUT",
             ROTATION_STEP,
             TARGET_ROTATION_STEP,
             TARGET_DEPARTURE_STEP,
@@ -71,6 +75,8 @@ class AutomaticPickingTransportOutcomePublisher:
             raise ValueError("unsupported automatic Transport binding step")
         if binding.step in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP}:
             await DrainInboundRepository().validate_outcome(db, outcome, binding)
+        if binding.step == RETURN_RACK_OUT:
+            await ReturnRackRepository().validate_outcome(db, outcome, binding)
         if binding.step == DEPARTURE_STEP:
             await SourceRackDepartureRepository(ReturnMotionRepository()).validate_outcome(db, outcome, binding)
         if binding.step == DRAIN_DEPARTURE_STEP:

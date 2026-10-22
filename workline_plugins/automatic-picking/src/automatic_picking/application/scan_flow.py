@@ -73,7 +73,10 @@ class AutomaticPickingScanFlow:
             material = await self._material_scan(db, line, evidence)
             if material is not None:
                 return material
-        if evidence.kind == "WMS_RESULT":
+        rack_flow = self.batch_driver.return_rack_flow if self.batch_driver is not None else None
+        if evidence.kind == "WMS_EVENT" and rack_flow is not None:
+            result = await rack_flow.apply_scope_in_session(db, line=line, evidence=evidence)
+        elif evidence.kind == "WMS_RESULT":
             if evidence.operation == "workline.return_buffer.drain_rack_decide@v1":
                 drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
                 result = (
@@ -149,6 +152,9 @@ class AutomaticPickingScanFlow:
         return BusinessEvidenceApplication(BusinessEvidenceDisposition.DEFERRED, retry_after_ms=1000)
 
     async def _departure_result(self, db, line, evidence):
+        rack = self.batch_driver.return_rack_flow if self.batch_driver else None
+        if rack is not None and await rack.repository.by_decision(db, line.id, evidence.operation_id) is not None:
+            return await rack.apply_decision_result_in_session(db, line=line, evidence=evidence)
         target = self.batch_driver.target_flow if self.batch_driver is not None else None
         replacement = target.replacement_flow if target is not None else None
         if (
@@ -173,7 +179,14 @@ class AutomaticPickingScanFlow:
 
     async def _transport_result(self, db, line, evidence):
         step = evidence.normalized_payload.get("step")
-        if step in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP, DRAIN_DEPARTURE_STEP}:
+        from .return_rack_repository import RETURN_RACK_IN, RETURN_RACK_OUT, RETURN_RACK_ROTATE
+
+        if (
+            step in {RETURN_RACK_IN, RETURN_RACK_ROTATE, RETURN_RACK_OUT}
+            and self.batch_driver.return_rack_flow is not None
+        ):
+            flow = self.batch_driver.return_rack_flow
+        elif step in {DRAIN_INBOUND_STEP, DRAIN_ROTATION_STEP, DRAIN_DEPARTURE_STEP}:
             drain = self.batch_driver.drain_flow if self.batch_driver is not None else None
             flow = drain.inbound if drain is not None else None
             if step == DRAIN_DEPARTURE_STEP:

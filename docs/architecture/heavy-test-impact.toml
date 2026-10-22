@@ -1333,7 +1333,7 @@ heavy_tests = []
 
 [[mapping]]
 # 精确 typed departure reader 单独映射；其他现有服务保持原 HEAVY 所有权。
-source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/__init__.py,services/bin_batch.py,services/bin_work_plan.py,services/manual_bin_admission.py,services/manual_bin_completed.py,services/manual_rack_direct_pick_completed.py,services/material_decide.py,services/material_movement_report.py,services/picking_task_cancel.py,services/picking_task_completion.py,services/picking_task_confirmation_owner.py,services/picking_task_issued.py,services/picking_task_plan_activation.py,services/picking_task_plan_delta.py,services/picking_task_prepare.py,services/picking_task_prepare_batch.py,services/picking_task_queue_changed.py,services/rack_departure_owner.py,services/return_batch_owner.py,services/return_rack_arrival.py}"
+source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/__init__.py,services/bin_batch.py,services/bin_work_plan.py,services/manual_bin_admission.py,services/manual_bin_completed.py,services/manual_rack_direct_pick_completed.py,services/material_decide.py,services/material_movement_report.py,services/picking_task_cancel.py,services/picking_task_confirmation_owner.py,services/picking_task_issued.py,services/picking_task_plan_delta.py,services/picking_task_prepare.py,services/picking_task_prepare_batch.py,services/picking_task_queue_changed.py,services/rack_departure_owner.py,services/return_batch_owner.py}"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_picking_task_repository_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
@@ -3366,3 +3366,20 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_configurat
 [[mapping]]
 source_glob = "migrations/versions/20261023_0322_81daa3e0047d_退料单盘直接成员进度.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0336_6781e26d6e19_自动退料架收口和任务确认当前引用.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 精确原 Confirmation 读取只影响两类确认结果消费；不重跑无关 operation 矩阵。
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/services/{picking_task_completion.py,return_rack_arrival.py}"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+]
+
+# 计划扫描只把已形成的候选交回插件过滤；宿主不解释自动单盘完成事实。
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/services/picking_task_plan_activation.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]

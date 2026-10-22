@@ -10,6 +10,7 @@ from src.core.uuid7 import new_uuid7
 
 from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .pickup_repository import SourceObservation
+from .return_rack_repository import ReturnRackRepository, member_done_clause
 
 
 class AutomaticPickingDirectPickFlow:
@@ -26,7 +27,7 @@ class AutomaticPickingDirectPickFlow:
                     select(DirectPickExecution)
                     .where(
                         DirectPickExecution.picking_task_id == task.id,
-                        DirectPickExecution.cancelled_evidence_id.is_(None),
+                        ~member_done_clause(DirectPickExecution),
                     )
                     .order_by(DirectPickExecution.id)
                 )
@@ -59,7 +60,9 @@ class AutomaticPickingDirectPickFlow:
                 select(AutomaticPickingPickup).where(AutomaticPickingPickup.direct_pick_id == owner.id)
             )
             # 原 Command 由共享 owner 恢复；取消只阻止新动作，不丢弃已创建的义务。
-            if pickup is not None or member.cancelled_evidence_id is not None:
+            if pickup is not None or await ReturnRackRepository().member_done(db, member):
+                continue
+            if not await ReturnRackRepository().member_admissible(db, line.id, member):
                 continue
             source = PickingRackSlot(member.rack_id, member.rack_face, member.slot_id)
             observed = await self.repository.physical_reader.read_in_session(db, work=owner, source=source, pickup=None)

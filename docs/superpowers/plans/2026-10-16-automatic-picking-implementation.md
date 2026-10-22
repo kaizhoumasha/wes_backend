@@ -977,7 +977,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 ### 任务 9：跨任务 drain 与完成确认收口
 
-**当前分项状态：**以下为原始整项验收清单，不代表 drain 尚未实施。9A–9H 已确认路径的离线证据按前文切片记录，9H 当前提交与 owner 见[收口索引](#task9h-offline-closure)；完成确认仍未接入，生产装配、WMS C1/C2 及真实设备验收未完成，故不整体勾选任务 9。初始 drain WAIT 的下一任务优先准入与补架 WAIT 的原责任续行分别沿各自既有规则，不能因本清单重做或互相套用。
+**当前分项状态：**以下为原始整项验收清单，不代表 drain 尚未实施。9A–9H 已确认路径的离线证据按前文切片记录，9H 当前提交与 owner 见[收口索引](#task9h-offline-closure)；正常 revision>0 完成确认及退料架级收口已在显式正常链装配中离线实现；revision 0 首批期限、生产装配、WMS 容量接续/核销及真实设备验收未完成，故不整体勾选任务 9。初始 drain WAIT 的下一任务优先准入与补架 WAIT 的原责任续行分别沿各自既有规则，不能因本清单重做或互相套用。
 
 **依赖：**任务 8 的当前 FIFO/回程能力、任务 5 的确认进度与 prepare 协调，不要求任务 6–7 或 DirectPick 设备路径先全部验收。实际任务完成仍逐项等待其必报事实。**新增：**`P/application/{drain_model,drain_repository,drain_flow}.py`；扩展 batch/completion driver 与插件 composition。
 **测试：**新增 `T/{test_drain_flow,test_completion_flow,test_recovery_owners}.py`、`T/integration/test_drain_progress_postgresql.py`。
@@ -1003,7 +1003,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 - [ ] RED：同架跨 revision 成员、单成员取消、through_plan_revision 范围完成、完成后追加、迟到结果与新的因果位置。
 - [x] 为有效直接成员复用 Pickup/MaterialExecution 离线正常路径，沿当前成员与精确到位授权；退料取盘复用 ARM02 实际绑定，正常来源仍为 ARM01。直接取料优先仅作用于同一物理臂的可执行工作，不抢占已有 PUT/取盘 Command、不停止独立 ARM01 或 CTU/Bin 流；不创建虚构 Work。
-- [ ] 到位报告独立可靠交付，整架完成先等连续版本齐全，只关闭覆盖范围，不补造逐面证据；取消停止无依据新动作，已发生事实和已有报告继续收口。
+- [x] 到位报告独立可靠交付，整架完成先等连续版本齐全，只关闭覆盖范围，不补造逐面证据；取消停止无依据新动作，已发生事实和已有报告继续收口。
 - [x] GREEN（离线）：直接取料不等待不存在的 Work 授权交接，当前成员取消阻止新动作，既有义务仍恢复；真实设备归属和定位只限制该设备路径，面级/整架完成另行实施。
 
 **恢复 owner：**范围完成 Evidence 延期由 FactProcessor 重领，业务关联由自动插件消费；直接取料及离场归插件 driver，物理对象沿原身份履约。
@@ -1171,3 +1171,20 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 
 
 本轮验证记录：新增退料 PostgreSQL 差异验收8项通过；受影响领域回归82项通过（其中包含上述退料6项，勿重复计数），插件 FAST 287项通过；测试拓扑14项通过，完整 QUALITY 通过。独立完整 Review 对固定25文件快照无阻塞 finding。HEAD/index 未变，改动保留在本工作分支未提交。核心 HEAVY 历史 schema 检查曾因普通 PostgreSQL 17.11 与固定平台不匹配失败，结构诊断为零差异；该项在本地 PostgreSQL 17.10 / TimescaleDB 缓存镜像单独补验通过，其余所选核心持久化检查17项通过；不修改历史 golden fixture。
+
+
+### 2026-10-23 退料架级收口与正常任务完成（当前工作区，未提交）
+
+承接已提交的退料单盘完整闭环，统一实现退料架权威到位 → arrival_report → 当前面范围完成 → CTU02 换面/新到位报告 → departure 决定/固定 WAIT 续问 → F01 离场，以及 task-owned completion_confirm。使用 `AutomaticPickingReturnRack` 保存当前轮次/动作引用，`AutomaticPickingTaskCompletion` 保存当前确认引用；仅增加业务必需的持久进度，不新增业务状态、授权模型、timer 或 bin-line-common。迁移 `6781e26d6e19` 从 `81daa3e0047d` 前进，空表可回退，有当前义务时拒绝丢失性回退。
+
+已完成单盘由当前成员完成 Evidence 直接结清，不等待重复面级或整架通知。范围完成阻止尚未创建的新取盘，不关闭已有物料或替换原 Command。全部本地成员和必报事实结清后可以请求任务完成；NO_WORK 后已无逐盘义务的 Work 不等待 SCAN3，退箱、drain、换面和离场不构成任务完成门禁。正常完成只核对当前计划；首批期限未确认的 revision 0、取消完成确认及异常终态重决策继续保留，不能视为本轮已实现。
+
+恢复 owner：任务确认和到位报告沿既有 task-owned Confirmation/typed reader；插件 completion driver 由宿主扫描恢复当前请求及确定重问。退料架由既有 batch 前缀在无 EXECUTING 时继续恢复，范围和运动结果应用归 FactProcessor，原窗口接纳交接及动作履约仍归现有 Transport owner。原离场建立后退出对闭合原进场历史的依赖。宿主只新增按精确 Confirmation id 的 typed 读取及可选的中立计划候选过滤调用；已完成成员的业务过滤由自动 batch 拥有，原进场历史清理后不重建已完成成员进场，不承载业务规则或另建派发机制；deployment 继续使用原搬运装配。
+
+主要测试 owner 为 `T/integration/test_return_rack_completion_postgresql.py`，复用原退料单盘/正常链证据，只验收范围、架级接续和任务完成。覆盖未报告/未关闭不完成、完成不等清场、整架截止版本延期与历史清理、原在途单盘保留、固定 WAIT/STALE/current 原子并发及原离场恢复；宿主合同测试只负责精确读取身份，schema/HEAVY 映射沿原所有权。真实扫码归属/稳定性保证及 ARM02 退料定位输入继续待设备确认，CK04 只限制 ROTATE；退箱补架容量接续与回库核销补证仅限制对应 drain 实际容量路径，不扩大正常链阻塞。未提交、未部署、未发外部请求、未启用生产装配或真实派发。
+
+
+本轮整段 Review 的三项反馈已按原合同收敛：departure current 创建即冻结，未来同面/异面 revision 等下一实际到位；原 OUT 未终态但新轮次已到位可独立继续。直接回架依赖只取原 root binding.created_at 之后的本架分配，不按最新 CTU02 重置。RETURN_RACK_OUT 的独立结果发布重新精确验证原已发布 READY 及冻结 F01 目标，错 operation、未发布或目标漂移均拒绝发布。当前仍支撑在位架清退的计划成员不是可清理历史，不以查不到成员推定完成。对应回归归同一插件 PostgreSQL owner，不复制通用派发/租约矩阵。
+
+
+本轮最终验收：插件 PostgreSQL 整段及受影响正常链 **27 passed**（新架级/完成 owner 13项，原退料/正常链14项，勿与前轮重复计数）；插件 FAST **287 passed**；完整 QUALITY **4324 passed / 5 skipped**。核心精确 reader/selector 聚焦 **256 passed**、宿主候选过滤及原宿主合同 **18 passed**、人工 completion 直接消费者 **16 passed**；所选5文件 HEAVY **33 passed**，含隔离 PostgreSQL/真实 worker 的已有可靠机制回归。迁移空表往返和有当前义务禁止降级随本轮PG owner通过。同一 Reviewer 完成三项修复闭环及 fresh full review，无新增明确问题；只补本条人类验收记录，不改变已评审可执行树。全部为本地隔离证据，不等于设备/WMS实际联调；未提交、未部署、未启用生产装配或真实派发。

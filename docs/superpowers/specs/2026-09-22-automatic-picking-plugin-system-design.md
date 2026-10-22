@@ -248,6 +248,14 @@ M1 单盘闭合仅要求本盘物理动作、报告和上述交接均已完成�
 面级 direct_pick_completed 沿现有固定 operation 接收，按 task、revision、rack/face 应用，不将人工插件的结果解释搬入自动插件。
 整架完成事实只覆盖同任务同架 `plan_revision <= through_plan_revision`，先等连续计划已应用，不补造逐面结果；后续成员独立判断。
 
+自动退料架当前进度保存原进场轮次、当前到位及换面/离场动作引用；不另建授权模型或业务状态。batch 先发现有已发布成功事实的原窗口，再可靠创建 task-owned 到位报告。当前面成员按单盘完成事实、取消、精确面级完成或覆盖 revision 的整架完成结清；已建 Pickup 保留原动作和物料义务，不能被范围事实伪造关闭。连续计划未齐时整架 Evidence 由 FactProcessor 延期；截止范围已应用后，重复通知不读取已清理成员历史。
+
+当前面结清且无原进场窗口创建时间范围内的本架直接回架义务后，按原成员顺序选择仍有业务的面，复用 manual-picking 的 CTU02；全部成员结清后创建 workline-owned departure 请求，保存唯一 current 引用及原结果固定 WAIT 到期点。未知/未发布不重问；离场 current 一经建立即冻结本次停靠，未来 revision 不清空该引用、不续停或创建本轮新 Pickup，须由下一实际到位接管。新轮次已权威到位即可承接，不等待旧 OUT 最终回调；READY 沿原结果创建并原子关联 F01 离场，接纳后由原窗口服务释放窗口，原 Transport 的成功结果继续由 batch 独立收口。独立结果发布先按冻结 `departure:<operation_id>` 验证原 taskless WorkLine owner、摘要、已应用且已发布 READY、rack 和 F01 目的地，不能只复用创建时的结论。离场动作成立后退出对已闭合原进场及到位报告的外键依赖，保留原轮次字符串供隔离；清理历史后只恢复原离场，不创建等价新动作。异常终态重决策不在正常链范围。
+
+completion driver 沿宿主已有任务扫描入口保存任务当前 Confirmation，创建/替换 current 与新义务同事务提交；确定 BUSINESS_IN_PROGRESS 使用原响应 received_at 的固定到期点，STALE 等待连续计划追平，再按本地条件重问。只有当前版本 COMPLETED 且当前成员/单盘及必报事实仍结清，才原子写 EXECUTION_COMPLETED。未完成 Work 阻塞；NO_WORK 后 EXIT_PENDING 已无逐盘业务时不等 SCAN3 或清场。任务完成不删除或改写原离场义务。当前正常路径要求已有连续计划，revision 0 的首批期限仍待双方配置，不猜期限。
+
+恢复 owner 不变：宿主扫描/WorkLine 锁 → batch 处理退料架当前引用；FactProcessor 应用/发布范围和 Transport 业务 Evidence；任务 completion driver 消费 task-owned 确认结果；Confirmation、原 Transport/Command 承担各自可靠交付/执行。只有显式 build_picking_plugin 装配新业务，deployment 的搬运装配不因此启用生产机械臂。
+
 ### 5.4 回程、清场和任务完成
 
 自动插件自行实现 SCAN3→SCAN4→OUTLET 回程，独立定义并验证本线拓扑，不复用人工表或仅修改其插件名前缀。

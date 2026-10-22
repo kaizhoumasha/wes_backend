@@ -204,3 +204,14 @@ async def test_scheduler_requires_picking_task_id_and_freezes_identity() -> None
     assert kwargs["operation_id"] == OPERATION_ID
     assert kwargs["picking_task_id"] == 11
     assert kwargs["request_payload"]["data"] == _request()["data"]
+
+
+@pytest.mark.asyncio
+async def test_exact_current_reference_reuses_typed_reader_and_checks_task_owner() -> None:
+    confirmation = _confirmation(operation=OPERATION, picking_task_id=11, workline_id=None, material_execution_id=None)
+    reader, _ = _reader(confirmation, _evidence())
+    db = SimpleNamespace(get=AsyncMock(return_value=confirmation))
+    snapshot = await reader.by_id(db, picking_task_id=11, confirmation_id=1)
+    assert snapshot == await reader.latest(object(), 11, "RACK-1", "TT-1")
+    with pytest.raises(ValueError, match="owner"):
+        await reader.by_id(db, picking_task_id=12, confirmation_id=1)

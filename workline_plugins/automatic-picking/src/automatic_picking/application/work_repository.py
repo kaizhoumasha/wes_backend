@@ -13,6 +13,8 @@ from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .return_allocation_model import AutomaticPickingReturnAllocation
 from .return_model import AutomaticPickingReturn
 from .return_motion_model import AutomaticPickingReturnMotion
+from .return_rack_model import AutomaticPickingReturnRack
+from .return_rack_repository import member_done_clause
 from .work_model import AutomaticPickingWork
 
 
@@ -100,13 +102,23 @@ class WorkRepository:
                 AutomaticPickingDirectPick.workline_id == workline_id,
                 AutomaticPickingDirectPick.completed_evidence_id.is_(None),
                 or_(
-                    DirectPickExecution.cancelled_evidence_id.is_(None),
+                    ~member_done_clause(DirectPickExecution),
                     exists().where(AutomaticPickingPickup.direct_pick_id == AutomaticPickingDirectPick.id),
                 ),
             )
         )
         count = (
-            direct_count
+            (
+                await db.scalar(
+                    select(func.count())
+                    .select_from(AutomaticPickingReturnRack)
+                    .where(
+                        AutomaticPickingReturnRack.workline_id == workline_id,
+                        AutomaticPickingReturnRack.closed_evidence_id.is_(None),
+                    )
+                )
+            )
+            + direct_count
             + work_count
             + return_count
             + allocation_count
