@@ -18,7 +18,7 @@ related:
 `task_type`、`params`、结果 `data`、`error_detail.code` 和事件 `data`。路径、包络、ACK、幂等、重试规则全部以白皮书为准，本文不重复。
 
 `docs/hardware/` 的供应商原文保持原样。原文中的 `source` / `target` 顶层字段，在统一接口里必须封装进 `params`。
-本文未决项仍是**草案**；硬件方回复的《SMT分拣机ECS接口调用说明书》V1.0.0（2026-03-18，仓库原文见 related）及最新用户确认按 §10 实施，不重复冻结。箱型直接使用2、3、6编码，货架面统一为 `rack_face`，机械臂分工见下表。原文顶层包络不覆盖统一白皮书；2026-10-23 用户已确认扫码采用原 `command_code` 回显、ARM02 从退料架取出单盘物料；仅回显字段路径/完整报文、设备保证和实际定位参数仍待设备确认，不得由示例推断。
+本文未决项仍是**草案**；硬件方回复的《SMT分拣机ECS接口调用说明书》V1.0.0（2026-03-18，仓库原文见 related）及最新用户确认按 §10 实施，不重复冻结。箱型直接使用2、3、6编码，货架面统一为 `rack_face`，机械臂分工见下表。原文顶层包络不覆盖统一白皮书；2026-10-23 最新基线要求可靠的取盘与扫码归属，不限定 SCAN_COMPLETED 回显 command_code；ARM02 从退料架取出单盘已确认。取盘结果携带 barcode 仅为待设备确认方案，字段、时序/补报保证和实际定位参数不得由示例推断。
 
 ## 2. 现场事实（2026-09-21 读取 `GET http://10.24.209.28:8080/api/v1/device/status`）
 
@@ -183,10 +183,10 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | `event_type` | 是 | 固定 `SCAN_COMPLETED` |
 | `timestamp` | 是 | 整数毫秒 |
 | `data.location` | 是 | 固定为扫码平台 `location_id`（如 `STATION_SCAN`） |
-| 原 `command_code` 的回显字段（名称/路径待定） | 设备待确认 | 用户已选择原命令编号回显；必须原样指向把本盘放上平台的取料命令。`data.source_command_code` 仅为讨论候选，不能先作为 parser 字段或默认配置 |
+| 取盘与扫码归属证据（承载方式待定） | 接入待确认 | 必须唯一指向把本盘放上平台的原取盘；不要求本事件增加 command_code。原命令回显、其他任务关联或结果携带条码均须先有设备合同依据，不预设字段 |
 | `data.barcode` | 是 | 单个原始字符串，ECS 不拆分，WES 原样保存并转发（O3 已确定，见下方） |
 
-完整事件样例（2026-09-21 联调实际收到的报文，`device_code` 为 `SCANNER_001`——该历史样例不代表最新确认的机械臂上报身份；本轮正常链使用 ARM01。样例没有精确来源 Command 引用，关联字段仍待确认）：
+完整事件样例（2026-09-21 联调实际收到的报文，`device_code` 为 `SCANNER_001`——该历史样例不代表最新确认的机械臂上报身份；本轮正常链使用 ARM01。样例没有取盘归属证据，不能从中推定关联；不要求仅靠本事件新增字段解决）：
 
 ```json
 {
@@ -230,7 +230,7 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | # | 问题 | 询问对象 |
 | --- | --- | --- |
 | O1（已明确） | ARM01 正常取料、ARM02 退料单盘取料后分别触发扫码；扫码事件须与原来源 Command 的设备一致 | 用户确认 |
-| O2（方案已确认，字段待确认） | 已选原 `command_code` 回显；设备只需回复字段名称/层级/类型及完整扫码报文，并保证延迟、重放、重启补报仍指向原取料命令，不改为当前新命令。未取得保证前保留原 Evidence，不按平台单盘、时间或最近命令推断 | ECS 供应商 |
+| O2（可靠归属待确认） | 请提供原取盘请求及对应的完整结果/扫码报文，说明条码如何唯一归属于本次取盘，并给出延迟、重复、重启补报和新旧轮次隔离保证。无需固定在 SCAN_COMPLETED 回显 command_code；取盘结果携带 barcode 仅为待确认方案，详见 §10.2 | ECS 供应商 |
 | ~~O3~~ | 已确定：WES 不解析，原样转发 `barcode` 给 WMS；`material.decide` 请求字段需要合同变更，见 §6 更新 | 已关闭 |
 | O4 | 字段、字符串格式及毫米/寸单位已有说明书依据，插件映射已接入；箱型已确认直接为2/3/6，设备侧按原合同转字符串；仅 WMS 尺寸单位对齐仍按对应输入核对，不重问字段结构 | WMS + ECS 供应商 |
 | O5 | 设备能否明确区分“Cell 无料（空取）”与“取料失败”？ | ECS 供应商 |
@@ -257,7 +257,7 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 | 依赖路径 | 已确认基线 | 真正缺少的接口证据 / 阻塞范围 |
 | --- | --- | --- |
 | Cell 取盘参数 | WMS 数字 DTO 不变；设备单元格/层数/尺寸转字符串，总厚度按十进制厚度×层数计算；说明书明确单元格1–7、毫米/寸和全部必填字段 | 箱型直接使用2/3/6，不另配映射；仅 WMS 尺寸单位对齐及实际位置绑定；已明确字段不再等待 O4/O16 整体冻结 |
-| 单盘扫码关联 | barcode 原样转发，str 最长1000；本地 Pickup/原来源 Command 精确关联 | ARM01 上报身份已确认；原 command_code 回显方案已确认；仅设备字段、完整报文及稳定回显保证待确认，不能猜“最近一条命令” |
+| 单盘扫码关联 | barcode 原样转发，str 最长1000；本地 Pickup/原来源 Command 精确关联 | ARM01 上报身份已确认；可靠取盘归属的承载报文、字段、时序/补报保证待确认，不限定 SCAN 回显；事件去重不等于物料归属，不能猜“最近一条命令” |
 | 来源/目标命令统一字段与时限 | 统一 DeviceCommand / PICK_AND_PUT 包络及每条命令稳定身份，不生成未要求的 business_key | O9 正式 timeout 与回调最长延迟按实际绑定落实；示例30000不是生产默认值，不阻塞离线映射 |
 | 目标臂参数 | ACCEPT 的目标层列转字符串，层1–5；必带 FIVE_LAYER_RACK、rack_id 和本盘尺寸，字段结构已确定 | rack_face 原样传递，取消 A/B 映射；仅实际目标位置绑定，不重问层列类型或 location_type |
 | 成功位置与报告 | 匹配原 PUT 的确定成功才保存位置；RECORDED/DUPLICATE 后关闭 | 统一使用本盘扫码 Evidence 的 barcode 原文（1–1000字符），核对已发布 decide 与冻结报告；独立物料编号读口和来源待确认项已撤销，不新增报告身份门禁 |
@@ -268,7 +268,7 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 ### 10.1 已确认设备接线与隔离验收
 
-`PickingMaterialScanReader` 已直接读取归一化 `SCAN_COMPLETED` 的原样 `data.barcode`、`data.location` 和时间，校验 Evidence 身份/摘要、本 Work 的原 Pickup/来源 Command，以及冻结命令目标平台。来源 Command 尚未下发、精确关联尚未取得或工作线暂停时，原 Evidence 保持未发布，由现有 FactProcessor 的 DEFERRED 重扫恢复；关联和单盘身份提交后，直接读取 Evidence 已存关联，不再依赖外部关联端口。扫码触发臂分工及原 command_code 回显方案已确认，读口校验事件设备与原来源 Command 一致；设备字段仍未冻结：该端口必须显式提供精确原命令，不能把讨论中的 `source_command_code` 当成已确认 wire 字段，不能按条码、时间或最近命令关联。本次不新增扫码设备角色、业务状态或 timer。
+`PickingMaterialScanReader` 已直接读取归一化 `SCAN_COMPLETED` 的原样 `data.barcode`、`data.location` 和时间，校验 Evidence 身份/摘要、本 Work 的原 Pickup/来源 Command，以及冻结命令目标平台。来源 Command 尚未下发、精确关联尚未取得或工作线暂停时，原 Evidence 保持未发布，由现有 FactProcessor 的 DEFERRED 重扫恢复；关联和单盘身份提交后，直接读取 Evidence 已存关联，不再依赖外部关联端口。扫码触发臂分工已确认，当前事件读口校验设备与原来源 Command 一致；内部端口仍须提供精确归属，但不限定外部必须在 SCAN 事件回显该命令。`source_command_code` 未成为 wire 合同，不按条码、时间或最近命令关联；当前读口仅处理 DEVICE_EVENT，若最终选择结果携带条码，须按冻结合同补读取/准入适配，不能称其已支持任意结果报文。本次不新增扫码设备角色、业务状态或 timer。
 
 本次隔离装配替换原语义扫码替身，使用上述真实读口；新增验收只覆盖缺关联保留、暂停恢复、并发绑定和清空外部关联后的重建防重。主要 PostgreSQL owner 仍为 `tests/integration/test_picking_device_ports_postgresql.py`；FAST owner `tests/test_picking_device_ports.py` 负责原样条码边界、错误平台/身份和未下发命令，不复制 9H、租约或真实进程矩阵。测试平台和位置参数均为显式离线输入，不能作为设备坐标/数值格式冻结证据。
 
@@ -276,7 +276,7 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。`PickingArmCommandMapper` 在同一事务读取显式 `PickingArmBinding`，按说明书构造完整 `params.source/target`；绑定仅提供工作位、扫码平台和目标位，不新增生产配置默认或箱型/面向映射表。来源缺工作位/平台时不创建来源命令、不消费授权；目标缺实际位置时只不创建 PUT。箱型编码直接转字符串，rack_face 原样传递。PUT 尺寸沿本盘原来源 Command 冻结正文读取，不能读取已推进的 Work 后继参数；平台不一致或原 Pickup/Command/单盘身份错误则拒绝。普通/ROTATE/REPLACE 共用原 PUT/report/close 与恢复 owner，已创建 Command 仍优先原身份恢复，不重映射或改写正文。
 
-`build_picking_plugin` 显式接收同一个 `arm_commands` 映射器，将来源和 PUT 接入正常链；不增加生产 deployment 注册。图中 STATION_WORK1/STATION_SCAN2/PIPELINE_WORK1 以及结果示例 ARM_01 的命名差异只由实际绑定解决，不硬编码、自动别名或选最新配置。扫码端口仍要求精确原命令，原文示例未提供该字段，不据此解除精确关联字段门禁。
+`build_picking_plugin` 显式接收同一个 `arm_commands` 映射器，将来源和 PUT 接入正常链；不增加生产 deployment 注册。图中 STATION_WORK1/STATION_SCAN2/PIPELINE_WORK1 以及结果示例 ARM_01 的命名差异只由实际绑定解决，不硬编码、自动别名或选最新配置。内部扫码端口仍要求明确原取盘归属；原文示例未提供归属证据，不据此解除真实接入门禁，也不把事件增加命令字段作为唯一方案。
 
 真实设备事件入口不提供本地 `command_code` 元数据。精确语义关联显式给定后，插件核对原 Work/Pickup/Command，再将该关联与 MaterialExecution 同事务保存，不改写原始报文或其摘要。来源结果先由 DeviceEvidenceService 应用，再由插件 business consumer 发布；PUT 结果在 FactProcessor 内读取确定成功，位置确认、movement_report 义务和发布仍同事务。设备摘要复用宿主 UNIFORM_WIRE 规则；设备 Fact 的 `1.1` 与既有 WMS Fact 的 `1.0` 由相应静态 handler 明确消费，不更改 Evidence 的版本或身份。
 
@@ -285,10 +285,20 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 恢复 owner 不变：Work/source 与 target/batch 推进当前业务；DeviceCommand/Transport 持有原动作；DeviceEvidenceService 应用设备 Evidence，FactProcessor 应用并发布业务事实，Confirmation 持有已冻结请求/报告。精确扫码关联和完整参数仍是实际接入门禁；退箱补架容量接续与回库分配核销只限制对应 drain 路径，CK04 只限制目标 ROTATE 派发。本轮不改 deployment、不启动 worker 或真实派发、不发送 WMS 请求。
 
 
-### 10.2 原命令回显与退料单盘的接线边界（2026-10-23）
+### 10.2 可靠取盘与扫码归属、退料单盘的接线边界（2026-10-23）
 
-已确认：扫码原样回显把本盘放上平台的取料 `command_code`；退料架取出单盘，由 ARM02 执行。原命令编号不是 barcode，也不是扫码之后 ARM02 目标放置的新命令编号。迟到、重复和重启补报须保留同一原因果；设备不能恢复原编号时不得套用当前命令，原 Evidence 保持未决。
+**硬件原文证据与已确认边界：**[说明书 §5.1](../hardware/SMT分拣机ECS接口调用说明书V1-20260318.md#51-任务结果回传report-result) 的任务结果有原 command_code，data 只定义 actual_qty、pick_and_put_result；§5.2 的独立扫码事件定义 location、barcode 和事件时间，未定义原任务关联或扫码轮次。配套 TaskResultData/EventData 模型一致。这里的“未定义”不等于已验证实际设备一定不返回额外字段。状态查询 current_command_code 只表示查询时的活动命令；[统一白皮书 §4.2](third_party_integration_whitepaper.md#42-上报设备事件event-callback) 的核心内容去重只识别同一事件重报，不证明其取盘归属，诊断扩展也不能直接提升为业务身份。timestamp 没有已批准的跨重启顺序保证。
 
-设备需补齐的最小材料仅为：一份含原命令回显的完整 SCAN_COMPLETED 报文与稳定性保证；一份 ARM02 单盘来源→扫码平台的完整 PICK_AND_PUT 参数及来源定位对应。正常 ARM01 来源/ARM02 PUT、箱型2/3/6、rack_face、barcode 原文不重新确认。字段位置和定位参数未明确前不添加解析分支、字段别名、动态路径配置或可执行占位值。
+**唯一业务要求：**每份完整扫码证据必须可靠、唯一地关联原 Pickup/取盘动作，延迟、重复和重启补报不能绑定到后续物料。扫码信息仍为本盘 barcode 原文及原扫码时间；已有精确关联一旦持久绑定便沿原 Evidence 恢复，不重写原始报文/摘要。SCAN_COMPLETED 不强制回显 command_code，也不固定替代字段或承载渠道。没有归属证据时保留原 Evidence、沿既有延期/对账处理；“当前唯一等待扫码者”、扫码台单盘容量、HTTP 顺序、当前活动命令和 barcode 均不能单独成为关联依据。
 
-正常链在字段冻结后只补现有 `source_commands.read_in_session` 的真实适配，交给原 `PickingMaterialScanReader` 校验并沿 Evidence 持久绑定，复用 FactProcessor 的延期/发布和 material/Confirmation owner。当前 provider 只有隔离测试显式关联，不得将其称为真实设备回显已接通。退料单盘仍属实施计划的 DirectPick 路径：授权来自当前有效成员与精确到位，复用 ARM02 实际绑定、原 Command 和单盘报告机制，不伪造 Work、不消费 BIN_CELL 授权；其生产 driver/扫码上下文尚未装配，不能仅改角色宣称完成。独立 ARM01 正常链不受该缺口阻塞。
+**待设备确认方案，不是已实施合同：**可先核实能否在已有带原 command_code 的取盘结果中，一并提供本盘 barcode 与原扫码时间。字段名称/路径、类型、完整报文、是否具备首次结果回传前取得扫码的能力，均由设备回复后冻结；本附录不新增结果字段、类型默认或示例 JSON。该方案须在首次结果回传时形成并冻结同一正文，保留真实物理完成时间与结果；扫码未完成/失败时的结果及补报方式也须说明，不得把“没有条码”擅自改成物理失败。如果扫码晚于原结果，不能以同一 command_code 改写已确认成功回调，必须提供独立且有可靠归属的扫码事实。设备已有其他稳定任务/轮次关联亦可评估；若主张仅靠状态和时序关联，必须先给跨轮次、迟到、重复和重启隔离依据，不能由 WES 自行假定。
+
+**设备确认清单：**
+
+1. 请提供同一盘的原取盘请求、完整首次结果回调及完整扫码报文（若所选方案仍单独发送事件），逐项说明 barcode、原扫码时间与原取盘的对应关系。明确实际承载报文、字段名/层级/类型、时间语义，以及重复、乱序、迟到、重启补报和无法恢复归属时的处理；不要只回复“单盘平台”或字段片段。
+2. 如选择结果携带条码，回复首次回传前是否已具备完整扫码、同命令重报是否正文不变，以及扫码晚于原结果时的独立归属方式。不支持可直接说明，不能把本方案当成强制接口。
+3. 请提供 ARM02 从退料单盘储位到扫码平台的完整 PICK_AND_PUT 参数，说明 rack_id/rack_face/slot_id 如何对应设备定位，确需额外尺寸时注明权威来源。不重问退料取单盘、两臂分工、箱型2/3/6、rack_face 或 barcode 原文规则。
+
+**装配与恢复范围：**保留既有物料入口、单一精确归属端口及 Pickup/MaterialExecution，不增加另一套物料状态机、平台资源锁、通用关联模型或 timer。设备方案冻结后只补其静态事实读取/归属/准入适配差异，继续由 FactProcessor 应用、延期与发布，Confirmation 负责 decide/报告可靠交付，原 Command 持有物理动作；不在 HTTP 基础接收层解释工作线归属。当前 provider 仅有隔离测试显式关联，不能宣称真实设备接入已完成，也不能预先将未知报文适配为现有事件 Fact。
+
+正常 BIN_CELL 的当前业务仍由 Work/source、target/batch 恢复。退料单盘来源已确认由 ARM02 执行，与既有 RACK_SLOT 一致；DirectPick 的当前成员业务 driver/扫码上下文尚未装配，不伪造 Work、不消费 BIN_CELL 授权。可靠归属接入与退料定位分别限制各自真实路径，不阻塞给定权威事实下的离线业务接续。主合同 §10.3 的双臂并发不变，不增加扫码台锁、平台释放事件或等待整盘报告才下发下一来源的统一门槛；CK04 只限制目标 ROTATE，退箱补架容量接续与回库分配核销只限制对应 drain。

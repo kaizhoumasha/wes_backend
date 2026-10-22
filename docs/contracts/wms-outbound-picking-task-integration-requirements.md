@@ -1249,7 +1249,7 @@ SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、�
 `reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float（JSON number）；
 `barcode` 为非空 UTF-8 原始字符串、最多 1000 字符。WMS DTO 不额外推定物理范围；设备映射按机械臂附录校验，不能反向改变本表 wire 类型。
 
-`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；设备 `bin_cell_location` 为同一定位号的字符串（1–7），不使用编码 `cell_id`。设备说明书已明确位置参数使用字符串、货架层1–5、厚度/总厚度为毫米、直径按寸；转换仅在插件设备边界进行，WMS 参数须按对应物理单位提供，不猜测单位或换算。`reel_totalthickness` 由 WES 本地按厚度×层数计算。最新确认：`bin_type` int 2/3/6 直接转设备字符串 `"2"`/`"3"`/`"6"`，货架面统一使用 `rack_face` 并沿授权原样传递，不保留 `rack_side` 或 A/B 转换。正常链由 ARM01 从滚筒线料箱取料到扫码平台并触发扫码，ARM02 从平台放入转运货架；实际位置与命令时限沿当前显式工作线绑定读取。2026-10-23 用户确认扫码采用原取料 `command_code` 回显，设备字段名称/层级及稳定回显保证仍待确认，只限制真实扫码汇合，不猜最近命令。ARM02 从退料架取出单盘，与既有 `RACK_SLOT` / `added_direct_picks` 语义一致，不增加整箱分支；剩余设备定位参数及 DirectPick 业务装配只限制退料路径。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
+`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；设备 `bin_cell_location` 为同一定位号的字符串（1–7），不使用编码 `cell_id`。设备说明书已明确位置参数使用字符串、货架层1–5、厚度/总厚度为毫米、直径按寸；转换仅在插件设备边界进行，WMS 参数须按对应物理单位提供，不猜测单位或换算。`reel_totalthickness` 由 WES 本地按厚度×层数计算。最新确认：`bin_type` int 2/3/6 直接转设备字符串 `"2"`/`"3"`/`"6"`，货架面统一使用 `rack_face` 并沿授权原样传递，不保留 `rack_side` 或 A/B 转换。正常链由 ARM01 从滚筒线料箱取料到扫码平台并触发扫码，ARM02 从平台放入转运货架；实际位置与命令时限沿当前显式工作线绑定读取。2026-10-23 最新扫码要求为可靠、唯一的取盘与扫码归属，不强制 SCAN_COMPLETED 回显 command_code；承载报文、实际关联字段及延迟/重复/重启保证待设备确认。取盘结果携带 barcode 仅为待确认方案，不能按当前活动命令或最近命令推断归属。ARM02 从退料架取出单盘，与既有 `RACK_SLOT` / `added_direct_picks` 语义一致，不增加整箱分支；剩余设备定位参数及 DirectPick 业务装配只限制退料路径。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
 
 WES 以每次真实 SCAN2 建立本地 Passage，并将各次 `work_plan` 请求及结果关联到该 Passage。WMS 可在首次决定中纳入多个 revision 指向同一 Bin 的物料，根据当前业务事实决定 `READY | NO_WORK | WAIT`；同箱实际再次经过时重新决定。后续 `BIN_CELL` 决定与上报分别携带来源、扫码或逐盘事实，由 WMS 决定和记录，WES 在本地按 Passage 与 Action 身份编排。
 
@@ -1384,6 +1384,12 @@ WES 将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批�
 再决定具体 SLOT、是否换面或是否换架。当前料盘在扫码台等待这个决定属于正常流程。
 
 扫码台最多承载一盘未决物料。这个容量由现场机构和 ECS/PLC 硬件锁保证；WES 不为它建立资源对象、锁、租约或平台释放事件。
+
+### 10.1.1 取盘与扫码归属
+
+WES 必须将本盘完整扫码证据可靠、唯一地关联原取盘动作，再沿现有 Pickup/MaterialExecution、FactProcessor 和 Confirmation 推进物料决定、PUT、位置报告与关闭；不增加另一套物料状态机或平台锁。关联不限定由 SCAN_COMPLETED 回显 command_code，设备已有其他可靠任务/轮次关联也可在合同确认后接入。事件内容去重只证明重复上报，不能单独证明取盘归属；平台单盘容量、HTTP 顺序、时间近似和当前活动命令同样不能代替归属证据。缺证据时保留原身份并延期/对账，不误绑下一盘，不改变 §10.3 的双臂并发。
+
+硬件说明书 §5.1 的取盘结果定义原 command_code、actual_qty、pick_and_put_result，未定义 barcode；§5.2 独立事件定义 barcode、位置和事件时间，未定义取盘关联。这不证明设备实际支持任何扩展。取盘结果携带本盘 barcode 和原扫码时间仅列为待设备确认方案，不新增本合同或 DTO 字段，不预设设备字段名称/路径/类型。设备须说明首次回传时是否已具备扫码及稳定重报方式；不能以同一命令编号改写已确认结果补条码，也不能以扫码缺失/失败改写物理取放结果。若扫码晚于原结果，需独立且可靠关联的扫码事实。完整依据及设备回复要求见[机械臂附录 §10.2](../integration/device-annex-automatic-picking-arms.md#102-可靠取盘与扫码归属退料单盘的接线边界2026-10-23)。
 
 ### 10.2 物料决定
 
