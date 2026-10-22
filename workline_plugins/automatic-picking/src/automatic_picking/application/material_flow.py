@@ -90,6 +90,7 @@ class AutomaticPickingMaterialFlow:
             source_locator=source,
             barcode=scan.barcode,
             scanned_at=scan.scanned_at,
+            plan_revision=await self.repository.source_revision(db, work),
         )
 
     async def _current(self, db, pickup, execution):
@@ -148,6 +149,7 @@ class AutomaticPickingMaterialFlow:
                         source_locator=expected.source_locator,
                         barcode=expected.barcode,
                         scanned_at=expected.scanned_at,
+                        plan_revision=expected.plan_revision,
                     )
                     pickup.material_confirmation_id = await self.scheduler.create_in_session(
                         db,
@@ -248,6 +250,7 @@ class AutomaticPickingMaterialFlow:
             source_locator=intent.source_locator,
             barcode=intent.barcode,
             scanned_at=intent.scanned_at,
+            plan_revision=intent.plan_revision,
         )
         if type(fact) is EvidenceReadyFact:
             if fact.evidence_id != str(execution.admission_evidence_id):
@@ -281,7 +284,7 @@ class AutomaticPickingMaterialFlow:
             fact_version=fact.fact_version,
             material_execution_id=fact.material_execution_id,
             pickup_id=pickup.pickup_id,
-            work_id=work.id,
+            work_id=pickup.work_id,
             result=fact.outcome.result,
         )
 
@@ -307,6 +310,13 @@ class AutomaticPickingMaterialFlow:
             else:
                 pickup.material_retry_at = None
         if type(fact) is MaterialDecidedFact and type(fact.result) is PickingMaterialAccept:
+            if pickup.direct_pick_id is not None:
+                if fact.result.next_source_action is not None:
+                    raise ValueError("DirectPick ACCEPT cannot authorize a Bin Work successor")
+                await self.repository.record_accept(
+                    db, pickup_id=fact.pickup_id, evidence_id=int(fact.evidence_id), outcome=fact.result
+                )
+                return
             await self.source_flow.handoff_in_session(
                 db,
                 work_id=fact.work_id,

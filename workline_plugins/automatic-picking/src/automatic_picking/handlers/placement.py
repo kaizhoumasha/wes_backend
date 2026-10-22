@@ -18,10 +18,11 @@ from wes_plugin_sdk import (
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaterialPutFact(FactReference):
     task_id: str
-    source: PickingBinCell
+    source: PickingBinCell | PickingRackSlot
     target: PickingTargetRackSlot
     barcode: str
     occurred_at: int
+    plan_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -49,6 +50,7 @@ def material_put(fact: MaterialPutFact) -> tuple[MaterialMovementReportIntent, .
             barcode=fact.barcode,
             to_locator=PickingRackSlot(fact.target.rack_id, fact.target.rack_face, fact.target.slot_id),
             occurred_at=fact.occurred_at,
+            plan_revision=fact.plan_revision,
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
         ),

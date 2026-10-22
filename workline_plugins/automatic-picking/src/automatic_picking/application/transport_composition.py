@@ -127,6 +127,7 @@ def build_picking_plugin(
     rack_transports,
     rotation_reader,
     departure_reader,
+    direct_pick_requests=None,
 ):
     """在已装配搬运插件上接通正常逐盘链；设备参数/精确事实读口必须显式提供。"""
     from copy import copy
@@ -135,6 +136,7 @@ def build_picking_plugin(
     from src.app.execution.services import MaterialExecutionService
     from src.app.wms_integration.outbound_picking.services import MaterialDecideResultReader, MaterialDecideScheduler
 
+    from .direct_pick_flow import AutomaticPickingDirectPickFlow
     from .material_flow import AutomaticPickingMaterialFlow
     from .pickup_repository import PickupRepository
     from .placement_flow import AutomaticPickingPlacementFlow
@@ -175,6 +177,11 @@ def build_picking_plugin(
         ),
     )
     batch.source_flow, batch.material_flow, batch.target_flow = source, material, target
+    batch.direct_pick_flow = (
+        AutomaticPickingDirectPickFlow(repository, commands, direct_pick_requests)
+        if direct_pick_requests is not None
+        else None
+    )
     scan.source_flow, scan.material_flow = source, material
     return build_plugin(
         scan_flow=scan, batch_driver=batch, works=transport_plugin.business_blocker, material_flow=material

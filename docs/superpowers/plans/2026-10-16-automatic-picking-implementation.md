@@ -997,14 +997,14 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 ### 任务 10：直接取料、取消与 revision 范围完成
 
-**依赖：**取消/范围完成依赖任务 4–5 的计划事实、成员关联及既有接收；设备动作复用任务 6–7 的原 Command/单盘机制并受 G4 约束，不要求任务 8–9 全部完成。2026-10-23 已确认 ARM02 退料单盘与现有 RACK_SLOT 一致，不能把当前只接受 Work 的生产读口直接称为 DirectPick 已接通。**新增：**`P/application/direct_pick_flow.py`；扩展本插件 handler、flow、completion/batch driver。
+**依赖：**取消/范围完成依赖任务 4–5 的计划事实、成员关联及既有接收；设备动作复用任务 6–7 的原 Command/单盘机制并受 G4 约束，不要求任务 8–9 全部完成。2026-10-23 已确认 ARM02 退料单盘与现有 RACK_SLOT 一致；本轮已实现显式输入下的 DirectPick 离线正常链，真实设备归属及定位仍未冻结。**新增：**`P/application/direct_pick_flow.py`；扩展本插件 handler、flow、completion/batch driver。
 **测试：**新增 `T/{test_direct_pick_flow,test_cancellation,test_return_rack_completion}.py`、`T/integration/test_direct_pick_progress_postgresql.py`。
 **接口：**沿用现有 DirectPick 成员、arrival_report、direct_pick_completed、return_rack.task_completed 的基础接收及 typed reader；不导入人工结果消费者。
 
 - [ ] RED：同架跨 revision 成员、单成员取消、through_plan_revision 范围完成、完成后追加、迟到结果与新的因果位置。
-- [ ] 为有效直接成员复用 Pickup/MaterialExecution 正常路径，沿当前成员与精确到位授权；退料取盘复用 ARM02 实际绑定，正常来源仍为 ARM01。直接取料优先仅作用于同一物理臂的可执行工作，不抢占已有 PUT/取盘 Command、不停止独立 ARM01 或 CTU/Bin 流；不创建虚构 Work。
+- [x] 为有效直接成员复用 Pickup/MaterialExecution 离线正常路径，沿当前成员与精确到位授权；退料取盘复用 ARM02 实际绑定，正常来源仍为 ARM01。直接取料优先仅作用于同一物理臂的可执行工作，不抢占已有 PUT/取盘 Command、不停止独立 ARM01 或 CTU/Bin 流；不创建虚构 Work。
 - [ ] 到位报告独立可靠交付，整架完成先等连续版本齐全，只关闭覆盖范围，不补造逐面证据；取消停止无依据新动作，已发生事实和已有报告继续收口。
-- [ ] GREEN：直接取料不会等待不存在的 Work 授权交接，不使用父任务状态代替成员取消事实；G4 未闭合只阻塞该设备分支，单独报告验收状态。
+- [x] GREEN（离线）：直接取料不等待不存在的 Work 授权交接，当前成员取消阻止新动作，既有义务仍恢复；真实设备归属和定位只限制该设备路径，面级/整架完成另行实施。
 
 **恢复 owner：**范围完成 Evidence 延期由 FactProcessor 重领，业务关联由自动插件消费；直接取料及离场归插件 driver，物理对象沿原身份履约。
 **验收：**旧 revision 不关闭新成员，原到位生命周期可复用，新轮次不依赖可清理历史；设备映射确认后才允许实际取盘。
@@ -1020,7 +1020,7 @@ C1/C2 仍待 WMS 容量接续与核销补证，仅限制对应真实补架验收
 
 唯一 owner 不变：当前 Work 授权由 source/batch 扫描，来源/PUT Command 与货架 Transport 归原基础可靠机制，已保存未应用事实归 FactProcessor，位置报告归 Confirmation，报告后当前 Work 和回程各沿现有 owner。确定未知、失败及未接入异常不换身份制造成功；已闭合 M1 不是 M2 继续或本箱正常结束的查询依据，仍被当前授权引用的 Evidence 保留为当前数据。
 
-主要新增验收 owner 为 `T/integration/test_normal_picking_postgresql.py`，一次覆盖真实插件显式装配中的一/两盘循环、扫码持久交接、WAIT、下一来源与当前 PUT/report 并行、普通/ROTATE/REPLACE 目标分支、报告关闭/正常点2流出/SCAN3、原身份重建、事务中断、缺 PkgID 延期和清理已闭合 Pickup 后继续。已有 6A–7C、F01、窗口与 9H 证据复用，只刷新受影响直接消费者；新增 REPLACE 正例通过后退役原7B/7C“REPLACE尚未接入”的阶段性负例，保留缺取出、未就绪和未装配准备流程的负例。故障注入为离线事务中断，不宣称真实进程失效或现场机械臂验收。
+主要新增验收 owner 为 `T/integration/test_normal_picking_postgresql.py`，一次覆盖真实插件显式装配中的一/两盘循环、扫码持久交接、WAIT、下一来源与当前 PUT/report 并行、普通/ROTATE/REPLACE 目标分支、报告关闭/正常点2流出/SCAN3、原身份重建、事务中断、缺可靠物料身份延期和清理已闭合 Pickup 后继续。已有 6A–7C、F01、窗口与 9H 证据复用，只刷新受影响直接消费者；新增 REPLACE 正例通过后退役原7B/7C“REPLACE尚未接入”的阶段性负例，保留缺取出、未就绪和未装配准备流程的负例。故障注入为离线事务中断，不宣称真实进程失效或现场机械臂验收。
 
 真实接口逐项门禁与已确认 WMS 字段对照集中在[机械臂附录 §10](../../integration/device-annex-automatic-picking-arms.md)。O1/O2、O6/O9、O10/O11/O15/O16 仅限制其真实接口，独立物料编号门禁已撤销；目标架 CK04 与现行 typed CTU02 的差异单列为目标 ROTATE 真实派发合同门禁；不扩散到普通目标/F01换架、现有可靠机制或其他已确认路径。C1/C2、直接取料及首批期限不扩大为本轮到位后业务阻塞。REPLACE 首次 departure/WAIT 的原阶段边界由下述完整接续实施取代；普通目标、ROTATE 及既有搬运/报告证据继续复用。
 
@@ -1142,7 +1142,7 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 
 **当前结论：**扫码必须可靠、唯一地归属于原取盘，不再强制 SCAN_COMPLETED 回显 command_code。ARM02 退料取出单盘与既有 WMS RACK_SLOT/plan_revision 成员合同一致，正常箱型2/3/6、rack_face、两臂分工不变。取盘结果携带 barcode 仅列为待设备确认方案；不能把建议、说明书任意 data 扩展或本地状态当成已批准 wire。主合同 §10.1.1 与机械臂附录 §10.2 是本轮接线依据，覆盖历史“已选回显”的前提。
 
-**已有与实际缺口：**硬件说明书 §5.1 的原命令结果只定义 actual_qty、pick_and_put_result，未定义 barcode；§5.2 的独立扫码定义位置、barcode、事件时间，未定义取盘因果。统一白皮书的相同内容去重不能单独证明归属，current_command_code/诊断扩展也不能提升为关联证据。正常 BIN_CELL 的 PickingMaterialScanReader 及现有 Pickup/MaterialExecution 已具备精确身份、持久绑定和重启恢复，source_commands 目前仅在隔离装配显式提供；不能称为真实设备归属已接通。当前读口只处理 DEVICE_EVENT，若最终选择结果携带条码，仍需按该合同补事实读取/准入差异，而非仅向旧事件 reader 填字段。DirectPick 的生产 driver/扫码上下文仍是任务 10 未完成项，不用虚构 Work 或切换 SOURCE_ARM 绕过。
+**已有与实际缺口：**硬件说明书 §5.1 的原命令结果只定义 actual_qty、pick_and_put_result，未定义 barcode；§5.2 的独立扫码定义位置、barcode、事件时间，未定义取盘因果。统一白皮书的相同内容去重不能单独证明归属，current_command_code/诊断扩展也不能提升为关联证据。正常 BIN_CELL 的 PickingMaterialScanReader 及现有 Pickup/MaterialExecution 已具备精确身份、持久绑定和重启恢复，source_commands 目前仅在隔离装配显式提供；不能称为真实设备归属已接通。当前读口只处理 DEVICE_EVENT，若最终选择结果携带条码，仍需按该合同补事实读取/准入差异，而非仅向旧事件 reader 填字段。DirectPick 的当前成员 driver/扫码上下文已按下节离线交付接通；真实设备事实适配仍未冻结，不用虚构 Work 或切换 SOURCE_ARM 绕过。
 
 **设备回复前可以继续的整体业务：**以当前有效 DirectPick 成员、精确到位及显式离线动作/归属事实为前提，一次性完成成员授权→原取盘 Command/Pickup→扫码身份→decide（含确定 WAIT）→目标准备/PUT→报告确认与单盘关闭。补齐插件当前成员与单盘的必要持久引用，复用原命令、物料和恢复机制；不建新物料状态机，不从 Bin Work 借授权或参数。现有代码的 work_id 必填、BIN_CELL-only 来源检查和 Work 授权交接须随这段业务整体收敛，不能只改请求工厂宣称接通。该离线交付不生成设备未确认的真实报文，不执行真实派发，不扩大到面级/整架完成、任务完成确认或失败重决策。
 
@@ -1157,3 +1157,17 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 **测试所有权与不重复范围：**未来设备方案确定后的差异归 `T/test_picking_device_ports.py`、`T/integration/test_picking_device_ports_postgresql.py`，包括实际归属读取、原扫码时间、证据不可改写及旧盘不得绑定新盘；若结果承载扫码，验证该载荷的准入/物理结果边界，不能复用事件 reader 绿灯宣布已支持。DirectPick 主贯通归任务 10 规划 owner，一次覆盖无 Work 的单盘接续，只补成员并发唯一消费、取消/跨版本、报告关闭和重启/历史清理差异。原并发、延期/重放、运输、共享租约及 worker/Beat 矩阵继续复用，不另铺一套。
 
 **本轮交付边界：**仅修改5份人类文档，对齐需求、硬件证据、候选方案、唯一 owner 和剩余设备回复；不改生产代码、测试、schema、可执行合同或供应商原文，不运行业务测试，不提交、不部署、不发外部请求、不启用真实派发，不做 bin-line-common 抽取。本地链接、3个新增章节引用、设计指纹及 diff 检查通过。独立完整纯文档 review 核对5文件固定快照及供应商/白皮书原文，无 P1/P2/P3 finding；评审后仅补记本句结论，不改变合同语义。报告见 `reports/scan-attribution-docs-{manifest,verification}.json`；HEAD 不变、index 为空，未提交。
+
+
+## 退料单盘完整离线闭环（2026-10-23，本轮工作树）
+
+**交付范围：**有效 `DirectPickExecution` → 当前成员进度 → 原取盘 Pickup/Command → 精确扫码 → decide/确定 WAIT 续问 → 既有目标准备与 PUT → movement_report → RECORDED/DUPLICATE 后单盘关闭。新增 `AutomaticPickingDirectPick` 只保存不可变成员引用、工作线/任务归属和当前完成 Evidence；没有新增物料状态、通用授权或 timer。Pickup 以约束保证 Work 与直接成员归属二选一；每个直接成员只消费一次。decide、续问、报告始终保留原 RACK_SLOT 与成员 revision，不从当前任务 revision 或 Bin Work 取值；DirectPick ACCEPT 不交接 Work 授权。
+
+**恢复与原子性：**新成员在已获准任务入口发现，当前进度由同一 batch 持久扫描承接，不要求存在 EXECUTING。成员/原取盘 Command/Pickup 同事务创建；精确扫码绑定、decide 与原目标动作继续使用既有 FactProcessor、Confirmation、Command/Transport owner。目标准备和 PUT 查询同时包含 Work 与直接成员，不另建搬运流程；原 PUT 恢复先于新动作准入。正常报告关闭与成员完成 Evidence 同事务；清理已闭合 Pickup、Command、报告及 PUT 历史后，当前成员完成事实独立防止重复取盘。取消只禁止新取盘/续问/目标准备/PUT，不抹去已保存事实或既有报告义务。未完成直接成员纳入既有业务工作量读口，不能被当作空闲业务。
+
+**验收归属：**`T/integration/test_direct_pick_progress_postgresql.py` 拥有无 Work 的整段贯通、原子回滚、并发唯一消费、确定 WAIT/无 EXECUTING 重建、取消/跨 revision、精确归属拒绝、报告关闭原子性、清理后防重及迁移保护；typed revision 传播归 `T/test_material_decisions.py`。普通/ROTATE/REPLACE 共用路径及其原动作矩阵复用 `T/integration/test_normal_picking_postgresql.py` 等已有 owner，只回归受影响消费者，不另铺共享机制或 worker/Beat 矩阵。
+
+**实际设备边界：**`build_picking_plugin` 仅在调用方显式给定 `direct_pick_requests` 与来源事实/扫码/目标/PUT 读口时关联退料入口；测试明确提供精确成员、位置与完整动作输入。现有真实来源参数映射仍属于 BIN_CELL；ARM02 退料定位及其必需尺寸来源尚未冻结，不能借用料箱参数。可靠扫码归属字段/时序保证仍待设备确认；取盘结果携带 barcode 只是候选方案，未新增 wire 字段或解析器。迁移模型发现不等于启用生产装配。CK04 仅限制目标 ROTATE，退箱补架容量接续与回库核销待补证仅限制 drain；本轮不接面级/整架或任务完成确认、异常结果重决策，不提交、不部署、不发外部请求、不启用真实派发。
+
+
+本轮验证记录：新增退料 PostgreSQL 差异验收8项通过；受影响领域回归82项通过（其中包含上述退料6项，勿重复计数），插件 FAST 287项通过；测试拓扑14项通过，完整 QUALITY 通过。独立完整 Review 对固定25文件快照无阻塞 finding。HEAD/index 未变，改动保留在本工作分支未提交。核心 HEAVY 历史 schema 检查曾因普通 PostgreSQL 17.11 与固定平台不匹配失败，结构诊断为零差异；该项在本地 PostgreSQL 17.10 / TimescaleDB 缓存镜像单独补验通过，其余所选核心持久化检查17项通过；不修改历史 golden fixture。

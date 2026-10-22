@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from wes_plugin_sdk import BinWorkPlanReady, PickingBinCell, PickingCellSource, PickingMaterialAccept
+from sqlalchemy import or_, select
+from wes_plugin_sdk import BinWorkPlanReady, PickingBinCell, PickingCellSource, PickingMaterialAccept, PickingRackSlot
 
 from automatic_picking.handlers.source_authorization import WorkSourceFact
 from src.app.device.models.command import DeviceCommand
@@ -13,12 +13,12 @@ from src.app.execution.services.inbound_evidence_service import InboundEvidenceD
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material
 from src.app.wms_adapter.outbound_picking.movement_report_wire import MATERIAL_MOVEMENT_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.work_plan_typed import decode_outcome as decode_plan
-from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskBinSourceRack
+from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
 from src.utils.canonical_json import canonical_json_digest
 
 from .feed_model import AutomaticPickingFeed
-from .pickup_model import AutomaticPickingPickup
+from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .work_model import AutomaticPickingWork
 
 
@@ -35,24 +35,64 @@ class PickupRepository:
         self.physical_reader = physical_reader
 
     async def material_context_for_update(self, db, pickup_id):
-        work_id = await db.scalar(
-            select(AutomaticPickingPickup.work_id).where(AutomaticPickingPickup.pickup_id == pickup_id)
-        )
-        if work_id is None:
+        current = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.pickup_id == pickup_id))
+        if current is None:
             raise ValueError("scan Pickup identity is missing")
-        work = await self._work_for_update(db, work_id)
+        if current.work_id is not None:
+            work = await self._work_for_update(db, current.work_id)
+        else:
+            owner = await self.owner(db, current)
+            await db.scalar(select(WorkLine).where(WorkLine.id == owner.workline_id).with_for_update())
+            work = await db.get(AutomaticPickingDirectPick, owner.id, with_for_update=True, populate_existing=True)
         pickup = await self.pickup_for_update(db, pickup_id)
         command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
         if command is None or command.workline_id != work.workline_id or command.execution_ref_id != pickup_id:
             raise ValueError("scan source Command identity differs from Pickup")
         return work, pickup, command
 
+    @staticmethod
+    def for_line(line_id):
+        return (
+            select(AutomaticPickingPickup)
+            .outerjoin(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+            .outerjoin(
+                AutomaticPickingDirectPick, AutomaticPickingDirectPick.id == AutomaticPickingPickup.direct_pick_id
+            )
+            .where(or_(AutomaticPickingWork.workline_id == line_id, AutomaticPickingDirectPick.workline_id == line_id))
+        )
+
+    @staticmethod
+    async def owner(db, pickup):
+        if pickup is None or (pickup.work_id is None) == (pickup.direct_pick_id is None):
+            raise ValueError("Pickup requires exactly one source owner")
+        model, identity = (
+            (AutomaticPickingWork, pickup.work_id)
+            if pickup.work_id is not None
+            else (AutomaticPickingDirectPick, pickup.direct_pick_id)
+        )
+        owner = await db.get(model, identity, populate_existing=True)
+        if owner is None:
+            raise ValueError("Pickup lost current source owner")
+        return owner
+
     async def pickup_by_source_command(self, db, line_id, command_code):
         return await db.scalar(
-            select(AutomaticPickingPickup.pickup_id)
-            .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
-            .where(AutomaticPickingWork.workline_id == line_id, AutomaticPickingPickup.command_code == command_code)
+            self.for_line(line_id)
+            .with_only_columns(AutomaticPickingPickup.pickup_id)
+            .where(AutomaticPickingPickup.command_code == command_code)
         )
+
+    async def source_revision(self, db, work):
+        if type(work) is AutomaticPickingDirectPick:
+            return (await self.direct_member(db, work)).plan_revision
+        return None
+
+    async def direct_member(self, db, owner):
+        member = await db.get(DirectPickExecution, owner.member_id, populate_existing=True)
+        task = await db.get(PickingTask, owner.picking_task_id)
+        if member is None or task is None or member.picking_task_id != task.id:
+            raise ValueError("DirectPick lost its exact member/task/WorkLine identity")
+        return member
 
     async def scan_evidence_for_update(self, db, evidence_id):
         return await inbound_evidence_repository.get_by_id_for_update(db, evidence_id)
@@ -64,7 +104,7 @@ class PickupRepository:
         return await db.get(MaterialExecution, material_id, populate_existing=True) if material_id is not None else None
 
     async def removed_for_close(self, db, *, work, pickup, source):
-        removed_id = work.top_removed_evidence_id
+        removed_id = work.top_removed_evidence_id if type(work) is AutomaticPickingWork else None
         if removed_id is None:
             observed = await self.physical_reader.read_in_session(db, work=work, source=source, pickup=pickup)
             if type(observed) is not SourceObservation:
@@ -89,11 +129,10 @@ class PickupRepository:
         return list(
             (
                 await db.scalars(
-                    select(AutomaticPickingPickup.pickup_id)
-                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                    self.for_line(line_id)
+                    .with_only_columns(AutomaticPickingPickup.pickup_id)
                     .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
                     .where(
-                        AutomaticPickingWork.workline_id == line_id,
                         MaterialExecution.status != "CLOSED",
                         AutomaticPickingPickup.accept_evidence_id.is_(None),
                     )
@@ -103,6 +142,9 @@ class PickupRepository:
         )
 
     async def material_retry_allowed(self, db, work, pickup):
+        if type(work) is AutomaticPickingDirectPick:
+            member = await self.direct_member(db, work)
+            return work.completed_evidence_id is None and member.cancelled_evidence_id is None
         feed = await db.get(AutomaticPickingFeed, work.feed_id)
         member = await db.get(PickingTaskBinSourceRack, feed.source_member_id, populate_existing=True) if feed else None
         return (
@@ -119,11 +161,10 @@ class PickupRepository:
         return list(
             (
                 await db.scalars(
-                    select(AutomaticPickingPickup.pickup_id)
-                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                    self.for_line(line_id)
+                    .with_only_columns(AutomaticPickingPickup.pickup_id)
                     .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
                     .where(
-                        AutomaticPickingWork.workline_id == line_id,
                         MaterialExecution.status != "CLOSED",
                         AutomaticPickingPickup.accept_evidence_id.is_not(None),
                     )
@@ -133,6 +174,9 @@ class PickupRepository:
         )
 
     async def target_allowed(self, db, work):
+        if type(work) is AutomaticPickingDirectPick:
+            member = await self.direct_member(db, work)
+            return work.completed_evidence_id is None and member.cancelled_evidence_id is None
         feed = await db.get(AutomaticPickingFeed, work.feed_id)
         member = await db.get(PickingTaskBinSourceRack, feed.source_member_id, populate_existing=True) if feed else None
         return (
@@ -147,6 +191,12 @@ class PickupRepository:
 
     async def material_source(self, db, work, pickup):
         """本盘仍未闭合时沿原授权引用读取，不使用 Work 的后继授权解释前盘。"""
+        if type(work) is AutomaticPickingDirectPick:
+            member = await self.direct_member(db, work)
+            if pickup.direct_pick_id != work.id or pickup.authorization_evidence_id != member.source_evidence_id:
+                raise ValueError("DirectPick source authorization differs from original member")
+            task = await db.get(PickingTask, work.picking_task_id)
+            return task.task_id, PickingRackSlot(member.rack_id, member.rack_face, member.slot_id)
         evidence = await self._evidence(db, pickup.authorization_evidence_id, work)
         if evidence.normalized_payload.get("operation_id") != evidence.operation_id:
             raise ValueError("source authorization operation identity differs")
@@ -335,7 +385,7 @@ class PickupRepository:
 
     async def record_accept(self, db, *, pickup_id, evidence_id, outcome):
         pickup = await self.pickup_for_update(db, pickup_id)
-        work = await db.get(AutomaticPickingWork, pickup.work_id)
+        work = await self.owner(db, pickup)
         evidence = await self._evidence(db, evidence_id, work)
         if (
             evidence.operation != "outbound.material.decide@v1"

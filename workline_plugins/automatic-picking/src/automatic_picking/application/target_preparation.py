@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from wes_plugin_sdk import (
     PickingBinCell,
     PickingMaterialAccept,
+    PickingRackSlot,
     PickingTargetRackSlot,
     PickingTargetReplace,
     PickingTargetRotate,
@@ -97,9 +98,10 @@ class AutomaticPickingTargetFlow:
                 or snapshot.published_at is None
                 or snapshot.evidence_id != pickup.accept_evidence_id
                 or type(snapshot.outcome.result) is not PickingMaterialAccept
-                or type(snapshot.intent.source_locator) is not PickingBinCell
+                or type(snapshot.intent.source_locator) not in (PickingBinCell, PickingRackSlot)
                 or snapshot.intent.task_id != task_id
                 or snapshot.intent.source_locator != source
+                or snapshot.intent.plan_revision != await self.repository.source_revision(db, work)
             ):
                 raise ValueError("PUT requires current published ACCEPT for this BIN_CELL material")
             accepted = snapshot.outcome.result

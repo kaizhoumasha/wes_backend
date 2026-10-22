@@ -18,6 +18,7 @@ class AutomaticPickingBatchDriver:
         *,
         tasks=None,
         source_flow=None,
+        direct_pick_flow=None,
         material_flow=None,
         target_flow=None,
         exit_flow=None,
@@ -33,6 +34,7 @@ class AutomaticPickingBatchDriver:
         self.batch_scheduler = batch_scheduler
         self.tasks = tasks or PickingTaskRepository()
         self.source_flow = source_flow
+        self.direct_pick_flow = direct_pick_flow
         self.material_flow = material_flow
         self.target_flow = target_flow
         self.exit_flow = exit_flow
@@ -44,6 +46,7 @@ class AutomaticPickingBatchDriver:
 
     async def advance_completed_in_session(self, db, line):
         now = self.clock()
+        direct_count = await self.direct_pick_flow.advance_in_session(db, line=line) if self.direct_pick_flow else 0
         drain_phase_count = (
             await self.drain_flow.prepare_return_motion_in_session(db, line) if self.drain_flow is not None else 0
         )
@@ -56,7 +59,7 @@ class AutomaticPickingBatchDriver:
             if self.exit_flow is not None
             else 0
         )
-        count += drain_phase_count + allocation_count + motion_count + departure_count
+        count += direct_count + drain_phase_count + allocation_count + motion_count + departure_count
         if self.material_flow is not None:
             count += await self.material_flow.advance_in_session(db, line_id=line.id, now=now)
         if self.target_flow is not None:
@@ -109,6 +112,8 @@ class AutomaticPickingBatchDriver:
         count = 0
         if task.status != "EXECUTING" or task.plan_blocked_evidence_id is not None:
             return 0
+        if self.direct_pick_flow is not None:
+            count += await self.direct_pick_flow.advance_in_session(db, line=line, task=task)
         for member in await self.feeds.source_members(db, task.id):
             if member.cancelled_evidence_id is not None or await self.feeds.by_member(db, member.id) is not None:
                 continue

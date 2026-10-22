@@ -129,6 +129,7 @@ class AutomaticPickingPlacementFlow:
             target=observed.target,
             barcode=accepted.intent.barcode,
             occurred_at=observed.occurred_at,
+            plan_revision=accepted.intent.plan_revision,
         )
 
     async def _accepted(self, db, work, pickup, execution):
@@ -152,8 +153,9 @@ class AutomaticPickingPlacementFlow:
             or accepted.evidence_id != pickup.accept_evidence_id
             or type(accepted.outcome.result) is not PickingMaterialAccept
             or accepted.intent.task_id != task_id
-            or type(accepted.intent.source_locator) is not PickingBinCell
+            or type(accepted.intent.source_locator) not in (PickingBinCell, PickingRackSlot)
             or accepted.intent.source_locator != source
+            or accepted.intent.plan_revision != await self.repository.source_revision(db, work)
         ):
             raise ValueError("successful PUT target/source differs from current published ACCEPT")
         scan = await self.scan_reader.read_in_session(db, evidence_id=execution.admission_evidence_id)
@@ -211,11 +213,16 @@ class AutomaticPickingPlacementFlow:
             or report.intent.task_id != task_id
             or report.intent.source_locator != source
             or report.intent.to_locator != PickingRackSlot(target.rack_id, target.rack_face, target.slot_id)
-            or work.authorization_evidence_id == pickup.authorization_evidence_id
+            or report.intent.plan_revision != accepted.intent.plan_revision
+            or (pickup.work_id is not None and work.authorization_evidence_id == pickup.authorization_evidence_id)
         ):
             raise ValueError("closure lost confirmed placement or ACCEPT handoff")
         removed_id = None
-        if work.authorization_evidence_id == pickup.accept_evidence_id and work.consumed_pickup_id is None:
+        if pickup.direct_pick_id is not None:
+            removed_id = await self.repository.removed_for_close(db, work=work, pickup=pickup, source=source)
+            if removed_id is None:
+                return MaterialPlacementPendingFact(**common, reason_code="SOURCE_REMOVAL_PENDING")
+        elif work.authorization_evidence_id == pickup.accept_evidence_id and work.consumed_pickup_id is None:
             removed_id = await self.repository.removed_for_close(
                 db, work=work, pickup=pickup, source=accepted.outcome.result.next_source_action
             )
@@ -226,6 +233,12 @@ class AutomaticPickingPlacementFlow:
     async def apply_in_session(self, db, *, fact):
         work, pickup, execution, _ = await self._context(db, fact.material_execution_id)
         if type(fact) is MaterialReportedFact:
+            if pickup.direct_pick_id is not None:
+                if fact.removed_evidence_id is None or work.completed_evidence_id not in (None, int(fact.evidence_id)):
+                    raise ValueError("DirectPick closure lost current removal or completion identity")
+                work.completed_evidence_id = int(fact.evidence_id)
+                await db.flush()
+                return
             if work.authorization_evidence_id == pickup.accept_evidence_id and work.consumed_pickup_id is None:
                 if fact.removed_evidence_id is None:
                     raise ValueError("closure requires current Work removal fact")

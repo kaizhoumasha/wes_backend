@@ -8,6 +8,7 @@ from wes_plugin_sdk import (
     PickingMaterialAccept,
     PickingMaterialIntent,
     PickingMaterialWait,
+    PickingRackSlot,
     Wait,
     handler,
     wms_operations,
@@ -17,15 +18,16 @@ from wes_plugin_sdk import (
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaterialScannedFact(FactReference):
     task_id: str
-    source_locator: PickingBinCell
+    source_locator: PickingBinCell | PickingRackSlot
     barcode: str
     scanned_at: int
+    plan_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaterialDecidedFact(FactReference):
     pickup_id: str
-    work_id: int
+    work_id: int | None
     result: PickingMaterialAccept | PickingMaterialWait
 
 
@@ -38,6 +40,7 @@ def material_scanned(fact: MaterialScannedFact) -> tuple[PickingMaterialIntent, 
             source_locator=fact.source_locator,
             barcode=fact.barcode,
             scanned_at=fact.scanned_at,
+            plan_revision=fact.plan_revision,
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
         ),

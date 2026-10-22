@@ -69,3 +69,30 @@ def test_determinate_result_does_not_create_a_new_decide_or_physical_command(res
         result=result,
     )
     assert material_decided(fact) == (Wait("EXEC-1", fact.fact_id, reason),)
+
+
+def test_direct_pick_decide_and_report_preserve_member_revision_without_work():
+    from dataclasses import replace
+
+    from automatic_picking.handlers.placement import MaterialPutFact, material_put
+    from wes_plugin_sdk import PickingRackSlot
+
+    source = PickingRackSlot("RETURN", "90", "SINGLE-REEL")
+    fact = replace(scanned(), source_locator=source, plan_revision=7)
+    (intent,) = material_scanned(fact)
+    assert intent.source_locator == source and intent.plan_revision == 7
+    (report,) = material_put(
+        MaterialPutFact(
+            fact_id="evidence:13",
+            evidence_id="13",
+            fact_version="1.0",
+            material_execution_id="EXEC-1",
+            task_id="TASK-1",
+            source=source,
+            target=PickingTargetRackSlot("TARGET", "270", "S1", 1, 2),
+            barcode=fact.barcode,
+            occurred_at=987,
+            plan_revision=intent.plan_revision,
+        )
+    )
+    assert report.plan_revision == 7 and report.source_locator == source and report.barcode == fact.barcode

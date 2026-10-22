@@ -29,7 +29,7 @@ def arm_mapping(*, available=True):
             }
         },
     )
-    pickup = N(work_id=11, material_execution_id=22, command_code="SOURCE-1")
+    pickup = N(work_id=11, direct_pick_id=None, material_execution_id=22, command_code="SOURCE-1")
     command = N(
         workline_id=1,
         command_code="SOURCE-1",
@@ -223,7 +223,7 @@ def scan_fixture(*, code="SOURCE-1", data=None):
         status="DISPATCHING",
         params={"target": {"location_type": "SCAN_PLATFORM", "location_id": "EXPLICIT-PLATFORM"}},
     )
-    pickup = N(pickup_id="P1", work_id=11)
+    pickup = N(pickup_id="P1", work_id=11, direct_pick_id=None)
     work = N(id=11, workline_id=1)
     db = N(
         get=AsyncMock(side_effect=lambda model, key, **kw: evidence if model is InboundEvidence else work),
@@ -333,3 +333,22 @@ async def test_scan_reader_uses_explicit_association_but_never_assumes_pending_c
     with pytest.raises(MaterialScanAssociationPending):
         await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
     association.read_in_session.assert_awaited_once_with(db, evidence_id=fact.id)
+
+
+@pytest.mark.asyncio
+async def test_explicit_direct_pick_scan_uses_original_arm02_owner_without_work():
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, command, association = scan_fixture()
+    command.device_code = fact.device_code = "ARM02"
+    payload = {**fact.normalized_payload, "device_code": "ARM02"}
+    fact.normalized_payload = payload
+    from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
+
+    fact.payload_digest = normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+    # 显式关联提供原取盘命令；不增加或解释任何未冻结设备字段。
+    direct = N(pickup_id="P1", work_id=None, direct_pick_id=17)
+    db.scalar = AsyncMock(side_effect=[command, direct])
+    matched = await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
+    assert matched.pickup_id == "P1" and matched.command_code == command.command_code
+    assert matched.barcode == payload["data"]["barcode"]

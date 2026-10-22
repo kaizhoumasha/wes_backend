@@ -20,13 +20,12 @@ from src.utils.timezone import timezone
 
 from .material_flow import MatchedMaterialScan, MaterialScanAssociationPending
 from .pickup_model import AutomaticPickingPickup
-from .pickup_repository import SourceObservation
+from .pickup_repository import PickupRepository, SourceObservation
 from .placement_flow import MatchedPutResult
 from .scan_flow import normal_bin_code
 from .target_preparation import ReadyTarget
 from .target_replacement import MatchedTargetDeparture
 from .target_replacement_repository import TARGET_INBOUND_STEP, TargetReplacementRepository
-from .work_model import AutomaticPickingWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +91,7 @@ class PickingArmCommandMapper:
         if target.rack_layer not in range(1, 6):
             raise ValueError("target rack layer is outside hardware range 1 through 5")
         pickup = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.pickup_id == pickup_id))
-        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        work = await PickupRepository.owner(db, pickup) if pickup is not None else None
         command = (
             await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
             if pickup is not None
@@ -246,7 +245,7 @@ class PickingMaterialScanReader:
             raise ValueError("material scan source Command identity is invalid")
         command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == code))
         pickup = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.command_code == code))
-        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        work = await PickupRepository.owner(db, pickup) if pickup is not None else None
         if (
             command is None
             or pickup is None
@@ -331,7 +330,7 @@ class PickingTargetReader:
         pickup = await db.scalar(
             select(AutomaticPickingPickup).where(AutomaticPickingPickup.material_execution_id == material_id)
         )
-        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        work = await PickupRepository.owner(db, pickup) if pickup is not None else None
         if work is None or work.workline_id != line_id:
             raise ValueError("target facts require this material's WorkLine")
         snapshot = (
@@ -470,7 +469,7 @@ class PickingPutReader:
         finished = await _finished_arm(db, command)
         if finished is None or finished[0].id != evidence_id:
             return None
-        work = await db.get(AutomaticPickingWork, pickup.work_id)
+        work = await PickupRepository.owner(db, pickup)
         execution = await db.get(MaterialExecution, pickup.material_execution_id)
         if (
             work is None

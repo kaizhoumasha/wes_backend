@@ -20,6 +20,7 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 from .pickup_model import AutomaticPickingPickup
+from .pickup_repository import PickupRepository
 from .target_preparation import ReadyTarget
 from .target_replacement_repository import (
     ROUND_PREFIX,
@@ -27,7 +28,6 @@ from .target_replacement_repository import (
     TARGET_INBOUND_STEP,
     TargetReplacementRepository,
 )
-from .work_model import AutomaticPickingWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,7 +358,7 @@ class AutomaticPickingTargetReplacementFlow:
                 db, workline_id=workline_id, material_execution_id=material_execution_id, target=target
             )
             return observed if type(observed) is ReadyTarget else None
-        work = await db.get(AutomaticPickingWork, pickup.work_id)
+        work = await PickupRepository.owner(db, pickup)
         if work.workline_id != workline_id:
             raise ValueError("replacement ready material belongs to another WorkLine")
         from src.app.execution.models import InboundEvidence

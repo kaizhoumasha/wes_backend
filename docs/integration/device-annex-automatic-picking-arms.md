@@ -268,7 +268,7 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 ### 10.1 已确认设备接线与隔离验收
 
-`PickingMaterialScanReader` 已直接读取归一化 `SCAN_COMPLETED` 的原样 `data.barcode`、`data.location` 和时间，校验 Evidence 身份/摘要、本 Work 的原 Pickup/来源 Command，以及冻结命令目标平台。来源 Command 尚未下发、精确关联尚未取得或工作线暂停时，原 Evidence 保持未发布，由现有 FactProcessor 的 DEFERRED 重扫恢复；关联和单盘身份提交后，直接读取 Evidence 已存关联，不再依赖外部关联端口。扫码触发臂分工已确认，当前事件读口校验设备与原来源 Command 一致；内部端口仍须提供精确归属，但不限定外部必须在 SCAN 事件回显该命令。`source_command_code` 未成为 wire 合同，不按条码、时间或最近命令关联；当前读口仅处理 DEVICE_EVENT，若最终选择结果携带条码，须按冻结合同补读取/准入适配，不能称其已支持任意结果报文。本次不新增扫码设备角色、业务状态或 timer。
+`PickingMaterialScanReader` 已直接读取归一化 `SCAN_COMPLETED` 的原样 `data.barcode`、`data.location` 和时间，校验 Evidence 身份/摘要、本 Work 或退料成员的原 Pickup/来源 Command，以及冻结命令目标平台。来源 Command 尚未下发、精确关联尚未取得或工作线暂停时，原 Evidence 保持未发布，由现有 FactProcessor 的 DEFERRED 重扫恢复；关联和单盘身份提交后，直接读取 Evidence 已存关联，不再依赖外部关联端口。扫码触发臂分工已确认，当前事件读口校验设备与原来源 Command 一致；内部端口仍须提供精确归属，但不限定外部必须在 SCAN 事件回显该命令。`source_command_code` 未成为 wire 合同，不按条码、时间或最近命令关联；当前读口仅处理 DEVICE_EVENT，若最终选择结果携带条码，须按冻结合同补读取/准入适配，不能称其已支持任意结果报文。本次不新增扫码设备角色、业务状态或 timer。
 
 本次隔离装配替换原语义扫码替身，使用上述真实读口；新增验收只覆盖缺关联保留、暂停恢复、并发绑定和清空外部关联后的重建防重。主要 PostgreSQL owner 仍为 `tests/integration/test_picking_device_ports_postgresql.py`；FAST owner `tests/test_picking_device_ports.py` 负责原样条码边界、错误平台/身份和未下发命令，不复制 9H、租约或真实进程矩阵。测试平台和位置参数均为显式离线输入，不能作为设备坐标/数值格式冻结证据。
 
@@ -301,4 +301,4 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 **装配与恢复范围：**保留既有物料入口、单一精确归属端口及 Pickup/MaterialExecution，不增加另一套物料状态机、平台资源锁、通用关联模型或 timer。设备方案冻结后只补其静态事实读取/归属/准入适配差异，继续由 FactProcessor 应用、延期与发布，Confirmation 负责 decide/报告可靠交付，原 Command 持有物理动作；不在 HTTP 基础接收层解释工作线归属。当前 provider 仅有隔离测试显式关联，不能宣称真实设备接入已完成，也不能预先将未知报文适配为现有事件 Fact。
 
-正常 BIN_CELL 的当前业务仍由 Work/source、target/batch 恢复。退料单盘来源已确认由 ARM02 执行，与既有 RACK_SLOT 一致；DirectPick 的当前成员业务 driver/扫码上下文尚未装配，不伪造 Work、不消费 BIN_CELL 授权。可靠归属接入与退料定位分别限制各自真实路径，不阻塞给定权威事实下的离线业务接续。主合同 §10.3 的双臂并发不变，不增加扫码台锁、平台释放事件或等待整盘报告才下发下一来源的统一门槛；CK04 只限制目标 ROTATE，退箱补架容量接续与回库分配核销只限制对应 drain。
+正常 BIN_CELL 的当前业务仍由 Work/source、target/batch 恢复。退料单盘来源已确认由 ARM02 执行，与既有 RACK_SLOT 一致；DirectPick 的当前成员业务 driver/扫码上下文已在显式离线装配中接通，复用原单盘 decide/目标准备/PUT/报告关闭及恢复 owner，不伪造 Work、不消费 BIN_CELL 授权。退料取盘请求和来源事实仍须显式提供；生产 BIN_CELL 参数映射不作为退料定位方案，设备归属字段/保证和退料定位未冻结前不启用真实路径。可靠归属接入与退料定位分别限制各自真实路径，不阻塞给定权威事实下的离线业务接续。主合同 §10.3 的双臂并发不变，不增加扫码台锁、平台释放事件或等待整盘报告才下发下一来源的统一门槛；CK04 只限制目标 ROTATE，退箱补架容量接续与回库分配核销只限制对应 drain。

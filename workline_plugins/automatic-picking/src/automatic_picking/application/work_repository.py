@@ -1,13 +1,15 @@
 """Work 当前轮次的持久查询；工作线锁由宿主/业务消费者统一取得。"""
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlmodel import col
 
 from src.app.execution.models import InboundEvidence
+from src.app.wms_integration.outbound_picking.models import DirectPickExecution
 
 from .drain_model import AutomaticPickingDrain
 from .feed_model import AutomaticPickingFeed
 from .feed_repository import FeedRepository
+from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .return_allocation_model import AutomaticPickingReturnAllocation
 from .return_model import AutomaticPickingReturn
 from .return_motion_model import AutomaticPickingReturnMotion
@@ -90,8 +92,22 @@ class WorkRepository:
                 ),
             )
         )
+        direct_count = await db.scalar(
+            select(func.count())
+            .select_from(AutomaticPickingDirectPick)
+            .join(DirectPickExecution, DirectPickExecution.id == AutomaticPickingDirectPick.member_id)
+            .where(
+                AutomaticPickingDirectPick.workline_id == workline_id,
+                AutomaticPickingDirectPick.completed_evidence_id.is_(None),
+                or_(
+                    DirectPickExecution.cancelled_evidence_id.is_(None),
+                    exists().where(AutomaticPickingPickup.direct_pick_id == AutomaticPickingDirectPick.id),
+                ),
+            )
+        )
         count = (
-            work_count
+            direct_count
+            + work_count
             + return_count
             + allocation_count
             + motion_count
@@ -107,7 +123,7 @@ class WorkRepository:
                 )
             )
         )
-        return {"count": count, "sample": "automatic-picking current Work/feed/Return" if count else None}
+        return {"count": count, "sample": "automatic-picking current Work/feed/Return/DirectPick" if count else None}
 
     async def archive_open_work(self, db, *, workline_id, archived_at):
         count = 0

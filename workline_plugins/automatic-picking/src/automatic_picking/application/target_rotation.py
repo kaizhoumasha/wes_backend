@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from wes_plugin_sdk import (
     PickingBinCell,
     PickingMaterialAccept,
+    PickingRackSlot,
     PickingTargetRackSlot,
     PickingTargetRotate,
     TransportRackPosition,
@@ -71,9 +72,10 @@ class AutomaticPickingTargetRotationFlow:
             or snapshot.published_at is None
             or snapshot.evidence_id != pickup.accept_evidence_id
             or type(snapshot.outcome.result) is not PickingMaterialAccept
-            or type(snapshot.intent.source_locator) is not PickingBinCell
+            or type(snapshot.intent.source_locator) not in (PickingBinCell, PickingRackSlot)
             or snapshot.intent.task_id != task_id
             or snapshot.intent.source_locator != source
+            or snapshot.intent.plan_revision != await self.repository.source_revision(db, work)
         ):
             raise ValueError("target rotation requires this material's published ACCEPT identity")
         return work, pickup, execution, snapshot.outcome.result

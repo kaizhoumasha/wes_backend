@@ -19,8 +19,8 @@ from src.app.workline.models import WorkLine
 from src.utils.canonical_json import canonical_json_digest
 
 from .pickup_model import AutomaticPickingPickup
+from .pickup_repository import PickupRepository
 from .target_rotation_repository import TARGET_ROTATION_STEP, TargetRotationRepository
-from .work_model import AutomaticPickingWork
 
 TARGET_DEPARTURE_STEP = "AUTOMATIC_PICKING_TARGET_REPLACE_OUT"
 TARGET_INBOUND_STEP = "AUTOMATIC_PICKING_TARGET_REPLACE_IN"
@@ -208,11 +208,9 @@ class TargetReplacementRepository:
 
     async def by_decision(self, db, line_id, operation_id):
         return await db.scalar(
-            select(AutomaticPickingPickup)
-            .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+            PickupRepository.for_line(line_id)
             .join(WmsConfirmation, WmsConfirmation.id == AutomaticPickingPickup.target_departure_confirmation_id)
             .where(
-                AutomaticPickingWork.workline_id == line_id,
                 WmsConfirmation.operation_id == operation_id,
                 WmsConfirmation.operation == "outbound.rack.departure_decide@v1",
             )
@@ -226,11 +224,9 @@ class TargetReplacementRepository:
     async def shared_target_round(self, db, line_id, pickup, target):
         peers = (
             await db.scalars(
-                select(AutomaticPickingPickup)
-                .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
+                PickupRepository.for_line(line_id)
                 .join(MaterialExecution, MaterialExecution.id == AutomaticPickingPickup.material_execution_id)
                 .where(
-                    AutomaticPickingWork.workline_id == line_id,
                     AutomaticPickingPickup.pickup_id != pickup.pickup_id,
                     AutomaticPickingPickup.target_departure_transport_task_id.is_not(None),
                     MaterialExecution.status != "CLOSED",
@@ -293,10 +289,7 @@ class TargetReplacementRepository:
         peers = list(
             (
                 await db.scalars(
-                    select(AutomaticPickingPickup)
-                    .join(AutomaticPickingWork, AutomaticPickingWork.id == AutomaticPickingPickup.work_id)
-                    .where(
-                        AutomaticPickingWork.workline_id == line_id,
+                    PickupRepository.for_line(line_id).where(
                         AutomaticPickingPickup.target_departure_round_id == observed.inbound_client_request_id,
                         AutomaticPickingPickup.target_departure_confirmation_id.is_not(None),
                     )
@@ -315,8 +308,8 @@ class TargetReplacementRepository:
         await db.execute(
             update(AutomaticPickingPickup)
             .where(
-                AutomaticPickingPickup.work_id.in_(
-                    select(AutomaticPickingWork.id).where(AutomaticPickingWork.workline_id == line_id)
+                AutomaticPickingPickup.id.in_(
+                    PickupRepository.for_line(line_id).with_only_columns(AutomaticPickingPickup.id)
                 ),
                 AutomaticPickingPickup.target_departure_round_id == round_id,
             )
