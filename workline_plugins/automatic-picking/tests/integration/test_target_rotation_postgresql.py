@@ -111,6 +111,25 @@ async def transport(p):
         )
 
 
+async def test_unwired_new_rotation_preserves_original_action_and_ready_recovery(rotating):
+    p = rotating
+    flow = application(p)
+    original_reader = flow.position_reader
+    flow.position_reader = None
+    assert await advance(p, flow) == 0
+    assert await transport(p) is None
+    flow.position_reader = original_reader
+    assert await advance(p, flow) == 1
+    original = await transport(p)
+    flow = application(p)
+    flow.position_reader = None
+    assert await advance(p, flow) == 0
+    assert (await transport(p)).transport_task_id == original.transport_task_id
+    await outcome(p)
+    assert await ready(p, flow) is not None
+    assert (await transport(p)).transport_task_id == original.transport_task_id
+
+
 async def outcome(p, *, status="SUCCEEDED", face="A", location="OFFLINE-TARGET", publish=True):
     from automatic_picking.application.plugin import build_plugin
     from test_return_allocation_postgresql import processor as scan_processor

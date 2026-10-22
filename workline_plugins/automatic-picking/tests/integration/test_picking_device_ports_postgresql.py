@@ -15,6 +15,7 @@ from automatic_picking.application.picking_device_ports import (
     PickingSourceReader,
     PickingTargetReader,
 )
+from automatic_picking.application.pickup_model import AutomaticPickingPickup
 from automatic_picking.application.transport_composition import build_picking_plugin
 from automatic_picking.application.work_model import AutomaticPickingWork
 from sqlalchemy import func, select
@@ -42,6 +43,72 @@ from src.app.workline.models import WorkLine
 from src.core.uuid7 import new_uuid7
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_prepared_deployment_reads_frozen_positions_and_preserves_original_action_when_config_is_missing(
+    prepared,
+):
+    from unittest.mock import AsyncMock
+
+    from deployment.plugin_composition import build_deployment_runtime
+    from src.app.device.services.device_command_service import DeviceCommandService
+
+    p = prepared
+    await assembled(p)
+    commands = DeviceCommandService(session_factory=p.sessions)
+
+    def rebuild():
+        runtime = build_deployment_runtime(
+            session_factory=p.sessions,
+            transport_runtime=N(service=p.service, position_projection_service=object(), client=object()),
+            device_command_service=commands,
+            enabled_plugin_keys=("automatic-picking",),
+            automatic_picking_source_commands=N(read_in_session=AsyncMock()),
+        )
+        return runtime.plugins[0].picking_task_batch_driver.source_flow
+
+    source = rebuild()
+    async with p.sessions.begin() as db:
+        line = await db.get(WorkLine, p.line.id)
+        line.position_bindings = {
+            key: value for key, value in line.position_bindings.items() if key not in ("WORK_BIN", "SCAN_PLATFORM")
+        }
+    for position in (None, "WORK_BIN", "SCAN_PLATFORM"):
+        async with p.sessions.begin() as db:
+            line = await db.get(WorkLine, p.line.id)
+            if position is not None:
+                line.position_bindings = {
+                    **line.position_bindings,
+                    position: {
+                        "location_type": "BIN" if position == "WORK_BIN" else "SCAN_PLATFORM",
+                        "location_id": "EXPLICIT-WORK" if position == "WORK_BIN" else "EXPLICIT-PLATFORM",
+                    },
+                }
+            pickup_id = await source.consume_in_session(db, work_id=p.work.id, authorization_evidence_id=p.ready.id)
+            work = await db.get(AutomaticPickingWork, p.work.id, populate_existing=True)
+            count = await db.scalar(select(func.count()).select_from(DeviceCommand))
+            if position != "SCAN_PLATFORM":
+                assert pickup_id is None and work.consumed_pickup_id is None and count == 0
+            else:
+                assert work.consumed_pickup_id == pickup_id and count == 1
+                pickup = await db.scalar(
+                    select(AutomaticPickingPickup).where(AutomaticPickingPickup.pickup_id == pickup_id)
+                )
+                original_code = pickup.command_code
+                command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == original_code))
+                assert command.params["source"]["location_id"] == "EXPLICIT-WORK"
+                assert command.params["target"]["location_id"] == "EXPLICIT-PLATFORM"
+                assert command.device_code == "ARM01"
+    # 新动作读当前绑定，已创建动作的恢复仍沿原 Work/Command，不重新准入或换身份。
+    async with p.sessions.begin() as db:
+        line = await db.get(WorkLine, p.line.id)
+        line.position_bindings = {}
+    source = rebuild()
+    async with p.sessions.begin() as db:
+        assert await source.consume_in_session(db, work_id=p.work.id, authorization_evidence_id=p.ready.id) == pickup_id
+        pickup = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.pickup_id == pickup_id))
+        assert pickup.command_code == original_code
+        assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 1
 
 
 async def assembled(p):

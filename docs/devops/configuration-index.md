@@ -14,6 +14,7 @@
 | 启用的已安装插件 | [Settings](../../src/core/conf.py) 的 `ENABLED_WORKLINE_PLUGINS`；[部署关联](../../deployment/plugin_composition.py) | 由部署显式关联并在启动时生效；不能通过配置自动安装插件或绕过工作线切换检查 |
 | 基础 START 的设备状态时效、命令超时 | [Settings](../../src/core/conf.py) 的 `WORKLINE_DEVICE_STATUS_MAX_AGE_MS`、`WORKLINE_DEVICE_COMMAND_TIMEOUT_MS` | 重启使用该配置的 API/worker 后生效；下次无业务启动计划的 START 冻结到设备合同，既有合同不变；默认值与合法范围以入口为准 |
 | 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |
+| 自动拣料机械臂位置 | [自动插件声明](../../workline_plugins/automatic-picking/src/automatic_picking/definition.py) 与 [PickingArmBindingReader](../../workline_plugins/automatic-picking/src/automatic_picking/application/picking_device_ports.py) | 沿同一 `config.position_bindings` 配置 `WORK_BIN`、`SCAN_PLATFORM` 的本线 STATION 工作位编码；START 冻结其 `logic_location_code`，动作只读当前 `position_bindings` 中对应的 BIN、SCAN_PLATFORM 执行位置；目标沿既有 `TRANSFER_RACK`。新增两槽对搬运装配可选，缺项只阻止依赖该位置的新机械臂命令，不生成默认位置，也不改原 Command 身份或正文 |
 | API 交互日志保留与尽力写入 | [Settings](../../src/core/conf.py) 的 `API_ACCESS_LOG_RETENTION_DAYS`、`API_ACCESS_LOG_WRITE_TIMEOUT_MS`、`API_ACCESS_LOG_MAX_CONCURRENT_WRITES` | 启动读取，重启相关 API/worker 后生效；默认值与合法范围以入口为准；写入预算不覆盖可靠 operation 接收事务 |
 | WmsConfirmation 周期派发调度 | [Celery 配置](../../src/celery_app/config.py) 的 `beat_schedule` 对应任务条目 | 当前是代码配置，修改调度后重启 Beat；任务参数仍须满足 worker 和 Service 的约束，不可仅放大调度参数绕过批量上限 |
 

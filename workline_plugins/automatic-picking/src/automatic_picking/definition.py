@@ -35,11 +35,22 @@ INLET = WorkLinePositionSlot(
 OUTLET = WorkLinePositionSlot(
     slot_key="OUTLET", display_name="料箱出口", position_type="STATION", location_type="HANDOFF_POSITION"
 )
+# 搬运装配可独立使用；机械臂动作只在其所需位置已显式绑定时准入。
+WORK_BIN = WorkLinePositionSlot(
+    slot_key="WORK_BIN", display_name="机械臂料箱作业位", position_type="STATION", location_type="BIN", required=False
+)
+SCAN_PLATFORM = WorkLinePositionSlot(
+    slot_key="SCAN_PLATFORM",
+    display_name="机械臂扫码平台",
+    position_type="STATION",
+    location_type="SCAN_PLATFORM",
+    required=False,
+)
 DEFINITION = PluginDefinition(
     plugin_key="automatic-picking",
     plugin_version="0.1.0",
     display_name="自动拣料",
     supported_line_types=("AUTO",),
     device_roles=(SCAN1, SCAN2, SCAN3, SCAN4, SOURCE_ARM, TARGET_ARM),
-    position_slots=(FIVE_RACK, RETURN_RACK, TRANSFER_RACK, INLET, OUTLET),
+    position_slots=(FIVE_RACK, RETURN_RACK, TRANSFER_RACK, INLET, OUTLET, WORK_BIN, SCAN_PLATFORM),
 )

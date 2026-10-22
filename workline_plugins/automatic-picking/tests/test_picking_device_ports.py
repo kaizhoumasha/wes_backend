@@ -63,6 +63,90 @@ def arm_mapping(*, available=True):
     return PickingArmCommandMapper(provider, worklines=worklines, clock=lambda: NOW), db, command
 
 
+def configured_line():
+    return N(
+        id=1,
+        is_active=True,
+        is_deleted=False,
+        plugin_key="automatic-picking",
+        plugin_version="0.1.0",
+        position_bindings={
+            "WORK_BIN": {"location_type": "BIN", "location_id": "EXPLICIT-WORK"},
+            "SCAN_PLATFORM": {"location_type": "SCAN_PLATFORM", "location_id": "EXPLICIT-PLATFORM"},
+            "TRANSFER_RACK": {"location_type": "RACK_POSITION", "location_id": "EXPLICIT-TARGET"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_binding_reader_uses_current_activated_positions_without_inferring_device_codes():
+    from automatic_picking.application.picking_device_ports import PickingArmBindingReader
+
+    line = configured_line()
+    lines = N(get_for_authority_update=AsyncMock(return_value=line))
+    db = object()
+    actual = await PickingArmBindingReader(worklines=lines).read_in_session(db, workline_id=1)
+    assert actual == PickingArmBinding("EXPLICIT-WORK", "EXPLICIT-PLATFORM", "EXPLICIT-TARGET")
+    lines.get_for_authority_update.assert_awaited_once_with(db, 1, populate_existing=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "slot,field",
+    [("WORK_BIN", "work_location"), ("SCAN_PLATFORM", "scan_location"), ("TRANSFER_RACK", "target_location")],
+)
+async def test_missing_binding_remains_unknown_only_for_its_dependent_command(slot, field):
+    from automatic_picking.application.picking_device_ports import PickingArmBindingReader
+
+    line = configured_line()
+    del line.position_bindings[slot]
+    lines = N(get_for_authority_update=AsyncMock(return_value=line))
+    actual = await PickingArmBindingReader(worklines=lines).read_in_session(object(), workline_id=1)
+    assert getattr(actual, field) is None
+    assert sum(getattr(actual, name) is None for name in ("work_location", "scan_location", "target_location")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["inactive", "deleted", "other_plugin", "other_version", "other_line"])
+async def test_binding_reader_never_uses_another_or_inactive_runtime(change):
+    from automatic_picking.application.picking_device_ports import PickingArmBindingReader
+
+    line = configured_line()
+    key, value = {
+        "inactive": ("is_active", False),
+        "deleted": ("is_deleted", True),
+        "other_plugin": ("plugin_key", "manual-picking"),
+        "other_version": ("plugin_version", "unavailable"),
+        "other_line": ("id", 2),
+    }[change]
+    setattr(line, key, value)
+    lines = N(get_for_authority_update=AsyncMock(return_value=line))
+    assert await PickingArmBindingReader(worklines=lines).read_in_session(object(), workline_id=1) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {},
+        {"location_type": "BIN", "location_id": ""},
+        {"location_type": "BIN", "location_id": "  "},
+        {"location_type": "RACK_POSITION", "location_id": "wrong-kind"},
+        {"location_type": "BIN", "location_id": 1},
+        {"location_type": "BIN", "location_id": "EXPLICIT-PLATFORM"},
+    ],
+)
+async def test_invalid_or_colliding_frozen_position_is_rejected(value):
+    from automatic_picking.application.picking_device_ports import PickingArmBindingReader
+
+    line = configured_line()
+    line.position_bindings["WORK_BIN"] = value
+    lines = N(get_for_authority_update=AsyncMock(return_value=line))
+    with pytest.raises(ValueError, match="position"):
+        await PickingArmBindingReader(worklines=lines).read_in_session(object(), workline_id=1)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["source", "put"])
 async def test_mapping_uses_current_role_binding_identity_and_configured_deadline(role):

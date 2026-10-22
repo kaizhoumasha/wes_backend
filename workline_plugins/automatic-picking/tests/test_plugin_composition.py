@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -58,3 +59,52 @@ def test_material_runtime_requires_explicit_injection():
     )
     assert plugin.runtime_binding.fact_factory is material
     assert plugin.runtime_binding.decision_application is material
+
+
+@pytest.mark.parametrize("keys", [("automatic-picking",), ("manual-picking", "automatic-picking")])
+def test_prepared_full_runtime_shares_one_plugin_across_all_existing_entrypoints(keys):
+    from automatic_picking.application.picking_device_ports import PickingArmBindingReader, PickingSourceReader
+
+    association = SimpleNamespace(read_in_session=AsyncMock())
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=keys,
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        device_command_service=object(),
+        automatic_picking_source_commands=association,
+    )
+    plugin = next(p for p in runtime.plugins if p.plugin_key == "automatic-picking")
+    batch = plugin.picking_task_batch_driver
+    scan = plugin.runtime_binding.business_evidence_consumer
+    material = batch.material_flow
+    identity = (plugin.plugin_key, plugin.plugin_version)
+    assert batch.source_flow is scan.source_flow
+    assert material is scan.material_flow is plugin.runtime_binding.fact_factory
+    assert material is plugin.runtime_binding.decision_application
+    assert material.scan_reader.source_commands is association
+    assert isinstance(batch.source_flow.repository.physical_reader, PickingSourceReader)
+    assert isinstance(batch.source_flow.request_factory.__self__.bindings, PickingArmBindingReader)
+    assert batch.target_flow.rotation_flow.position_reader is None  # 只限制新旋转，原动作仍由既有 flow 恢复。
+    assert batch.target_flow.replacement_flow is not None
+    assert batch.direct_pick_flow is None
+    assert batch.return_rack_flow is not None and batch.final_target_flow is not None
+    activation = runtime.picking_task_plan_activation_service
+    assert activation._batch_drivers[identity] is batch
+    assert activation._completion_drivers[identity] is plugin.picking_task_completion_driver
+    assert runtime.execution.fact_processor._plugins.resolve_business_evidence_consumer(*identity) is scan
+    assert runtime.execution.fact_processor._plugins.resolve_fact_factory(*identity) is material
+    assert runtime.transport_outcome_publisher._plugins is runtime.plugins
+
+
+@pytest.mark.parametrize(
+    "keys,association", [((), SimpleNamespace(read_in_session=AsyncMock())), (("automatic-picking",), object())]
+)
+def test_full_runtime_dependency_must_be_explicit_and_installed(keys, association):
+    with pytest.raises(ValueError, match="automatic picking"):
+        build_deployment_runtime(
+            enabled_plugin_keys=keys,
+            session_factory=object(),
+            transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+            device_command_service=object(),
+            automatic_picking_source_commands=association,
+        )

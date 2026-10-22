@@ -93,6 +93,7 @@ class AutomaticPickingTargetRotationFlow:
                 type(accepted.target_preparation) is not PickingTargetRotate
                 or execution.status == "CLOSED"
                 or not await self.repository.target_allowed(db, work)
+                or self.position_reader is None
             ):
                 continue
             observed = await self.position_reader.read_in_session(

@@ -7,7 +7,7 @@ from decimal import Decimal, localcontext
 from sqlalchemy import select
 from wes_plugin_sdk import PickingMaterialAccept
 
-from automatic_picking.definition import DEFINITION
+from automatic_picking.definition import DEFINITION, SCAN_PLATFORM, TRANSFER_RACK, WORK_BIN
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, MaterialExecution, PositionProjection, TransportDecisionBinding
@@ -42,6 +42,44 @@ class PickingArmBinding:
             for value in (self.work_location, self.scan_location, self.target_location)
         ):
             raise ValueError("arm locations require explicit nonempty binding")
+
+
+class PickingArmBindingReader:
+    """读取 START 已校验冻结的位置；不从设备名、扫码内容或其它插槽猜位置。"""
+
+    def __init__(self, *, worklines=None):
+        self.worklines = worklines or workline_repository
+
+    async def read_in_session(self, db, *, workline_id):
+        line = await self.worklines.get_for_authority_update(db, workline_id, populate_existing=True)
+        if (
+            line is None
+            or line.id != workline_id
+            or not line.is_active
+            or line.is_deleted
+            or (line.plugin_key, line.plugin_version) != (DEFINITION.plugin_key, DEFINITION.plugin_version)
+        ):
+            return None
+        if type(line.position_bindings) is not dict:
+            raise ValueError("arm position bindings must be a frozen object")
+        values = []
+        for slot in (WORK_BIN, SCAN_PLATFORM, TRANSFER_RACK):
+            if slot.slot_key not in line.position_bindings:
+                values.append(None)
+                continue
+            binding = line.position_bindings[slot.slot_key]
+            if (
+                type(binding) is not dict
+                or binding.get("location_type") != slot.location_type
+                or type(binding.get("location_id")) is not str
+                or not binding["location_id"].strip()
+            ):
+                raise ValueError(f"invalid frozen arm position: {slot.slot_key}")
+            values.append(binding["location_id"])
+        known = [value for value in values if value is not None]
+        if len(set(known)) != len(known):
+            raise ValueError("arm position bindings must identify distinct positions")
+        return PickingArmBinding(*values)
 
 
 def _device_number(value):

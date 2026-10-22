@@ -107,10 +107,16 @@ def build_deployment_runtime(
     device_command_service: DeviceCommandService,
     device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
     enabled_plugin_keys: tuple[str, ...] = (),
+    automatic_picking_source_commands: object | None = None,
 ) -> DeploymentRuntime:
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
+    if automatic_picking_source_commands is not None and (
+        "automatic-picking" not in enabled_plugin_keys
+        or not callable(getattr(automatic_picking_source_commands, "read_in_session", None))
+    ):
+        raise ValueError("automatic picking requires an installed plugin and explicit source association port")
     workline_owner = CombinedWorkLineConfirmationOwner(
         CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
         ReturnBufferDrainOwnerService(),
@@ -222,15 +228,41 @@ def build_deployment_runtime(
     if "automatic-picking" in enabled_plugin_keys:
         from automatic_picking.application.transport_composition import build_transport_plugin
 
-        plugins += (
-            build_transport_plugin(
-                session_factory=session_factory,
-                transport_service=transport_runtime.service,
-                commands=device_command_service,
-                workline_owner=workline_owner,
-                task_queue_gateway=task_queue_gateway,
-            ),
+        automatic = build_transport_plugin(
+            session_factory=session_factory,
+            transport_service=transport_runtime.service,
+            commands=device_command_service,
+            workline_owner=workline_owner,
+            task_queue_gateway=task_queue_gateway,
         )
+        # 生产调用未注入该依赖，仍保持原搬运装配；不提供猜测式扫码关联。
+        if automatic_picking_source_commands is not None:
+            from automatic_picking.application.picking_device_ports import (
+                PickingArmBindingReader,
+                PickingArmCommandMapper,
+                PickingDepartureReader,
+                PickingMaterialScanReader,
+                PickingPutReader,
+                PickingSourceReader,
+                PickingTargetReader,
+            )
+            from automatic_picking.application.transport_composition import build_picking_plugin
+
+            automatic = build_picking_plugin(
+                transport_plugin=automatic,
+                commands=device_command_service,
+                physical_reader=PickingSourceReader(),
+                arm_commands=PickingArmCommandMapper(PickingArmBindingReader()),
+                scan_reader=PickingMaterialScanReader(automatic_picking_source_commands),
+                target_reader=PickingTargetReader(),
+                put_reader=PickingPutReader(),
+                rack_transports=ReliableRackTransportCreator(
+                    transport_runtime.service, inbound_window=RackInboundWindowService()
+                ),
+                rotation_reader=None,
+                departure_reader=PickingDepartureReader(),
+            )
+        plugins += (automatic,)
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,
