@@ -1247,9 +1247,9 @@ SCAN2 准入只核对本点箱码属于当前有效 PickingTask 的已应用、�
 
 字段类型确认（2026-10-16）：`cell_index` 为 int，枚举 1–7；`bin_type` 为 int，枚举 2、3、6；
 `reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float（JSON number）；
-`barcode` 为非空 UTF-8 原始字符串、最多 1000 字符。层数、坐标和尺寸尚无额外物理范围约束，设备映射另行确认。
+`barcode` 为非空 UTF-8 原始字符串、最多 1000 字符。WMS DTO 不额外推定物理范围；设备映射按机械臂附录校验，不能反向改变本表 wire 类型。
 
-`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；WES 按设备附录 O16 的确认映射使用 `cell_index`。`reel_totalthickness` 由 WES 本地计算。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
+`READY.cell_id` 是 WMS 的 `BIN_ID + INDEX` 业务编码，`cell_index` 单独表示该料格在料箱内的定位号；设备 `bin_cell_location` 为同一定位号的字符串（1–7），不使用编码 `cell_id`。设备说明书已明确位置参数使用字符串、货架层1–5、厚度/总厚度为毫米、直径按寸；转换仅在插件设备边界进行，WMS 参数须按对应物理单位提供，不猜测单位或换算。`reel_totalthickness` 由 WES 本地按厚度×层数计算。`bin_type` 数字到设备箱型、`rack_face` 到 A/B 及实际绑定仍须显式给定；缺少时只停对应命令。确定的 `READY` 冻结本次 Passage 的工作范围；下一盘或下一 Cell 由 §10.2 的 WMS 决定提供。
 
 WES 以每次真实 SCAN2 建立本地 Passage，并将各次 `work_plan` 请求及结果关联到该 Passage。WMS 可在首次决定中纳入多个 revision 指向同一 Bin 的物料，根据当前业务事实决定 `READY | NO_WORK | WAIT`；同箱实际再次经过时重新决定。后续 `BIN_CELL` 决定与上报分别携带来源、扫码或逐盘事实，由 WMS 决定和记录，WES 在本地按 Passage 与 Action 身份编排。
 

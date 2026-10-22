@@ -18,7 +18,7 @@ related:
 `task_type`、`params`、结果 `data`、`error_detail.code` 和事件 `data`。路径、包络、ACK、幂等、重试规则全部以白皮书为准，本文不重复。
 
 `docs/hardware/` 的供应商原文保持原样。原文中的 `source` / `target` 顶层字段，在统一接口里必须封装进 `params`。
-本文是**草案**：标记为“待确认”的条目未经供应商书面确认前，不得据此编写生产 Adapter 或 handler。
+本文未决项仍是**草案**；硬件方本轮回复的《SMT分拣机ECS接口调用说明书》V1.0.0（2026-03-18，仓库原文见 related）已明确的字段按 §10 实施，不重复冻结。原文顶层包络不覆盖统一白皮书；扫码精确关联、箱型/面向对应和实际绑定不得由示例推断。
 
 ## 2. 现场事实（2026-09-21 读取 `GET http://10.24.209.28:8080/api/v1/device/status`）
 
@@ -51,7 +51,7 @@ WES 的业务角色“转运货架”，在 ECS 侧的 `location_type` 就是 `F
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `business_key` | 是 | WES 生成的稳定业务键，对应一个 `MaterialExecution`；ECS 只原样回显，用于追溯（待确认 O6 是否必要） |
+| `business_key` | 不要求 | 硬件说明书未列此字段；WES 本地 Pickup/MaterialExecution 仍负责业务关联，设备动作沿原 `command_code` 追溯，不以额外回显作为正常命令前置条件 |
 | `source` | 是 | 起点位置对象，见 4.2 |
 | `target` | 是 | 终点位置对象，见 4.2 |
 
@@ -61,15 +61,15 @@ WES 的业务角色“转运货架”，在 ECS 侧的 `location_type` 就是 `F
 
 | `location_type` | 必填字段 | 逻辑来源 |
 | --- | --- | --- |
-| `BIN` | `location_id`、`location_type`、`bin_cell_location` | WMS 已确认 `cell_id` 保持 `BIN_ID + INDEX` 业务编码，并单独提供 `cell_index`；WES 按 O16 冻结的设备映射生成 `bin_cell_location` |
+| `BIN` | `location_id`、`location_type`、`bin_type`、`bin_cell_location`、`reel_layer`、`reel_thickness`、`reel_totalthickness`、`reel_diameter` | `cell_index` 原定位号转字符串1–7，不能使用编码 `cell_id`；数字箱型到设备箱型仍需明确对应 |
 | `ONE_LAYER_RACK` | 供应商原文要求 `location_id`、`location_type`、`bin_type`、`bin_location`、`bin_cell_location` 等；退料货架储位直接放料盘，字段是否适用见 O12、O13 | 来自 `plan_delta.added_direct_picks[].source_locator`（`rack_id`、`rack_face`、`slot_id`） |
 | `SCAN_PLATFORM` | `location_id`、`location_type` | WorkLine 位置绑定 |
-| `FIVE_LAYER_RACK` | `location_id`、`location_type`、`rack_id`、`rack_side`、`rack_layer`、`rack_column` | WMS 已接受在 `material.decide.ACCEPT.target_locator` 给出层/列；`rack_side` 与 `rack_face` 值域仍待 O11 确认 |
+| `FIVE_LAYER_RACK` | `location_id`、`location_type`、`rack_id`、`rack_side`、`rack_layer`、`rack_column`、`reel_thickness`、`reel_diameter` | 层/列转字符串，层为1–5；尺寸使用本盘原来源命令冻结值；`rack_side` 与 `rack_face` 对应仍待 O11，不按同名或角度推断 |
 
 供应商原文还要求 `bin_type`、`reel_layer`、`reel_thickness`、`reel_totalthickness`、`reel_diameter`。
 **2026-09-21 更新**：`reel_totalthickness` 不需要 WMS 提供，WES 本地按 `reel_thickness × reel_layer` 计算。
 其余四个字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`）由 WMS 已接受的
-`work_plan.READY` 目标响应提供，见[出库主合同 §9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)；已确认的公共命令/事实接线见 §10.1；设备私有参数编码仍待 O4/O16 等项冻结。
+`work_plan.READY` 或 `next_source_action` 提供，见[出库主合同 §9.3](../contracts/wms-outbound-picking-task-integration-requirements.md)。位置及料盘参数在设备侧均为字符串；厚度/总厚度为毫米，直径按寸（说明书列出7/13/15寸，但未证明是封闭枚举，不新增 WMS 枚举）。十进制总厚度不引入浮点尾差，不做额外取整、裁剪或单位换算。未知箱型、面向和位置不填默认值。
 
 ### 4.3 示例
 
@@ -84,8 +84,11 @@ ARM01（工作位料箱 → 扫码平台）：
   "timeout": 30000,
   "timestamp": 1790019600000,
   "params": {
-    "business_key": "MEXEC-0001",
-    "source": {"location_id": "STATION_WORK1", "location_type": "BIN", "bin_cell_location": "1"},
+    "source": {
+      "location_id": "STATION_WORK1", "location_type": "BIN", "bin_type": "三格箱",
+      "bin_cell_location": "1", "reel_layer": "10", "reel_thickness": "20",
+      "reel_totalthickness": "200", "reel_diameter": "15"
+    },
     "target": {"location_id": "STATION_SCAN", "location_type": "SCAN_PLATFORM"}
   }
 }
@@ -102,11 +105,11 @@ ARM02（扫码平台 → 转运货架储位）：
   "timeout": 30000,
   "timestamp": 1790019610000,
   "params": {
-    "business_key": "MEXEC-0001",
     "source": {"location_id": "STATION_SCAN", "location_type": "SCAN_PLATFORM"},
     "target": {
       "location_id": "STATION_A", "location_type": "FIVE_LAYER_RACK",
-      "rack_id": "RACK_01", "rack_side": "A", "rack_layer": "1", "rack_column": "1"
+      "rack_id": "RACK_01", "rack_side": "A", "rack_layer": "1", "rack_column": "1",
+      "reel_thickness": "20", "reel_diameter": "15"
     }
   }
 }
@@ -123,7 +126,6 @@ ARM01（退料货架直接取料 → 扫码平台，示例，`source` 字段待 
   "timeout": 30000,
   "timestamp": 1790019700000,
   "params": {
-    "business_key": "MEXEC-0002",
     "source": {
       "location_id": "STATION_RETURN_RACK",
       "location_type": "ONE_LAYER_RACK",
@@ -255,34 +257,34 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | O1 | 扫码平台事件用哪个 `device_code` 上报（`ARM01`、`ARM02` 还是独立设备）？状态查询里没有独立扫码设备 | ECS 供应商 |
 | O2 | 事件能否带 `source_command_code` 或提供等价精确关联？未确认前保留原 Evidence，不按平台单盘、时间或最近命令推断 | ECS 供应商 |
 | ~~O3~~ | 已确定：WES 不解析，原样转发 `barcode` 给 WMS；`material.decide` 请求字段需要合同变更，见 §6 更新 | 已关闭 |
-| O4 | WMS 已接受在 `work_plan.READY` 按 Cell 提供 `bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`；`reel_totalthickness` 由 WES 本地计算，接线与设备验收仍待完成 | WMS |
+| O4 | 字段、字符串格式及毫米/寸单位已有说明书依据，插件映射已接入；仅剩 WMS 数字 `bin_type=2/3/6` 到设备箱型字符串的对应和 WMS 尺寸单位对齐，不重问字段结构 | WMS + ECS 供应商 |
 | O5 | 设备能否明确区分“Cell 无料（空取）”与“取料失败”？ | ECS 供应商 |
-| O6 | `params.business_key` 是否需要，或仅靠 `command_code` 追溯 | ECS 供应商 |
+| O6（不再作门禁） | 说明书未要求 `business_key`；正常命令不生成此扩展，追溯使用原 `command_code` 与本地执行身份 | 已收窄 |
 | O7 | `error_detail.code` 取值表及原厂码对应关系 | ECS 供应商 |
 | O8 | 读不出码或不完整时，ECS 发什么事件、是否重扫、何时放弃 | ECS 供应商 |
 | O9 | `PICK_AND_PUT` 的合理 `timeout`、结果回调最长延迟 | ECS 供应商 |
-| O10 | WMS 已接受在 `material.decide.ACCEPT.target_locator` 提供 `rack_layer`、`rack_column`；设备值域与映射仍需验收 | WMS |
+| O10 | 说明书明确层/列为字符串、层1–5；插件按此转换，不猜列数上限，不修改 WMS int DTO | 已明确 |
 | O11 | `rack_side`（A/B）与合同 `rack_face` 是否同一值域 | WMS + ECS 供应商 |
 | O12 | 退料货架在 ECS 里的 `location_type` 是否为 `ONE_LAYER_RACK`，`ARM01` 能否从它直接取单个料盘 | ECS 供应商 |
 | O13 | 退料货架直接取料的位置字段：`bin_*` 是否适用于“储位直接放料盘”，`slot_id` 如何映射到 ECS 字段（字段名和 O10 不同，但可以是同一种做法：WMS 直接给出 ECS 需要的字段，不用 WES 反推） | ECS 供应商 + WMS |
 | O14 | 直接取料的“空取”信号，是否与 O5 同一机制 | ECS 供应商 |
-| O15 | 2026-09-21 联调样例的 ARM02 `target` 缺少 `location_type`；硬件文档 §8.1 要求 `FIVE_LAYER_RACK` 必填该字段，请确认是遗漏还是有意省略 | ECS 供应商 |
-| O16 | WMS 已确认 `cell_id` 保持 `BIN_ID + INDEX` 编码并单独提供料箱内定位号 `cell_index`；`cell_index` 的设备类型/值域及到 `bin_cell_location` 的映射由 WMS 与 ECS 供应商冻结 | WMS + ECS 供应商 |
+| O15 | 按说明书 §8.1，ARM02 目标必须包含 `location_type=FIVE_LAYER_RACK` 及 `rack_id`，不照抄漏字段样例 | 已明确 |
+| O16 | `cell_index` 表示同一料箱内定位号，设备 `bin_cell_location` 为其字符串1–7；不拆解业务 `cell_id` | 已明确 |
 | O17 | 直接取料的 ARM01 测量字段（`bin_type`、`reel_layer`、`reel_thickness`、`reel_diameter`，如果 O13 确认 `ONE_LAYER_RACK` 需要）目前没有任何 wire 来源：`plan_delta.added_direct_picks[]` 只给 `source_locator`，直接取料没有 `work_plan` 等价物。如果确实需要，建议同 O4/变更 1 的解法，扩展 `added_direct_picks[]` 每项带上这些字段 | WMS |
 
 
 ## 10. 正常业务装配与真实接口门禁（2026-10-22 核对）
 
-本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与公共命令映射已实现；完整设备位置正文、精确扫码关联仍须由调用方显式注入；报告 barcode 直接沿本盘扫码 Evidence；`build_picking_plugin` 不注册到生产 deployment，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
+本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与完整参数映射已实现；实际位置/箱型/面向绑定及精确扫码关联由调用方显式提供；报告 barcode 直接沿本盘扫码 Evidence；`build_picking_plugin` 不注册到生产 deployment，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
 
 REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT 到期续问，再沿原 F01 旧架离场/新架进场和共用 PUT/report/close 继续，不重新请求物料资格。首次输入只需精确旧架、原进场轮次及到位事实；当前请求、轮次和到期点保存在 Pickup，恢复不按“最新请求”猜身份。所有搬运和机械臂成功事实仍必须匹配并已发布；未知交付不创建等价新动作。这证明显式权威输入下的离线业务闭环，不代表下表接口门禁已解除。
 
 | 依赖路径 | 已确认基线 | 真正缺少的接口证据 / 阻塞范围 |
 | --- | --- | --- |
-| Cell 取盘参数 | WMS `cell_index` 为 int 1–7；`bin_type` 为 int 2/3/6；`reel_layer` 为 int，厚度/直径为 float；总厚度按既有约定计算 | O16：ECS `bin_cell_location` 的最终类型/映射；O4 的设备侧数值序列化和适用字段。只限制真实来源命令映射，不阻塞授权/持久事务 |
+| Cell 取盘参数 | WMS 数字 DTO 不变；设备单元格/层数/尺寸转字符串，总厚度按十进制厚度×层数计算；说明书明确单元格1–7、毫米/寸和全部必填字段 | 仅剩数字箱型到设备字符串的明确对应、WMS 尺寸单位对齐及实际绑定；已明确字段不再等待 O4/O16 整体冻结 |
 | 单盘扫码关联 | barcode 原样转发，str 最长1000；本地 Pickup/原来源 Command 精确关联 | O1/O2：最终扫码设备身份及可可靠回显的来源 Command 关联字段；现有样例缺 source_command_code，不能猜“最近一条命令” |
-| 来源/目标命令统一字段与时限 | 统一 DeviceCommand / PICK_AND_PUT 包络及每条命令稳定身份 | O6/O9：business_key 最终要求、正式 timeout 与回调最长延迟；示例30000不是生产默认值 |
-| 目标臂参数 | WMS rack_layer/rack_column 已确认为 int；业务目标 rack/face/slot 冻结在 ACCEPT | O10/O11/O15：ECS 层列编码、rack_side/rack_face 映射和 location_type 最终要求；不从字符串示例反推 |
+| 来源/目标命令统一字段与时限 | 统一 DeviceCommand / PICK_AND_PUT 包络及每条命令稳定身份，不生成未要求的 business_key | O9 正式 timeout 与回调最长延迟按实际绑定落实；示例30000不是生产默认值，不阻塞离线映射 |
+| 目标臂参数 | ACCEPT 的目标层列转字符串，层1–5；必带 FIVE_LAYER_RACK、rack_id 和本盘尺寸，字段结构已确定 | 仅 O11 的 rack_face→A/B 及实际目标位置绑定，不重问层列类型或 location_type |
 | 成功位置与报告 | 匹配原 PUT 的确定成功才保存位置；RECORDED/DUPLICATE 后关闭 | 统一使用本盘扫码 Evidence 的 barcode 原文（1–1000字符），核对已发布 decide 与冻结报告；独立物料编号读口和来源待确认项已撤销，不新增报告身份门禁 |
 | 目标架 ROTATE | 目标就绪与 PUT/report 业务接续可离线验证 | [现场搬运基线](manual-outbound-rack-transport.md)记录 CK04，现行 typed RACK_ROTATE 仅支持 CTU02；需独立合同对齐后才能真实派发，不能将来源架 CTU02 默认为目标架 CK04。F01 进出场不受此项阻塞 |
 | 直接取料与异常 | 当前正常 BIN_CELL 链不依赖这些分支 | O12/O13/O14/O17 只限制直接取料；O5/O7/O8 只限制空取、失败/不可读码等异常动作，保留对象/原身份，不替代正常确认 |
@@ -297,7 +299,9 @@ C1/C2 继续只限制 drain 容量接续与回库核销。首批期限只限制�
 
 `application/picking_device_ports.py` 提供来源事实、当前目标/REPLACE 原架、PUT 成功事实读口和 `PickingArmCommandMapper`。来源准入读取本 Work 原 SCAN2 的归一化料箱编码、设备/工作线/时间和已发布 Evidence；可靠取出要求原来源 Command 的 `SUCCESS + PUT_FINISHED + actual_qty` 严格整数 `1`，结果已由 FactProcessor 发布。当前目标沿原进场轮次、已发布结果、未释放窗口和权威当前位置核对，复用既有换架读口的因果检查；第二盘晚于旧架 ACK 加入时，由原换架 owner 从相同目标架/架面、尚未闭合的换架义务恢复唯一原轮次，不查询 latest，不要求旧架重新在位。目标已权威就绪时读取现有 ReadyTarget，不重做换架；ACK、计划目标、未知位置均不构成 ReadyTarget。
 
-公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。请求工厂在同一数据库事务内异步读取，完整 `source/target` 正文由必填参数端口提供，未提供则不创建命令、不消费来源授权。这里没有实现 O4/O10/O11/O15/O16 尚未冻结的设备编码，也没有使用示例坐标、30000 或扫码样例作为生产默认值。
+公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。`PickingArmCommandMapper` 在同一事务读取显式 `PickingArmBinding`，按说明书构造完整 `params.source/target`；绑定提供工作位、扫码平台、目标位和箱型/面向对应，不新增生产配置默认。缺绑定或箱型时不创建来源命令、不消费授权；缺面向时只不创建 PUT。PUT 尺寸沿本盘原来源 Command 冻结正文读取，不能读取已推进的 Work 后继参数；平台不一致或原 Pickup/Command/单盘身份错误则拒绝。普通/ROTATE/REPLACE 共用原 PUT/report/close 与恢复 owner，已创建 Command 仍优先原身份恢复，不重映射或改写正文。
+
+`build_picking_plugin` 显式接收同一个 `arm_commands` 映射器，将来源和 PUT 接入正常链；不增加生产 deployment 注册。图中 STATION_WORK1/STATION_SCAN2/PIPELINE_WORK1 以及结果示例 ARM_01 的命名差异只由实际绑定解决，不硬编码、自动别名或选最新配置。扫码端口仍要求精确原命令，原文示例未提供该字段，不据此解除 O1/O2。
 
 真实设备事件入口不提供本地 `command_code` 元数据。精确语义关联显式给定后，插件核对原 Work/Pickup/Command，再将该关联与 MaterialExecution 同事务保存，不改写原始报文或其摘要。来源结果先由 DeviceEvidenceService 应用，再由插件 business consumer 发布；PUT 结果在 FactProcessor 内读取确定成功，位置确认、movement_report 义务和发布仍同事务。设备摘要复用宿主 UNIFORM_WIRE 规则；设备 Fact 的 `1.1` 与既有 WMS Fact 的 `1.0` 由相应静态 handler 明确消费，不更改 Evidence 的版本或身份。
 

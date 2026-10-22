@@ -120,10 +120,9 @@ def build_picking_plugin(
     transport_plugin,
     commands,
     physical_reader,
-    source_request_factory,
+    arm_commands,
     scan_reader,
     target_reader,
-    target_request_factory,
     put_reader,
     rack_transports,
     rotation_reader,
@@ -152,7 +151,7 @@ def build_picking_plugin(
     scan = copy(transport_plugin.runtime_binding.business_evidence_consumer)
     scan.batch_driver = batch
     repository, reader = PickupRepository(physical_reader), MaterialDecideResultReader()
-    source = AutomaticPickingSourceFlow(repository, commands, source_request_factory)
+    source = AutomaticPickingSourceFlow(repository, commands, arm_commands.source_request)
     material = AutomaticPickingMaterialFlow(
         repository,
         source,
@@ -167,7 +166,7 @@ def build_picking_plugin(
         commands,
         reader,
         target_reader,
-        target_request_factory,
+        arm_commands.put_request,
         rotation_flow=AutomaticPickingTargetRotationFlow(
             TargetRotationRepository(physical_reader), rack_transports, reader, rotation_reader
         ),

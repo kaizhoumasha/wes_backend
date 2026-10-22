@@ -2,6 +2,8 @@
 
 > 2026-10-22 当前基线：出库物料统一使用 `barcode` 原文（非空、最多1000字符），decide、报告与关闭沿本盘同一扫码 Evidence；G5 独立 PkgID 来源门禁与读取端口已撤销，不做双字段兼容。下文既往实施/验收记录中的 PkgID、缺编号延期和外部编号 fixture 仅保留为历史说明，已由本轮扫码原文规则承接，不是当前待办或可复用的新合同证据。扫码精确关联、设备映射及 CK04 各自门禁不变，C1/C2 不扩大。
 
+> 硬件说明书收敛：位置/料盘字符串、单元格1–7、层1–5、毫米/寸和必填字段已明确，business_key 不再是前置条件。下文旧阶段“完整参数由外部工厂给定”、O4/O10/O15/O16 整体未定的说明已由本文末尾本轮映射实施与机械臂附录 §10 承接；仅扫码精确关联、箱型/面向对应、实际绑定/时限及 WMS 尺寸单位对齐限制各自真实路径，CK04 只限制目标 ROTATE。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 使用 `superpowers:executing-plans` 按切片执行，使用复选框记录进度。推荐主 Agent 顺序实施；本计划不授权自动派生 Subagent、Commit、Push、Merge 或 Deploy。
 
 **Goal:** 先完整对齐已确认的 WMS DTO、SDK、typed converter、OpenAPI 与测试，再交付独立 `automatic-picking` 插件的正常业务闭环及其持久恢复。
@@ -45,9 +47,9 @@
 
 | 编号 | 已明确 / 尚未明确 | 影响与解除证据 |
 | --- | --- | --- |
-| G1 字段结构与边界 | 2026-10-16 已确认 int cell_index=1–7、int bin_type=2/3/6、int reel_layer/目标层列、float 厚度/直径、barcode str ≤1000；编码对应和设备物理边界仍待设备映射 | 任务 2 按已确认类型/枚举/长度完成严格 DTO 与正反例；编码对应和设备值域只阻塞使用它们的设备路径 |
-| G2 扫码关联 | O1/O2 的事件设备及来源 Command 精确关联、O6 business_key 必要性未定 | 限制任务 6 的生产扫码/命令接线；须有获批附录和可匹配的结果、事件样例，禁止用最近命令或平台容量推断 |
-| G3 Bin 与目标设备映射 | O9/O10/O11/O15/O16 涉及时限、层列/面、cell_index、必填位置字段及设备值域 | 限制任务 6、7 对应命令生成；须冻结映射、成功后置条件和合法边界。不能用编码 cell_id 充当 bin_cell_location |
+| G1 字段结构与边界 | WMS 已确认数字类型/枚举与 barcode ≤1000；硬件说明书已明确设备侧字符串、单元格1–7、层1–5、毫米/寸及必填字段 | DTO 不变，插件设备边界转换；不再要求已明确字段重新冻结，不猜列数上限或其它物理范围 |
+| G2 扫码关联 | O1/O2 的实际设备及来源 Command 精确关联未定；business_key 不再是门禁 | 仅限制真实扫码汇合；原样 barcode 与持久绑定已有实现，禁止最近命令/时间/平台容量推断 |
+| G3 Bin 与目标设备映射 | 已明确的两臂参数已实现；剩余为 bin_type→设备箱型、rack_face→A/B、实际设备/位置绑定与时限、WMS 尺寸单位对齐 | 缺哪个输入只停对应命令，原 Work/target owner 负责重扫。CK04 只限制目标 ROTATE；普通目标、F01 REPLACE 不等 CK04 或 C1/C2 |
 | G4 DirectPick 映射 | O12/O13/O17 的退料架位置类型、slot 到设备字段及测量参数来源未定 | 限制任务 10 的直接取料设备路径；若需扩展 plan_delta，先批准具体 wire，再同步全部消费者，不反推 bin_* 参数 |
 | G5 barcode 统一（已收敛） | decide、movement_report 均为本盘扫码原文，1–1000字符 | 删除独立编号来源与读取端口；报告和关闭校验本盘原扫码及已发布决定，不再阻塞真实接入 |
 | G6 首批期限 | 业务超期规则已确认，插件配置入口、双方期限值及合法范围待落定 | 任务 5 建立插件唯一配置入口并冻结每次等待；不复用 30 秒技术派发窗口，未明确值不猜默认值 |
@@ -82,7 +84,7 @@
 | 任务 5 首批等待与 revision 0 确认 | 宿主在查找 EXECUTING 前已有 batch 钩子；自动插件目前只恢复 Feed/Work，尚无任务确认进度、配置入口或 completion driver | G6 需给出期限值、单位、合法范围及具体配置落点；不得借 30 秒技术派发期限、重启时间或 WMS 重试间隔代替 |
 | 任务 5 正常完成确认的共用协调器 | completion_confirm 基础合同/调度可用，自动插件的业务发起与重问进度尚未接入 | 首批分支受 G6 限制；普通完成分支不因 G6 一概停工，但必须具备可证明的当前本地完成谓词。涉及逐盘报告、Work 放行及回程的完整验收随任务 7–9 闭合，不把空查询当成完成 |
 | 任务 6 已确认纯业务规则与持久适配 | 6A 的来源规则/协调器由 6B 补入 Pickup、Work 消费/当前取出事实引用及 Repository；batch/Work owner 可显式注入来源协调器，生产组合根尚未启用 | 6A 离线证据与 6B PostgreSQL 证据分别记录；6C 补齐明确关联输入后的单盘应用；真实事实 reader、设备映射与生产扫码汇合仍未启用，不能以持久适配或离线接线代表生产取盘闭环 |
-| 任务 6 Pickup/来源 Command 与扫码关联 | 设计要求同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | 生产构造/真实扫码接线须闭合 G2 的事件设备、来源 Command 引用/business_key 规则及 G3 对应来源映射；离线测试不受这些值阻塞，但不先建无 Command 的 Pickup 或仅先扣减授权 |
+| 任务 6 Pickup/来源 Command 与扫码关联 | 同事务保存授权消费、Pickup、来源 Command；真实扫码必须精确关联 | G2 只保留实际事件设备和精确原 Command 引用，G3 只保留对应未知映射/绑定；不要求 business_key，不先建无 Command 的 Pickup 或仅先扣减授权 |
 | 任务 6–7 不可逆取盘及正常逐盘闭环 | 需要可靠取出、关联扫码、decide、目标动作和 movement_report 都有确定合同 | 来源映射/关联及 G3 目标映射仍须闭合；G5 已统一为本盘 barcode 原文，不再等待独立编号 |
 
 G1 的 WMS 字段类型和已确认枚举不重新列为阻塞：`cell_index=1..7`、`bin_type=2/3/6`、层列/层数整型、厚度/直径浮点及原始 barcode 长度已接通；这些不等于设备字段映射已经验收。G4 只限制任务 10 的直接取料设备路径；G7 只限制对应异常分支，不扩大成投料、Work 或纯规则测试的停工条件。
@@ -1107,3 +1109,13 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 主要验收 owner：核心 movement_report 合同（原文/长度/拒绝旧字段/typed 往返与 OpenAPI）、SDK 出库合同；插件 placement/close 与正常装配 PostgreSQL（同盘原文、错误扫码身份/冻结报告、并发/崩溃/重放/历史清理）。旧缺 PkgID 负例由原扫码/决定不一致拒绝及无需独立编号的正例承接，不复制搬运、9H 或共享恢复矩阵。既有已冻结义务不改写请求正文，不新增迁移、状态、timer 或生产注册。入库/上架的独立合同不在本轮替换范围。
 
 本轮聚焦验证：插件/SDK FAST **308 passed**，插件报告、关闭及正常装配 PostgreSQL **103 passed、0 skipped**（普通/ROTATE/REPLACE、1000字符原文、不同执行同 barcode、并发/崩溃/重放及历史清理恢复）；完整 QUALITY 通过，核心 FAST **4323 passed、5 skipped**，拓扑/所有权14通过。独立评审与 selector 所选19文件核心 HEAVY 的最终结果、快照和环境统一记录在 `reports/barcode-verification.json`；不把测试本机 Mock HTTP 或早期环境/fixture诊断结果当作真实 WMS/ECS 联调通过。状态止于离线实施与验证，未提交、未部署、未启用生产装配或真实派发。
+
+### 机械臂参数映射与正常链装配（基线 7bf382b8，本轮未提交）
+
+按硬件方回复的说明书实施已明确的 BIN→SCAN_PLATFORM→FIVE_LAYER_RACK 参数，统一位置/尺寸字符串、单元格1–7、层1–5、毫米/寸和必填字段；十进制总厚度按输入位数计算，避免二进制尾差，不新增物理枚举、取整或单位换算。`PickingArmCommandMapper` 读取显式 `PickingArmBinding`，不增加持久配置或生产默认值。未知箱型、面向或位置只停止依赖它的命令，原授权保留；PUT 使用本盘原来源 Command 的冻结尺寸，不误用已推进的 Work 授权，扫码平台改变或本盘身份错误时拒绝新 PUT。已创建 Command 继续由原身份恢复，不重映射其正文。
+
+`build_picking_plugin` 用同一个 `arm_commands` 接回来源和 PUT，普通/ROTATE/REPLACE 复用既有目标、报告、关闭和 Work 事实交接。来源/目标业务恢复仍归 Work/source 与 target/batch，原 Command/Transport、FactProcessor、Confirmation 的技术与事实所有权不变；没有 schema、状态、timer、SDK/wire/OpenAPI 或生产 deployment 变化。机械臂私有包络仍由供应商适配统一接口，WES 不增加私有 Adapter。
+
+主要测试 owner 为 `T/test_picking_device_ports.py`（完整参数、精确十进制、未知/部分绑定、错误原 Command 和层越界）及 `T/integration/test_picking_device_ports_postgresql.py`（真实读口/映射的有无后继正常闭环、并发唯一命令、可靠取出门禁、报告关闭与原身份恢复）；`test_normal_picking_postgresql.py` 承接装配签名及普通/ROTATE/REPLACE 直接回归。复用既有6A–7C、搬运和9H证据，不复制共享可靠机制。最终插件 FAST **277 passed**，两份直接 PostgreSQL **17 passed、0 skipped**；5个Python文件 Ruff/格式、文档本地引用及 diff 检查通过，核心 HEAVY selector 为 NONE。快照与命令记录在 `reports/arm-parameters-verification.json`，独立 review 结论也写入同一记录。
+
+真实接入仅保留 O1/O2 精确扫码关联、数字箱型→设备字符串、面向→A/B、实际绑定/时限及 WMS 尺寸单位对齐。business_key、字段字符串类型、单元格、层范围和 location_type 不再是待冻结门禁；CK04 只限制目标 ROTATE，C1/C2 只限制 drain 容量/核销。设备示例及本轮显式离线绑定不是现场确认，不启用生产装配或真实派发，不发送 WMS/ECS 请求；既有约束命名失败保留，本轮不处理完成确认或已接纳后 FAILED 重决策。

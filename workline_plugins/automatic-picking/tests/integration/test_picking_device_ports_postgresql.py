@@ -7,6 +7,7 @@ from types import SimpleNamespace as N
 
 import pytest
 from automatic_picking.application.picking_device_ports import (
+    PickingArmBinding,
     PickingArmCommandMapper,
     PickingDepartureReader,
     PickingMaterialScanReader,
@@ -20,7 +21,7 @@ from sqlalchemy import func, select
 from test_material_close_postgresql import report_result
 from test_material_flow_postgresql import BARCODE, result
 from test_normal_picking_postgresql import application, processor, tick
-from test_pickup_identity_postgresql import SOURCE, TARGET, components, database, prepared
+from test_pickup_identity_postgresql import OTHER, SOURCE, TARGET, components, database, prepared
 from test_target_put_postgresql import current_pickup
 from test_target_replacement_departure_postgresql import callback, first_departure, replacing
 from test_target_replacement_inbound_postgresql import inbound, incoming
@@ -55,27 +56,13 @@ async def assembled(p):
     await application(p)
     p.params_available, p.associations, p.observed = True, {}, None
 
-    class Parameters:
-        async def source_in_session(self, db, **kwargs):
-            return (
-                {
-                    "source": {
-                        "location_id": "EXPLICIT-WORK",
-                        "location_type": "BIN",
-                        "bin_cell_location": "EXPLICIT-CELL",
-                    },
-                    "target": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
-                }
-                if p.params_available
-                else None
-            )
+    p.bin_types, p.rack_sides = {2: "TEST-TWO", 3: "TEST-THREE", 6: "TEST-SIX"}, {"A": "A", "B": "B"}
 
-        async def put_in_session(self, db, **kwargs):
+    class Bindings:
+        async def read_in_session(self, db, *, workline_id):
+            assert workline_id == p.line.id
             return (
-                {
-                    "source": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
-                    "target": {"location_id": "EXPLICIT-TARGET", "location_type": "FIVE_LAYER_RACK"},
-                }
+                PickingArmBinding("EXPLICIT-WORK", "EXPLICIT-PLATFORM", "EXPLICIT-TARGET", p.bin_types, p.rack_sides)
                 if p.params_available
                 else None
             )
@@ -84,13 +71,12 @@ async def assembled(p):
         async def read_in_session(self, db, *, evidence_id):
             return p.associations.get(evidence_id)
 
-    mapper = PickingArmCommandMapper(Parameters(), clock=lambda: p.now)
+    mapper = PickingArmCommandMapper(Bindings(), clock=lambda: p.now)
     p.picking_kwargs.update(
         physical_reader=PickingSourceReader(),
-        source_request_factory=mapper.source_request,
+        arm_commands=mapper,
         scan_reader=PickingMaterialScanReader(SourceCommands()),
         target_reader=PickingTargetReader(),
-        target_request_factory=mapper.put_request,
         put_reader=PickingPutReader(),
         departure_reader=PickingDepartureReader(),
     )
@@ -188,7 +174,7 @@ async def material_scan(p, code, *, barcode=BARCODE):
     p.associations[p.scan_id] = code
 
 
-async def accepted(p, plugin, *, replace_target=False):
+async def accepted(p, plugin, *, replace_target=False, next_source=False):
     await processor(p, plugin).process_batch()
     p.now += timedelta(seconds=2)
     await processor(p, plugin).process_batch()
@@ -201,11 +187,14 @@ async def accepted(p, plugin, *, replace_target=False):
     data = {"result": "ACCEPT", "target_locator": {"type": "RACK_SLOT", **asdict(TARGET)}}
     if replace_target:
         data["target_preparation"] = {"mode": "REPLACE"}
+    if next_source:
+        data["next_source_action"] = asdict(OTHER)
     await result(p, decide, data=data)
     await processor(p, plugin).process_batch()
 
 
-async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared):
+@pytest.mark.parametrize("with_next", [False, True])
+async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared, with_next):
     raw = " 原文\n" + "条" * 996
     p = prepared
     plugin = await assembled(p)
@@ -215,14 +204,33 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
         assert (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id is None
         assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
     p.params_available = True
+    original_types, p.bin_types = p.bin_types, {}
+    await tick(p, plugin)
+    async with p.sessions() as db:
+        assert (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id is None
+        assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+    p.bin_types = original_types
     await asyncio.gather(*(tick(p, plugin) for _ in range(3)))
     async with p.sessions() as db:
         p.pickup_id = (await db.get(AutomaticPickingWork, p.work.id)).consumed_pickup_id
         source_code = (await current_pickup(p, db)).command_code
         source = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == source_code))
         assert source.task_type == "PICK_AND_PUT" and source.device_code == "OFFLINE-SOURCE"
+        assert source.params == {
+            "source": {
+                "location_id": "EXPLICIT-WORK",
+                "location_type": "BIN",
+                "bin_type": "TEST-TWO",
+                "bin_cell_location": "7",
+                "reel_layer": "1",
+                "reel_thickness": "20",
+                "reel_totalthickness": "20",
+                "reel_diameter": "15",
+            },
+            "target": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
+        }
     await material_scan(p, source_code, barcode=raw)
-    await accepted(p, plugin)
+    await accepted(p, plugin, next_source=with_next)
     await arrived(p)
     async with p.sessions.begin() as db:
         from src.app.execution.models import PositionProjection
@@ -257,13 +265,31 @@ async def test_real_device_ports_complete_normal_chain_without_dispatch(prepared
         )
         assert observation.removed_evidence_id is None  # 宿主应用完成，尚未发布。
     await processor(p, plugin).process_batch()
+    original_sides, p.rack_sides = p.rack_sides, {}
+    await tick(p, plugin)
+    async with p.sessions() as db:
+        assert (await current_pickup(p, db)).put_command_code is None
+    p.rack_sides = original_sides
     await asyncio.gather(*(tick(p, plugin) for _ in range(3)))
     async with p.sessions() as db:
         assert (await db.get(InboundEvidence, receipt.evidence_id)).published_at is not None
         put_code = (await current_pickup(p, db)).put_command_code
         put = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == put_code))
         assert put.device_code == "OFFLINE-TARGET" and put.task_type == "PICK_AND_PUT"
-        assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 2
+        assert put.params == {
+            "source": {"location_id": "EXPLICIT-PLATFORM", "location_type": "SCAN_PLATFORM"},
+            "target": {
+                "location_id": "EXPLICIT-TARGET",
+                "location_type": "FIVE_LAYER_RACK",
+                "rack_id": TARGET.rack_id,
+                "rack_side": "A",
+                "rack_layer": "1",
+                "rack_column": "1",
+                "reel_thickness": "20",
+                "reel_diameter": "15",
+            },
+        }
+        assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 2 + int(with_next)
     p.put_evidence_id = (await device_result(p, put_code))[0].evidence_id
     await processor(p, plugin).process_batch()
     async with p.sessions() as db:
@@ -376,6 +402,12 @@ async def test_real_ports_late_replace_accept_uses_existing_target_obligation(in
         command.task_type = "PICK_AND_PUT"
         command.params = {
             **command.params,
+            "source": {
+                "location_id": "EXPLICIT-WORK",
+                "location_type": "BIN",
+                "reel_thickness": "20",
+                "reel_diameter": "15",
+            },
             "target": {"location_type": "SCAN_PLATFORM", "location_id": "EXPLICIT-PLATFORM"},
         }
         # 原 6C fixture 在此改用真实读口，保留同一盘扫码时间、原文和绑定身份。

@@ -380,7 +380,7 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 
 ### 5.1 `outbound.bin.work_plan@v1`
 
-**Current Wire → Target Wire：** 首问和确定 `WAIT` 后的重问均发送 `data={task_id,bin_code,scanned_at}`；重问使用新顶层 `operation_id`。`READY` 目标响应给出单个 `cell_id + cell_index` 及物理参数。WMS 希望 `cell_id` 保持 `BIN_ID + INDEX` 业务编码，并以 `cell_index` 提供料格在料箱内的定位号；WES 将该定位号用于经 O16 确认的设备映射。下例以 `BIN_ID=BIN-001`、`INDEX=3` 示意；确切编码、`cell_index` 类型与值域仍需 WMS 冻结。
+**Current Wire → Target Wire：** 首问和确定 `WAIT` 后的重问均发送 `data={task_id,bin_code,scanned_at}`；重问使用新顶层 `operation_id`。`READY` 目标响应给出单个 `cell_id + cell_index` 及物理参数。`cell_id` 保持 `BIN_ID + INDEX` 业务编码；`cell_index` 已确认为 int 1–7，设备定位按同一编号转字符串，不拆解 `cell_id`。下例以 `BIN_ID=BIN-001`、`INDEX=3` 示意，业务编码对应仍由 WMS 给出。
 
 **Request Example：** 假设 rev1 与 rev2 均有与 `BIN-001` 相关的物料；本次 SCAN2 发起一条首问，由 WMS 统一决定本次可取内容。
 
@@ -496,7 +496,7 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 
 **Identity / Retry / Compatibility：** 每次实际 SCAN2 对应独立的本地 Passage。确定 `WAIT` 后，WES 以新 `operation_id` 对同次 Passage 请求新的业务决定；响应未知时按原身份和冻结正文重发。WES 在本地关联各次请求及最终 `READY | NO_WORK`；`READY` 响应按目标单 Cell DTO 替换，`reel_totalthickness` 由 WES 本地计算。
 
-**WMS Decision：Accepted。** WMS 对每次请求按实际 Bin、当前相关 revision 及库存决定 `READY | NO_WORK | WAIT`；同箱实际再次经过时重新决定。`cell_id` 保持 `BIN_ID + INDEX` 编码，并单独提供 `cell_index`。编码与 `bin_code` 的对应规则、`cell_index` 的最终类型/值域及设备附录 O16 映射按设备联合项冻结。
+**WMS Decision：Accepted。** WMS 对每次请求按实际 Bin、当前相关 revision 及库存决定 `READY | NO_WORK | WAIT`；同箱实际再次经过时重新决定。`cell_id` 保持 `BIN_ID + INDEX` 编码，并单独提供 int 1–7 的 `cell_index`；设备侧同编号转字符串。编码与 `bin_code` 对应由 WMS 权威给出，不重新冻结已确认类型和值域。
 
 ### 5.2 `outbound.material.decide@v1`，`BIN_CELL`
 
@@ -652,21 +652,21 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 
 | 修订项 | Current Wire → Target Wire | 待决语义 | Compatibility Impact | WMS Decision |
 | --- | --- | --- | --- | --- |
-| A1 `work_plan.READY` | `cell_ids[]` → 单个 `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `cell_id` 保持 `BIN_ID + INDEX` 编码，`cell_index` 单独定位料箱内料格；设备类型/值域由 O16 冻结 | 一次性替换 READY DTO | WMS Accepted |
+| A1 `work_plan.READY` | `cell_ids[]` → 单个 `cell_id + cell_index + bin_type + reel_layer + reel_thickness + reel_diameter` | `cell_id` 保持业务编码，`cell_index` 为 int 1–7；设备同编号转字符串，剩余箱型/面向和实际绑定各自补证 | 一次性替换 READY DTO | WMS Accepted |
 | A2 `material.decide` 请求 | `six_in_one` 六字段 → `barcode` 原文 | 非空 UTF-8 原文，最多 1000 字符；超界按 `INVALID_DATA` 拒绝 | 一次性替换请求 DTO | WMS Accepted |
 | A3 `material.decide.ACCEPT.target_locator` | 增加 `rack_layer`、`rack_column` | WMS 直接给出，`ROTATE/REPLACE` 后同样提供 | 一次性替换 ACCEPT 目标 DTO | WMS Accepted |
 | A4 `material.decide.ACCEPT.next_source_action` | `CONTINUE/SOURCE_DONE` → 下一盘/下一 Cell 对象，含编码 `cell_id` 与独立 `cell_index`；无后续时省略 | 同 Cell 参数及换 Cell 决定由 WMS 按当次业务事实提供 | 一次性替换 ACCEPT 结果 DTO | WMS Accepted |
 
 A4 的 `RACK_SLOT` 来源是单盘储位，目标响应省略 `next_source_action`，其余直接取料来源由插件按当前有效 plan member 继续编排。`BIN_CELL` 的对象可表示同 Cell 下一盘或另一个 Cell；在当前授权和获批后继来源合同范围内，同一 Passage 是否继续取其他 revision 涉及的物料由 WMS 决定，WES 不按 revision 切断当前 Bin 工作。当前栈顶可靠取出且后继授权有效后，WES 可按主合同 §10.3 在当前盘 PUT 或报告尚未完成时下发下一条来源命令，实际交接由 ECS/PLC 硬件锁裁决；依赖当前盘位置报告的完成条件仍等待 WMS 确认。`REJECT` 继续使用 `business_exception_code + ng_locator + source_disposition`；`WAIT` 继续携带 `retry_after_ms`。自动插件 MVP 暂不执行 NG，不得据此删除长期合同中的 NG 协议。
 
-设备映射须与[机械臂附录](device-annex-automatic-picking-arms.md)共同确认：`rack_side` 与 `rack_face` 的值域（O11）；直接取料 `slot_id` 是否能由 WMS 给出 ECS `bin_*` 参数（O13）；独立 `cell_index` 如何映射 ECS `bin_cell_location`（O16），不得把编码 `cell_id` 直接用作该设备字段；DirectPick 如需 `bin_type/reel_*` 参数，`plan_delta.added_direct_picks[]` 是否应携带这些数据（O17）。这些问题未闭合前，不把设备参数推断写入 WES 主合同。
+设备映射按[机械臂附录](device-annex-automatic-picking-arms.md)收窄：说明书已明确设备字符串格式、单元格1–7、层1–5、毫米/寸与必填位置字段，不再重复确认。正常链只补 WMS 数字箱型到设备箱型、`rack_face` 到 A/B、WMS 尺寸单位对齐和实际绑定，未给定时只停对应命令。O1/O2 精确扫码关联仍未闭合；CK04 仅限制目标 ROTATE；C1/C2 不扩大。DirectPick 的 O13/O17 仍只限制该路径，不反推 `bin_*` 或新增 wire 字段。
 
 ### 6.0 字段类型确认（2026-10-16）
 
 WMS 已补充确认：`cell_index` 为 int，值为 1–7；`bin_type` 为 int，值为 2、3、6；
 `reel_layer`、`rack_layer`、`rack_column` 为 int；`reel_thickness`、`reel_diameter` 为 float；
 `barcode` 为原始 str，最多 1000 字符（沿用主合同非空 UTF-8，不裁剪、不拆分）。
-未确认的层数/坐标/尺寸物理范围不额外推定；设备字段映射、`cell_id` 编码对应仍在各自关口处理；报告 barcode 已统一为本盘扫码原文，不再另取物料编号，不阻塞共享 DTO 与 typed 接线。
+WMS DTO 不反向套用设备字符串类型或新增物理枚举；插件设备边界按说明书转换并校验已明确范围，其余范围不推定。设备箱型/面向、实际绑定及业务编码对应按各自关口处理；报告 barcode 已统一为本盘扫码原文，不再另取物料编号，不阻塞共享 DTO 与 typed 接线。
 
 ### 6.1 退料货架整架任务完成 API（WMS 已确认，WES 待实施）
 

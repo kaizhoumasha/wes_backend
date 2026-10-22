@@ -1,6 +1,9 @@
 """正常机械臂的统一合同读口；未冻结的位置编码、扫码关联由必填端口显式提供。"""
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal, localcontext
 
 from sqlalchemy import select
 from wes_plugin_sdk import PickingMaterialAccept
@@ -27,24 +30,137 @@ from .target_replacement_repository import TARGET_INBOUND_STEP, TargetReplacemen
 from .work_model import AutomaticPickingWork
 
 
-class PickingArmCommandMapper:
-    """只映射已确认包络/角色/时限；parameters 必须明确提供完整正文，无生产默认值。"""
+@dataclass(frozen=True, slots=True)
+class PickingArmBinding:
+    """调用方显式给定的当前工作线绑定；不推断箱型、面向或现场位置。"""
 
-    def __init__(self, parameters, *, worklines=None, clock=timezone.now_for_db):
-        self.parameters, self.clock = parameters, clock
+    work_location: str | None
+    scan_location: str | None
+    target_location: str | None
+    bin_types: Mapping[int, str]
+    rack_sides: Mapping[str, str]
+
+    def __post_init__(self):
+        if any(
+            value is not None and (type(value) is not str or not value)
+            for value in (self.work_location, self.scan_location, self.target_location)
+        ):
+            raise ValueError("arm locations require explicit nonempty binding")
+        if any(
+            type(key) is not int or key not in (2, 3, 6) or type(value) is not str or not value
+            for key, value in self.bin_types.items()
+        ):
+            raise ValueError("bin types require an explicit WMS to device mapping")
+        if any(type(key) is not str or not key or value not in ("A", "B") for key, value in self.rack_sides.items()):
+            raise ValueError("rack faces require an explicit WMS to A/B mapping")
+
+
+def _device_number(value):
+    text = format(value if isinstance(value, Decimal) else Decimal(str(value)), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+class PickingArmCommandMapper:
+    """按设备说明书映射位置正文；绑定缺失时由原 Work/target owner 重扫。"""
+
+    def __init__(self, bindings, *, worklines=None, clock=timezone.now_for_db):
+        self.bindings, self.clock = bindings, clock
         self.worklines = worklines or workline_repository
 
     async def source_request(self, db, *, work, pickup_id):
-        params = await self.parameters.source_in_session(db, work=work, pickup_id=pickup_id)
+        binding = await self._binding(db, work.workline_id)
+        if binding is None or binding.work_location is None or binding.scan_location is None or work.source is None:
+            return None
+        source = work.source
+        bin_type = binding.bin_types.get(source.bin_type)
+        if bin_type is None:
+            return None
+        thickness = Decimal(str(source.reel_thickness))
+        # 精度由输入位数限定，避免 0.1×3 的浮点尾差或 Decimal 默认精度截断。
+        if thickness.is_zero() or source.reel_layer == 0:
+            total = Decimal(0)
+        else:
+            with localcontext() as context:
+                context.prec = max(28, len(thickness.as_tuple().digits) + len(str(source.reel_layer)))
+                total = thickness * source.reel_layer
+        params = {
+            "source": {
+                "location_id": binding.work_location,
+                "location_type": "BIN",
+                "bin_type": bin_type,
+                "bin_cell_location": str(source.cell_index),
+                "reel_layer": str(source.reel_layer),
+                "reel_thickness": _device_number(source.reel_thickness),
+                "reel_totalthickness": _device_number(total),
+                "reel_diameter": _device_number(source.reel_diameter),
+            },
+            "target": {"location_id": binding.scan_location, "location_type": "SCAN_PLATFORM"},
+        }
         return await self._request(db, work.workline_id, "SOURCE_ARM", pickup_id, None, params, self.clock())
 
     async def put_request(self, db, *, workline_id, pickup_id, material_execution_id, target, now):
-        params = await self.parameters.put_in_session(
-            db, workline_id=workline_id, pickup_id=pickup_id, material_execution_id=material_execution_id, target=target
+        binding = await self._binding(db, workline_id)
+        if (
+            binding is None
+            or binding.scan_location is None
+            or binding.target_location is None
+            or target.rack_face not in binding.rack_sides
+        ):
+            return None
+        if target.rack_layer not in range(1, 6):
+            raise ValueError("target rack layer is outside hardware range 1 through 5")
+        pickup = await db.scalar(select(AutomaticPickingPickup).where(AutomaticPickingPickup.pickup_id == pickup_id))
+        work = await db.get(AutomaticPickingWork, pickup.work_id) if pickup is not None else None
+        command = (
+            await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
+            if pickup is not None
+            else None
         )
+        if (
+            work is None
+            or work.workline_id != workline_id
+            or pickup.material_execution_id != material_execution_id
+            or command is None
+            or command.workline_id != workline_id
+            or command.task_type != "PICK_AND_PUT"
+            or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+            or command.execution_ref_id != pickup_id
+            or command.material_execution_id is not None
+        ):
+            raise ValueError("PUT parameters lost original Pickup/source Command identity")
+        source, platform = command.params.get("source"), command.params.get("target")
+        if (
+            type(source) is not dict
+            or type(platform) is not dict
+            or source.get("location_type") != "BIN"
+            or platform.get("location_type") != "SCAN_PLATFORM"
+            or platform.get("location_id") != binding.scan_location
+            or any(type(source.get(key)) is not str or not source[key] for key in ("reel_thickness", "reel_diameter"))
+        ):
+            raise ValueError("PUT requires the same platform and frozen source dimensions")
+        # 当前 Work 可已授权下一盘；本盘尺寸只沿原来源 Command 冻结正文读取。
+        params = {
+            "source": {"location_id": binding.scan_location, "location_type": "SCAN_PLATFORM"},
+            "target": {
+                "location_id": binding.target_location,
+                "location_type": "FIVE_LAYER_RACK",
+                "rack_id": target.rack_id,
+                "rack_side": binding.rack_sides[target.rack_face],
+                "rack_layer": str(target.rack_layer),
+                "rack_column": str(target.rack_column),
+                "reel_thickness": source["reel_thickness"],
+                "reel_diameter": source["reel_diameter"],
+            },
+        }
         return await self._request(
             db, workline_id, "TARGET_ARM", "put:" + pickup_id, material_execution_id, params, now
         )
+
+    async def _binding(self, db, line_id):
+        binding = await self.bindings.read_in_session(db, workline_id=line_id)
+        if binding is not None and type(binding) is not PickingArmBinding:
+            raise ValueError("arm parameters require a typed explicit binding")
+        return binding
 
     async def _request(self, db, line_id, role, ref, material_id, params, now):
         if params is None:
