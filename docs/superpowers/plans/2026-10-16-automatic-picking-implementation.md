@@ -1199,3 +1199,13 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 - 剩余条件：扫码可靠归属字段/稳定性保证、ARM02 退料单盘定位及首批期限仍待确认；CK04 仅限制目标 ROTATE，退箱补架容量接续与核销补证仅限制对应 drain 实际容量路径。本轮不猜参数、不接异常终态重新决定、不抽取 bin-line-common；不提交、不部署、不发外部请求、不启用生产装配或真实派发。
 - 最终验证：新增最终目标架 PostgreSQL owner 11 项，加原正常链/REPLACE 进场/退料架相关 37 项共 48 项闭合。统一执行先为 47 passed、1 项旧迁移 fixture 被新表保护提前拦截；仅隔离该 fixture 的上层门禁后原项复验 1 passed，未重跑已绿色业务矩阵，也未改变生产逻辑或旧断言。插件 FAST 287 passed；完整 QUALITY 4330 passed / 5 skipped；所选 23 文件 HEAVY 122 passed / 0 skipped。新表空库迁移往返及持有义务禁止降级已验证。核心 reader/selector/架构聚焦 282 项属于上述 QUALITY 覆盖，不另累计。
 - 闭环 review：固定 21 文件首次完整独立评审无 actionable finding；旧迁移 fixture 的第 22 文件调整随后定向复核，确认测试所有权、旧断言及生产可观察语义不变，无未关闭问题。相关生产代码未在完整评审后变化；最后仅补本文档验收记录。离线证据见 `reports/final-target-{review-manifest,verification}.json` 及对应 PG/QUALITY/HEAVY 日志；不代表现场设备/WMS 联调或部署。
+
+
+### 完整正常拣料装配：真实 worker＋Beat 离线贯通（2026-10-23）
+
+- 本轮只补测试装配和贯通验收，不修改生产代码、schema、合同或生产插件安装。`T/integration/normal_picking_worker_runtime.py` 在测试子进程中装配现有完整 `build_picking_plugin`、真实 FactProcessor、Transport outcome publisher 和宿主计划扫描；复用既有 broker/Beat 生命周期、日志和通知丢弃装配。料箱 Work READY、原来源架及转运架已权威到位、来源服务已结束是明确起点，不重复进场/投料验收。
+- 唯一新增业务验收 owner 为 `T/integration/test_normal_picking_worker_recovery.py`：同一盘取盘 → 原始扫码归属 → 首次 decide/ACCEPT → 可靠取出门禁 → PUT → movement_report/RECORDED → 单盘关闭 → completion_confirm/COMPLETED → 当前实际转运架 departure/READY → 原 F01 成功后关闭。精确扫码对应、位置、动作参数和外部结果均为显式离线输入；不把候选设备字段或本地状态当作已冻结设备合同，不复制普通/ROTATE/REPLACE、WAIT、并发、租约或历史清理矩阵。
+- 运行 `device-command`、`wms-fulfillment`、`celery` 三个独立真实 prefork worker 和真实 Beat。沿用现有五个扫描任务及原队列路由，测试进程仅将扫描周期缩短为1秒，不修改生产周期或业务到期计算；不投递 Command、Transport、Confirmation 派发任务。丢弃加速通知后仍能推进，所有任务发布仅来自 Beat。
+- 恢复 owner 不变：Work/source 拥有来源授权与原取盘，设备 Evidence 处理器可靠应用外部事实，FactProcessor 负责 typed 业务应用和发布，Confirmation 保存 decide/报告/完成/离场原义务，batch/completion 持久扫描推进业务和终态收口，Transport 保存原 F01 及原结果。任务完成时箱仍为 EXIT_PENDING、最终架尚未离场；重启三个 worker/Beat 后先验证没有 EXECUTING、没有成功事实时保留原义务，再接收精确原 F01 成功，经真实消费链收口，Command/Confirmation/Transport 身份集合不变。
+- 本轮边界：可靠扫码归属字段与稳定性保证、ARM02 退料定位、首批期限仍待确认；目标 ROTATE 的 CK04 只限制该分支，退箱补架容量接续与回库核销补证只限制对应 drain。本轮不接异常重决策，不抽取 bin-line-common，不发外部请求、不启用生产装配或真实派发，不提交、不部署。
+- 最终验证：完整正常链真实 worker＋Beat PostgreSQL 用例 **1 passed / 0 skipped**（36.36秒）；测试拓扑与核心/插件所有权 **14 passed**；两份测试资产 Ruff、格式与 tracked/untracked 空白检查通过，核心 HEAVY selector 为 NONE。独立完整只读 review 核对固定3文件快照和直接/间接 owner，**无 actionable finding**。本轮未发现生产接线缺口，全部改动限于测试装配及本文；复用未变化生产树的既有业务证据，不重复 QUALITY、共享机制或业务分支矩阵。报告见 `reports/normal-worker-{review-manifest,verification}.json`、`reports/normal-worker.xml` 与进程事件记录；仅为隔离离线验收，未提交、未部署、未启用生产装配或真实派发。
