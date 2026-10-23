@@ -78,6 +78,7 @@ from .drain_repository import (
 )
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
+from .rack_retry import rack_retry_delay_ms
 from .return_rack_task_completion import ManualPickingReturnRackTaskCompletion
 
 _WAIT_FOR_RESULT = "WAIT_FOR_RESULT"
@@ -604,11 +605,20 @@ class ManualPickingScanFlow:
             and (await self._goal_already_satisfied(db, workline_id, payload, target, request))
         ):
             return "IGNORED"
+        if task.status == "REJECTED" and binding.step in {
+            SOURCE_RACK_OUT_STEP,
+            RETURN_RACK_OUT_STEP,
+            TRANSFER_RACK_OUT_STEP,
+            DRAIN_RACK_OUT_STEP,
+            RETIRED_DRAIN_RACK_OUT_STEP,
+        }:
+            # 拒绝后的清退重新决定由持久工作线扫描统一退避，不在结果回放中另建 Transport。
+            return "IGNORED"
         prior_attempt = 0
         if binding.correlation_id.startswith("retry:"):
             prior_attempt = int(binding.correlation_id.split(":", 2)[1])
         if evidence.decision_next_attempt_at is None:
-            return min(1000 * 2 ** min(prior_attempt, 6), 60_000)
+            return rack_retry_delay_ms(prior_attempt)
         if self._rack_creator is None:
             return None
         if binding.step not in {

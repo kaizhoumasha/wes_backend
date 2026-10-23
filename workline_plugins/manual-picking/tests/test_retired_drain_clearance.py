@@ -304,7 +304,6 @@ async def test_clearance_result_is_published_from_frozen_drain_fact():
     [
         (None, None),
         (CLEARANCE, "FAILED"),
-        (CLEARANCE, "REJECTED"),
         ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", "FAILED"),
     ],
 )

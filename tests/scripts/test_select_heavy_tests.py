@@ -1424,6 +1424,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py",
         "migrations/versions/20261023_0000_a8c5e2107b94_新增人工任务业务类型.py",
         "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py",
+        "migrations/versions/20261024_0010_a72d4e6c9b13_持久化清退拒绝退避.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[

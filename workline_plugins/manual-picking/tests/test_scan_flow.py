@@ -86,6 +86,36 @@ def _drain_rack_recovery(status, *, step="MANUAL_PICKING_RETURN_BUFFER_DRAIN_RAC
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step",
+    [
+        "MANUAL_PICKING_SOURCE_RACK_OUT",
+        "MANUAL_PICKING_RETURN_RACK_OUT",
+        "MANUAL_PICKING_TRANSFER_RACK_OUT",
+        "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+        "MANUAL_PICKING_RETIRED_DRAIN_RACK_OUT",
+    ],
+)
+async def test_rejected_departure_replay_leaves_redecision_to_persistent_scan(step):
+    flow, _, task, evidence = _drain_rack_recovery("ACTIVE", step=step, action_status="REJECTED")
+    evidence.normalized_payload = {**evidence.normalized_payload, "status": "REJECTED", "reason_code": None}
+    binding = flow._transport_bindings.get_by_client_request_id.return_value
+    if step in {"MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_RETURN_RACK_OUT", "MANUAL_PICKING_TRANSFER_RACK_OUT"}:
+        binding.picking_task_id = 31
+        flow._tasks.get_by_id_for_update = AsyncMock(return_value=SimpleNamespace(id=31))
+    flow._batch_progress.has_newer_rack_action = AsyncMock(return_value=False)
+    # 即使旧 Evidence 的技术等待已到期，回放也不创建新的物理动作。
+    for _ in range(2):
+        result = await flow.apply_in_session(object(), 10, workline_id=7)
+        assert result.disposition is BusinessEvidenceDisposition.APPLIED
+        assert await flow._apply_transport_result(object(), evidence, 7) == "REJECTED"
+        assert await flow._retry_terminal_rack(object(), evidence, task, 7) == "IGNORED"
+    flow._rack_creator.create.assert_not_awaited()
+    flow._rack_creator.create_rotate.assert_not_awaited()
+    flow._rack_creator.create_windowed_inbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_completed_drain_preserves_original_departure_retry():
     flow, execution, task, _ = _drain_rack_recovery("COMPLETED")
     task.created_at = NOW

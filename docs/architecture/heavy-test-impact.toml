@@ -3260,3 +3260,8 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postg
 [[mapping]]
 source_glob = "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261024_0010_a72d4e6c9b13_持久化清退拒绝退避.py"
+heavy_tests = []
+# 插件游标迁移由 manual-picking/tests/test_departure_retry_postgresql.py 独占验证，不进入核心 HEAVY。
