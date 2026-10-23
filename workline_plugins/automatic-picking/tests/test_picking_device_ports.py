@@ -375,6 +375,22 @@ async def test_known_scan_without_authoritative_association_stays_pending():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bound", [True, False])
+async def test_scan_without_device_adapter_only_uses_its_persisted_exact_association(bound):
+    from automatic_picking.application.material_flow import MaterialScanAssociationPending
+    from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
+
+    db, fact, command, _association = scan_fixture(code="SOURCE-1" if bound else None)
+    reader = PickingMaterialScanReader()
+    if bound:
+        assert (await reader.read_in_session(db, evidence_id=fact.id)).command_code == command.command_code
+    else:
+        with pytest.raises(MaterialScanAssociationPending):
+            await reader.read_in_session(db, evidence_id=fact.id)
+        db.scalar.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changes", [{"location": "OTHER"}, {"barcode": ""}, {"barcode": 123}, {"barcode": "x" * 1001}])
 async def test_scan_reader_rejects_wrong_platform_or_invalid_raw_barcode(changes):
     from automatic_picking.application.picking_device_ports import PickingMaterialScanReader
@@ -436,3 +452,76 @@ async def test_explicit_direct_pick_scan_uses_original_arm02_owner_without_work(
     matched = await PickingMaterialScanReader(association).read_in_session(db, evidence_id=fact.id)
     assert matched.pickup_id == "P1" and matched.command_code == command.command_code
     assert matched.barcode == payload["data"]["barcode"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["ready", "wrong_face", "moving", "no_arrival", "unbound"])
+async def test_direct_source_uses_its_return_round_without_bin_scan(boundary, monkeypatch):
+    from automatic_picking.application.picking_device_ports import PickingSourceReader
+    from automatic_picking.application.pickup_model import AutomaticPickingDirectPick
+    from automatic_picking.application.return_rack_repository import ReturnRackRepository
+    from wes_plugin_sdk import PickingRackSlot
+
+    from src.app.workline.models import WorkLine
+
+    owner = AutomaticPickingDirectPick(id=17, workline_id=1, picking_task_id=2, member_id=3)
+    member = N(picking_task_id=2, rack_id="RETURN", rack_face="F2", slot_id="S1", cancelled_evidence_id=None)
+    line = N(id=1, is_active=True, position_bindings={"RETURN_RACK": {"location_id": "RETURN-POS"}})
+    current = N(departure_confirmation_id=None, departure_transport_task_id=None, rotation_transport_task_id=None)
+    position = N(
+        arrival_face="OTHER" if boundary == "wrong_face" else "F2",
+        position_json={"kind": "RACK_POSITION", "location_code": "RETURN-POS"},
+    )
+    if boundary == "moving":
+        current.rotation_transport_task_id = "ROTATE"
+    if boundary == "unbound":
+        line.position_bindings = {}
+    arrival = AsyncMock(return_value=None if boundary == "no_arrival" else (object(), object(), position))
+    monkeypatch.setattr(ReturnRackRepository, "current_arrival", arrival)
+    monkeypatch.setattr(ReturnRackRepository, "member_done", AsyncMock(return_value=False))
+    monkeypatch.setattr(ReturnRackRepository, "member_admissible", AsyncMock(return_value=True))
+    db = N(
+        get=AsyncMock(side_effect=lambda model, key, **kw: line if model is WorkLine else member),
+        scalars=AsyncMock(return_value=N(all=lambda: [current])),
+    )
+    actual = await PickingSourceReader().read_in_session(
+        db, work=owner, source=PickingRackSlot("RETURN", "F2", "S1"), pickup=None
+    )
+    assert actual.source_ready is (boundary == "ready")
+    assert actual.removed_evidence_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_owner", [False, True])
+async def test_direct_original_removal_is_independent_of_new_source_admission(wrong_owner, monkeypatch):
+    from automatic_picking.application.picking_device_ports import PickingSourceReader
+    from automatic_picking.application.pickup_model import AutomaticPickingDirectPick
+    from wes_plugin_sdk import PickingRackSlot
+
+    from src.app.workline.models import WorkLine
+
+    owner = AutomaticPickingDirectPick(id=17, workline_id=1, picking_task_id=2, member_id=3)
+    member = N(picking_task_id=2, rack_id="RETURN", rack_face="F2", slot_id="S1", cancelled_evidence_id=21)
+    pickup = N(work_id=None, direct_pick_id=18 if wrong_owner else 17, pickup_id="P1", command_code="SOURCE-1")
+    command = N(
+        workline_id=1, execution_ref_type="WORKLINE_BUSINESS", execution_ref_id="P1", material_execution_id=None
+    )
+    fact = N(id=99, published_at=NOW)
+    finished = AsyncMock(return_value=(fact, object()))
+    monkeypatch.setattr("automatic_picking.application.picking_device_ports._finished_arm", finished)
+    db = N(
+        get=AsyncMock(side_effect=lambda model, key, **kw: N(is_active=False) if model is WorkLine else member),
+        scalar=AsyncMock(return_value=command),
+    )
+    # 取消/暂停阻止新动作，原匹配结果的恢复仍继续。
+    if wrong_owner:
+        with pytest.raises(ValueError, match="identity"):
+            await PickingSourceReader().read_in_session(
+                db, work=owner, source=PickingRackSlot("RETURN", "F2", "S1"), pickup=pickup
+            )
+        finished.assert_not_awaited()
+    else:
+        actual = await PickingSourceReader().read_in_session(
+            db, work=owner, source=PickingRackSlot("RETURN", "F2", "S1"), pickup=pickup
+        )
+        assert not actual.source_ready and actual.removed_evidence_id == 99

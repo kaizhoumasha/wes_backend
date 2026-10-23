@@ -105,6 +105,11 @@ async def test_normal_chain_real_workers_beat_and_completed_task_departure_recov
     # Work READY、来源服务已结束和原目标架已到位是本轮起点；不重复搬运验收。
     async with p.sessions.begin() as db:
         line = await db.get(WorkLine, p.line.id)
+        line.position_bindings = {
+            **line.position_bindings,
+            "WORK_BIN": {"location_type": "BIN", "location_id": p.work_location},
+            "SCAN_PLATFORM": {"location_type": "SCAN_PLATFORM", "location_id": p.scan_platform},
+        }
         source_handle = await p.creator.create(
             db,
             workline_id=line.id,
@@ -137,11 +142,6 @@ async def test_normal_chain_real_workers_beat_and_completed_task_departure_recov
                 "fact_processing": True,
                 "callback_processing": True,
                 "associations": str(associations),
-                "arm_binding": {
-                    "work_location": p.work_location,
-                    "scan_location": p.scan_platform,
-                    "target_location": p.target_location,
-                },
             }
         )
     )

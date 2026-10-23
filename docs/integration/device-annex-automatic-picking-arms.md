@@ -252,9 +252,11 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 
 2026-10-23 生产接入准备补充：机械臂位置沿既有工作线位置配置入口，不新增环境变量或设备 wire 字段。`WORK_BIN`（BIN）和 `SCAN_PLATFORM`（SCAN_PLATFORM）声明为两个可选 STATION 插槽，实际工作位及执行位置编码必须显式配置；`TRANSFER_RACK` 继续复用原转运架位置。通用 START 校验本线工作位并冻结执行位置，`PickingArmBindingReader` 只读取匹配工作线、精确插件版本且已启用的当前快照，不从设备编码、INLET、扫码文本或历史推导。缺项保持未知，类型错误或位置冲突拒绝准入；已创建原 Command 的恢复先于新参数读取。
 
-Web/worker 继续共用 `build_deployment_runtime`。只有调用方显式注入内部精确关联读口 `automatic_picking_source_commands`，才会在同一个原搬运插件上安装完整正常链，并将同一实例交给 FactProcessor、宿主持久扫描、完成驱动和结果发布。该参数不是设备回显字段或生产开关；现有 Web/worker 生产调用均未注入，仍为搬运装配。未提供目标旋转 reader 时只阻止新旋转动作，保留原旋转 flow 的原动作结果与就绪恢复，不以假 reader 或 CTU02 默认值替代 CK04；普通目标和 F01 换架保持可接续。退料真实定位适配和扫码归属读口仍待设备输入；首批等待已接入原完成 owner，只有显式配置期限才冻结到期点，未配置不猜值。内部关联读口仍无设备实现。
+Web/worker 共用 `build_deployment_runtime`，现有 `ENABLED_WORKLINE_PLUGINS` 显式安装自动插件时，统一构造完整正常链，并将同一实例交给 FactProcessor、宿主持久扫描、完成驱动和结果发布；不再把“提供外部扫码关联端口”作为整条业务装配条件。本次不修改任何环境启用列表或现场绑定。扫码 reader 先恢复当前 Evidence 已保存的精确 Command 引用；未绑定时仅调用显式注入的内部 `automatic_picking_source_commands`，缺读口或缺证据均由原 FactProcessor 延期，不按最近命令、条码或时间推断。该参数不是设备回显字段，设备归属方案仍待确认。
 
-本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与完整参数映射已实现；箱型直接使用2/3/6、货架面统一为 `rack_face`；实际位置绑定及精确扫码关联由调用方显式提供；报告 barcode 直接沿本盘扫码 Evidence；生产调用尚未注入精确归属依赖，仍未启用完整拣料装配，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
+退料来源 reader 复用当前有效成员、原退料架到位轮次和已发布结果，校验当前面、工作位、窗口及运动边界；可靠取出沿原 Pickup/Command 的匹配成功结果读取，不借用 BIN_CELL 的 SCAN2。退料定位请求只有显式注入 `automatic_picking_direct_pick_requests` 后才接入，缺参数不创建退料动作，不影响正常料箱链。未提供目标旋转 reader 时只阻止新旋转，保留原动作恢复，普通目标和 F01 换架可继续。首批等待沿原完成 owner，只有明确期限才冻结到期点，未配置不猜值。
+
+本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与完整参数映射已实现；箱型直接使用2/3/6、货架面统一为 `rack_face`；实际位置绑定及精确扫码关联由调用方显式提供；报告 barcode 直接沿本盘扫码 Evidence；生产调用共用上述完整组合根，未绑定扫码仍须等待可靠归属；本轮不修改环境启用清单、不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
 
 REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT 到期续问，再沿原 F01 旧架离场/新架进场和共用 PUT/report/close 继续，不重新请求物料资格。首次输入只需精确旧架、原进场轮次及到位事实；当前请求、轮次和到期点保存在 Pickup，恢复不按“最新请求”猜身份。所有搬运和机械臂成功事实仍必须匹配并已发布；未知交付不创建等价新动作。这证明显式权威输入下的离线业务闭环，不代表下表接口门禁已解除。
 
@@ -280,13 +282,13 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 公共映射固定 SOURCE_ARM/TARGET_ARM、PICK_AND_PUT、原 Pickup/MaterialExecution/步骤身份，使用当前 WorkLine 冻结绑定的合同与命令时限。`PickingArmCommandMapper` 在同一事务读取显式 `PickingArmBinding`，按说明书构造完整 `params.source/target`；绑定仅提供工作位、扫码平台和目标位，不新增生产配置默认或箱型/面向映射表。来源缺工作位/平台时不创建来源命令、不消费授权；目标缺实际位置时只不创建 PUT。箱型编码直接转字符串，rack_face 原样传递。PUT 尺寸沿本盘原来源 Command 冻结正文读取，不能读取已推进的 Work 后继参数；平台不一致或原 Pickup/Command/单盘身份错误则拒绝。普通/ROTATE/REPLACE 共用原 PUT/report/close 与恢复 owner，已创建 Command 仍优先原身份恢复，不重映射或改写正文。
 
-`build_picking_plugin` 显式接收同一个 `arm_commands` 映射器，将来源和 PUT 接入正常链；不增加生产 deployment 注册。图中 STATION_WORK1/STATION_SCAN2/PIPELINE_WORK1 以及结果示例 ARM_01 的命名差异只由实际绑定解决，不硬编码、自动别名或选最新配置。内部扫码端口仍要求明确原取盘归属；原文示例未提供归属证据，不据此解除真实接入门禁，也不把事件增加命令字段作为唯一方案。
+`build_picking_plugin` 显式接收同一个 `arm_commands` 映射器，将来源和 PUT 接入正常链，部署组合根统一关联该装配。图中 STATION_WORK1/STATION_SCAN2/PIPELINE_WORK1 以及结果示例 ARM_01 的命名差异只由实际绑定解决，不硬编码、自动别名或选最新配置。内部扫码端口仍要求明确原取盘归属；原文示例未提供归属证据，不据此解除真实接入门禁，也不把事件增加命令字段作为唯一方案。
 
 真实设备事件入口不提供本地 `command_code` 元数据。精确语义关联显式给定后，插件核对原 Work/Pickup/Command，再将该关联与 MaterialExecution 同事务保存，不改写原始报文或其摘要。来源结果先由 DeviceEvidenceService 应用，再由插件 business consumer 发布；PUT 结果在 FactProcessor 内读取确定成功，位置确认、movement_report 义务和发布仍同事务。设备摘要复用宿主 UNIFORM_WIRE 规则；设备 Fact 的 `1.1` 与既有 WMS Fact 的 `1.0` 由相应静态 handler 明确消费，不更改 Evidence 的版本或身份。
 
 隔离装配的主要验收 owner 是 `tests/integration/test_picking_device_ports_postgresql.py`：调用真实 DeviceEvidenceService 与 FactProcessor，以明确提供的参数/扫码关联 跑通普通目标取盘→扫码→ACCEPT→PUT→报告→关闭，并验证扫码绑定回滚、未发布来源结果、非整数单盘数量、未知/错误架面、缺参数、并发唯一命令、重建/重放及 REPLACE 原架/轮次发现。旧换架、WAIT、报告关闭和历史清理矩阵继续引用既有测试，不另建一套。测试将“已下发但尚未 ACK”显式作为前提，不执行发送，也不宣称物理设备成功。
 
-恢复 owner 不变：Work/source 与 target/batch 推进当前业务；DeviceCommand/Transport 持有原动作；DeviceEvidenceService 应用设备 Evidence，FactProcessor 应用并发布业务事实，Confirmation 持有已冻结请求/报告。精确扫码关联和完整参数仍是实际接入门禁；退箱补架容量接续与回库分配核销只限制对应 drain 路径，CK04 只限制目标 ROTATE 派发。本轮不改 deployment、不启动 worker 或真实派发、不发送 WMS 请求。
+恢复 owner 不变：Work/source 与 target/batch 推进当前业务；DeviceCommand/Transport 持有原动作；DeviceEvidenceService 应用设备 Evidence，FactProcessor 应用并发布业务事实，Confirmation 持有已冻结请求/报告。精确扫码关联和完整参数仍是实际接入门禁；退箱补架容量接续与回库分配核销只限制对应 drain 路径，CK04 只限制目标 ROTATE 派发。完整组合根已接通，并以隔离 worker 验证；本轮不部署、不启用真实派发、不发送外部 WMS 请求。
 
 
 ### 10.2 可靠取盘与扫码归属、退料单盘的接线边界（2026-10-23）
@@ -305,4 +307,4 @@ REPLACE 已接入首次 `departure_decide`、持久当前引用与确定 WAIT �
 
 **装配与恢复范围：**保留既有物料入口、单一精确归属端口及 Pickup/MaterialExecution，不增加另一套物料状态机、平台资源锁、通用关联模型或 timer。设备方案冻结后只补其静态事实读取/归属/准入适配差异，继续由 FactProcessor 应用、延期与发布，Confirmation 负责 decide/报告可靠交付，原 Command 持有物理动作；不在 HTTP 基础接收层解释工作线归属。当前 provider 仅有隔离测试显式关联，不能宣称真实设备接入已完成，也不能预先将未知报文适配为现有事件 Fact。
 
-正常 BIN_CELL 的当前业务仍由 Work/source、target/batch 恢复。退料单盘来源已确认由 ARM02 执行，与既有 RACK_SLOT 一致；DirectPick 的当前成员业务 driver/扫码上下文已在显式离线装配中接通，复用原单盘 decide/目标准备/PUT/报告关闭及恢复 owner，不伪造 Work、不消费 BIN_CELL 授权。退料取盘请求和来源事实仍须显式提供；生产 BIN_CELL 参数映射不作为退料定位方案，设备归属字段/保证和退料定位未冻结前不启用真实路径。可靠归属接入与退料定位分别限制各自真实路径，不阻塞给定权威事实下的离线业务接续。主合同 §10.3 的双臂并发不变，不增加扫码台锁、平台释放事件或等待整盘报告才下发下一来源的统一门槛；CK04 只限制目标 ROTATE，退箱补架容量接续与回库分配核销只限制对应 drain。
+正常 BIN_CELL 的当前业务仍由 Work/source、target/batch 恢复。退料单盘来源已确认由 ARM02 执行，与既有 RACK_SLOT 一致；DirectPick 的当前成员业务 driver/扫码上下文已在显式离线装配中接通，复用原单盘 decide/目标准备/PUT/报告关闭及恢复 owner，不伪造 Work、不消费 BIN_CELL 授权。退料来源事实已沿当前架级 owner 读取，取盘请求仍须显式提供；生产 BIN_CELL 参数映射不作为退料定位方案，设备归属字段/保证和退料定位未冻结前不启用真实路径。可靠归属接入与退料定位分别限制各自真实路径，不阻塞给定权威事实下的离线业务接续。主合同 §10.3 的双臂并发不变，不增加扫码台锁、平台释放事件或等待整盘报告才下发下一来源的统一门槛；CK04 只限制目标 ROTATE，退箱补架容量接续与回库分配核销只限制对应 drain。

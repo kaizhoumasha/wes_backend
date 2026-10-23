@@ -1230,3 +1230,16 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 - 仍未启用生产调用、真实扫码关联、退料定位或真实派发；实际首批时长未配置，不发外部请求、不提交、不部署、不抽取 bin-line-common。
 - 最终证据：插件 FAST **314 passed**；宿主读口/直接消费者 **56 passed**；受影响 completion/final-target PostgreSQL **29 passed**，其中评审修订的两项另行 **2 passed**，迁移最终降级保护复验 **1 passed**，均无 skip。QUALITY **4338 passed / 5 skipped**（既有 FAST skip，不算集成通过）；最终 selector 的26份既有 HEAVY **139 passed / 0 skipped**，420.09秒，未新增真实 worker/运输业务矩阵。首轮门禁发现新增迁移漏同步既有 selector 精确列表，仅补路径后完整门禁通过。
 - 独立 review 的唯一 P2 已闭环：撤销“等待首批期间可删原 prepare”的错误验收前提，保留当前准入依据，用失败读口证明 completion 不重读已冻结计时，再经真实 plan_delta Service 验证首批可接入、旧0不关闭新1。原 reviewer 合并完成闭环与当前18文件 fresh full review，无新增 actionable finding；未扩大生产范围。Ruff/格式/新增链接与 diff 检查通过。证据见 `reports/first-plan-{review-manifest,verification}.json` 及对应 JUnit；实施结束仅追加本文证据，不改变可执行快照。未提交、未部署、未发外部请求、未启用生产装配或真实派发。
+
+
+## 2026-10-23 现场接入准备：统一正常链与退料来源读取
+
+本段承接首批持久等待，取代此前“Web/worker 仅搬运、必须提供扫码关联端口才能装配正常链”的当前接线说明；历史验证记录仍保留。已确认箱型、rack_face、两臂分工和尺寸映射不重做。
+
+- 统一组合根沿现有插件清单显式安装完整正常链，Web/worker 原调用点保持一致，不新增环境模式开关，不修改现场启用列表、绑定或派发配置。首批时长仍只接受显式值，没有默认期限。
+- 扫码读口可独立恢复 Evidence 已保存的精确原 Command 引用；未绑定时只有明确提供的内部关联端口可返回身份，无依据沿原 Evidence/FactProcessor 延期。未增加或猜测设备字段，不宣称真实扫码归属已打通。
+- 退料来源 reader 按有效成员、当前架级到位轮次、当前面、工作位和运动边界读取准入；原 Pickup 的可靠取出沿匹配已发布原 Command 结果读取。复用 ReturnRackRepository，不伪造 Work、不消费料箱 SCAN2、不增加模型、状态或 timer。
+- 组合根提供显式退料定位请求注入，缺工厂则不安装新退料取盘入口；已创建单盘仍由共有 Material/target/Command owner 恢复。定位参数未确认只限制退料新动作，不撤掉正常出库链。
+- 装配差异测试归插件原 `test_plugin_composition.py`、`test_picking_device_ports.py` 及 PostgreSQL owner；既有完整正常 worker＋Beat 验收改用真实部署组合根，只注入离线归属并隔离外发，不再手工复制生产装配。不新增业务矩阵或共享可靠机制验收。
+
+验证与闭环 review：插件 FAST 324 passed；相关 PostgreSQL 四文件 37 passed；核心部署 FAST 19 passed；既有完整正常 worker＋Beat 经真实组合根 1 passed。独立完整只读 review 未发现 P0/P1/P2；附录旧阶段装配措辞已定向收敛。共享组合根 selector 的 11 文件门禁 75 passed、0 skipped；首次环境误用 admin 库被安全校验拒绝，改为本次隔离实例的新建已迁移测试库后完整通过，未放宽门禁或修改业务。当前可执行快照及报告记录于 `reports/picking-site-verification.json`，完整 QUALITY 留待授权提交边界。本轮不提交、不部署、不发外部请求、不启用真实派发；可靠归属的设备字段/稳定性、ARM02 定位及实际首批时长仍待联调。目标旋转只限制 ROTATE，退箱补架容量接续与核销补证只限制对应排空路径。

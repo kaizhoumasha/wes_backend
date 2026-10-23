@@ -5,13 +5,14 @@ from datetime import timedelta
 from decimal import Decimal, localcontext
 
 from sqlalchemy import select
-from wes_plugin_sdk import PickingMaterialAccept
+from wes_plugin_sdk import PickingMaterialAccept, PickingRackSlot
 
 from automatic_picking.definition import DEFINITION, SCAN_PLATFORM, TRANSFER_RACK, WORK_BIN
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, MaterialExecution, PositionProjection, TransportDecisionBinding
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
+from src.app.wms_integration.outbound_picking.models import DirectPickExecution
 from src.app.wms_integration.outbound_picking.services import MaterialDecideResultReader
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.models import WorkLine
@@ -19,9 +20,11 @@ from src.app.workline.repositories.workline_repository import workline_repositor
 from src.utils.timezone import timezone
 
 from .material_flow import MatchedMaterialScan, MaterialScanAssociationPending
-from .pickup_model import AutomaticPickingPickup
+from .pickup_model import AutomaticPickingDirectPick, AutomaticPickingPickup
 from .pickup_repository import PickupRepository, SourceObservation
 from .placement_flow import MatchedPutResult
+from .return_rack_model import AutomaticPickingReturnRack
+from .return_rack_repository import ReturnRackRepository
 from .scan_flow import normal_bin_code
 from .target_preparation import ReadyTarget
 from .target_replacement import MatchedTargetDeparture
@@ -250,7 +253,7 @@ async def _finished_arm(db, command):
 class PickingMaterialScanReader:
     """读取统一扫码合同；原来源命令由显式关联端口提供，不猜供应商回显字段。"""
 
-    def __init__(self, source_commands):
+    def __init__(self, source_commands=None):
         self.source_commands = source_commands
 
     async def read_in_session(self, db, *, evidence_id):
@@ -275,7 +278,7 @@ class PickingMaterialScanReader:
             raise ValueError("material scan differs from its admitted uniform Evidence")
         # 已绑定关联属于当前 Evidence，恢复不再依赖外部关联端口或已闭合历史。
         code = evidence.command_code
-        if code is None:
+        if code is None and self.source_commands is not None:
             code = await self.source_commands.read_in_session(db, evidence_id=evidence_id)
         if code is None:
             raise MaterialScanAssociationPending("material scan needs its exact original source Command")
@@ -314,6 +317,32 @@ class PickingMaterialScanReader:
 class PickingSourceReader:
     async def read_in_session(self, db, *, work, source, pickup):
         line = await db.get(WorkLine, work.workline_id)
+        ready = (
+            await self._direct_ready(db, line, work, source)
+            if type(work) is AutomaticPickingDirectPick
+            else await self._bin_ready(db, line, work, source)
+        )
+        removed = None
+        if pickup is not None:
+            command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
+            if (
+                command is None
+                or (
+                    (pickup.direct_pick_id != work.id or pickup.work_id is not None)
+                    if type(work) is AutomaticPickingDirectPick
+                    else (pickup.work_id != work.id or pickup.direct_pick_id is not None)
+                )
+                or command.workline_id != work.workline_id
+                or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
+                or command.execution_ref_id != pickup.pickup_id
+                or command.material_execution_id is not None
+            ):
+                raise ValueError("source physical fact lost original Work/Pickup/Command identity")
+            finished = await _finished_arm(db, command)
+            removed = finished[0].id if finished is not None and finished[0].published_at is not None else None
+        return SourceObservation(ready, removed)
+
+    async def _bin_ready(self, db, line, work, source):
         scan = await db.get(InboundEvidence, work.scan2_evidence_id)
         ready = False
         if (
@@ -340,21 +369,52 @@ class PickingSourceReader:
                 and event.timestamp == work.scanned_at
                 and normal_bin_code(event.data.get("bin_code"), "SCAN2") == work.bin_code
             )
-        removed = None
-        if pickup is not None:
-            command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == pickup.command_code))
-            if (
-                command is None
-                or pickup.work_id != work.id
-                or command.workline_id != work.workline_id
-                or command.execution_ref_type != WORKLINE_BUSINESS_REF_TYPE
-                or command.execution_ref_id != pickup.pickup_id
-                or command.material_execution_id is not None
+        return ready
+
+    async def _direct_ready(self, db, line, owner, source):
+        member = await db.get(DirectPickExecution, owner.member_id, populate_existing=True)
+        if (
+            member is None
+            or member.picking_task_id != owner.picking_task_id
+            or type(source) is not PickingRackSlot
+            or source != PickingRackSlot(member.rack_id, member.rack_face, member.slot_id)
+        ):
+            raise ValueError("return source differs from its exact member authorization")
+        if line is None or not line.is_active or member.cancelled_evidence_id is not None:
+            return False
+        location = line.position_bindings.get("RETURN_RACK", {}).get("location_id")
+        if not location:
+            return False
+        repository = ReturnRackRepository()
+        if await repository.member_done(db, member) or not await repository.member_admissible(db, line.id, member):
+            return False
+        currents = (
+            await db.scalars(
+                select(AutomaticPickingReturnRack).where(
+                    AutomaticPickingReturnRack.workline_id == line.id,
+                    AutomaticPickingReturnRack.picking_task_id == owner.picking_task_id,
+                    AutomaticPickingReturnRack.rack_id == member.rack_id,
+                    AutomaticPickingReturnRack.closed_evidence_id.is_(None),
+                )
+            )
+        ).all()
+        for current in currents:
+            if any(
+                value is not None
+                for value in (
+                    current.rotation_transport_task_id,
+                    current.departure_confirmation_id,
+                    current.departure_transport_task_id,
+                )
             ):
-                raise ValueError("source physical fact lost original Work/Pickup/Command identity")
-            finished = await _finished_arm(db, command)
-            removed = finished[0].id if finished is not None and finished[0].published_at is not None else None
-        return SourceObservation(ready, removed)
+                continue
+            arrival = await repository.current_arrival(db, current)
+            if arrival is not None and (
+                arrival[2].arrival_face == member.rack_face
+                and arrival[2].position_json == {"kind": "RACK_POSITION", "location_code": location}
+            ):
+                return True
+        return False
 
 
 class PickingTargetReader:

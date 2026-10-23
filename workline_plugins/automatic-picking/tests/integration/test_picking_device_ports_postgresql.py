@@ -45,6 +45,63 @@ from src.core.uuid7 import new_uuid7
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+async def test_deployment_return_source_reads_original_arrival_without_work_or_position_defaults(database):
+    from unittest.mock import AsyncMock
+
+    from automatic_picking.application.pickup_model import AutomaticPickingDirectPick
+    from test_return_rack_completion_postgresql import inbound as return_inbound
+    from test_return_rack_completion_postgresql import prepared as return_prepared
+    from wes_plugin_sdk import PickingRackSlot
+
+    from deployment.plugin_composition import build_deployment_runtime
+    from src.app.device.services.device_command_service import DeviceCommandService
+
+    p = await return_prepared(database)
+    request_factory = AsyncMock(return_value=None)  # 未确认定位参数时，不创建退料动作。
+    runtime = build_deployment_runtime(
+        session_factory=p.sessions,
+        transport_runtime=N(service=p.service, position_projection_service=object(), client=object()),
+        device_command_service=DeviceCommandService(session_factory=p.sessions),
+        enabled_plugin_keys=("automatic-picking",),
+        automatic_picking_direct_pick_requests=request_factory,
+    )
+    p.plugin = runtime.plugins[0]
+    current = await return_inbound(p)
+    async with p.sessions.begin() as db:
+        line = await db.get(WorkLine, p.line.id, with_for_update=True)
+        await p.plugin.picking_task_batch_driver.advance_in_session(db, line, p.task)
+    source = PickingRackSlot(p.member.rack_id, p.member.rack_face, p.member.slot_id)
+    reader = p.plugin.picking_task_batch_driver.source_flow.repository.physical_reader
+    async with p.sessions.begin() as db:
+        owner = await db.scalar(select(AutomaticPickingDirectPick))
+        assert owner is not None
+        assert (await reader.read_in_session(db, work=owner, source=source, pickup=None)).source_ready
+        assert await db.scalar(select(func.count()).select_from(AutomaticPickingWork)) == 0
+        assert await db.scalar(select(func.count()).select_from(AutomaticPickingPickup)) == 0
+        # 已发布到位仍必须属于当前面与未释放的原进场轮次。
+        from src.app.execution.models import PositionProjection
+
+        position = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == p.member.rack_id))
+        original_face = position.arrival_face
+        position.arrival_face = "OTHER"
+        await db.flush()
+        assert not (await reader.read_in_session(db, work=owner, source=source, pickup=None)).source_ready
+        position.arrival_face = original_face
+        task = await db.scalar(
+            select(TransportTask).where(TransportTask.transport_task_id == current.root_transport_task_id)
+        )
+        binding = await db.scalar(
+            select(TransportDecisionBinding).where(TransportDecisionBinding.client_request_id == task.client_request_id)
+        )
+        binding.window_released_at = p.now
+        await db.flush()
+        assert not (await reader.read_in_session(db, work=owner, source=source, pickup=None)).source_ready
+        await db.rollback()
+    async with p.sessions() as db:
+        owner = await db.scalar(select(AutomaticPickingDirectPick))
+        assert (await PickingSourceReader().read_in_session(db, work=owner, source=source, pickup=None)).source_ready
+
+
 async def test_prepared_deployment_reads_frozen_positions_and_preserves_original_action_when_config_is_missing(
     prepared,
 ):

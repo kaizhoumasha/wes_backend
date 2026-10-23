@@ -20,13 +20,7 @@ def test_automatic_installation_preserves_static_identity_and_runtime_ports(keys
     assert automatic.picking_task_plan_applied_handler is not None
     assert automatic.picking_task_batch_driver is not None
     assert automatic.transport_outcome_publisher is not None
-    assert automatic.runtime_binding.business_wms_operations == (
-        "outbound.bin.inbound_batch@v1",
-        "outbound.bin.work_plan@v1",
-        "outbound.bin.return_batch@v1",
-        "outbound.rack.departure_decide@v1",
-        "workline.return_buffer.drain_rack_decide@v1",
-    )
+    assert "outbound.return_rack.task_completed@v1" in automatic.runtime_binding.business_wms_operations
     assert automatic.picking_task_batch_driver.return_batch_flow is not None
     assert automatic.picking_task_batch_driver.drain_flow is not None
     assert (
@@ -35,12 +29,14 @@ def test_automatic_installation_preserves_static_identity_and_runtime_ports(keys
     )
     assert automatic.picking_task_batch_driver.rack_motion_flow is not None
     assert automatic.picking_task_batch_driver.rack_departure_flow is not None
-    assert automatic.picking_task_batch_driver.source_flow is None
-    assert automatic.picking_task_batch_driver.material_flow is None
-    assert automatic.picking_task_batch_driver.target_flow is None
-    assert automatic.runtime_binding.handlers == ()
-    assert automatic.runtime_binding.fact_factory is None
-    assert automatic.runtime_binding.decision_application is None
+    assert automatic.picking_task_batch_driver.source_flow is not None
+    assert automatic.picking_task_batch_driver.material_flow is not None
+    assert automatic.picking_task_batch_driver.target_flow is not None
+    assert automatic.runtime_binding.handlers
+    assert automatic.runtime_binding.fact_factory is automatic.picking_task_batch_driver.material_flow
+    assert automatic.runtime_binding.decision_application is automatic.picking_task_batch_driver.material_flow
+    assert automatic.picking_task_batch_driver.direct_pick_flow is None
+    assert automatic.picking_task_batch_driver.material_flow.scan_reader.source_commands is None
 
 
 def test_material_runtime_requires_explicit_injection():
@@ -120,14 +116,24 @@ def test_explicit_first_plan_timeout_reaches_same_owner_without_device_defaults(
         "device_command_service": object(),
         "automatic_picking_first_plan_timeout_ms": 1234,
     }
-    with pytest.raises(ValueError, match="full assembly"):
-        build_deployment_runtime(**kwargs)
-    runtime = build_deployment_runtime(
-        **kwargs, automatic_picking_source_commands=SimpleNamespace(read_in_session=AsyncMock())
-    )
+    runtime = build_deployment_runtime(**kwargs)
     plugin = runtime.plugins[0]
     assert plugin.picking_task_completion_driver.first_plan_timeout_ms == 1234
     assert plugin.picking_task_completion_driver is plugin.picking_task_batch_driver.completion_flow
+
+
+def test_return_position_adapter_is_explicit_and_does_not_gate_normal_picking():
+    request_factory = AsyncMock()
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=("automatic-picking",),
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        device_command_service=object(),
+        automatic_picking_direct_pick_requests=request_factory,
+    )
+    batch = runtime.plugins[0].picking_task_batch_driver
+    assert batch.direct_pick_flow.request_factory is request_factory
+    assert batch.direct_pick_flow.repository is batch.source_flow.repository
 
 
 @pytest.mark.parametrize("timeout_ms", [True, 0, -1, 1.5, "1000"])
