@@ -13,6 +13,7 @@ from wes_plugin_sdk import (
 from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTaskBinSourceRack
 from src.app.wms_integration.outbound_picking.services.picking_task_completion import PickingTaskCompletionResultReader
+from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareResultReader
 from src.app.wms_integration.outbound_picking.services.return_rack_arrival import ReturnRackArrivalResultReader
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -26,9 +27,13 @@ from .work_model import AutomaticPickingWork
 
 
 class AutomaticPickingCompletionFlow:
-    def __init__(self, scheduler, *, clock=timezone.now_for_db):
+    def __init__(self, scheduler, *, first_plan_timeout_ms=None, clock=timezone.now_for_db):
+        if first_plan_timeout_ms is not None and (type(first_plan_timeout_ms) is not int or first_plan_timeout_ms <= 0):
+            raise ValueError("first plan timeout requires explicit positive milliseconds")
         self.scheduler, self.clock = scheduler, clock
         self.reader = PickingTaskCompletionResultReader()
+        self.first_plan_timeout_ms = first_plan_timeout_ms
+        self.prepare_reader = PickingTaskPrepareResultReader()
 
     async def ready(self, db, task):
         if (
@@ -165,13 +170,35 @@ class AutomaticPickingCompletionFlow:
         if (
             not line.is_active
             or task.workline_id != line.id
-            or task.status != "EXECUTING"
+            or task.status not in ("PREPARING", "EXECUTING")
             or task.plan_blocked_evidence_id is not None
-            or task.last_applied_plan_revision < 1
+            or (task.last_applied_plan_revision == 0 and task.status != "PREPARING")
         ):
             return 0
         current = await self.current(db, task)
-        if current is not None:
+        if task.last_applied_plan_revision == 0:
+            if current is None:
+                if self.first_plan_timeout_ms is None:
+                    return 0
+                accepted_at = await self.prepare_reader.accepted_at_in_session(
+                    db, picking_task_id=task.id, task_id=task.task_id, workline_code=line.line_code
+                )
+                if accepted_at is None:
+                    return 0
+                current = AutomaticPickingTaskCompletion(
+                    workline_id=line.id,
+                    picking_task_id=task.id,
+                    first_plan_due_at=accepted_at + timedelta(milliseconds=self.first_plan_timeout_ms),
+                )
+                db.add(current)
+                await db.flush()
+                if now < current.first_plan_due_at:
+                    return 1
+            if current.workline_id != line.id:
+                raise ValueError("first plan current owner mismatch")
+            if current.confirmation_id is None and now < current.first_plan_due_at:
+                return 0
+        if current is not None and current.confirmation_id is not None:
             snapshot, evidence = await self.result(db, task, current)
             if snapshot.status != "COMPLETED" or evidence is None or snapshot.outcome is None:
                 return 0

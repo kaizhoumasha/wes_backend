@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import ClassVar
 
+from sqlalchemy import CheckConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -42,7 +43,15 @@ class AutomaticPickingReturnRack(EnterpriseMixin, DataTableMixin, table=True):
 class AutomaticPickingTaskCompletion(EnterpriseMixin, DataTableMixin, table=True):
     __tablename__: ClassVar[str] = "automatic_picking_task_completions"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = ({"schema": SchemaType.BIZ.value},)
+    __table_args__ = (
+        CheckConstraint(
+            "confirmation_id IS NOT NULL OR first_plan_due_at IS NOT NULL", name="automatic_completion_has_owner"
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", sa_type=SQL_COMPAT_BIGINT)
     picking_task_id: int = Field(foreign_key="wes_biz.picking_tasks.id", sa_type=SQL_COMPAT_BIGINT, unique=True)
-    confirmation_id: int = Field(foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT)
+    confirmation_id: int | None = Field(
+        default=None, foreign_key="wes_biz.wms_confirmations.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    first_plan_due_at: datetime | None = None

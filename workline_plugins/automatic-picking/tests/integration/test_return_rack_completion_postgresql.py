@@ -1,6 +1,7 @@
 """退料架与正常完成整段验收；精确动作/位置只作为离线输入。"""
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace as N
 
@@ -24,7 +25,7 @@ from src.app.execution.services.rack_inbound_window import RackInboundWindowServ
 from src.app.transport.models import TransportMember, TransportTask
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask
+from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTask, PickingTaskBinSourceRack
 from src.app.workline.models import WorkLine
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher
 from src.core.uuid7 import new_uuid7
@@ -113,6 +114,200 @@ async def completion_tick(p):
         line = await db.get(WorkLine, p.line.id, with_for_update=True)
         task = await db.get(PickingTask, p.task.id, with_for_update=True)
         return await p.plugin.picking_task_completion_driver.advance_in_session(db, line, task, now=p.now)
+
+
+async def preparing_without_plan(database, *, timeout_ms=1000):
+    from automatic_picking.application.completion_flow import AutomaticPickingCompletionFlow
+    from wes_plugin_sdk import wms_operations
+
+    from src.app.wms_adapter.outbound_picking.typed import encode_request
+
+    p = await prepared(database)
+    async with p.sessions.begin() as db:
+        await db.execute(delete(DirectPickExecution))
+        task = await db.get(PickingTask, p.task.id)
+        task.status, task.last_applied_plan_revision = "PREPARING", 0
+        task.target_rack_id = task.target_rack_face = None
+        task.initial_plan_evidence_id = task.last_plan_evidence_id = None
+        request = encode_request(
+            wms_operations.outbound_picking_task_prepare(
+                operation_id=new_uuid7(), task_id=task.task_id, work_line_code=p.line.line_code
+            ),
+            timestamp=1,
+        )
+        payload = {"operation_id": request["operation_id"], "code": "PREPARE_ACCEPTED", "timestamp": 1, "data": {}}
+        evidence = InboundEvidence(
+            kind="WMS_RESULT",
+            source_identity=request["operation"] + ":" + request["operation_id"],
+            operation=request["operation"],
+            operation_id=request["operation_id"],
+            normalized_payload=payload,
+            payload_digest=canonical_json_digest(payload),
+            received_at=p.now,
+            processed_at=p.now,
+            apply_status="APPLIED",
+            picking_task_id=task.id,
+        )
+        db.add(evidence)
+        await db.flush()
+        db.add(
+            WmsConfirmation(
+                operation=request["operation"],
+                operation_id=request["operation_id"],
+                picking_task_id=task.id,
+                request_payload=request,
+                request_digest=canonical_json_digest(request),
+                deadline_at=p.now + timedelta(seconds=30),
+                status="COMPLETED",
+                response_evidence_id=evidence.id,
+                response_result="PREPARE_ACCEPTED",
+                completed_at=p.now,
+            )
+        )
+    old = p.plugin.picking_task_completion_driver
+    driver = AutomaticPickingCompletionFlow(old.scheduler, first_plan_timeout_ms=timeout_ms, clock=lambda: p.now)
+    p.plugin = replace(p.plugin, picking_task_completion_driver=driver)
+    p.plugin.picking_task_batch_driver.completion_flow = driver
+    return p
+
+
+async def test_first_plan_deadline_is_frozen_and_current_request_recovers(database):
+    from automatic_picking.application.completion_flow import AutomaticPickingCompletionFlow
+
+    p = await preparing_without_plan(database)
+    assert await completion_tick(p) == 1
+    assert await completion_tick(p) == 0
+    assert await confirmation(p, COMPLETION) is None
+    async with p.sessions() as db:
+        current = await db.scalar(select(AutomaticPickingTaskCompletion))
+        assert current.first_plan_due_at == p.now + timedelta(seconds=1)
+        assert current.confirmation_id is None
+        assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 1
+    p.now += timedelta(milliseconds=999)
+    flow = p.plugin.picking_task_completion_driver
+    driver = AutomaticPickingCompletionFlow(flow.scheduler, clock=lambda: p.now)
+
+    class NoPrepareReread:
+        async def accepted_at_in_session(self, *args, **kwargs):
+            raise AssertionError("frozen deadline must not reread prepare")
+
+    driver.prepare_reader = NoPrepareReread()
+    p.plugin = replace(p.plugin, picking_task_completion_driver=driver)
+    p.plugin.picking_task_batch_driver.completion_flow = driver
+    assert await completion_tick(p) == 0
+    p.now += timedelta(milliseconds=1)
+    assert sum(await asyncio.gather(*(completion_tick(p) for _ in range(3)))) == 1
+    first = await confirmation(p, COMPLETION)
+    assert first.request_payload["data"]["last_applied_plan_revision"] == 0
+    assert await completion_tick(p) == 0
+    await answer(p, COMPLETION, {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": 1000})
+    assert await completion_tick(p) == 0
+    p.now += timedelta(seconds=1)
+    assert await completion_tick(p) == 1
+    await answer(p, COMPLETION, {"result": "COMPLETED"})
+    assert await completion_tick(p) == 1
+    async with p.sessions() as db:
+        assert (await db.get(PickingTask, p.task.id)).status == "EXECUTION_COMPLETED"
+
+
+async def test_first_plan_deadline_without_configuration_does_not_guess_timeout(database):
+    p = await preparing_without_plan(database, timeout_ms=None)
+    p.now += timedelta(days=10)
+    assert await completion_tick(p) == 0
+    async with p.sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(AutomaticPickingTaskCompletion)) == 0
+
+
+async def test_first_plan_current_creation_rolls_back_and_never_closes_new_plan(database, monkeypatch):
+    from test_source_revision_postgresql import add_revision
+
+    p = await preparing_without_plan(database)
+    assert await completion_tick(p) == 1
+    p.now += timedelta(seconds=1)
+    flow = p.plugin.picking_task_completion_driver
+    original = flow.scheduler.create_in_session
+
+    async def crash(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise RuntimeError("after first-plan confirmation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(flow.scheduler, "create_in_session", crash)
+        with pytest.raises(RuntimeError, match="first-plan confirmation"):
+            await completion_tick(p)
+    async with p.sessions() as db:
+        assert (await db.scalar(select(AutomaticPickingTaskCompletion))).confirmation_id is None
+        assert await confirmation(p, COMPLETION) is None
+    assert await completion_tick(p) == 1
+    old = await confirmation(p, COMPLETION)
+    await add_revision(p, 1)
+    await answer(p, COMPLETION, {"result": "COMPLETED"})
+    assert await completion_tick(p) == 0
+    async with p.sessions.begin() as db:
+        assert (await db.get(PickingTask, p.task.id)).status == "EXECUTING"
+        assert (await db.get(PickingTask, p.task.id)).plan_blocked_evidence_id is None
+        live = await db.scalar(
+            select(PickingTaskBinSourceRack).where(PickingTaskBinSourceRack.picking_task_id == p.task.id)
+        )
+        live.cancelled_evidence_id = live.source_evidence_id
+    assert await completion_tick(p) == 1
+    current = await confirmation(p, COMPLETION)
+    assert current.id != old.id and current.request_payload["data"]["last_applied_plan_revision"] == 1
+
+
+async def test_first_plan_recovery_uses_existing_host_scan_without_executing_task(database):
+    from automatic_picking.definition import DEFINITION
+
+    from src.app.wms_integration.outbound_picking.services.picking_task_plan_activation import (
+        PickingTaskPlanActivationService,
+    )
+
+    p = await preparing_without_plan(database)
+    p.plugin.picking_task_batch_driver.clock = lambda: p.now
+
+    class NoActions:
+        async def create_windowed_inbound(self, *args, **kwargs):
+            raise AssertionError("no plan must not create transport")
+
+    def scan():
+        return PickingTaskPlanActivationService(
+            p.sessions, plugins=(p.plugin,), transport_creator=NoActions()
+        )._activate_workline(
+            p.line.id,
+            handler=p.plugin.picking_task_plan_applied_handler,
+            plugin_identity=(DEFINITION.plugin_key, DEFINITION.plugin_version),
+        )
+
+    assert await scan() == 1
+    assert await scan() == 0
+    p.now += timedelta(seconds=1)
+    assert sum(await asyncio.gather(*(scan() for _ in range(3)))) == 1
+    current = await confirmation(p, COMPLETION)
+    assert current is not None
+    assert await scan() == 0
+    assert (await confirmation(p, COMPLETION)).id == current.id
+
+
+async def test_first_plan_deadline_migration_refuses_losing_wait_owner(database):
+    import subprocess
+
+    from tests.support.postgresql_heavy import run_alembic
+
+    url, sessions = database
+    run_alembic("downgrade", "f5c962df755c", database_url=url)
+    run_alembic("upgrade", "head", database_url=url)
+    p = await preparing_without_plan(database)
+    assert await completion_tick(p) == 1
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        run_alembic("downgrade", "f5c962df755c", database_url=url)
+    assert "cannot discard pending first-plan deadline" in failure.value.stderr
+    p.now += timedelta(seconds=1)
+    assert await completion_tick(p) == 1
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        run_alembic("downgrade", "f5c962df755c", database_url=url)
+    assert "cannot discard pending first-plan deadline" in failure.value.stderr
+    async with sessions() as db:
+        assert (await db.scalar(select(AutomaticPickingTaskCompletion))).first_plan_due_at is not None
 
 
 async def completed_member(p):

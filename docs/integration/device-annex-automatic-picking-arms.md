@@ -237,7 +237,7 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 | O6（不再作门禁） | 说明书未要求 `business_key`；正常命令不生成此扩展，追溯使用原 `command_code` 与本地执行身份 | 已收窄 |
 | O7 | `error_detail.code` 取值表及原厂码对应关系 | ECS 供应商 |
 | O8 | 读不出码或不完整时，ECS 发什么事件、是否重扫、何时放弃 | ECS 供应商 |
-| O9 | `PICK_AND_PUT` 的合理 `timeout`、结果回调最长延迟 | ECS 供应商 |
+| O9 | 命令时限复用既有配置与 START 冻结（基础默认30000毫秒）；实际节拍和回调延迟在联调校准，超时不改写原物理结果，不重复索取整套配置 | 联调校准 |
 | O10 | 说明书明确层/列为字符串、层1–5；插件按此转换，不猜列数上限，不修改 WMS int DTO | 已明确 |
 | O11（已明确） | 统一使用 `rack_face`，原样传递授权值；删除 `rack_side` 和 A/B 转换前提，不做双字段兼容 | 用户最新确认 |
 | O12（对象已明确） | ARM02 从退料架取出单盘物料；与 WMS `RACK_SLOT` 一致，不再确认整箱/单盘。仅设备来源 `location_type` 及定位正文待确认 | ECS 供应商 |
@@ -252,7 +252,7 @@ ACK 只表示接纳。只有匹配 `command_code` 的 `SUCCESS` 回调才是物�
 
 2026-10-23 生产接入准备补充：机械臂位置沿既有工作线位置配置入口，不新增环境变量或设备 wire 字段。`WORK_BIN`（BIN）和 `SCAN_PLATFORM`（SCAN_PLATFORM）声明为两个可选 STATION 插槽，实际工作位及执行位置编码必须显式配置；`TRANSFER_RACK` 继续复用原转运架位置。通用 START 校验本线工作位并冻结执行位置，`PickingArmBindingReader` 只读取匹配工作线、精确插件版本且已启用的当前快照，不从设备编码、INLET、扫码文本或历史推导。缺项保持未知，类型错误或位置冲突拒绝准入；已创建原 Command 的恢复先于新参数读取。
 
-Web/worker 继续共用 `build_deployment_runtime`。只有调用方显式注入内部精确关联读口 `automatic_picking_source_commands`，才会在同一个原搬运插件上安装完整正常链，并将同一实例交给 FactProcessor、宿主持久扫描、完成驱动和结果发布。该参数不是设备回显字段或生产开关；现有 Web/worker 生产调用均未注入，仍为搬运装配。未提供目标旋转 reader 时只阻止新旋转动作，保留原旋转 flow 的原动作结果与就绪恢复，不以假 reader 或 CTU02 默认值替代 CK04；普通目标和 F01 换架保持可接续。退料取盘和首批期限均未接入或猜值，内部关联读口仍无设备实现。
+Web/worker 继续共用 `build_deployment_runtime`。只有调用方显式注入内部精确关联读口 `automatic_picking_source_commands`，才会在同一个原搬运插件上安装完整正常链，并将同一实例交给 FactProcessor、宿主持久扫描、完成驱动和结果发布。该参数不是设备回显字段或生产开关；现有 Web/worker 生产调用均未注入，仍为搬运装配。未提供目标旋转 reader 时只阻止新旋转动作，保留原旋转 flow 的原动作结果与就绪恢复，不以假 reader 或 CTU02 默认值替代 CK04；普通目标和 F01 换架保持可接续。退料真实定位适配和扫码归属读口仍待设备输入；首批等待已接入原完成 owner，只有显式配置期限才冻结到期点，未配置不猜值。内部关联读口仍无设备实现。
 
 本轮将料箱到工作位后的 BIN_CELL 正常链统一装配：Work READY→来源 Command→精确扫码绑定→material.decide（含确定 WAIT）→普通/ROTATE/REPLACE 目标就绪→PUT→movement_report→RECORDED/DUPLICATE 关闭→下一来源或点2正常流出/SCAN3。已确认的设备事实读口与完整参数映射已实现；箱型直接使用2/3/6、货架面统一为 `rack_face`；实际位置绑定及精确扫码关联由调用方显式提供；报告 barcode 直接沿本盘扫码 Evidence；生产调用尚未注入精确归属依赖，仍未启用完整拣料装配，不发送 WMS 请求或启用设备派发。离线输入不能当作下表未决项已确认。
 

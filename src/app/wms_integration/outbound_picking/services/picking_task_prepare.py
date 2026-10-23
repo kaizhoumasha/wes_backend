@@ -186,6 +186,70 @@ def _timestamp_ms(value: datetime) -> int:
     return int(timezone.to_utc(value).timestamp() * 1000)
 
 
+class PickingTaskPrepareResultReader:
+    """只读取原准备请求的可靠接收时间，不决定业务等待期限。"""
+
+    async def accepted_at_in_session(
+        self, db: AsyncSession, *, picking_task_id: int, task_id: str, workline_code: str
+    ) -> datetime | None:
+        from sqlalchemy import select
+        from wes_plugin_sdk import PrepareAccepted
+
+        from src.app.execution.models import InboundEvidence, WmsConfirmation
+        from src.app.wms_adapter.outbound_picking.typed import decode_outcome
+        from src.app.wms_adapter.outbound_picking.wire import parse_picking_task_prepare_request
+        from src.utils.canonical_json import canonical_json_digest
+
+        rows = (
+            await db.scalars(
+                select(WmsConfirmation).where(
+                    WmsConfirmation.picking_task_id == picking_task_id,
+                    WmsConfirmation.operation == PICKING_TASK_PREPARE_OPERATION,
+                )
+            )
+        ).all()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("prepare requires one original confirmation")
+        confirmation = rows[0]
+        if confirmation.status != "COMPLETED":
+            return None
+        if (
+            confirmation.workline_id is not None
+            or confirmation.material_execution_id is not None
+            or canonical_json_digest(confirmation.request_payload) != confirmation.request_digest
+        ):
+            raise ValueError("prepare confirmation owner or digest mismatch")
+        request = parse_picking_task_prepare_request(confirmation.request_payload)
+        if (
+            request.operation_id != confirmation.operation_id
+            or request.data.task_id != task_id
+            or request.data.workline_code != workline_code
+        ):
+            raise ValueError("prepare frozen request identity mismatch")
+        evidence = await db.get(InboundEvidence, confirmation.response_evidence_id)
+        if (
+            evidence is None
+            or evidence.kind != "WMS_RESULT"
+            or evidence.apply_status != "APPLIED"
+            or evidence.picking_task_id != picking_task_id
+            or evidence.workline_id is not None
+            or evidence.material_execution_id is not None
+            or evidence.operation != confirmation.operation
+            or evidence.operation_id != confirmation.operation_id
+            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or evidence.normalized_payload.get("operation_id") != confirmation.operation_id
+        ):
+            raise ValueError("prepare result evidence identity or digest mismatch")
+        if (
+            type(decode_outcome(evidence.normalized_payload).result) is not PrepareAccepted
+            or confirmation.response_result != "PREPARE_ACCEPTED"
+        ):
+            raise ValueError("prepare confirmation is not accepted")
+        return evidence.received_at
+
+
 __all__ = [
     "PickingTaskPrepareCoordinator",
     "PickingTaskPrepareNoopReason",

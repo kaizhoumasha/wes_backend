@@ -108,10 +108,13 @@ def build_deployment_runtime(
     device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
     enabled_plugin_keys: tuple[str, ...] = (),
     automatic_picking_source_commands: object | None = None,
+    automatic_picking_first_plan_timeout_ms: int | None = None,
 ) -> DeploymentRuntime:
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
+    if automatic_picking_first_plan_timeout_ms is not None and automatic_picking_source_commands is None:
+        raise ValueError("automatic picking first plan timeout requires explicit full assembly")
     if automatic_picking_source_commands is not None and (
         "automatic-picking" not in enabled_plugin_keys
         or not callable(getattr(automatic_picking_source_commands, "read_in_session", None))
@@ -261,6 +264,7 @@ def build_deployment_runtime(
                 ),
                 rotation_reader=None,
                 departure_reader=PickingDepartureReader(),
+                first_plan_timeout_ms=automatic_picking_first_plan_timeout_ms,
             )
         plugins += (automatic,)
     plugin_binding = StaticPluginBinding(

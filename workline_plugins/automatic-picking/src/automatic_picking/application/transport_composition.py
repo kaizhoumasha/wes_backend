@@ -128,6 +128,7 @@ def build_picking_plugin(
     rotation_reader,
     departure_reader,
     direct_pick_requests=None,
+    first_plan_timeout_ms=None,
 ):
     """在已装配搬运插件上接通正常逐盘链；设备参数/精确事实读口必须显式提供。"""
     from copy import copy
@@ -190,7 +191,10 @@ def build_picking_plugin(
     from .return_rack_flow import AutomaticPickingReturnRackFlow
 
     confirmations = batch.rack_departure_flow.scheduler._confirmations
-    completion = AutomaticPickingCompletionFlow(PickingTaskCompletionScheduler(confirmations))
+    completion = AutomaticPickingCompletionFlow(
+        PickingTaskCompletionScheduler(confirmations), first_plan_timeout_ms=first_plan_timeout_ms
+    )
+    batch.completion_flow = completion
     batch.return_rack_flow = AutomaticPickingReturnRackFlow(
         rack_transports, ReturnRackArrivalScheduler(confirmations), batch.rack_departure_flow.scheduler
     )

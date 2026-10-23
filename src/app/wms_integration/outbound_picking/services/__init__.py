@@ -12,7 +12,7 @@ from .picking_task_confirmation_owner import PickingTaskConfirmationOwnerService
 from .picking_task_issued import PickingTaskIssuedService
 from .picking_task_plan_activation import PickingTaskPlanActivationService
 from .picking_task_plan_delta import PickingTaskPlanDeltaService
-from .picking_task_prepare import PickingTaskPrepareCoordinator
+from .picking_task_prepare import PickingTaskPrepareCoordinator, PickingTaskPrepareResultReader
 from .picking_task_prepare_batch import PickingTaskPrepareBatchService
 from .picking_task_queue_changed import PickingTaskQueueChangedService
 from .rack_departure import RackDepartureResultReader, RackDepartureScheduler
@@ -39,6 +39,7 @@ __all__ = [
     "PickingTaskPlanDeltaService",
     "PickingTaskPrepareBatchService",
     "PickingTaskPrepareCoordinator",
+    "PickingTaskPrepareResultReader",
     "PickingTaskQueueChangedService",
     "RackDepartureOwnerService",
     "RackDepartureResultReader",

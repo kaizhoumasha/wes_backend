@@ -3387,3 +3387,7 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_prepare_post
 [[mapping]]
 source_glob = "migrations/versions/20261023_0424_f5c962df755c_自动最终转运架当前离场义务.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0900_3a17b9c40d62_自动首批计划持久期限.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]

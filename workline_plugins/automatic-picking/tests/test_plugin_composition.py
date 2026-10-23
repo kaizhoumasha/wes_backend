@@ -91,6 +91,8 @@ def test_prepared_full_runtime_shares_one_plugin_across_all_existing_entrypoints
     activation = runtime.picking_task_plan_activation_service
     assert activation._batch_drivers[identity] is batch
     assert activation._completion_drivers[identity] is plugin.picking_task_completion_driver
+    assert batch.completion_flow is plugin.picking_task_completion_driver
+    assert batch.completion_flow.first_plan_timeout_ms is None
     assert runtime.execution.fact_processor._plugins.resolve_business_evidence_consumer(*identity) is scan
     assert runtime.execution.fact_processor._plugins.resolve_fact_factory(*identity) is material
     assert runtime.transport_outcome_publisher._plugins is runtime.plugins
@@ -108,3 +110,29 @@ def test_full_runtime_dependency_must_be_explicit_and_installed(keys, associatio
             device_command_service=object(),
             automatic_picking_source_commands=association,
         )
+
+
+def test_explicit_first_plan_timeout_reaches_same_owner_without_device_defaults():
+    kwargs = {
+        "enabled_plugin_keys": ("automatic-picking",),
+        "session_factory": object(),
+        "transport_runtime": SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
+        "device_command_service": object(),
+        "automatic_picking_first_plan_timeout_ms": 1234,
+    }
+    with pytest.raises(ValueError, match="full assembly"):
+        build_deployment_runtime(**kwargs)
+    runtime = build_deployment_runtime(
+        **kwargs, automatic_picking_source_commands=SimpleNamespace(read_in_session=AsyncMock())
+    )
+    plugin = runtime.plugins[0]
+    assert plugin.picking_task_completion_driver.first_plan_timeout_ms == 1234
+    assert plugin.picking_task_completion_driver is plugin.picking_task_batch_driver.completion_flow
+
+
+@pytest.mark.parametrize("timeout_ms", [True, 0, -1, 1.5, "1000"])
+def test_first_plan_timeout_rejects_nonpositive_or_noninteger_configuration(timeout_ms):
+    from automatic_picking.application.completion_flow import AutomaticPickingCompletionFlow
+
+    with pytest.raises(ValueError, match="positive milliseconds"):
+        AutomaticPickingCompletionFlow(object(), first_plan_timeout_ms=timeout_ms)

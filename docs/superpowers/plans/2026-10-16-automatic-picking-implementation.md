@@ -54,7 +54,7 @@
 | G3 Bin 与目标设备映射 | 箱型直接使用2/3/6、统一 rack_face 原样传递，已删除转换表；正常链显式绑定 ARM01 来源、ARM02 目标。剩余为实际位置绑定与时限、WMS 尺寸单位对齐 | 缺哪个输入只停对应命令，原 Work/target owner 负责重扫。CK04 只限制目标 ROTATE；普通目标、F01 REPLACE 不等 CK04 或 C1/C2 |
 | G4 DirectPick 映射 | ARM02 从退料架取出单盘已确认；退料架设备位置类型、slot 到设备定位字段及确需尺寸参数的来源未定，生产 driver 尚未装配 | 限制任务 10 的直接取料设备路径；若需扩展 plan_delta，先批准具体 wire，再同步全部消费者，不反推 bin_* 参数 |
 | G5 barcode 统一（已收敛） | decide、movement_report 均为本盘扫码原文，1–1000字符 | 删除独立编号来源与读取端口；报告和关闭校验本盘原扫码及已发布决定，不再阻塞真实接入 |
-| G6 首批期限 | 业务超期规则已确认，插件配置入口、双方期限值及合法范围待落定 | 任务 5 建立插件唯一配置入口并冻结每次等待；不复用 30 秒技术派发窗口，未明确值不猜默认值 |
+| G6 首批期限 | 业务超期规则已确认；显式毫秒配置、持久到期点和原完成确认接续已实现，实际期限值待联调配置 | 未配置只保留等待；已冻结到期点由原 batch/completion owner 恢复，不复用设备30秒或技术派发窗口 |
 | G7 异常分支 | REJECT、空取和 NG 协议保留，设备失败/空取语义及恢复动作仍有未决 | 正常切片只可靠留证并保留依赖；这些分支另做实施切片，不能因此删 DTO 或宣布整线业务验收 |
 
 任务 1 可先完整推进。任务 2 按 2026-10-16 确认表开展 RED 与受控替换；G1 剩余设备映射不阻塞 DTO 与共享接线；
@@ -1219,3 +1219,14 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 - 恢复 owner 不变：未消费授权与当前取出事实归 Work/source；已创建 Command 先沿原身份恢复，不因当前配置缺失重新准入；扫码归属不足由原 Evidence/FactProcessor 延期，绑定后沿原 Pickup/MaterialExecution；decide/报告/完成/离场沿原 Confirmation；后续推进与终态收口仍归插件 batch/completion 和原 Transport。没有 schema、状态、timer、通用授权或 bin-line-common。
 - 差异验收唯一归插件 `T/test_definition.py`、`T/test_picking_device_ports.py`、`T/test_plugin_composition.py`、`T/integration/test_picking_device_ports_postgresql.py` 的配置接入用例及 `T/integration/test_target_rotation_postgresql.py` 的缺参数恢复用例；验证默认未启用、显式依赖准入、同实例交接、缺项不消费授权、完整位置后唯一创建及重建保留原命令，以及未装配新旋转读口时保留原动作和目标就绪恢复。既有 `test_normal_picking_worker_recovery.py`、正常/ROTATE/REPLACE 和共享可靠机制矩阵不复制；装配受影响的核心消费者按既有测试/HEAVY mapping 验证，不由核心承接插件业务。
 - 最终验证：插件 FAST **308 passed**；核心直接消费者 **109 passed**；新增 PostgreSQL 差异用例 **2 passed / 0 skipped**。共享 QUALITY **4330 passed / 5 skipped**（FAST 既有 skip，未计作集成证据）；组合根现有 mapping 选择的11份 HEAVY **75 passed / 0 skipped**，含真实 worker，164.67秒。首次 HEAVY 因临时库名不符合测试保护规则在 setup 被拒绝，改用独占 `test_` 逻辑库后完整通过，未放宽保护或修改测试。独立完整只读 review 对固定12文件快照 **无 actionable finding**；Ruff、格式、新增文档链接与 diff 检查通过。证据见 `reports/picking-preparation-{review-manifest,verification}.json`、FAST/core/PG/HEAVY JUnit 和 QUALITY 日志；仅收口人类文档不使执行证据失效。本轮未提交、未部署、未发外部请求，未启用生产装配或真实派发。
+
+
+### 已知合同继续实施：首批等待与完成确认接续（2026-10-23，基线 `04fa7010`）
+
+- 正常/退料取盘、扫码、decide、目标、PUT、报告关闭沿既有离线闭环，不再重写。两臂分工、箱型2/3/6、rack_face、barcode原文及毫米/寸已明确；实际位置、设备时限复用既有配置和 START 冻结，未知扫码字段和退料定位不填默认、不伪造设备适配。联调时校准真实输入；目标旋转指令只限制 ROTATE，退箱补架容量与核销补证仍只限制对应排空路径。
+- 首批期限只有显式正整数毫秒输入才建立等待。新增基础读口 `PickingTaskPrepareResultReader` 仅核对原准备请求/响应的 typed 身份、owner、摘要和可靠接收时间，不解释工作线业务。插件在原 `AutomaticPickingTaskCompletion` current 冻结 `first_plan_due_at`；Confirmation 在到期后才创建，current 与新义务原子关联。无新授权模型、业务状态或通用 timer。迁移 `3a17b9c40d62` 允许到期等待暂未创建 Confirmation，同时用约束保证 current 至少有到期点或原 Confirmation；降级拒绝丢弃首批等待语义。
+- 原宿主计划扫描仍锁工作线，插件 batch 在无 EXECUTING 的 PREPARING 任务上调用同一 completion owner。确定 BUSINESS_IN_PROGRESS 仍按原结果接收时间＋retry_after_ms 固定续问；未知交付保留原请求。首批计划到达后的版本竞争沿当前任务锁与版本校验处理，旧版本0结果不关闭新版本。任务完成不等清场。冻结后 completion 不重新读取准备结果或重新计时；原 prepare 在首批计划准入或任务尚未闭合前仍是当前业务依据，必须保留，不能按技术 COMPLETED 当成可清理历史。
+- 新差异主要 owner 为 `T/integration/test_return_rack_completion_postgresql.py` 的首批期限用例；复用当前正常完成、最终架离场及已提交真实 worker＋Beat 证据。宿主 `tests/contracts/wms_adapter/outbound_picking/test_prepare_result_reader.py` 只证明新结果读口的身份/可靠事实；插件 FAST 装配验证显式参数传给同一恢复 owner。只回归受影响 owner，不再复制运输、扫码和共享租约矩阵。
+- 仍未启用生产调用、真实扫码关联、退料定位或真实派发；实际首批时长未配置，不发外部请求、不提交、不部署、不抽取 bin-line-common。
+- 最终证据：插件 FAST **314 passed**；宿主读口/直接消费者 **56 passed**；受影响 completion/final-target PostgreSQL **29 passed**，其中评审修订的两项另行 **2 passed**，迁移最终降级保护复验 **1 passed**，均无 skip。QUALITY **4338 passed / 5 skipped**（既有 FAST skip，不算集成通过）；最终 selector 的26份既有 HEAVY **139 passed / 0 skipped**，420.09秒，未新增真实 worker/运输业务矩阵。首轮门禁发现新增迁移漏同步既有 selector 精确列表，仅补路径后完整门禁通过。
+- 独立 review 的唯一 P2 已闭环：撤销“等待首批期间可删原 prepare”的错误验收前提，保留当前准入依据，用失败读口证明 completion 不重读已冻结计时，再经真实 plan_delta Service 验证首批可接入、旧0不关闭新1。原 reviewer 合并完成闭环与当前18文件 fresh full review，无新增 actionable finding；未扩大生产范围。Ruff/格式/新增链接与 diff 检查通过。证据见 `reports/first-plan-{review-manifest,verification}.json` 及对应 JUnit；实施结束仅追加本文证据，不改变可执行快照。未提交、未部署、未发外部请求、未启用生产装配或真实派发。
