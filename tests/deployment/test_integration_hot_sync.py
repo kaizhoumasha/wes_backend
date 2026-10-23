@@ -60,6 +60,11 @@ def _init_source_repositories(tmp_path: Path) -> tuple[Path, Path, str]:
         "src/app.py": "VALUE = 'base'\n",
         "deployment/plugin_composition.py": "# composition\n",
         "workline_plugins/manual-picking/src/plugin.py": "# plugin\n",
+        "workline_plugins/automatic-picking/src/plugin.py": "# automatic plugin\n",
+        "workline_plugins/automatic-picking/.venv/lib/runtime.bin": "large cache\n",
+        "workline_plugins/automatic-picking/tests/test_plugin.py": "def test_plugin(): pass\n",
+        "workline_plugins/manual-picking/pyproject.toml": "[project]\nname = 'manual'\n",
+        "workline_plugins/automatic-picking/pyproject.toml": "[project]\nname = 'automatic'\n",
         "workline_plugins/manual-picking/.venv/lib/runtime.bin": "large cache\n",
         "workline_plugins/manual-picking/tests/test_plugin.py": "def test_plugin(): pass\n",
         "scripts/frontend-dev-entrypoint.sh": "#!/bin/sh\nexec pnpm dev\n",
@@ -151,14 +156,20 @@ def test_bootstrap_transfers_runtime_sources_without_local_state(tmp_path: Path)
     assert "workline_plugins/manual-picking/src/plugin.py" in transferred
     assert "workline_plugins/manual-picking/.venv" not in transferred
     assert "workline_plugins/manual-picking/tests" not in transferred
+    assert "workline_plugins/automatic-picking/src/plugin.py" in transferred
+    assert "workline_plugins/automatic-picking/.venv" not in transferred
+    assert "workline_plugins/automatic-picking/tests" not in transferred
     assert transferred.count("scp ") == 2
     assert "CANTAISYS@100.94.216.118" in transferred
     assert "/srv/wes/app/current-single" in transferred
 
 
-def test_bootstrap_refuses_backend_dependency_or_migration_drift_before_transfer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("changed_path", ["uv.lock", "workline_plugins/automatic-picking/pyproject.toml"])
+def test_bootstrap_refuses_backend_dependency_or_migration_drift_before_transfer(
+    tmp_path: Path, changed_path: str
+) -> None:
     backend, frontend, backend_revision = _init_source_repositories(tmp_path)
-    (backend / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+    (backend / changed_path).write_text("changed input\n", encoding="utf-8")
     bin_dir, trace = _fake_transport(tmp_path, backend_revision)
 
     result = _run(
@@ -339,7 +350,7 @@ def test_remote_sync_restarts_existing_applications_before_success(tmp_path: Pat
 
     assert result.returncode == restart_exit, result.stderr
     docker_calls = docker_trace.read_text(encoding="utf-8") if docker_trace.exists() else ""
-    assert "restart --timeout 30 api celery celery-wms-fulfillment celery_beat frontend" in docker_calls
+    assert "restart --timeout 30 api celery celery-wms-fulfillment celery_beat flower frontend" in docker_calls
     assert " up " not in docker_calls
     assert live_main.stat().st_ino == live_main_inode
     assert upload.exists() is bool(restart_exit)
@@ -465,8 +476,8 @@ def test_remote_probe_supports_current_single_integration_layout(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     assert "DEPLOY_LAYOUT=integration" in result.stdout
-    assert result.stdout.count("BACKEND_REVISION=revision-sha") == 4
-    assert result.stdout.count("BACKEND_PROTECTED_SHA=protected-sha") == 4
+    assert result.stdout.count("BACKEND_REVISION=revision-sha") == 5
+    assert result.stdout.count("BACKEND_PROTECTED_SHA=protected-sha") == 5
     assert "HOT_MODE=false" in result.stdout
     docker_calls = docker_trace.read_text(encoding="utf-8")
     assert "inspect wes_api_int" in docker_calls
@@ -546,3 +557,16 @@ def test_sync_control_fingerprint_changes_for_loaded_control_files(tmp_path: Pat
         activation = [line for line in trace.read_text().splitlines() if " activate " in line][-1]
         fingerprints.append(activation.split()[-2])
     assert fingerprints[0] != fingerprints[1]
+
+
+@pytest.mark.parametrize("name", ["api", "celery", "celery-wms-fulfillment", "celery_beat", "flower"])
+def test_hot_processes_load_both_plugin_sources(name: str) -> None:
+    service = yaml.safe_load((REPO_ROOT / "docker-compose.integration-hot.yml").read_text())["services"][name]
+    for key in ("manual-picking", "automatic-picking"):
+        assert f"/app/workline_plugins/{key}/src" in service["environment"]["PYTHONPATH"].split(":")
+        assert (
+            f"${{HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}}/workline_plugins/{key}/src:/app/workline_plugins/{key}/src:ro,z"
+            in service["volumes"]
+        )
+    if name in ("celery", "celery-wms-fulfillment", "celery_beat"):
+        assert "/app/workline_plugins/automatic-picking/src" in service["environment"]["CELERY_WATCH_PATHS"].split()

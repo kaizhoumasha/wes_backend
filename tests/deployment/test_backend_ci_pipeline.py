@@ -7,6 +7,7 @@ from pathlib import Path
 from shutil import which
 
 import pytest
+import yaml
 
 from scripts.export_release_provider import (
     ReleaseProviderExportError,
@@ -281,3 +282,24 @@ def test_backend_heavy_runner_uses_bounded_reference_resources() -> None:
 
     assert "--cpus=2" in heavy_body
     assert "--memory=4g" in heavy_body
+
+
+def test_release_builds_install_manual_and_automatic_plugins() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text()
+    assert pipeline.count('--build-arg "WES_PLUGIN_EXTRAS=manual-picking automatic-picking"') == 2
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    assert compose["x-no-localhost-proxy-build-args"]["WES_PLUGIN_EXTRAS"] == "manual-picking automatic-picking"
+
+
+@pytest.mark.parametrize(
+    "filename", ["docker-compose.yml", "docker-compose.deploy.yml", "docker-compose.test-deploy.yml"]
+)
+def test_release_processes_share_explicit_plugin_selection_without_activating_automatic_by_default(filename) -> None:
+    compose = yaml.safe_load((REPO_ROOT / filename).read_text().replace("!override", ""))
+    services = compose["services"]
+    for name in ("api", "celery", "celery-wms-fulfillment", "celery_beat", "flower"):
+        service = services[name]
+        environment = dict(services[service["extends"]["service"]]["environment"]) if "extends" in service else {}
+        environment.update(service.get("environment", {}))
+        assert environment["ENABLED_WORKLINE_PLUGINS"] == '${ENABLED_WORKLINE_PLUGINS:-["manual-picking"]}'
+        assert "AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS" not in environment

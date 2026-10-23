@@ -78,7 +78,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
-reviewed_content_sha256 = "e75996c786fb8ed0728703c8a3d3099073c14098acd50c348e3d7f6999bf2659"
+reviewed_content_sha256 = "49372cfbcead6b6acc3125dd7745501d221e09260788585586c983e51bf5212e"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
 

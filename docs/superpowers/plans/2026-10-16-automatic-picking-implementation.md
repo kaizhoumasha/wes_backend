@@ -1256,3 +1256,14 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 本轮差异验证：部署配置与启动测试115 passed，未受影响的插件装配14 passed；真实Web与三类worker的未配置/显式配置两项验收2 passed、0 skipped，未创建物理动作或WMS义务，未发请求。Ruff、格式与diff检查通过。独立完整review发现未配置用例可能读取真实.env的P2，仅修测试父/子进程临时空.env隔离，定向复验后由原reviewer合并完成闭环及fresh full review，无剩余actionable finding。既有完整正常链和持久计时证据复用，不重复业务矩阵；完整QUALITY及selector所选整组HEAVY留待授权提交边界，不能以本轮差异验收替代。证据见reports/first-plan-configuration-{snapshot,verification}.json及对应JUnit。
 
 不提交、不部署、不发外部请求、不启用真实派发；实际首批时长、可靠扫码归属字段/保证、ARM02定位及实际绑定继续待确认，不填写任何猜测值。
+
+
+## 2026-10-24 联调发布配置与现场基线核对
+
+本轮仅补双插件镜像构建选择、五个后端消费者统一插件配置入口、热更新源码及监听/重启范围、双插件依赖指纹和保护检查。省略启用列表保持人工插件，实际首批期限不填默认；不新增业务代码、模型、状态或恢复 owner。配置/产物/传输差异由既有 deployment 与 exporter 测试拥有，正常链及真实 worker＋Beat 证据复用，不复制业务矩阵。
+
+只读现场核对已确定 ARM01/ARM02 地址，但尚无工作线归属，KT16/KT18 当前均为启用中的人工线，不能推定实际自动线。五个消费者现役核心/部署/人工插件与迁移散列一致，自动插件尚未安装，首批时长未配置。服务器迁移头 `a72d4e6c9b13` 和来源独立到位/人工撤出/清退退避补丁超出当前分支及本次拉取的 develop；发布前须统一进最终基线，不能直接覆盖。只读合并检查发现 HEAVY 映射与 selector 测试两处冲突，未改动分支或其他工作区。操作顺序与证据边界集中见[联调发布说明](../../devops/integration-hot-reload.md#双插件联调发布准备2026-10-24)，不另建业务设计。
+
+本轮发布差异验收95 passed、1 skipped（未提供新生产镜像的既有探针，不能计为镜像通过）；直接消费者及selector验证297 passed；真实Compose只读渲染6种组合、每组5个消费者一致，未启动服务。Ruff、格式、shell语法、链接目标与diff检查通过。独立只读完整review核对15文件快照无actionable finding；已有正常业务及真实worker＋Beat证据复用，不重复矩阵。完整QUALITY和selector所选整组HEAVY留授权提交边界；新镜像构建与进程smoke须在最终基线收口后执行，不以配置通过替代。证据见reports/automatic-release-{review-manifest,verification,server-readonly,compose}.json及JUnit。
+
+暂不提交、不部署、不发业务请求、不启用真实派发；设备报文、实际自动线位置及首批时长继续待确认。
