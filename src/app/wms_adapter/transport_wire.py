@@ -20,6 +20,15 @@ EVENT_PATH = "/api/v1/wms/events"
 SIGNED_INT64_MIN = 0
 SIGNED_INT64_MAX = 2**63 - 1
 TRANSPORT_FAILURE_CODES = frozenset({"RCS_TASK_REJECTED", "RCS_EXECUTION_FAILED", "POSITION_UNKNOWN", "MANUAL_ABORTED"})
+TRANSPORT_SUBMIT_REJECTED_REASON_CODES = frozenset(
+    {
+        "INVALID_ENVELOPE",
+        "UNSUPPORTED_OPERATION",
+        "INVALID_DATA",
+        "COORDINATED_BIN_EXCHANGE_UNSUPPORTED",
+        "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf",
+    }
+)
 
 
 class UnsupportedTransportOperation(TransportContractError):

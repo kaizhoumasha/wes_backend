@@ -17,6 +17,7 @@ from src.app.wms_adapter.strict_json import (
     loads_transport_json,
     valid_json_response_headers,
 )
+from src.app.wms_adapter.transport_wire import TRANSPORT_SUBMIT_REJECTED_REASON_CODES
 from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.core.uuid7 import is_uuid7
 
@@ -27,15 +28,6 @@ if TYPE_CHECKING:
 
 _BODY_LIMIT = 256 * 1024
 _SIGNED_INT64_MAX = 2**63 - 1
-_REJECTED_REASON_CODES = frozenset(
-    {
-        "INVALID_ENVELOPE",
-        "UNSUPPORTED_OPERATION",
-        "INVALID_DATA",
-        "COORDINATED_BIN_EXCHANGE_UNSUPPORTED",
-        "There are other unfinished tasks on the shelf任务下发失败：There are other unfinished tasks on the shelf",
-    }
-)
 
 
 class WmsTransportAdapter:
@@ -219,7 +211,7 @@ def _valid_frozen_identity(
 
 
 def _persistable_reason_code(value: object) -> str | None:
-    if not isinstance(value, str) or value not in _REJECTED_REASON_CODES:
+    if not isinstance(value, str) or value not in TRANSPORT_SUBMIT_REJECTED_REASON_CODES:
         return None
     try:
         _ = value.encode("utf-8")

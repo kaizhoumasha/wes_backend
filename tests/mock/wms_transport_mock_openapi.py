@@ -5,8 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from src.app.wms_adapter.transport_adapter import _REJECTED_REASON_CODES
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA
+from src.app.wms_adapter.transport_wire import TRANSPORT_SUBMIT_REJECTED_REASON_CODES
 
 WMS_TRANSPORT_CONTRACT_TAG = "WMS Transport Contract"
 MOCK_DEBUG_TAG = "Mock Debug"
@@ -32,7 +32,7 @@ _NONBLANK_TEXT_SCHEMA = {
 _TRANSPORT_TASK_ID_SCHEMA = {**_NONBLANK_TEXT_SCHEMA, "maxLength": 80}
 _REJECTION_REASON_SCHEMA = {
     "type": "string",
-    "enum": sorted(_REJECTED_REASON_CODES),
+    "enum": sorted(TRANSPORT_SUBMIT_REJECTED_REASON_CODES),
 }
 _UUIDV7_SCHEMA = {
     "type": "string",

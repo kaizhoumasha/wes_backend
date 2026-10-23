@@ -56,7 +56,8 @@ def test_packaged_mock_imports_without_host_runtime_configuration(tmp_path: Path
             "-c",
             "import sys; sys.path.insert(0, sys.argv[1]); "
             "import tests.mock.wms_mock_server; import tests.mock.ecs_mock_server; "
-            "assert 'src.core.conf' not in sys.modules",
+            "assert 'src.core.conf' not in sys.modules; "
+            "assert 'src.app.wms_adapter.transport_adapter' not in sys.modules",
             str(tmp_path),
         ],
         cwd=tmp_path,
