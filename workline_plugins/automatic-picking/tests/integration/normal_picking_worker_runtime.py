@@ -7,12 +7,17 @@ from functools import partial
 from pathlib import Path
 
 import deployment.plugin_composition
+from deployment.plugin_configuration import DeploymentPluginSettings, deployment_plugin_settings
 from src.celery_app.config import beat_schedule, task_routes
 from src.core.task_queue_gateway import task_queue_gateway
 
 # 先保存真实组合根；复用的进程支撑模块会安装其 drain 专用测试替身。
 build_installed_runtime = deployment.plugin_composition.build_deployment_runtime
 from drain_wait_worker_runtime import FIXTURE, celery_app, record
+
+if "plugin_env_file" in FIXTURE:
+    DeploymentPluginSettings.model_config["env_file"] = FIXTURE["plugin_env_file"]
+    deployment_plugin_settings.cache_clear()
 
 
 def build_runtime(*, session_factory, transport_runtime, device_command_service, **kwargs):
@@ -41,6 +46,7 @@ def build_runtime(*, session_factory, transport_runtime, device_command_service,
         source=__file__,
         version=plugin.plugin_version,
         queue=os.environ["CELERY_WORKER_QUEUES"],
+        first_plan_timeout_ms=plugin.picking_task_completion_driver.first_plan_timeout_ms,
     )
     return runtime
 

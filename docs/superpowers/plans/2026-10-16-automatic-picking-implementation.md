@@ -1243,3 +1243,16 @@ Transport 专用 `docs/contracts/openapi/wes-wms-transport.openapi.json` 不因�
 - 装配差异测试归插件原 `test_plugin_composition.py`、`test_picking_device_ports.py` 及 PostgreSQL owner；既有完整正常 worker＋Beat 验收改用真实部署组合根，只注入离线归属并隔离外发，不再手工复制生产装配。不新增业务矩阵或共享可靠机制验收。
 
 验证与闭环 review：插件 FAST 324 passed；相关 PostgreSQL 四文件 37 passed；核心部署 FAST 19 passed；既有完整正常 worker＋Beat 经真实组合根 1 passed。独立完整只读 review 未发现 P0/P1/P2；附录旧阶段装配措辞已定向收敛。共享组合根 selector 的 11 文件门禁 75 passed、0 skipped；首次环境误用 admin 库被安全校验拒绝，改为本次隔离实例的新建已迁移测试库后完整通过，未放宽门禁或修改业务。当前可执行快照及报告记录于 `reports/picking-site-verification.json`，完整 QUALITY 留待授权提交边界。本轮不提交、不部署、不发外部请求、不启用真实派发；可靠归属的设备字段/稳定性、ARM02 定位及实际首批时长仍待联调。目标旋转只限制 ROTATE，退箱补架容量接续与核销补证只限制对应排空路径。
+
+
+## 2026-10-23 首批期限统一配置与最后现场输入
+
+沿已批准的部署组合根入参增加 deployment 自有配置入口 `AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS`，不把具体插件参数放入宿主 Settings，不新增业务状态或第二套工作线时长配置。进程环境优先于运行时 `.env`；不设业务默认值，省略保持等待，仅接受正整数毫秒。Web lifespan 与 worker 初始化在分配资源前读取同一配置入口，分别注入现有组合根及同一完成 owner；配置不自动安装或启用插件，实际时长仍待业务/WMS双方确认。
+
+计时语义不变：原 PREPARE_ACCEPTED 首次可靠接收时间加配置时长，原 current 持久冻结到期点；后续改配置/重启不重算。原持久期限、到期完成确认、版本竞争及正常业务闭环沿既有证据，不重复验收。
+
+差异验收归部署配置 FAST、既有 worker 初始化隔离测试，以及自动插件现有真实进程 owner 中仅启动 Web/worker 的两种配置用例；只验证未配置/显式配置同值注入，无任务、不启动Beat、不创建Command/Transport/Confirmation或外发请求。现场输入和设备方完整报文回复要求集中见机械臂附录§10.3，不新增另一套确认文档。
+
+本轮差异验证：部署配置与启动测试115 passed，未受影响的插件装配14 passed；真实Web与三类worker的未配置/显式配置两项验收2 passed、0 skipped，未创建物理动作或WMS义务，未发请求。Ruff、格式与diff检查通过。独立完整review发现未配置用例可能读取真实.env的P2，仅修测试父/子进程临时空.env隔离，定向复验后由原reviewer合并完成闭环及fresh full review，无剩余actionable finding。既有完整正常链和持久计时证据复用，不重复业务矩阵；完整QUALITY及selector所选整组HEAVY留待授权提交边界，不能以本轮差异验收替代。证据见reports/first-plan-configuration-{snapshot,verification}.json及对应JUnit。
+
+不提交、不部署、不发外部请求、不启用真实派发；实际首批时长、可靠扫码归属字段/保证、ARM02定位及实际绑定继续待确认，不填写任何猜测值。

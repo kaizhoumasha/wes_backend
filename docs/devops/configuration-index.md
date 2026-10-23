@@ -15,7 +15,7 @@
 | 基础 START 的设备状态时效、命令超时 | [Settings](../../src/core/conf.py) 的 `WORKLINE_DEVICE_STATUS_MAX_AGE_MS`、`WORKLINE_DEVICE_COMMAND_TIMEOUT_MS` | 重启使用该配置的 API/worker 后生效；下次无业务启动计划的 START 冻结到设备合同，既有合同不变；默认值与合法范围以入口为准 |
 | 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |
 | 自动拣料机械臂位置 | [自动插件声明](../../workline_plugins/automatic-picking/src/automatic_picking/definition.py) 与 [PickingArmBindingReader](../../workline_plugins/automatic-picking/src/automatic_picking/application/picking_device_ports.py) | 沿同一 `config.position_bindings` 配置 `WORK_BIN`、`SCAN_PLATFORM` 的本线 STATION 工作位编码；START 冻结其 `logic_location_code`，动作只读当前 `position_bindings` 中对应的 BIN、SCAN_PLATFORM 执行位置；目标沿既有 `TRANSFER_RACK`。新增两槽对搬运装配可选，缺项只阻止依赖该位置的新机械臂命令，不生成默认位置，也不改原 Command 身份或正文 |
-| 自动拣料首批等待期限 | [部署关联](../../deployment/plugin_composition.py) 的 `automatic_picking_first_plan_timeout_ms`，传给同一完整插件的完成 owner | 显式正整数毫秒；省略时不触发首批超期。只在完整插件关联依赖显式给定后接入；首次可靠接收原 PREPARE_ACCEPTED 后冻结任务的 `first_plan_due_at`，已有到期点不随重启或参数变化重算。此入口不安装插件、不启用生产；实际值待联调配置，不借用命令30秒时限 |
+| 自动拣料首批等待期限 | [部署配置](../../deployment/plugin_configuration.py) 的 `AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS`；Web/worker 均注入既有组合根的 `automatic_picking_first_plan_timeout_ms` | 进程环境优先于本工作树运行时 `.env`；只接受正整数毫秒，不设业务默认值。省略保持 PREPARING，不使用空串、0、浮点、布尔或设备命令时限代替。启动时读取并校验，调整后重启相关 Web/worker；首次可靠接收原 PREPARE_ACCEPTED 后冻结任务的 `first_plan_due_at`，已有到期点不随重启或参数变化重算。此配置不安装或启用插件，实际时长仍待双方明确；给出时长但未显式安装自动插件沿组合根既有准入拒绝，不自动开启插件 |
 | API 交互日志保留与尽力写入 | [Settings](../../src/core/conf.py) 的 `API_ACCESS_LOG_RETENTION_DAYS`、`API_ACCESS_LOG_WRITE_TIMEOUT_MS`、`API_ACCESS_LOG_MAX_CONCURRENT_WRITES` | 启动读取，重启相关 API/worker 后生效；默认值与合法范围以入口为准；写入预算不覆盖可靠 operation 接收事务 |
 | WmsConfirmation 周期派发调度 | [Celery 配置](../../src/celery_app/config.py) 的 `beat_schedule` 对应任务条目 | 当前是代码配置，修改调度后重启 Beat；任务参数仍须满足 worker 和 Service 的约束，不可仅放大调度参数绕过批量上限 |
 
@@ -23,7 +23,7 @@
 部署 profile 和编排负责提供值，不应在另一份 Python 配置中重复维护默认值。核实生效值时需检查目标进程的实际环境，不能只看 `.env` 文件。
 本地环境的生成、启动和重建使用 [本地开发环境说明](local-development-environment.md) 的既有入口。
 
-插件业务参数由插件声明和解释，经工作线配置流程进入 WorkLine；宿主环境配置不得依赖具体插件业务字段。
+插件业务参数由插件声明和解释，经工作线配置流程进入 WorkLine；宿主环境配置不得依赖具体插件业务字段。上表首批期限沿已批准的部署组合根参数，由 deployment 独立读取并注入插件完成 owner，不在宿主 Settings 中新增具体插件字段，也不复制到工作线配置形成第二来源。
 工作线完全收敛清线并停用后才能修改运行配置；配置变更不改写已冻结的请求正文、幂等身份或可靠义务期限。
 
 ## 2. 固定合同：修改前同步核对合同与消费者

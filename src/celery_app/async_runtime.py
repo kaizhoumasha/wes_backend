@@ -196,6 +196,7 @@ class CeleryAsyncRuntime:
         deadline: float,
         progress: dict[str, Any],
     ) -> None:
+        from deployment.plugin_configuration import deployment_plugin_settings
         from src.app.execution.services.rack_inbound_window import RackInboundWindowService
         from src.app.transport.composition import build_transport_runtime
         from src.app.transport_debug.repository import TransportDebugRunRepository
@@ -203,6 +204,7 @@ class CeleryAsyncRuntime:
         from src.core.task_queue_gateway import task_queue_gateway
         from src.database import db as db_module
 
+        plugin_settings = deployment_plugin_settings()
         database_budget = max(deadline - time.monotonic(), 0.0)
         _log_worker_stage("database_start")
         await CeleryAsyncRuntime._wait_task_without_cancel_wait(init_db(), database_budget)
@@ -262,6 +264,7 @@ class CeleryAsyncRuntime:
             session_factory=db_module.AsyncSessionLocal,
             transport_runtime=transport_runtime,
             device_command_service=device_command_service,
+            automatic_picking_first_plan_timeout_ms=plugin_settings.AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS,
             device_adapter_provider=(
                 getattr(progress["device_command_runtime"], "provider", None)
                 if progress["device_command_runtime"] is not None

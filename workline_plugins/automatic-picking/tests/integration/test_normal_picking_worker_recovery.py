@@ -332,3 +332,71 @@ async def test_normal_chain_real_workers_beat_and_completed_task_departure_recov
         processes.stop_beat(fulfillment)
         worker.close(success=success)
         server.close()
+
+
+@pytest.mark.parametrize("timeout_ms", [None, 2300])
+async def test_optional_first_plan_configuration_reaches_web_and_real_workers_without_business_actions(
+    database, monkeypatch, tmp_path, timeout_ms
+):
+    from fastapi import FastAPI
+    from sqlalchemy.engine import make_url
+
+    from deployment.plugin_configuration import DeploymentPluginSettings, deployment_plugin_settings
+    from src import register as register_module
+    from src.database import db as db_module
+    from src.database import redis_client
+    from tests.integration.test_transport_fastapi_lifespan import _integration_settings
+
+    if timeout_ms is None:
+        monkeypatch.delenv("AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS", raising=False)
+    else:
+        monkeypatch.setenv("AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS", str(timeout_ms))
+    config = tmp_path / ".env"
+    config.write_text("")
+    monkeypatch.setitem(DeploymentPluginSettings.model_config, "env_file", str(config))
+    deployment_plugin_settings.cache_clear()
+    event_file, fixture = tmp_path / "events.jsonl", tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"events": str(event_file), "plugin_env_file": str(config)}))
+    monkeypatch.setenv("AUTOMATIC_PICKING_WAIT_FIXTURE", str(fixture))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            (
+                str(Path(__file__).parents[2] / "src"),
+                str(Path(__file__).parent),
+            )
+        ),
+    )
+    monkeypatch.setenv("ECS_CONNECT_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ECS_READ_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("DEVICE_COMMAND_QUEUE", "device-command")
+    settings = _integration_settings().model_copy(
+        update={
+            "ENABLED_WORKLINE_PLUGINS": ("automatic-picking",),
+            "POSTGRES_DB": make_url(database[0]).database,
+        }
+    )
+    for module in (register_module, db_module, redis_client):
+        monkeypatch.setattr(module, "settings", settings)
+    server = broker.MockWmsHttpServer().start()
+    worker = broker.TransportBrokerWorker(database[0], os.environ["INTEGRATION_REDIS_URL"], server.url, pool="prefork")
+    fulfillment, success = None, False
+    try:
+        app = FastAPI()
+        async with register_module.register_init(app):
+            plugin = app.state.deployment_runtime.plugins[0]
+            assert plugin.picking_task_completion_driver.first_plan_timeout_ms == timeout_ms
+        fulfillment = start(worker)
+        rows = [row for row in processes.events(event_file) if row["kind"] == "normal_runtime"]
+        assert {row["queue"] for row in rows} == {"celery", "device-command", "wms-fulfillment"}
+        assert all(row["first_plan_timeout_ms"] == timeout_ms for row in rows)
+        async with database[1]() as db:
+            for model in (DeviceCommand, TransportTask, WmsConfirmation):
+                assert await db.scalar(select(func.count()).select_from(model)) == 0
+        assert server.requests == []
+        success = True
+    finally:
+        processes.stop_beat(fulfillment)
+        worker.close(success=success)
+        server.close()
+        deployment_plugin_settings.cache_clear()

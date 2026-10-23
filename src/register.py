@@ -25,12 +25,14 @@ def register_logger() -> None:
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
+    from deployment.plugin_configuration import deployment_plugin_settings
     from src.app.wms_diagnostics.config import diagnostics_config
     from src.core.task_queue_gateway import task_queue_gateway
     from src.database import db as db_module
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
+    plugin_settings = deployment_plugin_settings()
     _ = diagnostics_config()
     transport_runtime = None
     device_command_runtime = None
@@ -115,6 +117,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             transport_runtime=transport_runtime,
             device_command_service=device_command_runtime.command_service,
             device_adapter_provider=device_command_runtime.provider,
+            automatic_picking_first_plan_timeout_ms=plugin_settings.AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS,
         )
         _app.state.deployment_runtime = deployment_runtime
         _app.state.wms_recovery_event_handler = deployment_runtime.wms_recovery_event_handler
