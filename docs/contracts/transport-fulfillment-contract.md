@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-10-16
+updated_at: 2026-10-24
 contract_version: 0.4.0
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
@@ -60,6 +60,11 @@ T3 只在来源合同可证明先后时更新聚合位置；否则保存各任�
 owner）在自身重试循环中以指数退避方式发起重试：退避上限约 60 秒，重试次数无上限（直到目标可用或业务主动放弃），
 且每次重试必须使用全新 `client_request_id` 创建全新 TransportTask，不复用原 `transport_task_id`、`operation_id`
 或已冻结的请求体。
+
+manual-picking 的清退 `REJECTED` 后重新请求 `outbound.rack.departure_decide@v1` 同样属于业务重试，不能绕过退避。
+本轮、本架、离场步骤的有界退避级别与下一次允许重新决定时间持久保存；按 1、2、4、8、16、32、60 秒递增，后续维持 60 秒。
+新的 departure 决定、Transport 或技术派发身份不重置本轮退避级别；新的进场轮次独立计算。到期后只允许一次新的决定，决定可靠义务与退避游标在同一工作线事务提交；响应未知只重提这笔已冻结决定。
+原 `REJECTED` Transport、operation_id、冻结正文与 Evidence 不变。持久工作线扫描是拒绝清退的唯一重新决定 owner，结果回放不得另建等价清退。归档父任务或 `MANUAL_WITHDRAWN` drain 不创建游标或后继。
 
 已确认的同步拒绝示例。原提交请求（WES → WMS，`POST /api/v1/wes/transport-requests`）：
 

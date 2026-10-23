@@ -356,6 +356,10 @@ class BatchRepository:
                 contexts.append((window, latest[1], position))
         return contexts
 
+    async def current_round_client_request_id(self, db: AsyncSession, *, workline_id: int, rack_id: str) -> str:
+        window = await self._current_round_window(db, workline_id=workline_id, rack_id=rack_id)
+        return window.client_request_id
+
     async def current_round_started_at(self, db: AsyncSession, *, workline_id: int, rack_id: str) -> datetime:
         window = await self._current_round_window(db, workline_id=workline_id, rack_id=rack_id)
         return window.created_at
