@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.49.18.1] - 2026-10-25
+
+### Changed
+
+- 校正人工拣料退料架清退测试的当前工作位与架面夹具，确认退料架离场不触发滚筒线回箱求值；生产行为保持不变。
+
+
 ## [0.49.18.0] - 2026-10-25
 
 ### Fixed

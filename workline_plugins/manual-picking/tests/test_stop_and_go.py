@@ -23,6 +23,8 @@ START = datetime(2026, 10, 14)
 async def test_cancelled_return_rack_has_independent_exit_owner(status):
     driver, line, *_ = setup_driver()
     line.position_bindings["RETURN_RACK"] = {"location_id": "RETURN-POS"}
+    driver._positions.source.position_json["location_code"] = "RETURN-POS"
+    driver._positions.source.arrival_face = None
     window = SimpleNamespace(
         resource_fence_id="R1",
         picking_task_id=31,
@@ -66,6 +68,7 @@ async def test_motion_dependencies_keep_ingress_round_after_rotation():
 async def test_cancelled_return_departure_freezes_departure_evidence_and_f01():
     driver, line, *_ = setup_driver()
     line.position_bindings["RETURN_RACK"] = {"location_id": "RETURN-POS"}
+    driver._positions.source.position_json["location_code"] = "RETURN-POS"
     driver._batches.cancelled_return_windows.return_value = [
         (
             SimpleNamespace(
@@ -395,7 +398,7 @@ async def test_cancelled_return_window_requires_members_and_actual_owner():
             driver._transports.get_task.return_value = rejected
             line.position_bindings["RETURN_RACK"] = {"location_id": "RETURN-POS"}
             assert await driver.project_exits_in_session(db, line) == 1
-            assert driver._flow.return_before_motion.await_args.kwargs["arrived_at"] == START
+            driver._flow.return_before_motion.assert_not_awaited()
             driver._departure_scheduler.create_in_session.assert_awaited_once()
             root.picking_task_id = 32
             await db.flush()
