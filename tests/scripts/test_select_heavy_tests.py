@@ -1449,6 +1449,13 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261023_0336_6781e26d6e19_自动退料架收口和任务确认当前引用.py",
         "migrations/versions/20261023_0424_f5c962df755c_自动最终转运架当前离场义务.py",
         "migrations/versions/20261023_0900_3a17b9c40d62_自动首批计划持久期限.py",
+        "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py",
+        "migrations/versions/20261023_0000_a8c5e2107b94_新增人工任务业务类型.py",
+        "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py",
+        "migrations/versions/20261024_0010_a72d4e6c9b13_持久化清退拒绝退避.py",
+        "migrations/versions/20261023_0335_e3fec1d9ffae_新增人工来源架独立到位事实.py",
+        "migrations/versions/20261023_0510_f6d0319c8a42_支持排空人工撤出.py",
+        "migrations/versions/20261024_0519_0f1be9a476d2_合并自动拣料与现场修复迁移链.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[

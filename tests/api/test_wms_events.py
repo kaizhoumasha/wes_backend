@@ -778,6 +778,7 @@ def test_shared_wms_event_route_dispatches_picking_task_issued_to_the_exact_busi
             "data": {
                 "task_id": "PICK-20260811-001",
                 "task_type": "MANUAL",
+                "business_type": "outbound",
                 "queue_revision": 1,
                 "dispatch_sequence": 100,
             },
@@ -817,7 +818,13 @@ def test_issued_ingress_parses_json_once_with_real_handler(
         "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
         "operation": PICKING_TASK_ISSUED_OPERATION,
         "timestamp": 1786060800000,
-        "data": {"task_id": "PICK-ONCE", "task_type": "MANUAL", "queue_revision": 1, "dispatch_sequence": 1},
+        "data": {
+            "task_id": "PICK-ONCE",
+            "task_type": "MANUAL",
+            "business_type": "outbound",
+            "queue_revision": 1,
+            "dispatch_sequence": 1,
+        },
     }
     with TestClient(app) as client:
         response = client.post("/api/v1/wms/events", json=payload)
@@ -857,6 +864,7 @@ def test_shared_wms_event_route_returns_unavailable_when_picking_task_runtime_is
             "data": {
                 "task_id": "PICK-20260811-001",
                 "task_type": "MANUAL",
+                "business_type": "outbound",
                 "queue_revision": 1,
                 "dispatch_sequence": 100,
             },

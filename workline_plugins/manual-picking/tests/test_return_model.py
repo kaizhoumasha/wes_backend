@@ -198,6 +198,7 @@ async def test_scan3_recovery_replaces_current_return_atomically() -> None:
             )
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         flow = ManualPickingScanFlow(
+            transport_service=SimpleNamespace(confirm_bin_arrival_in_session=AsyncMock()),
             commands=object(),
             admissions=object(),
             returns=ReturnRepository(),

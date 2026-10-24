@@ -76,13 +76,7 @@ class PickingTaskIssuedService:
                     reason_code="IDEMPOTENCY_CONFLICT",
                 )
             evidence = acceptance.evidence
-            if isinstance(envelope, PickingTaskIssuedInvalidData):
-                evidence.processed_at = evidence.received_at
-                return PickingTaskIssuedPersistenceResult(
-                    code="REJECTED",
-                    timestamp_ms=_timestamp_ms(evidence.received_at),
-                    reason_code="INVALID_DATA",
-                )
+            # 已冻结的接收结果不因后续 DTO 收紧而改判。
             if acceptance.duplicate:
                 if InboundEvidenceApplyStatus(evidence.apply_status) is InboundEvidenceApplyStatus.APPLIED:
                     return PickingTaskIssuedPersistenceResult(
@@ -95,7 +89,15 @@ class PickingTaskIssuedService:
                         timestamp_ms=_timestamp_ms(evidence.received_at),
                         reason_code="STATE_CONFLICT",
                     )
-                raise RuntimeError("PickingTask 发布 evidence 处于非法应用状态")
+                if not invalid:
+                    raise RuntimeError("PickingTask 发布 evidence 处于非法应用状态")
+            if isinstance(envelope, PickingTaskIssuedInvalidData):
+                evidence.processed_at = evidence.received_at
+                return PickingTaskIssuedPersistenceResult(
+                    code="REJECTED",
+                    timestamp_ms=_timestamp_ms(evidence.received_at),
+                    reason_code="INVALID_DATA",
+                )
             if evidence.id is None:
                 raise RuntimeError("PickingTask 发布 evidence 缺少主键")
             await self._tasks.lock_task_identity(db, envelope.data.task_id)
@@ -144,6 +146,7 @@ class PickingTaskIssuedService:
                 PickingTask(
                     task_id=envelope.data.task_id,
                     task_type=cast("PickingTaskType", envelope.data.task_type),
+                    business_type=envelope.data.business_type or "outbound",
                     queue_revision=envelope.data.queue_revision,
                     dispatch_sequence=envelope.data.dispatch_sequence,
                     not_before_ms=envelope.data.not_before,

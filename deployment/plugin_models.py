@@ -31,10 +31,12 @@ def load_plugin_models(enabled_plugin_keys: tuple[str, ...]) -> None:
             ManualPickingInboundBatchScan,
         )
         from manual_picking.application.bin_line.return_model import BinLineReturn  # noqa: F401
+        from manual_picking.application.departure_retry_model import ManualPickingDepartureRetry  # noqa: F401
         from manual_picking.application.drain_execution_model import (  # noqa: F401
             ManualPickingDrainExecution,
             ManualPickingDrainReturnMember,
         )
+        from manual_picking.application.manual_source_arrival_model import ManualPickingSourceArrival  # noqa: F401
         from manual_picking.application.passage_model import ManualPickingPassage  # noqa: F401
 
 
@@ -58,6 +60,8 @@ def include_plugin_table(table_name: str, enabled_plugin_keys: tuple[str, ...]) 
     return (
         table_name
         not in {
+            "manual_picking_source_arrivals",
+            "manual_picking_departure_retries",
             "manual_picking_passages",
             "bin_line_returns",
             "manual_picking_inbound_batches",

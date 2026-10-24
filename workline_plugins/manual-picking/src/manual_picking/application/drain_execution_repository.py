@@ -207,7 +207,7 @@ class DrainExecutionRepository:
         db: AsyncSession,
         execution: ManualPickingDrainExecution,
         *,
-        status: Literal["COMPLETED", "EXCEPTION_RETIRED"],
+        status: Literal["COMPLETED", "EXCEPTION_RETIRED", "MANUAL_WITHDRAWN"],
         closed_at: datetime,
         reason_code: str | None = None,
         blocker_client_request_id: str | None = None,
@@ -218,6 +218,9 @@ class DrainExecutionRepository:
         if status == "COMPLETED":
             if any(value is not None for value in (reason_code, blocker_client_request_id, trigger_picking_task_id)):
                 raise ValueError("normal drain completion cannot carry retirement references")
+        elif status == "MANUAL_WITHDRAWN":
+            if reason_code != "MANUAL_SCOPE_EXIT" or not blocker_client_request_id or trigger_picking_task_id is None:
+                raise ValueError("manual withdrawal requires reason and frozen blocker/trigger")
         elif (
             status != "EXCEPTION_RETIRED"
             or reason_code not in {"DRAIN_ACTION_TERMINAL_EXCEPTION", "DRAIN_RESULT_OVERDUE", "DRAIN_RESULT_UNKNOWN"}

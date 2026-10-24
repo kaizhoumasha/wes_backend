@@ -5,7 +5,7 @@ related: ""
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与本地应用；其余环节复用自动出库合同
 status: ReviewRequired
 title: WMS / WES 人工出库拣料交互要求
-updated_at: 2026-09-23
+updated_at: 2026-10-23
 ---
 
 # WMS / WES 人工出库拣料交互要求 {#wms-wes}
@@ -99,6 +99,10 @@ flowchart TD
 终点为绑定 HANDOFF_POSITION；不等待 SCAN、人工业务或回架。已有可靠义务先闭合，未完成投料的分段间隙最多一次机会式回架。
 `workline_positions.capacity` 是基础层按目标点维护的滚动 CTU01 下发窗口，按物理货架的进场生命周期计数。货架到位后仍占窗；业务完成且对应 CTU03 获得 `ACCEPTED` 后释放名额，并从 pending 补发下一架。RCS 负责物理排队、自主进位和工作位互斥；真实当前架仍由原 Transport 成功成员及精确 rack/face 到位事实确认，不按提交先后推断。
 
+已完成（`EXECUTION_COMPLETED`）的人工任务不再持有来源架的本地准入名额：插件持久工作线扫描只退出原来源进架窗口的准入职责，保留窗口身份、原进场轮次、operation_id、冻结正文、Transport 和全部 Evidence。该退出不证明离场、物理完成、CTU 空闲或 WMS reservation 释放；原未决搬运继续由 Transport owner 等待终态，只约束其直接因果步骤。若当前权威货架事实仍属于原 owner 且尚无新窗口接管，原轮次清退继续由持久扫描承接；新实际动作/窗口接管后旧清退让路。新的有效任务与独立 drain 经既有原子容量准入创建自身动作，不继承旧到位事实；drain 插缝只检查当前活动任务自己的来源窗口。已完成任务的全取消来源架仍由持久扫描承接原清退，不因准入释放失去 Next Owner；当前面由同 owner 的后续 revision 换面到位时，仍解析该面所属原进场轮次，不要求换面 Evidence 与进场计划 Evidence 相同。
+
+投箱创建前按同一箱码、来源架面储位和目标交接位检查原未决等价搬运；有直接依赖时保留新的 READY 分配，暂不创建第二个 Transport，其他箱或非等价动作不受该检查影响。既有记录若已存在更新动作的真实成功终态，且当前权威 BIN 终位精确指向该动作和入口，可据此唯一关联当前扫码；原未决 Transport 不改身份、不补造终态。
+
 CTU03 的执行准入独立于 Return 派发队列：本轮 `departure_decide=READY` 只表示取得业务离场决定。
 所有货架离场/换面前，若当前 FIFO 有可派发退箱，先根据货架实际到达工作位的 rack 和当前 face 请求一次 `return_batch`。候选快照不代表储位预分配，只有该次 WMS READY 才冻结目标槽位并创建 BIN_MOVE；运动前阶段只求值一次，新的候选、重复扫描和重启不重开该阶段；新的实际到位轮次/当前面或同面新的有效投料服务结束才可创建新请求。投料间隙机会式请求不替代最终投料完成后的运动前求值，离场决定已冻结后不再追加回架或投料。普通来源架、直接取料架、转运架和退役 drain 的独立清退使用相同规则；不要求旧排空重开或父任务仍在执行。请求未知、未应用/未发布结果及本轮直接搬运保持依赖，NO_BATCH 后可继续货架动作。全线未分配 FIFO 不参与当前架留架判断，正常 drain 当前面 READY 所选搬运闭合后也应推进下一面或离场。
 直接取料当前成员由 WMS 完成/取消后，可基于本地权威到位事实推进换面和离场，不等待到位报告 ACK；原报告可靠义务继续履约，PickingTask 完成仍等待 `RECORDED | DUPLICATE`。业务完成不解除当前在途、未知或未发布结果的依赖。转运架保留现有完成与到位报告门禁。
@@ -167,6 +171,86 @@ driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建
 上述接口的字段、条件必填、响应联合、错误码、幂等和重试语义完全以出库合同为准，本文不重复摘录，也不允许出现与出库合同
 不一致的实现。
 
+### 2.1.1 manual-picking 任务业务类型 {#211-business-type}
+
+> 状态：已按 2026-10-23 实施指令确认。人工线 issued 通过 `business_type` 区分上架、出库；其余流程、operation 和字段全部沿用现有出库任务合同。
+> 代码与数据库迁移须一同部署后再联调，文档确认不代表现场已上线。
+
+`manual-picking` 接收 WMS 主动下发的上架、出库任务，沿用唯一入口 `POST /api/v1/wms/events` 和
+`outbound.picking_task.issued@v1`。本次不新增拉取接口或另一条任务发布 operation；operation 名中的 `outbound`
+沿用既有字面量，业务方向由明确字段表达，不从任务编号或来源货架推导。
+
+现有 `data.task_type=MANUAL|AUTO` 表示工作线执行方式，不能改成 `inbound|outbound`。为人工线 issued
+增加独立字段 `data.business_type`：
+
+| JSON Path | 人工线 issued 要求 | 取值与语义 |
+| --- | --- | --- |
+| `data.task_type` | 必填，固定 `MANUAL` | 匹配人工 WorkLine 与 `manual-picking` 插件 |
+| `data.business_type` | 必填，发布后不可变 | 严格小写枚举：`inbound` 为上架任务，`outbound` 为出库任务 |
+| `data.task_id` | 沿用 §7.1 | WMS 提供的唯一任务编号；两类业务共享身份空间，不按业务类型拆分幂等键 |
+| `data.workline_code` | 沿用 §7.1，发布后不可变 | WMS 指定承接任务的人工 WorkLine |
+| 队列字段 | 沿用 §7.1 | `queue_revision=1`、`dispatch_sequence` 及可选 `not_before`，不新增方向专用队列 |
+
+人工线缺少 `business_type`、传 `null` 或未知枚举应按既有 `INVALID_DATA` 拒绝，不默认出库。
+自动线不携带该字段，现有 AUTO 请求保持不变；显式携带则拒绝。`queue_changed` 不携带也不能修改业务类型；取消仍引用原 `task_id`。
+公开幂等身份仍为 `(operation, operation_id)`，规范化正文须包含 `business_type`，同 identity 改变业务类型属于正文漂移冲突；
+不能通过更换 `operation_id` 把已有任务改为另一类型。
+
+上架任务下发示例（模拟数据）：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+  "operation": "outbound.picking_task.issued@v1",
+  "timestamp": 1792713600000,
+  "data": {
+    "task_id": "PUTAWAY-20261023-001",
+    "task_type": "MANUAL",
+    "business_type": "inbound",
+    "workline_code": "KT16",
+    "queue_revision": 1,
+    "dispatch_sequence": 101
+  }
+}
+```
+
+出库任务使用相同结构，明确发送 `business_type="outbound"`，例如：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4475",
+  "operation": "outbound.picking_task.issued@v1",
+  "timestamp": 1792713600000,
+  "data": {
+    "task_id": "PICK-20261023-001",
+    "task_type": "MANUAL",
+    "business_type": "outbound",
+    "workline_code": "KT16",
+    "queue_revision": 1,
+    "dispatch_sequence": 102
+  }
+}
+```
+
+成功响应继续使用公共回调信封，示例（模拟数据）：
+
+```json
+{
+  "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+  "code": "RECEIVED",
+  "timestamp": 1792713600100,
+  "data": {}
+}
+```
+
+HTTP `202 / RECEIVED` 仅表示 Evidence、任务及初始队列事实同事务可靠保存，重放沿用 `200 / DUPLICATE`；
+不代表已上架、已准备资源或已完成物理搬运。issued 仍禁止携带来源货架、Bin/Cell、目标货架、SLOT 或物理命令。
+
+**后续流程：** 两类任务使用同一 PickingTask 队列、prepare、plan_delta、人工操作与完成事实、回箱/货架离场和任务完成条件，
+不因 `business_type` 增加不同执行分支；WMS 负责按任务业务类型处理其业务内容。既有数据库任务均为出库，迁移回填 `outbound`，
+新 MANUAL 请求必须明确传值，不以数据库默认值代替接收边界校验。下文端到端出库示例的操作顺序同样适用于上架任务，
+任务编号和业务类型由 WMS 下发；代码验证不等于 WMS 联调或物理上架验收。
+
 ### 2\.2 人工出库线独有的部分（本文新增） {#22}
 
 > **直接取料状态：** 下方退料货架直接取料条目已获批并完成实施；`direct_pick_completed`、其接收语义及换面/离场前提
@@ -212,8 +296,9 @@ flowchart LR
 
 点1读取 ECS `SCAN_COMPLETED.data.bin_code`，实际值带方向后缀。仅形如 `A00000xxxx-B` 的本点有效箱码创建 `MOVE_FORWARD`；
 不可读、箱码格式错误或后缀不为 `-B` 时记录本次 NG 并创建 `MOVE_RIGHT`，由点1直达点3，不向 WMS 发送猜测的箱码。
-SCAN1 放行不依赖目标货架到位，只校验本箱的任务、当前轮次、计划来源和入站位置/Transport 等必要依据。
-原 inbound_batch 中已成功到达冻结入口、结果已发布且仍由当前料箱位置所引用的箱，以原入站 Transport 精确恢复原批次及原 task_id。若该原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务），SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 READY 成员、来源储位、终位和 WorkLine 必须一致，原 owner 不能已运维归档；同箱更新的在途/未知/未发布动作仍保留直接依赖，明确等待中的结果自动延迟重试。可识别但方向后缀错误的已到入口箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
+SCAN1 放行不依赖目标货架到位；本点扫码确认到位后，只校验本箱的任务、当前轮次及冻结计划来源，不再等待原下架搬运结果。
+人工线 SCAN1 的有效扫码是本点实际到位事实，不等待原下架 Transport 成功、结果发布或入口位置投影。按本线尚未记录入线的冻结 inbound_batch 成员唯一关联原 Transport 及原 task_id，校验已应用且已发布的 WMS READY 清单、来源储位和目标入口一致；当前任务正常放行还须匹配未取消的计划来源架面。原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务）时，SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 owner 不能已运维归档；归属缺失或不唯一时保留扫码并对账，同箱更新的在途/未知/未发布动作仍保留直接依赖并延迟重试，其他箱和已闭合历史不构成阻塞。可识别但方向后缀错误的原批次箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
+人工线 SCAN1 有效扫码与冻结投箱成员唯一匹配、且扫码点就是冻结 HANDOFF_POSITION 目标时，扫码本身是该箱已交付目标的权威事实。设备事件 `timestamp` 不得早于原 Transport 创建时间（UTC Unix 毫秒）；延迟首次到达的旧事件不得以较晚的 WES 接收时间归入新轮次。宿主同事务将原成员记为成功，`last_operation_id=scan:<InboundEvidence.id>` 引用真实来源；整笔 BIN_MOVE 的全部成员均成功且终位等于冻结目标后，将原 Transport 记为 `SUCCEEDED / SCAN_TARGET_CONFIRMED`，只递增一次本地 outcome_version，经原发布链路释放 WES 的 CTU 投料门禁。原任务仍在 `RECONCILING`、成员为位置未知的 `FAILED` 时，真实扫码继续按原身份收敛成员及其未知投影；位置已知的终态保持不变。成员未齐时不结束整笔任务；滚筒线仍遵守自身命令顺序。原 Transport、client_request_id、提交 operation_id 和冻结请求不变，不创建替代搬运、WMS 回执或虚构的 WMS outcome_revision。部分成员已扫码后收到一致的整笔成功回执时，保留已确认成员的原扫码身份和投影来源，只补齐其余成员。迟到真实 WMS 成功回执与已确认到位一致时可靠留存，仅推进 WMS 自身 revision，不重复发布成功或覆盖后继位置；相矛盾的回执留冲突证据，不改写已确认事实。该规则仅适用于人工线 SCAN1 的入站 BIN_MOVE，不用于货架搬运、旋转、BIN_EXCHANGE 或箱到货架的回架；RCS 内部车辆及任务释放仍由 RCS 裁决。
 旁路继续沿原 SCAN1 Evidence 冻结 DeviceCommand；重放复用原身份，不重复下发。原 Transport、批次及 Evidence 均保留；SCAN3 按本次实际扫码独立决定方向：有效 `-B` 创建正常 Return 并下发 `MOVE_FORWARD`，条码无效则 `MOVE_LEFT`；不沿用 SCAN1 的旁路原因强制 NG，原 Passage 保留原 task_id，并以同一 SCAN3 Evidence 关联回程。
 目标货架与料箱同时就绪由实际人工拣料的 WMS/PDA 作业准入负责，不提前串联到 SCAN1 或点2到位上报。
 `MOVE_FORWARD` 的匹配物理结果只闭合点1动作，不建立点2业务准入队首；不能把命令创建或 ACK 当作到达。
@@ -491,7 +576,7 @@ Evidence/Confirmation。
 
 整架 `outbound.return_rack.task_completed@v1` 按[出库合同 §6.2](wms-outbound-picking-task-integration-requirements.md#62-退料货架整架任务完成)独立作为权威业务完成事实，覆盖同任务、同架且不超过截止版本的直接取料成员，不等待逐面通知，也不补造逐面结果。同任务后续 revision 可以再次向同架追加成员；旧整架完成只闭合其覆盖的版本，旧通知重放不闭合新成员或回退已推进的完成范围。后续换面、离场和任务完成判断按成员版本接受该覆盖事实；回箱及其他物理执行依赖保持原合同约束。
 
-来源架、直接取料架和 drain 架的换面与离场，只检查唯一未释放进场窗口内与本架直接关联的回架依赖。窗口创建时间是本轮范围起点，换面不重置；本轮其他面仍在途、终位未知或结果未发布时继续等待。旧轮次的 Transport 和 Evidence 保留，不以其失败或未知终位阻止本轮独立执行；依赖判定不撤销已有可靠交付义务。详见出库合同 §9.4。
+来源架、直接取料架和 drain 架的换面与离场，只检查当前进场轮次内与本架直接关联的回架依赖。活动准入窗口唯一时以其创建时间为起点；准入已释放时，以当前已知终态位置及因果绑定确认原进场轮次，沿用原窗口创建时间，不重开窗口。换面不重置范围；本轮其他面仍在途、终位未知或结果未发布时继续等待，身份或轮次不确定时明确报错。准入释放不撤销原清退职责，不得仅因缺少活动窗口中断清退及后续独立 drain。旧轮次的 Transport 和 Evidence 保留，不以其失败或未知终位阻止本轮独立执行；依赖判定不撤销已有可靠交付义务。详见出库合同 §9.4。
 
 来源成员取消与 Transport 终态不要求到达顺序；取消通知晚到 3～180 秒不能成为推定取消的定时器。当前未释放进场窗口由 manual-picking 持久工作线扫描承接：本轮来源成员均已取消、最新货架动作及直接依赖已闭合、权威位置仍在目标点时请求离场决定。父任务完成不撤销该 Next Owner；当前重试仍在途时保留身份等待结果。取消结果没有面向时 departure 决定显式提供 `current_face=null`，不补造计划面，WMS 必须支持该分支；收到离场接纳后才释放窗口。详见出库合同 §7.3/§9.4。
 

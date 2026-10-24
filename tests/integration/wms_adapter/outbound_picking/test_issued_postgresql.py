@@ -333,6 +333,7 @@ def _event(
     workline_code: str,
     task_type: str = "MANUAL",
     not_before: int | None = None,
+    business_type: str = "outbound",
 ):
     data = {
         "task_id": task_id,
@@ -341,6 +342,8 @@ def _event(
         "queue_revision": 1,
         "dispatch_sequence": dispatch_sequence,
     }
+    if task_type == "MANUAL":
+        data["business_type"] = business_type
     if not_before is not None:
         data["not_before"] = not_before
     return parse_picking_task_issued_event(
@@ -354,8 +357,10 @@ def _event(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("business_type", ["inbound", "outbound"])
 async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_closed(
     integration_session_factory,
+    business_type,
 ) -> None:
     task_id = f"PICK-{new_uuid7()}"
     operation_id = new_uuid7()
@@ -382,9 +387,16 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
             dispatch_sequence=dispatch_sequence,
             workline_code=workline_code,
             not_before=not_before,
+            business_type=business_type,
         )
         first = await service.record(event, received_at=datetime(2026, 9, 3, 10))
         replay = await service.record(event, received_at=datetime(2026, 9, 3, 11))
+        changed_type = event.model_dump(mode="json", exclude_none=True)
+        changed_type["data"]["business_type"] = "outbound" if business_type == "inbound" else "inbound"
+        type_conflict = await service.record(
+            type(event).model_validate(changed_type), received_at=datetime(2026, 9, 3, 11)
+        )
+        assert (type_conflict.code, type_conflict.reason_code) == ("CONFLICT", "IDEMPOTENCY_CONFLICT")
         extended = event.model_dump(mode="json", exclude_none=True)
         extended["supplier_trace"] = "T-1"
         extended["data"]["supplier_extension"] = {"value": 1}
@@ -444,12 +456,14 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
         assert task is not None
         assert task.status == PickingTaskStatus.QUEUED
         assert task.task_type == PickingTaskType.MANUAL
+        assert task.business_type == business_type
         assert task.queue_revision == 1
         assert task.dispatch_sequence == dispatch_sequence
         assert task.not_before_ms == not_before
         assert task.issued_at_ms == 1786060800000
         assert task_count == 1
         assert issued_evidence is not None
+        assert issued_evidence.normalized_payload["data"]["business_type"] == business_type
         assert task.issued_evidence_id == issued_evidence.id
         assert issued_evidence.processed_at == datetime(2026, 9, 3, 10)
         assert conflict_evidence is not None
@@ -704,3 +718,70 @@ async def test_wms_event_http_route_persists_picking_task_before_received_ack(
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
             if workline_code is not None:
                 await db.execute(delete(WorkLine).where(WorkLine.line_code == workline_code))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("apply_status", "expected_http", "expected_code"),
+    [
+        (InboundEvidenceApplyStatus.APPLIED, 200, "DUPLICATE"),
+        (InboundEvidenceApplyStatus.RECONCILING, 409, "CONFLICT"),
+        (InboundEvidenceApplyStatus.IGNORED, 422, "REJECTED"),
+    ],
+)
+async def test_historical_issued_replays_frozen_receipt_without_new_business_type(
+    integration_session_factory,
+    apply_status,
+    expected_http,
+    expected_code,
+) -> None:
+    from src.app.execution.models import InboundEvidenceKind
+    from src.app.execution.services import InboundEvidenceService
+
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    payload = {
+        "operation_id": operation_id,
+        "operation": PICKING_TASK_ISSUED_OPERATION,
+        "timestamp": 1786060800000,
+        "data": {
+            "task_id": f"HISTORICAL-{operation_id}",
+            "task_type": "MANUAL",
+            "workline_code": "LINE-3",
+            "queue_revision": 1,
+            "dispatch_sequence": _dispatch_sequence(),
+        },
+    }
+    received_at = datetime(2026, 9, 3, 10)
+    try:
+        async with integration_session_factory.begin() as db:
+            acceptance = await InboundEvidenceService().accept(
+                db,
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=identity,
+                normalized_payload=payload,
+                received_at=received_at,
+                operation=PICKING_TASK_ISSUED_OPERATION,
+                operation_id=operation_id,
+                contract_key=PICKING_TASK_ISSUED_OPERATION,
+                contract_version="1.0",
+                apply_status=apply_status,
+            )
+            acceptance.evidence.processed_at = received_at
+        handler = PickingTaskIssuedHandler(PickingTaskIssuedService(integration_session_factory))
+        response = await handler.handle(payload)
+        assert (response.http_status, response.body["code"]) == (expected_http, expected_code)
+        assert response.body["timestamp"] == 1788429600000
+        async with integration_session_factory() as db:
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.source_identity == identity))
+            assert evidence.normalized_payload == payload
+            assert evidence.apply_status == apply_status
+            assert evidence.processed_at == received_at
+        changed = {**payload, "data": {**payload["data"], "business_type": "outbound"}}
+        conflict = await handler.handle(changed)
+        assert conflict.http_status == 409
+        assert conflict.body["data"]["reason_code"] == "IDEMPOTENCY_CONFLICT"
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity == identity))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))

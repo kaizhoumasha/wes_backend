@@ -60,6 +60,7 @@ async def issued(sessions, task_id="QUEUE-1", sequence=100):
             "data": {
                 "task_id": task_id,
                 "task_type": "MANUAL",
+                "business_type": "outbound",
                 "workline_code": "QUEUE-LINE",
                 "queue_revision": 1,
                 "dispatch_sequence": sequence,
@@ -298,6 +299,7 @@ async def test_queue_update_and_issued_share_the_same_dispatch_sequence_fence(se
             "data": {
                 "task_id": "COMPETING",
                 "task_type": "MANUAL",
+                "business_type": "outbound",
                 "workline_code": "QUEUE-LINE",
                 "queue_revision": 1,
                 "dispatch_sequence": 90,

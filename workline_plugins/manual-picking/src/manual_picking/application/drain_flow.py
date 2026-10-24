@@ -141,9 +141,9 @@ class ManualPickingDrainFlow:
         return 1, None
 
     async def _five_rack_window_occupied(self, db: Any, line: Any) -> bool:
-        """FIVE_RACK 容量窗口当前是否被占用——业务事实（R6），不是全局位置投影数量（红队复核）。
+        """当前活动任务是否仍有 FIVE_RACK 服务窗口；旧任务不构成独立 drain 门禁。
 
-        活动 PickingTask 存在但 FIVE_RACK 目标点当前没有未释放的窗口时，drain 仍可插缝；
+        活动 PickingTask 没有自身未释放的窗口时，drain 仍可插缝；
         窗口占用与否最终仍由 RackInboundWindowService.admit 的目标点行锁裁决，不是新的竞态。
         """
         location = (line.position_bindings.get(FIVE_RACK.slot_key) or {}).get("location_id")
@@ -159,7 +159,10 @@ class ManualPickingDrainFlow:
             for window in retired:
                 window.window_released_at = closed_at
             await db.flush()
-        return any(window.step != DRAIN_RACK_IN_STEP for window in active)
+        current_task = await self._tasks.get_active_for_workline(db, line.id)
+        return current_task is not None and any(
+            window.step != DRAIN_RACK_IN_STEP and window.picking_task_id == current_task.id for window in active
+        )
 
     async def trigger_full_drain_in_session(self, db: Any, line: Any, now: Any) -> None:
         """停线前主动排空：不等待下一次 tick，一次性纳入当前全部待回库料箱。"""

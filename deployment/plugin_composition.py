@@ -216,6 +216,7 @@ def build_deployment_runtime(
         )
         scan_flow = ManualPickingScanFlow(
             commands=device_command_service,
+            transport_service=transport_runtime.service,
             admissions=ManualBinAdmissionScheduler(WmsConfirmationLifecycleService(workline_owner=workline_owner)),
             wms_reader=manual_bin_typed,
             batch_reader=batch_reader,

@@ -141,8 +141,9 @@ async def test_retired_clearance_tracks_current_fact_and_yields_to_new_owner(rac
                 rack_id=rack_id,
                 round_started_at=root.created_at,
             )
-            with pytest.raises(ValueError, match="exactly one active"):
-                await BatchRepository().has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id=rack_id)
+            assert not await BatchRepository().has_unclosed_return_dependency_for_rack(
+                db, workline_id=7, rack_id=rack_id
+            )
 
             successor = TransportDecisionBinding(
                 workline_id=7,
@@ -249,6 +250,8 @@ async def test_retired_clearance_scanner_is_independent_and_preserves_direct_dep
         outcome_version=1,
         published_outcome_version=0 if hold == "unpublished" else 1,
     )
+    driver._batches.working_rack_position.side_effect = None
+    driver._batches.working_rack_position.return_value = SimpleNamespace(arrival_face="270")
     driver._drain = SimpleNamespace(
         repository=SimpleNamespace(
             retired_clearance_racks=AsyncMock(return_value=[(root, current, SimpleNamespace(arrival_face="270"))])
@@ -303,13 +306,14 @@ async def test_clearance_result_is_published_from_frozen_drain_fact():
     [
         (None, None),
         (CLEARANCE, "FAILED"),
-        (CLEARANCE, "REJECTED"),
         ("MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT", "FAILED"),
     ],
 )
 async def test_clearance_ready_creates_independent_action_and_terminal_failure_redecides(previous_step, status):
     driver, line, *_ = setup_driver()
     creator = driver._rack_creator
+    driver._batches.working_rack_position.side_effect = None
+    driver._batches.working_rack_position.return_value = SimpleNamespace(arrival_face="270")
     driver._drain = SimpleNamespace(
         repository=SimpleNamespace(
             retired_clearance_racks=AsyncMock(

@@ -214,6 +214,7 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             await db.delete(await db.scalar(select(ManualPickingInboundBatch)))
             binding = TransportDecisionBinding(
                 correlation_id="pt:11:e:1:rack:R1",
+                picking_task_id=11,
                 step="PICKING_TASK_BIN_SOURCE_RACK_IN",
                 workline_id=7,
                 resource_fence_id="R1",

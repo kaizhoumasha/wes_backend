@@ -59,7 +59,7 @@
 
 双向验证的收敛结论（2026-09-19 重新对账）：
 
-- `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`），不引入新窗口表、不维护占用计数器，capacity 解释完全交给 ECS/RCS。
+- `target_rack` / `added_bin_source_racks` / `added_direct_picks` 三类货架位在 `plan_delta` 落库后均由 `PickingTaskPlanActivationService` 派发到对应 step（F01 for `TRANSFER_RACK` & `RETURN_RACK`，CTU01 for `FIVE_RACK`）。`workline_positions.capacity` 限制 WES 本地滚动进场下发窗口；真实物理容量、车辆接纳、排队和互斥由 ECS/RCS 裁决。
 - `MANUAL_PICK_NG` 持久化已落地；Passage 保留本地准入 `admission_operation_id`，取消跨 Passage 的 `(task_id, bin_code)` 终态唯一索引；合同 §6 现场物理验收仍 `NOT ACCEPTED`。
 - 集成测试通过 `scripts/run-integration-tests.sh` + `RUN_WORKLINE_INTEGRATION=1` 统一入口接入，不依赖旧的"本机通过代表现场"假设。
 
@@ -70,7 +70,7 @@
 `TRANSFER_RACK`、`INLET`、`OUTLET`，每个插槽绑定一个本线实际资源。
 
 五层货架区对 WES 只有一个绑定工作位；运输目标使用冻结绑定的实际 `location_id`。
-`workline_positions.capacity` 不用于 CTU01 物理准入。RCS 负责 AGV 接纳、排队、互斥和自主进位；WES 只按实际到位事实推进相应货架的 SOP。实际工作位编码与货架编号是不同身份。
+`workline_positions.capacity` 用于 WES 本地滚动进场下发窗口，不用于 CTU01 物理准入。RCS 负责 AGV 接纳、排队、互斥和自主进位；WES 按窗口准入下发，并按实际到位事实推进相应货架的 SOP。实际工作位编码与货架编号是不同身份。
 
 后续业务直接引用具名对象，例如 `from manual_picking.definition import SCAN2, FIVE_RACK`；
 需要字符串的现有端口使用 `SCAN2.role_key` 或 `FIVE_RACK.slot_key`。
@@ -118,11 +118,13 @@ PickingTask 完成后，同一 WorkLine 锁内先原子准备/领取下一任务
 没有新增 Epoch、兼容路径、窗口表、缓存计数器、业务表或字段；仅为既有 `wms_confirmations`
 增加 `workline_id + operation + operation_id` 查询索引。停线/插件切换触发仍留在 TODO。
 
-WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或在 `EXECUTING` 中按
-`PLAN_MEMBERS` 撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已发出的 prepare 不撤销，迟到结果仍按原身份留证，取消后的新计划与调度入口保持 fail closed。
+WMS 可通过 `outbound.picking_task.cancel@v1` 取消 `QUEUED | PREPARING` 的整单任务，或按 `PLAN_MEMBERS` 在任意父任务状态下
+撤销仍未执行的计划成员。取消请求与任务/成员边界在同一事务内保存 Evidence；已应用的整单 `TASK` 取消同事务保存任务 `cancelled_at`，在归档及历史清理后仍停止原 prepare 后续派发，以 `SUPERSEDED` 保留原身份、冻结正文和迟到响应，不伪造成功或恢复任务。成员取消不终止 prepare；取消后的新计划与调度入口保持 fail closed。
 
-SCAN1 正常箱码须匹配计划内来源架面，并具备当前转运架和 Bin 入口的权威位置投影及当前 Bin 原入站
-`SUCCEEDED` Transport；不要求来源架随后仍保持原位置投影。结果未到时保留原扫码 Evidence 等待，确定失败或位置未知进入对账。
+SCAN1 本点有效扫码确认 Bin 实际到位，按尚未入线的冻结批次成员唯一关联原任务和原搬运，并校验当前有效计划来源架面；
+不等待入口位置投影、目标转运架或原下架 Transport 成功。扫码确认冻结目标到位时，宿主以 `scan:<Evidence.id>` 留下成员完成依据；整笔所有成员均到位后沿原 Transport 发布
+`SUCCEEDED / SCAN_TARGET_CONFIRMED`，解除 WES 的 CTU 投料门禁。冻结请求和提交 operation_id 不变，不伪造 WMS 回执或 revision。
+迟到一致 WMS 结果仅补记其 revision，矛盾结果保留冲突；滚筒线命令和 RCS 内部车辆调度仍遵守各自约束。归属缺失/歧义进入对账，同箱更新的未决动作仍保留直接依赖。
 批次调度和扫码流程已有本地实现，但不能把代码测试当作完整出库或真实设备验收。
 
 部署通过 `InstalledWorkLinePlugin.picking_task_prepare_policy` 显式关联该能力。宿主静态注册通用 Celery 任务，只扫描精确版本匹配的
@@ -162,3 +164,15 @@ MANUAL 首批计划可省略 `target_rack` 并提供来源。省略时，人工�
 ### SCAN2 当前批次准入
 
 SCAN2 按实际 `-C` 箱码匹配当前有效 PickingTask 的已应用、已发布 inbound_batch 成员，不校验 SCAN1 队首、前序命令或位置投影。直达 SCAN2 时保存本箱 Passage，SCAN1 字段为空，不伪造前序事实；SCAN2 同时记录批次入线进度。来源成员取消仅停止尚未入线的新投箱；原批次已有入线记录，或匹配的投箱已成功、结果已发布且到达冻结交接位的箱仍继续准入，由 WMS 判断是否还有取料需求。重复扫码不重复准入，未知/失效批次成员留异常证据且不自动放行；SCAN4 返料 FIFO 不变。
+
+### 已完成任务来源窗口的准入退出
+
+已完成（`EXECUTION_COMPLETED`）的人工任务不再持有来源架的本地准入名额：插件持久工作线扫描只退出原来源进架窗口的准入职责，保留窗口身份、原进场轮次、operation_id、冻结正文、Transport 和全部 Evidence。该退出不证明离场、物理完成、CTU 空闲或 WMS reservation 释放；原未决搬运继续由 Transport owner 等待终态，只约束其直接因果步骤。若当前权威货架事实仍属于原 owner 且尚无新窗口接管，原轮次清退继续由持久扫描承接；新实际动作/窗口接管后旧清退让路。新的有效任务与独立 drain 经既有原子容量准入创建自身动作，不继承旧到位事实；drain 插缝只检查当前活动任务自己的来源窗口。已完成任务的全取消来源架仍由持久扫描承接原清退，不因准入释放失去 Next Owner；当前面由同 owner 的后续 revision 换面到位时，仍解析该面所属原进场轮次，不要求换面 Evidence 与进场计划 Evidence 相同。
+
+清退依赖查询统一通过当前进场轮次解析：活动窗口已释放但当前终态位置与因果绑定仍承接原轮次时，沿用原窗口创建时间继续清退，不重开准入窗口。当前轮次未决搬运、未知终位和未发布结果仍是直接依赖；旧轮次动作保留原身份等待结果，不作为其他轮次或独立 drain 的围栏。
+
+### WMS 下发上架与出库任务
+
+`outbound.picking_task.issued@v1` 在 `task_type=MANUAL` 时必须携带 `business_type=inbound|outbound`，分别表示上架、出库。
+两类任务共用现有队列、prepare、计划、人工作业、回箱和离场流程，不增加插件执行分支；任务与 Evidence 保存原业务类型。
+请求示例与接收规则见[人工线对接合同 §2.1.1](../../docs/contracts/wms-manual-outbound-picking-integration-requirements.md#211-business-type)。

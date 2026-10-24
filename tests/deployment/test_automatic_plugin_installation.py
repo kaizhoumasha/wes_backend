@@ -27,3 +27,11 @@ def test_unknown_and_duplicate_automatic_keys_remain_closed():
     for keys in [("automatic-picking", "automatic-picking"), ("automatic-picking-extra",)]:
         with pytest.raises(ValueError):
             load_plugin_definitions(keys)
+
+
+@pytest.mark.parametrize("name", ["manual_picking_source_arrivals", "manual_picking_departure_retries"])
+def test_site_models_keep_manual_ownership_with_both_plugins_installed(name):
+    assert not include_plugin_table(name, ())
+    assert not include_plugin_table(name, ("automatic-picking",))
+    assert include_plugin_table(name, ("manual-picking",))
+    assert include_plugin_table(name, ("manual-picking", "automatic-picking"))
