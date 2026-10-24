@@ -6,6 +6,7 @@ from wes_plugin_sdk import PickingMaterialAccept
 from src.app.device.contracts import EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, MaterialExecution
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome
 from src.utils.canonical_json import canonical_json_digest
 
@@ -84,7 +85,10 @@ class ReturnRepository:
                 or evidence.workline_id != line_id
                 or evidence.apply_status != "APPLIED"
                 or evidence.published_at is None
-                or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+                or normalize_payload(
+                    evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE
+                )[1]
+                != evidence.payload_digest
             ):
                 return None
             try:
