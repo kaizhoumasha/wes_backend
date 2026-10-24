@@ -214,12 +214,13 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             await db.delete(await db.scalar(select(ManualPickingInboundBatch)))
             binding = TransportDecisionBinding(
                 correlation_id="pt:11:e:1:rack:R1",
-                picking_task_id=11,
                 step="PICKING_TASK_BIN_SOURCE_RACK_IN",
                 workline_id=7,
                 resource_fence_id="R1",
                 client_request_id="rack-client-1",
+                picking_task_id=11,
                 source_evidence_id=1,
+                causal_token=1,
             )
             db.add(binding)
             transport = TransportTask(
@@ -274,6 +275,94 @@ async def test_completion_requires_closed_source_or_known_failure_and_no_unfinis
             transport.published_outcome_version = 1
             await db.flush()
             assert await repository.ready_to_confirm(db, line, task)
+            retry_binding = TransportDecisionBinding(
+                correlation_id="retry:1:rack-transport-1",
+                step=binding.step,
+                workline_id=7,
+                picking_task_id=11,
+                resource_fence_id="R1",
+                client_request_id="rack-client-2",
+                source_evidence_id=1,
+                causal_token=2,
+            )
+            retry = TransportTask(
+                transport_task_id="rack-transport-2",
+                client_request_id="rack-client-2",
+                request_digest="f" * 64,
+                kind="RACK_MOVE",
+                caller_json={"workline_id": "7"},
+                request_json={"rack_id": "R1"},
+                submit_operation_id="rack-operation-2",
+                submit_timestamp_ms=2,
+                submit_request_body="{}",
+                submit_request_body_digest="e" * 64,
+                status="ACCEPTED",
+                authority_workline_id=7,
+                created_at=datetime(2026, 9, 14, 4, 1),
+                updated_at=datetime(2026, 9, 14, 4, 1),
+            )
+            db.add_all([retry_binding, retry])
+            # 历史序号为0或同序号时无法比较先后，不能据旧失败豁免。
+            for token in (0, 1):
+                binding.causal_token = retry_binding.causal_token = token
+                await db.flush()
+                assert not await repository.ready_to_confirm(db, line, task)
+            binding.causal_token = 1
+            retry_binding.causal_token = 2
+            # 旧拒绝不能结束仍有后续进场动作的同一来源。
+            for status in ("ACCEPTED", "PENDING", "RECONCILING", "SUCCEEDED", "FAILED"):
+                retry.status = status
+                await db.flush()
+                assert not await repository.ready_to_confirm(db, line, task), status
+            retry.status = "ACCEPTED"
+            # 其他任务、工作线、来源依据、货架或动作不继承本来源的完成门禁。
+            for field, other in (
+                ("picking_task_id", 12),
+                ("workline_id", 8),
+                ("source_evidence_id", 2),
+                ("resource_fence_id", "R2"),
+                ("step", "MANUAL_PICKING_SOURCE_RACK_OUT"),
+            ):
+                original = getattr(retry_binding, field)
+                setattr(retry_binding, field, other)
+                await db.flush()
+                assert await repository.ready_to_confirm(db, line, task), field
+                setattr(retry_binding, field, original)
+            retry.status = "REJECTED"
+            retry.outcome_version = 1
+            await db.flush()
+            assert not await repository.ready_to_confirm(db, line, task)
+            retry.published_outcome_version = 1
+            await db.flush()
+            assert await repository.ready_to_confirm(db, line, task)
+            retry.status = "FAILED"
+            await db.flush()
+            assert not await repository.ready_to_confirm(db, line, task)
+            retry_member = TransportMember(
+                transport_task_id=retry.transport_task_id,
+                ordinal=1,
+                object_type="RACK",
+                object_id="R1",
+                source_json=member.source_json,
+                target_json=member.target_json,
+                status="FAILED",
+                final_position_json=member.source_json,
+                position_unknown=False,
+                updated_at=datetime(2026, 9, 14, 4, 1),
+            )
+            db.add(retry_member)
+            await db.flush()
+            assert await repository.ready_to_confirm(db, line, task)
+            retry_member.position_unknown = True
+            await db.flush()
+            assert not await repository.ready_to_confirm(db, line, task)
+            await db.delete(retry_member)
+            assert transport.status == "REJECTED"
+            assert retry.submit_operation_id == "rack-operation-2"
+            assert retry.submit_request_body == "{}"
+            await db.delete(retry_binding)
+            await db.delete(retry)
+            await db.flush()
             ready = sdk.BinInboundBatchReady(
                 (sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),)
             )

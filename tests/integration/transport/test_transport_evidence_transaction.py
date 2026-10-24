@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
@@ -1686,3 +1687,142 @@ async def test_rotate_creation_freezes_explicit_position_despite_concurrent_move
             await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
             await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack_id))
+
+
+async def test_manual_completion_is_audited_once_and_keeps_newer_projection(integration_session_factory, monkeypatch):
+    from src.app.sys.models.audit_log import AuditLog
+    from src.app.sys.services.audit_service import audit_log_service
+
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
+    service = TransportService(
+        integration_session_factory, TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+    )
+    task_id = f"manual-{uuid.uuid4()}"
+    client_id = new_uuid7()
+    bin_code = f"manual-bin-{uuid.uuid4().hex}"
+    body = '{"manual_test":"' + task_id + '"}'
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    target = HandoffPosition("MANUAL-INLET")
+    async with integration_session_factory.begin() as db:
+        db.add(
+            TransportTask(
+                transport_task_id=task_id,
+                client_request_id=client_id,
+                kind="BIN_MOVE",
+                request_digest=digest,
+                caller_json={"workline_id": str(authority.workline_id)},
+                authority_workline_id=authority.workline_id,
+                request_json={},
+                submit_operation_id=new_uuid7(),
+                submit_timestamp_ms=1,
+                submit_request_body=body,
+                submit_request_body_digest=digest,
+                status="ACCEPTED",
+                created_at=timezone.now_for_db(),
+                updated_at=timezone.now_for_db(),
+            )
+        )
+        await db.flush()
+        db.add(
+            TransportMember(
+                transport_task_id=task_id,
+                ordinal=0,
+                object_type="BIN",
+                object_id=bin_code,
+                source_json={"kind": "RACK_BIN_SLOT", "rack_id": "510019", "rack_face": "90", "slot_id": "S1"},
+                target_json={"kind": "HANDOFF_POSITION", "location_code": "MANUAL-INLET"},
+                updated_at=timezone.now_for_db(),
+            )
+        )
+        projection = PositionProjection(
+            object_type="BIN",
+            object_id=bin_code,
+            workline_id=authority.workline_id,
+            position_json={
+                "kind": "RACK_BIN_SLOT",
+                "rack_id": "510020",
+                "rack_face": "90",
+                "slot_id": "510020A1F1C101",
+            },
+            position_unknown=False,
+            source_operation_id=new_uuid7(),
+            source_transport_task_id="later-return",
+            source_causal_token=1424,
+            source_effect_phase=ProjectionEffectPhase.FINAL_RESULT,
+            updated_at=timezone.now_for_db(),
+        )
+        db.add(projection)
+        await db.flush()
+        before = projection.model_dump()
+    args = {
+        "transport_task_id": task_id,
+        "bin_code": bin_code,
+        "target": target,
+        "expected_request_body_digest": digest,
+        "confirmed_by": "integration confirmer",
+        "confirmation_reference": "confirmed original manual delivery",
+    }
+    try:
+        create_audit = audit_log_service.create_audit_log
+
+        async def fail_after_audit(*a, **kw):
+            await create_audit(*a, **kw)
+            raise RuntimeError("rollback persisted audit")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(audit_log_service, "create_audit_log", fail_after_audit)
+            with pytest.raises(RuntimeError, match="rollback persisted audit"):
+                await service.confirm_manual_bin_delivery(**args)
+        async with integration_session_factory() as db:
+            assert (await service._repository.get_task(db, task_id)).status == "ACCEPTED"
+            assert await db.scalar(select(AuditLog.id).where(AuditLog.object_id == task_id)) is None
+        first, second = await asyncio.gather(
+            service.confirm_manual_bin_delivery(**args), service.confirm_manual_bin_delivery(**args)
+        )
+        assert first == second
+        await record_valid_callback(
+            service,
+            operation_id=new_uuid7(),
+            transport_task_id=task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": bin_code,
+                        "status": "SUCCEEDED",
+                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "MANUAL-INLET"},
+                    }
+                ],
+            },
+        )
+        await service.process_pending_evidence(100)
+        async with integration_session_factory() as db:
+            candidates = await service._repository.list_final_result_projection_candidates(db, limit=1000)
+            assert not any(row[0] == task_id for row in candidates)
+        await service.replay_final_result_projections(100)
+        async with integration_session_factory() as db:
+            task = await service._repository.get_task(db, task_id)
+            assert (
+                task.status == "SUCCEEDED" and task.outcome_version == 1 and task.last_applied_wms_outcome_revision == 1
+            )
+            assert task.reason_code == "MANUAL_TARGET_CONFIRMED" and task.submit_request_body == body
+            assert await db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.object_id == task_id)) == 1
+            projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == bin_code))
+            assert projection.model_dump() == before
+            evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
+            assert evidence.status == "APPLIED"
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(AuditLog).where(AuditLog.object_id == task_id))
+            await db.execute(
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.message_json["data"]["transport_task_id"].as_string() == task_id
+                )
+            )
+            await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id == bin_code))
+            await db.execute(delete(TransportMember).where(TransportMember.transport_task_id == task_id))
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))

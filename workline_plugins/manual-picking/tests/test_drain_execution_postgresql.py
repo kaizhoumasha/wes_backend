@@ -148,7 +148,7 @@ async def previous_schema_database():
             await engine.dispose()
 
 
-@pytest.mark.parametrize("terminal_status", ["COMPLETED", "EXCEPTION_RETIRED"])
+@pytest.mark.parametrize("terminal_status", ["COMPLETED", "EXCEPTION_RETIRED", "MANUAL_WITHDRAWN"])
 async def test_execution_constraints_and_identity_concurrency(rack_database, terminal_status):
     _, sessions = rack_database
     repository = DrainExecutionRepository()
@@ -167,7 +167,7 @@ async def test_execution_constraints_and_identity_concurrency(rack_database, ter
     async with sessions.begin() as db:
         execution = await repository.active_for_workline(db, line.id)
         assert execution.id == first
-        for invalid in ("UNKNOWN", "EXCEPTION_RETIRED"):
+        for invalid in ("UNKNOWN", "EXCEPTION_RETIRED", "MANUAL_WITHDRAWN"):
             with pytest.raises(IntegrityError):
                 async with db.begin_nested():
                     await db.execute(
@@ -178,7 +178,7 @@ async def test_execution_constraints_and_identity_concurrency(rack_database, ter
             {}
             if terminal_status == "COMPLETED"
             else {
-                "reason_code": "DRAIN_RESULT_UNKNOWN",
+                "reason_code": "MANUAL_SCOPE_EXIT" if terminal_status == "MANUAL_WITHDRAWN" else "DRAIN_RESULT_UNKNOWN",
                 "blocker_client_request_id": blocker,
                 "trigger_picking_task_id": task.id,
             }
@@ -783,3 +783,50 @@ async def test_nonempty_downgrade_refuses_and_preserves_frozen_runtime_identity(
             await db.scalar(select(TransportTask.client_request_id).where(TransportTask.client_request_id == blocker))
             == blocker
         )
+
+
+async def test_manual_withdrawal_migration_preserves_original_ready_and_blocks_downgrade(integration_guard):
+    import subprocess
+
+    async with temporary_database() as (_, url):
+        run_alembic("upgrade", "e3fec1d9ffae", database_url=url)
+        run_alembic("upgrade", "f6d0319c8a42", database_url=url)
+        run_alembic("downgrade", "e3fec1d9ffae", database_url=url)
+        run_alembic("upgrade", "f6d0319c8a42", database_url=url)
+        engine = create_async_engine(url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessions.begin() as db:
+                line, task = await seed_line(db, bins=0)
+                decision = await seed_ready(db, line)
+                blocker = await seed_rack_transport(db, line, decision)
+                repository = DrainExecutionRepository()
+                execution = await repository.ensure_ready_in_session(db, decision=decision)
+                assert await repository.close_in_session(
+                    db,
+                    execution,
+                    status="MANUAL_WITHDRAWN",
+                    closed_at=timezone.now_for_db(),
+                    reason_code="MANUAL_SCOPE_EXIT",
+                    blocker_client_request_id=blocker,
+                    trigger_picking_task_id=task.id,
+                )
+                assert await repository.active_for_workline(db, line.id) is None
+                assert await DrainRepository().current(db, line.id) is None
+                assert await DrainRepository().retired_clearance_racks(db, workline_id=line.id) == []
+                assert (await repository.ensure_ready_in_session(db, decision=decision)).status == "MANUAL_WITHDRAWN"
+                original = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == blocker))
+                assert original.status == "PENDING" and original.outcome_version == 0
+                with pytest.raises(IntegrityError):
+                    async with db.begin_nested():
+                        await db.execute(
+                            text("UPDATE wes_biz.manual_picking_drain_executions SET reason_code=NULL WHERE id=:id"),
+                            {"id": execution.id},
+                        )
+            with pytest.raises(subprocess.CalledProcessError) as failure:
+                run_alembic("downgrade", "e3fec1d9ffae", database_url=url)
+            assert "manual drain withdrawals exist" in failure.value.stderr
+            async with sessions.begin() as db:
+                assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "f6d0319c8a42"
+        finally:
+            await engine.dispose()

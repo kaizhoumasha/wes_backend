@@ -13,6 +13,7 @@ from manual_picking.application.batch_result import ManualPickingBatchResultFlow
 from manual_picking.application.bin_line.return_model import BinLineReturn
 from manual_picking.application.drain_execution_model import ManualPickingDrainExecution, ManualPickingDrainReturnMember
 from manual_picking.application.drain_execution_repository import DrainExecutionRepository
+from manual_picking.application.scan_flow import ManualPickingScanFlow
 from test_batch_repository import _new_sessions
 from test_source_progression import setup_driver
 
@@ -189,11 +190,12 @@ async def test_new_candidates_do_not_reset_current_face_motion_phase():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "step",
-    ["MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_RETURN_RACK_OUT", "MANUAL_PICKING_RETIRED_DRAIN_RACK_OUT"],
+    ["MANUAL_PICKING_SOURCE_RACK_OUT", "MANUAL_PICKING_RETIRED_DRAIN_RACK_OUT"],
 )
-async def test_all_workline_departures_request_returns_before_departure_decision(step):
+async def test_conveyor_return_racks_request_returns_before_departure_decision(step):
     driver, line, *_ = setup_driver()
     driver._flow.return_before_motion = AsyncMock(return_value=1)
+    driver._batches.working_rack_position = AsyncMock(return_value=SimpleNamespace(arrival_face="90"))
     assert (
         await driver._advance_workline_departure(
             object(),
@@ -488,3 +490,184 @@ async def test_old_ready_cannot_consume_same_bin_new_return_execution():
     assert batches.return_request_in_round.await_args.kwargs["arrived_at"] == row.created_at
     transport.create.assert_not_awaited()
     assert row.return_state == "READY"
+
+
+@pytest.mark.asyncio
+async def test_pda_rack_departure_skips_conveyor_returns():
+    driver, line, *_ = setup_driver()
+    driver._batches.supersede_return_rack_requests = AsyncMock()
+    driver._flow.return_before_motion = AsyncMock(return_value=1)
+    driver._batches.working_rack_position = AsyncMock(return_value=SimpleNamespace(arrival_face="270"))
+    assert (
+        await driver._advance_workline_departure(
+            object(),
+            line,
+            rack_id="620001",
+            current_face="270",
+            step="MANUAL_PICKING_RETURN_RACK_OUT",
+            picking_task_id=31,
+            arrival_transport_task_id="actual-arrival",
+            now=NOW,
+            round_started_at=NOW,
+        )
+        == 1
+    )
+    driver._flow.return_before_motion.assert_not_awaited()
+    driver._departure_scheduler.create_in_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_late_ready_for_pda_rack_does_not_allocate_or_create_bin_move():
+    flow = ManualPickingScanFlow.__new__(ManualPickingScanFlow)
+    intent = sdk.wms_operations.outbound_bin_return_batch(
+        operation_id="01a15f3e-e782-72c9-a8b8-ad22c13e9790",
+        workline_code="KT18",
+        rack_id="620001",
+        rack_face="270",
+        return_candidates=(sdk.BinReturnCandidate(1, "A000001711", "CNV0402"),),
+    )
+    ready = sdk.BinReturnBatchReady(
+        (
+            sdk.BinReturnMove(
+                1,
+                "A000001711",
+                sdk.TransportRackBinSlot("620001", "270", "SLOT-1"),
+            ),
+        )
+    )
+    flow._batch_reader = SimpleNamespace(read_return=AsyncMock(return_value=(intent, SimpleNamespace(result=ready))))
+    flow._batch_result = SimpleNamespace(apply_return_in_session=AsyncMock())
+    flow._drain_executions = unbound_drain_executions()
+    flow._batch_progress = SimpleNamespace(has_return_batch_transport=AsyncMock(return_value=False))
+    flow._positions = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                workline_id=7,
+                position_unknown=False,
+                position_json={"kind": "RACK_POSITION", "location_code": "OUT56"},
+            )
+        )
+    )
+    line = SimpleNamespace(
+        id=7,
+        line_code="KT18",
+        position_bindings={
+            "FIVE_RACK": {"location_id": "KT18"},
+            "RETURN_RACK": {"location_id": "OUT56"},
+            "OUTLET": {"location_id": "CNV0402"},
+        },
+    )
+    evidence = SimpleNamespace(operation="outbound.bin.return_batch@v1", operation_id=intent.operation_id)
+    assert await flow._apply_batch_result(object(), evidence, line) == "RETURN_RACK_RETURN_IGNORED"
+    flow._batch_result.apply_return_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["PENDING", "RECONCILING", "DISPATCHING"])
+@pytest.mark.parametrize("has_transport", [False, True])
+async def test_pda_return_request_retirement_preserves_identity_and_inflight_response(status, has_transport):
+    engine, sessions = await _new_sessions()
+    async with engine.begin() as connection:
+        for table in (
+            ManualPickingDrainExecution.__table__,
+            ManualPickingDrainReturnMember.__table__,
+            BinLineReturn.__table__,
+        ):
+            await connection.run_sync(table.create)
+    try:
+        async with sessions.begin() as db:
+            payload = encode_request(
+                sdk.wms_operations.outbound_bin_return_batch(
+                    operation_id="01a15f3e-e782-72c9-a8b8-ad22c13e9790",
+                    workline_code="KT18",
+                    rack_id="620001",
+                    rack_face="270",
+                    return_candidates=(sdk.BinReturnCandidate(1, "A000001711", "CNV0402"),),
+                ),
+                timestamp=1792599320417,
+            )
+            request = WmsConfirmation(
+                workline_id=7,
+                operation="outbound.bin.return_batch@v1",
+                operation_id=payload["operation_id"],
+                request_payload=payload,
+                request_digest=canonical_json_digest(payload),
+                status=status,
+                retry_eligible=True,
+                attempt_count=600,
+                next_attempt_at=NOW,
+                claim_token="inflight" if status == "DISPATCHING" else None,
+                created_at=NOW,
+                deadline_at=NOW + timedelta(seconds=30),
+            )
+            db.add(request)
+            if has_transport:
+                db.add(
+                    TransportDecisionBinding(
+                        workline_id=7,
+                        correlation_id=payload["operation_id"],
+                        step="MANUAL_PICKING_RETURN_BATCH",
+                        resource_fence_id=payload["operation_id"],
+                        client_request_id="original-bin-move",
+                        source_evidence_id=1,
+                    )
+                )
+            candidate = BinLineReturn(
+                workline_id=7,
+                bin_code="A000001711",
+                scan3_evidence_id=1,
+                scan4_evidence_id=2,
+                scan4_event_time=1,
+                return_state="READY",
+                created_at=NOW - timedelta(seconds=1),
+            )
+            db.add(candidate)
+            await db.flush()
+            await BatchRepository().supersede_return_rack_requests(
+                db,
+                workline_id=7,
+                rack_id="620001",
+                round_started_at=NOW,
+                now=NOW,
+            )
+            assert request.status == (status if status == "DISPATCHING" or has_transport else "SUPERSEDED")
+            assert request.operation_id == payload["operation_id"]
+            assert request.request_payload == payload and request.request_digest == canonical_json_digest(payload)
+            assert request.attempt_count == 600
+            assert request.response_evidence_id is None and request.completed_at is None
+            if status == "DISPATCHING":
+                assert request.claim_token == "inflight"
+            elif not has_transport:
+                assert not request.retry_eligible and request.next_attempt_at is None
+                assert await DrainExecutionRepository().eligible_return_prefix(
+                    db,
+                    workline_id=7,
+                    rows=(candidate,),
+                ) == (candidate,)
+                assert candidate.return_state == "READY" and candidate.return_batch_evidence_id is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [True, False])
+async def test_pda_rack_retry_preserves_physical_gate_without_requesting_returns(pending):
+    from test_scan_flow import _drain_rack_recovery
+
+    flow, _, task, evidence = _drain_rack_recovery("ACTIVE", step="MANUAL_PICKING_RETURN_RACK_OUT")
+    flow._transport_bindings.get_by_client_request_id.return_value.picking_task_id = 31
+    flow._tasks.get_by_id_for_update = AsyncMock(return_value=SimpleNamespace(id=31, status="EXECUTING"))
+    flow._positions.get = AsyncMock(
+        return_value=SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            arrival_face="270",
+            position_json={"kind": "RACK_POSITION", "location_code": "RETURN-RACK-POSITION"},
+            source_transport_task_id=task.transport_task_id,
+        )
+    )
+    flow._batch_progress.has_current_rack_dependency = AsyncMock(return_value=pending)
+    flow._batch_progress.has_unclosed_return_dependency_for_rack = AsyncMock(return_value=False)
+    flow._batch_flow = SimpleNamespace(return_before_motion=AsyncMock(return_value=1))
+    assert await flow._retry_terminal_rack(object(), evidence, task, 7) == (1000 if pending else "RETRY_CREATED")
+    flow._batch_flow.return_before_motion.assert_not_awaited()

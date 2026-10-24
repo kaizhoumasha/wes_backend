@@ -413,6 +413,7 @@ class DrainExecutionRepository:
                 .where(
                     WmsConfirmation.workline_id == workline_id,
                     WmsConfirmation.operation == BIN_RETURN_BATCH_OPERATION,
+                    WmsConfirmation.status != WmsConfirmationStatus.SUPERSEDED,
                     or_(
                         WmsConfirmation.status != WmsConfirmationStatus.COMPLETED,
                         InboundEvidence.published_at.is_(None),

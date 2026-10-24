@@ -412,3 +412,29 @@ async def test_ready_fixture_freezes_enough_slots_for_all_returned_faces():
     intent, outcome = await reader.read(db, evidence, workline_id=7)
     assert intent == record.intent
     assert outcome.result == record.result
+
+
+@pytest.mark.asyncio
+async def test_manual_withdrawal_preserves_identity_and_never_reopens():
+    from manual_picking.application.drain_execution_repository import DrainExecutionRepository
+
+    repository = DrainExecutionRepository()
+    db = SimpleNamespace(flush=AsyncMock())
+    execution = SimpleNamespace(status="ACTIVE", drain_operation_id="original", decision_evidence_id=91)
+    now = datetime(2026, 10, 23)
+    assert await repository.close_in_session(
+        db,
+        execution,
+        status="MANUAL_WITHDRAWN",
+        closed_at=now,
+        reason_code="MANUAL_SCOPE_EXIT",
+        blocker_client_request_id="original-accepted",
+        trigger_picking_task_id=31,
+    )
+    assert (execution.status, execution.drain_operation_id, execution.decision_evidence_id) == (
+        "MANUAL_WITHDRAWN",
+        "original",
+        91,
+    )
+    assert not await repository.close_in_session(db, execution, status="COMPLETED", closed_at=now)
+    assert execution.reason_code == "MANUAL_SCOPE_EXIT"

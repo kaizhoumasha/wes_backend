@@ -129,7 +129,7 @@ Phase 4。
 
 系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、WMS/RCS 状态查询、回调提示、别名、兼容路径或数据迁移。
 WES 可以提供本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、状态修改或
-业务完成判定。唯一写入例外是数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
+业务完成判定。受控人工结案仅通过本地 TransportService 运维方法执行，规则见 §6 的“人工完成对账”；不进入 WMS/RCS wire 合同。另允许数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
 Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。`TRANSPORT_DEBUG` 的已应用终态只更新 Transport
 自有、可丢弃的联调当前位置投影，供后续 `RACK_ROTATE` / `BIN_EXCHANGE` 校验，不写入活动业务执行使用的核心 `PositionProjection`。
 删除范围包括 Callback Receipt、Evidence、由该任务 Evidence 产生的联调当前位置投影、成员和任务；不扩展到库存、业务单据或
@@ -683,6 +683,14 @@ WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evid
 失败或 `POSITION_UNKNOWN`；只有 WMS/RCS 基于实际物理恢复或对账形成的明确结论才能构成相应权威结果。
 已接纳任务被 RCS 主动取消时，内部使用 `RCS_TASK_CANCELLED` 标识；调用方重试语义见 T1。
 
+人工拣料的来源架、直接取料架、转运架及 drain 架离场结果，按已确认的目标事实决定是否仍需搬运。原
+`RACK_MOVE` 已为 `FAILED / RCS_TASK_CANCELLED`，且原结果唯一成员的已知 `RACK_POSITION` 终位精确等于冻结
+`RACK_POSITION` 目标时，插件将原业务结果 Evidence 收口为 `APPLIED`，不创建等价清退。冻结目标为 `ZONE` 时，仅凭取消结果
+可直接闭合的范围是实际精确终位与冻结目标同码（例如原目标 `ZONE/WH01`、原终位 `RACK_POSITION/WH01`）；
+不得用其他非空地码推断区域归属。结果版本、同架成员及其终位必须与原 Transport 已保存的完整结果一致。
+该业务消费保留原取消终态、请求身份、冻结正文及全部证据，不改写当前投影，不恢复父任务，也不将它伪装成搬运成功或车辆空闲。
+未知位置、未满足目标的终位、非离场动作及身份不一致继续使用原恢复或对账路径；较新投影不因旧结果消费而回退。
+
 任务结果只按冻结对象事实聚合：全部对象成功且位置明确才是 `SUCCEEDED`；至少一个对象失败、但全部对象位置均明确时是
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
@@ -748,7 +756,7 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 
 | `TransportOutcome.status` | 形成条件 | 插件语义 |
 | --- | --- | --- |
-| `SUCCEEDED` | 匹配权威成功结果且最终位置完整，或本节规定的扫码投箱交付事实完整 | 可以继续依赖该搬运的业务步骤 |
+| `SUCCEEDED` | 匹配权威成功结果且最终位置完整，或本节规定的扫码/人工投箱交付事实完整 | 可以继续依赖该搬运的业务步骤 |
 | `FAILED` | 匹配权威失败结果且相关位置完整 | 搬运失败，但资源位置可判断 |
 | `REJECTED` | WMS/RCS 明确未接纳 | 原任务不可修改；修正业务输入或重新分配后，以新的 `client_request_id` 创建新任务 |
 | `UNKNOWN` | 交付、结果或任一对象位置不确定 | 停止依赖动作，等待核验 |
@@ -759,6 +767,14 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 人工线入站 `BIN_MOVE` 增加已批准的本地扫码完成依据：插件将真实 SCAN1、当前冻结 READY 成员、原 Transport 和精确 HANDOFF_POSITION 目标唯一关联，宿主同事务保存该成员成功及原 InboundEvidence 引用（`last_operation_id=scan:<id>`）。扫码事件的 ECS `timestamp` 不得早于原 Transport 创建时间（按 UTC Unix 毫秒比较）；WES `received_at` 仅表示接收时间，迟到的旧轮次扫码不能确认新 Transport。全部冻结成员成功且终位与冻结目标一致后，原任务成为 `SUCCEEDED`，`reason_code=SCAN_TARGET_CONFIRMED`，递增一次本地 `outcome_version`，由既有可靠发布扫描接管；成员未齐不发布整笔成功。任务仍为 `RECONCILING` 且成员仅因 `POSITION_UNKNOWN` 标为 `FAILED` 时，匹配的真实扫码可将原成员从未知收敛为目标到位；同一因果来源的未知投影同步收敛并保留扫码身份。位置已知的成员终态及原任务的确定终态仍不改写。该事务不构造 TransportEvidence/CallbackReceipt，不增加 WMS operation、WMS outcome_revision、表或状态，不修改原提交身份及请求。扫码成员的本地最终位置只在原因果来源仍有效时应用，不覆盖后继 Transport 的位置。
 
 部分成员已扫码、整笔尚未完成时，一致的 WMS 完整结果只补齐其余成员，已确认扫码成员的 `last_operation_id`、终位及对应投影来源保持原身份；恢复扫描不因回执覆盖扫码身份而反复选中。真实 WMS 结果仍可靠接收：与扫码完成事实一致时应用原始 Evidence 并推进 `last_applied_wms_outcome_revision`，不重复本地成功发布；与已确认扫码成员或整笔终态矛盾时保留 CONFLICT，不改写原事实。此规则不适用于 RACK_MOVE、RACK_ROTATE、BIN_EXCHANGE 或 RACK_BIN_SLOT 目标。它释放的是 WES 依赖门禁，RCS 内部任务与车辆调度仍由 RCS 拥有。
+
+#### 人工完成对账
+
+操作员已明确确认原单箱投料人工完成时，可调用受控本地 `TransportService.confirm_manual_bin_delivery`。输入必须包含原 `transport_task_id`、箱号、冻结 HANDOFF_POSITION 目标、原请求正文 SHA256、确认人及可追溯的确认依据；实际完成时间未知时只记录本次确认时间，不推定现场完成时间。仅允许已接纳或对账中的单成员 `BIN_MOVE`（来源 RACK_BIN_SLOT、目标 HANDOFF_POSITION）；已有确定任务/成员终态不可覆盖，待应用的原结果 Evidence 须先由原 owner 处理。
+
+服务先取原 WorkLine authority 与任务行锁，同一数据库事务内通过公共审计能力新增 `MANUAL_TRANSPORT_COMPLETED` 审计，保存确认来源、冻结身份/摘要及前后状态，再将原成员和任务闭合为 `SUCCEEDED / MANUAL_TARGET_CONFIRMED`。成员 `last_operation_id=manual:<audit_id>` 直接引用审计依据；本地 `outcome_version` 递增一次，交既有可靠发布扫描接管。审计失败则全部回滚；相同任务和确认内容重提返回原审计，不重复结案或发布；确认内容漂移冲突。原 operation_id、client_request_id、Transport、冻结正文、成员来源/目标及全部既有 Evidence 保留；不生成 TransportEvidence、CallbackReceipt、扫码事件或 WMS outcome_revision，不发送搬运请求。
+
+人工结案确认原动作交付，不声明料箱仍在原交付点：不写当前 PositionProjection，也不参加终态投影恢复或投影孤儿扫描，保留后继实际动作形成的当前位置。原对象级未决门禁随本地终态及 outcome 发布退出，不改变业务 Requirement、不恢复已完成/已取消任务、不创建后继物理动作。真实迟到位置/结果继续经原入口可靠留存：与本地确认一致时只推进 WMS 自身游标，不重复本地 outcome 或回写旧位置；矛盾时保留 CONFLICT，不覆盖人工完成及当前投影。该结案不代表 RCS 原任务或全场车辆资源已由 WES 操作释放。
 
 任务首次进入 `ACCEPTED` 时可冻结观察期限 `result_deadline_at`，供等待时长监控。期限到达不产生 `UNKNOWN` 搬运结果，不改变任务的物理结果或位置事实。RCS 保证已接纳任务最终有明确终态，并经可靠 Response 链路送达；WES 保留原任务身份和证据，等待该权威终态；本节扫码已确认整笔交付时按扫码规则闭合本地任务并继续接收迟到结果。真实 `POSITION_UNKNOWN` 或证据冲突仍按其专属事实处理。
 
