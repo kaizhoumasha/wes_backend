@@ -179,11 +179,12 @@ async def test_cancelled_rack_business_retry_checks_current_face_returns(step, p
         "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
     ],
 )
-async def test_retired_drain_never_retries_rack_action(step):
-    flow, retired, *_ = _drain_rack_recovery("EXCEPTION_RETIRED", step=step)
+@pytest.mark.parametrize("status", ["EXCEPTION_RETIRED", "MANUAL_WITHDRAWN"])
+async def test_retired_drain_never_retries_rack_action(step, status):
+    flow, retired, *_ = _drain_rack_recovery(status, step=step)
     result = await flow.apply_in_session(object(), 10, workline_id=7)
     assert result.disposition is BusinessEvidenceDisposition.IGNORED
-    assert retired.status == "EXCEPTION_RETIRED"
+    assert retired.status == status
     flow._rack_creator.create.assert_not_awaited()
     flow._rack_creator.create_rotate.assert_not_awaited()
     flow._rack_creator.create_windowed_inbound.assert_not_awaited()
