@@ -11,6 +11,20 @@ from src.app.execution.plugin_binding import (
 )
 
 
+def test_decision_application_is_optional_and_resolved_by_exact_frozen_plugin_identity():
+    application = object()
+    bindings = StaticPluginBinding(
+        (
+            PluginRuntimeBinding(plugin_key="a", plugin_version="1", handlers=(), decision_application=application),
+            PluginRuntimeBinding(plugin_key="b", plugin_version="1", handlers=()),
+        )
+    )
+    assert bindings.resolve_decision_application("a", "1") is application
+    assert bindings.resolve_decision_application("b", "1") is None
+    with pytest.raises(LookupError):
+        bindings.resolve_decision_application("a", "2")
+
+
 @dataclass(frozen=True, slots=True)
 class _TypedEvidenceFact(EvidenceReadyFact):
     shape_result: str

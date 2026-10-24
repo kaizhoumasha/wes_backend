@@ -119,6 +119,18 @@ def setup_driver():  # type: ignore[no-untyped-def]
         last_applied_plan_revision=1,
     )
     positions, plans, creator = Positions(), Plans(), Creator()
+
+    async def working_position(db, *, workline_id, rack_id, location_code):
+        position = await positions.get(db, "RACK", rack_id)
+        if (
+            position is not None
+            and position.workline_id == workline_id
+            and not position.position_unknown
+            and position.position_json == {"kind": "RACK_POSITION", "location_code": location_code}
+        ):
+            return position
+        return None
+
     arrival_reader = SimpleNamespace(latest=AsyncMock(return_value=None))
     arrival_scheduler = SimpleNamespace(create_in_session=AsyncMock())
     departure_reader = SimpleNamespace(
@@ -131,6 +143,9 @@ def setup_driver():  # type: ignore[no-untyped-def]
             return_before_motion=AsyncMock(return_value=None),
         ),
         batches=SimpleNamespace(
+            working_rack_position=AsyncMock(side_effect=working_position),
+            supersede_return_rack_requests=AsyncMock(),
+            manual_source_arrival=AsyncMock(return_value=None),
             has_newer_rack_action=AsyncMock(return_value=False),
             current_rack_arrival_at=AsyncMock(return_value=timezone.now_for_db()),
             has_current_rack_dependency=AsyncMock(return_value=False),

@@ -23,6 +23,8 @@ from src.app.execution.models import (
     MaterialExecutionStatus,
 )
 from src.app.wms_adapter.inbound_material.typed import decode_outcome
+from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_outcome as decode_material_outcome
+from src.app.wms_adapter.outbound_picking.movement_report_typed import decode_outcome as decode_movement_outcome
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorkLinePositionBinding
@@ -58,15 +60,21 @@ class FactBuilder:
                 material_trace_id=execution.material_trace_id,
             )
         if kind is InboundEvidenceKind.WMS_RESULT:
-            return WmsResultReadyFact(
-                **common,
-                operation_id=_required(evidence.operation_id, "operation_id"),
-                outcome=decode_outcome(
-                    _required(evidence.operation, "operation"),
-                    evidence.normalized_payload,
-                    material_trace_id=execution.material_trace_id,
-                ),
-            )
+            operation = _required(evidence.operation, "operation")
+            operation_id = _required(evidence.operation_id, "operation_id")
+            if operation in ("outbound.material.decide@v1", "outbound.material.movement_report@v1"):
+                if evidence.normalized_payload.get("operation_id") != operation_id:
+                    raise ValueError("WMS result operation_id differs from persisted evidence")
+                outcome = (
+                    decode_material_outcome(evidence.normalized_payload)
+                    if operation == "outbound.material.decide@v1"
+                    else decode_movement_outcome(evidence.normalized_payload)
+                )
+            else:
+                outcome = decode_outcome(
+                    operation, evidence.normalized_payload, material_trace_id=execution.material_trace_id
+                )
+            return WmsResultReadyFact(**common, operation_id=operation_id, outcome=outcome)
         if kind is InboundEvidenceKind.TRANSPORT_RESULT:
             self._validate_transport_causal(evidence, execution, causal_evidence)
             return TransportResultReadyFact(

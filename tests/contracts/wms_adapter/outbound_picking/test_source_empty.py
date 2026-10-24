@@ -24,7 +24,12 @@ def request(source="BIN_CELL"):
         "operation": OPERATION,
         "operation_id": OPERATION_ID,
         "timestamp": 0,
-        "data": {"task_id": "TASK-1", "source_locator": locator, "observed_at": 123},
+        "data": {
+            **({"plan_revision": 2} if source == "RACK_SLOT" else {}),
+            "task_id": "TASK-1",
+            "source_locator": locator,
+            "observed_at": 123,
+        },
     }
 
 
@@ -69,7 +74,11 @@ def test_typed_request_reuses_source_and_preserves_observed_time(source):
         else sdk.PickingRackSlot("RACK-1", "面 A", "SLOT-1")
     )
     intent = wms_operations.outbound_source_empty_decide(
-        operation_id=OPERATION_ID, task_id="TASK-1", source_locator=locator, observed_at=123
+        operation_id=OPERATION_ID,
+        task_id="TASK-1",
+        source_locator=locator,
+        observed_at=123,
+        plan_revision=2 if source == "RACK_SLOT" else None,
     )
     assert intent.source_locator is locator
     assert encode_request(intent, timestamp=0) == request(source)
@@ -168,6 +177,7 @@ def test_sdk_rejects_invalid_intent(override):
         "operation_id": OPERATION_ID,
         "task_id": "TASK-1",
         "source_locator": sdk.PickingRackSlot("RACK-1", "A", "S-1"),
+        "plan_revision": 2,
         "observed_at": 0,
     }
     with pytest.raises((ValueError, TypeError)):
@@ -226,6 +236,7 @@ def test_observed_at_preserves_int64_boundaries(observed_at):
         operation_id=OPERATION_ID,
         task_id="TASK-1",
         source_locator=sdk.PickingRackSlot("RACK-1", "A", "S-1"),
+        plan_revision=2,
         observed_at=observed_at,
     )
     assert encode_request(intent, timestamp=0)["data"]["observed_at"] == observed_at

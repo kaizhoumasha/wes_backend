@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.app.execution import config
-from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
+from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmation
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationIdentityConflictResult,
@@ -76,6 +76,24 @@ class ReturnRackArrivalResultReader:
         confirmation = await self._repository.latest(db, picking_task_id, rack_id, transport_task_id)
         if confirmation is None:
             return None
+        return await self._snapshot(db, confirmation, rack_id)
+
+    async def by_id(self, db: AsyncSession, *, picking_task_id: int, confirmation_id: int) -> ReturnRackArrivalSnapshot:
+        confirmation = await db.get(WmsConfirmation, confirmation_id, populate_existing=True)
+        if (
+            confirmation is None
+            or confirmation.operation != RETURN_RACK_ARRIVAL_REPORT_OPERATION
+            or confirmation.picking_task_id != picking_task_id
+            or confirmation.workline_id is not None
+            or confirmation.material_execution_id is not None
+        ):
+            raise ValueError("arrival confirmation owner mismatch")
+        request = parse_return_rack_arrival_report_request(confirmation.request_payload)
+        return await self._snapshot(db, confirmation, request.data.rack_id)
+
+    async def _snapshot(
+        self, db: AsyncSession, confirmation: WmsConfirmation, rack_id: str
+    ) -> ReturnRackArrivalSnapshot:
         request = parse_return_rack_arrival_report_request(confirmation.request_payload)
         if request.operation_id != confirmation.operation_id or request.data.rack_id != rack_id:
             raise ValueError("arrival request identity differs from confirmation")

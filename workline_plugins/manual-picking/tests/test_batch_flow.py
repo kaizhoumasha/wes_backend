@@ -636,6 +636,8 @@ async def test_batch_driver_starts_only_for_authoritatively_positioned_rack_and_
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
         bindings=SimpleNamespace(list_task_member_bindings=AsyncMock(return_value={(11, "R1")})),
         batches=SimpleNamespace(
+            manual_source_arrival=AsyncMock(return_value=None),
+            working_rack_position=AsyncMock(return_value=SimpleNamespace(arrival_face="90")),
             cancelled_source_windows=AsyncMock(return_value=[]),
             current_rack_arrival_at=AsyncMock(return_value=None),
             has_newer_rack_action=AsyncMock(return_value=False),
@@ -735,6 +737,8 @@ async def test_batch_driver_checks_return_buffer_after_inbound_before_creating_n
         departure_reader=SimpleNamespace(latest_for_workline=AsyncMock(return_value=None)),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=(SimpleNamespace(bin_code="BIN-1"),))),
         batches=SimpleNamespace(
+            manual_source_arrival=AsyncMock(return_value=None),
+            working_rack_position=AsyncMock(return_value=SimpleNamespace(arrival_face="90")),
             has_newer_rack_action=AsyncMock(return_value=False),
             cancelled_source_windows=AsyncMock(return_value=[]),
             cancelled_return_windows=AsyncMock(return_value=[]),
@@ -843,6 +847,8 @@ async def test_completed_task_continues_return_fifo_without_target_rack() -> Non
         departure_reader=SimpleNamespace(latest_for_workline=AsyncMock(return_value=None)),
         passages=SimpleNamespace(ready_prefix_for_update=AsyncMock(return_value=())),
         batches=SimpleNamespace(
+            manual_source_arrival=AsyncMock(return_value=None),
+            working_rack_position=AsyncMock(return_value=SimpleNamespace(arrival_face="90")),
             cancelled_source_windows=AsyncMock(return_value=[]),
             current_rack_arrival_at=AsyncMock(return_value=None),
             has_newer_rack_action=AsyncMock(return_value=False),

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import aliased
 
 from src.app.execution.models import TransportDecisionBinding, WmsConfirmation
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
@@ -142,6 +143,7 @@ class ManualPickingCompletionRepository:
             binding = cast("Any", TransportDecisionBinding).__table__.c
             transport = cast("Any", TransportTask).__table__.c
             member = cast("Any", TransportMember).__table__.c
+            newer = aliased(TransportDecisionBinding)
             terminal_failure = await db.scalar(
                 select(binding.id)
                 .select_from(
@@ -158,9 +160,22 @@ class ManualPickingCompletionRepository:
                 )
                 .where(
                     binding.workline_id == line.id,
+                    binding.picking_task_id == task.id,
                     binding.step == "PICKING_TASK_BIN_SOURCE_RACK_IN",
                     binding.resource_fence_id == source.rack_id,
                     binding.source_evidence_id == source.source_evidence_id,
+                    # 旧失败只结束自身动作，不能豁免同一来源的后续进场。
+                    ~select(newer.id)
+                    .where(
+                        newer.workline_id == binding.workline_id,
+                        newer.picking_task_id == binding.picking_task_id,
+                        newer.step == binding.step,
+                        newer.resource_fence_id == binding.resource_fence_id,
+                        newer.source_evidence_id == binding.source_evidence_id,
+                        newer.id != binding.id,
+                        newer.causal_token >= binding.causal_token,
+                    )
+                    .exists(),
                     transport.authority_workline_id == line.id,
                     transport.outcome_version > 0,
                     transport.published_outcome_version >= transport.outcome_version,

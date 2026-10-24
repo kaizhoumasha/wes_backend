@@ -148,6 +148,9 @@ class PickingTaskPlanActivationService:
             )
             pending_racks = await self._pending_bin_racks(db, task, decided_members)
             pending_return_racks = await self._pending_return_racks(db, task, decided_members)
+            filter_return_racks = getattr(driver, "filter_return_racks_in_session", None)
+            if filter_return_racks is not None:
+                pending_return_racks = await filter_return_racks(db, line, task, pending_return_racks)
             target_rack = (
                 PickingTaskPlanRack(
                     rack_id=task.target_rack_id,

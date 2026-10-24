@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import wes_plugin_sdk as sdk
+from departure_retry_support import RetrySession
 from drain_execution_support import unbound_drain_executions
 from manual_picking.application.batch_driver import ManualPickingBatchDriver
 
@@ -151,12 +152,28 @@ def setup_driver():  # type: ignore[no-untyped-def]
         target_rack_face="A",
     )
     positions, plans, flow, creator = Positions(), Plans(), Flow(), Creator()
+
+    async def working_position(_db, *, workline_id, rack_id, location_code):
+        projection = await positions.get(_db, "RACK", rack_id)
+        if (
+            projection is not None
+            and projection.workline_id == workline_id
+            and not projection.position_unknown
+            and projection.position_json == {"kind": "RACK_POSITION", "location_code": location_code}
+        ):
+            return projection
+        return None
+
     batches = SimpleNamespace(
+        manual_source_arrival=AsyncMock(return_value=None),
+        working_rack_position=AsyncMock(side_effect=working_position),
+        supersede_return_rack_requests=AsyncMock(),
         has_newer_rack_action=AsyncMock(return_value=False),
         current_rack_arrival_at=AsyncMock(return_value=timezone.now_for_db()),
         release_completed_source_windows=AsyncMock(return_value=0),
         cancelled_source_windows=AsyncMock(return_value=[]),
         cancelled_return_windows=AsyncMock(return_value=[]),
+        current_round_client_request_id=AsyncMock(return_value="original-window"),
         current_round_started_at=AsyncMock(return_value=timezone.now_for_db()),
         has_current_rack_dependency=AsyncMock(return_value=False),
         has_unclosed_return_dependency_for_rack=AsyncMock(return_value=False),
@@ -173,6 +190,7 @@ def setup_driver():  # type: ignore[no-untyped-def]
     )
     tasks = SimpleNamespace(
         get_by_task_id_for_update=AsyncMock(return_value=task),
+        get_by_id_for_update=AsyncMock(return_value=task),
         get_active_for_workline=AsyncMock(return_value=task),
     )
     driver = ManualPickingBatchDriver(
@@ -747,6 +765,8 @@ async def test_cancelled_source_window_clearance_survives_parent_completion(pare
     # 第一条事实不满足清退资格；第二条到达后持久窗口扫描必定重新求值。
     assert await driver.project_exits_in_session(object(), line) == 0
     driver._batches.cancelled_source_windows.return_value = [(window, terminal, position)]
+    driver._batches.working_rack_position.side_effect = None
+    driver._batches.working_rack_position.return_value = position
     driver._transports.get_task.return_value = terminal
     assert await driver.project_exits_in_session(object(), line) == 1
     request = scheduler.create_in_session.await_args.args[1]
@@ -1018,7 +1038,7 @@ async def test_source_departure_uses_authoritative_departure_evidence_and_destin
 
 
 @pytest.mark.asyncio
-async def test_rejected_source_departure_requests_new_wms_decision() -> None:
+async def test_rejected_source_departure_waits_before_new_wms_decision() -> None:
     driver, line, task, positions, plans, flow, creator, reader, scheduler = setup_driver()
     task.status = "EXECUTION_COMPLETED"
     plans.rows[1].source_evidence_id = 99
@@ -1036,16 +1056,22 @@ async def test_rejected_source_departure_requests_new_wms_decision() -> None:
         outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
         evidence_id=88,
     )
-    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(client_request_id="old-request")
-    driver._transports.get_task_by_client_request = AsyncMock(return_value=SimpleNamespace(status="REJECTED"))
+    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(
+        client_request_id="old-request", picking_task_id=task.id, causal_token=1, correlation_id="departure:old-op"
+    )
+    driver._transports.get_task_by_client_request = AsyncMock(
+        return_value=SimpleNamespace(
+            status="REJECTED", transport_task_id="rejected-1", outcome_version=1, published_outcome_version=1
+        )
+    )
 
-    assert await driver.advance_in_session(object(), line, task) == 1
+    assert await driver.advance_in_session(RetrySession(), line, task) == 0
     assert creator.depart == []
-    assert scheduler.create_in_session.await_args.args[1].operation_id != "old-op"
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_rejected_transfer_departure_requests_new_wms_decision() -> None:
+async def test_rejected_transfer_departure_waits_before_new_wms_decision() -> None:
     driver, line, task, _, plans, _, creator, reader, scheduler = setup_driver()
     task.status = "EXECUTION_COMPLETED"
     plans.transfer_owner = task
@@ -1061,12 +1087,18 @@ async def test_rejected_transfer_departure_requests_new_wms_decision() -> None:
         outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportRackPosition("STORE-POS"))),
         evidence_id=71,
     )
-    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(client_request_id="old-request")
-    driver._transports.get_task_by_client_request = AsyncMock(return_value=SimpleNamespace(status="REJECTED"))
+    driver._bindings.get_by_decision_identity_for_update.return_value = SimpleNamespace(
+        client_request_id="old-request", picking_task_id=task.id, causal_token=1, correlation_id="departure:old-op"
+    )
+    driver._transports.get_task_by_client_request = AsyncMock(
+        return_value=SimpleNamespace(
+            status="REJECTED", transport_task_id="rejected-1", outcome_version=1, published_outcome_version=1
+        )
+    )
 
-    assert await driver.advance_completed_in_session(object(), line) == 1
+    assert await driver.advance_completed_in_session(RetrySession(), line) == 0
     assert creator.transfer_depart == []
-    assert scheduler.create_in_session.await_args.args[1].operation_id != "old-op"
+    scheduler.create_in_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1492,3 +1524,174 @@ async def test_scan_releases_completed_admission_before_current_task_progress():
     call = driver._batches.release_completed_source_windows.await_args.kwargs
     assert call["workline_id"] == line.id
     assert task.status == "EXECUTING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transfer", (False, True))
+async def test_new_departure_decisions_keep_backoff_in_real_progression_entry(transfer, monkeypatch):
+    driver, line, task, positions, plans, flow, creator, reader, scheduler = setup_driver()
+    task.status = "EXECUTION_COMPLETED"
+    clock = [timezone.now_for_db()]
+    monkeypatch.setattr(timezone, "now_for_db", lambda: clock[0])
+    if transfer:
+        plans.transfer_owner = task
+    else:
+        plans.rows[1].source_evidence_id = 99
+        positions.source.arrival_face = "270"
+        flow.complete.add(("R1", "270"))
+    db = RetrySession()
+    binding = SimpleNamespace(
+        client_request_id="old", picking_task_id=task.id, causal_token=1, correlation_id="departure:old"
+    )
+    rejected = SimpleNamespace(
+        status="REJECTED", transport_task_id="rejected", outcome_version=1, published_outcome_version=1
+    )
+    driver._bindings.get_by_decision_identity_for_update.return_value = binding
+    driver._transports.get_task_by_client_request = AsyncMock(return_value=rejected)
+    # Fresh decision identity on every cycle is the path that previously reset retry timing.
+    for attempt, seconds in enumerate((1, 2, 4, 8, 16, 32, 60, 60), 1):
+        operation = f"decision-{attempt}"
+        binding.causal_token = attempt
+        binding.correlation_id = "departure:" + operation
+        rejected.transport_task_id = f"rejected-{attempt}"
+        intent = sdk.wms_operations.outbound_rack_departure_decide(
+            operation_id=operation,
+            task_id=task.task_id if transfer else None,
+            rack_id="TARGET" if transfer else "R1",
+            current_location=sdk.TransportRackPosition("TRANSFER-POS" if transfer else "FIVE-POS"),
+            current_face="A" if transfer else "270",
+        )
+        snapshot = SimpleNamespace(
+            intent=intent,
+            status=WmsConfirmationStatus.COMPLETED,
+            outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
+            evidence_id=88 + attempt,
+        )
+        if transfer:
+            reader.latest.return_value = snapshot
+        else:
+            reader.latest_for_workline.return_value = snapshot
+
+        async def scan():
+            if transfer:
+                return await driver.advance_completed_in_session(db, line)
+            return await driver.advance_in_session(db, line, task)
+
+        assert await scan() == 0
+        assert next(iter(db.rows.values())).next_attempt_at == clock[0] + timedelta(seconds=seconds)
+        clock[0] += timedelta(seconds=seconds) - timedelta(microseconds=1)
+        assert await scan() == 0
+        clock[0] += timedelta(microseconds=1)
+        assert await scan() == 1
+        assert scheduler.create_in_session.await_count == attempt
+        assert await scan() == 0
+        clock[0] += timedelta(seconds=1)
+    assert creator.depart == [] and creator.transfer_depart == []
+    assert len(db.rows) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("cancelled_source", "cancelled_return", "retired_drain"))
+async def test_window_clearance_rejections_keep_original_round_and_backoff(kind, monkeypatch):
+    driver, line, task, _, _, _, creator, reader, scheduler = setup_driver()
+    clock = [timezone.now_for_db()]
+    started_at = clock[0] - timedelta(minutes=1)
+    monkeypatch.setattr(timezone, "now_for_db", lambda: clock[0])
+    retired = kind == "retired_drain"
+    rack_id = "R1"
+    location = "RETURN-POS" if kind == "cancelled_return" else "FIVE-POS"
+    line.position_bindings["RETURN_RACK"] = {"location_id": "RETURN-POS"}
+    root = SimpleNamespace(
+        client_request_id="original-window",
+        resource_fence_id=rack_id,
+        picking_task_id=None if retired else task.id,
+        source_evidence_id=99,
+        created_at=started_at,
+        window_target_location_code=location,
+    )
+    position = SimpleNamespace(arrival_face="270")
+    rejected = SimpleNamespace(
+        status="REJECTED",
+        transport_task_id="rejected",
+        created_at=clock[0],
+        outcome_version=1,
+        published_outcome_version=1,
+    )
+    driver._batches.working_rack_position = AsyncMock(return_value=position)
+    driver._batches.current_rack_arrival_at.return_value = started_at
+    execution = SimpleNamespace(status="EXCEPTION_RETIRED")
+    driver._drain = SimpleNamespace(
+        repository=SimpleNamespace(
+            retired_clearance_racks=AsyncMock(return_value=[(root, rejected, position)] if retired else []),
+            executions=SimpleNamespace(for_evidence=AsyncMock(return_value=execution)),
+        )
+    )
+    if not retired:
+        getattr(
+            driver._batches, "cancelled_return_windows" if kind == "cancelled_return" else "cancelled_source_windows"
+        ).return_value = [(root, rejected, position)]
+    binding = SimpleNamespace(
+        client_request_id="rejected-client",
+        picking_task_id=root.picking_task_id,
+        causal_token=1,
+        source_evidence_id=99,
+        correlation_id="departure:old",
+    )
+    driver._bindings.get_by_decision_identity_for_update.return_value = binding
+    driver._transports.get_task_by_client_request = AsyncMock(return_value=rejected)
+    driver._transports.get_task.side_effect = lambda *_: rejected
+    db = RetrySession()
+    for attempt, seconds in enumerate((1, 2, 4, 8, 16, 32, 60, 60), 1):
+        operation = f"decision-{attempt}"
+        binding.causal_token = attempt
+        binding.correlation_id = "departure:" + operation
+        rejected.transport_task_id = f"rejected-{attempt}"
+        rejected.created_at = clock[0]
+        intent = sdk.wms_operations.outbound_rack_departure_decide(
+            operation_id=operation,
+            task_id=None,
+            rack_id=rack_id,
+            current_location=sdk.TransportRackPosition(location),
+            current_face="270",
+        )
+        snapshot = SimpleNamespace(
+            intent=intent,
+            status=WmsConfirmationStatus.COMPLETED,
+            outcome=sdk.RackDepartureOutcome(sdk.RackDepartureReady(sdk.TransportZonePosition("WH05"))),
+            evidence_id=100 + attempt,
+        )
+
+        async def within_round(_db, _line, _rack, *, arrived_at, snapshot=snapshot):
+            return snapshot if arrived_at <= rejected.created_at - timedelta(microseconds=1) else None
+
+        reader.latest_for_workline.side_effect = within_round
+        if attempt == 7 and not retired:
+            # 成员取消前的普通清退已进入60秒退避，取消后必须沿用同一游标。
+            driver._transports.get_task.side_effect = None
+            driver._transports.get_task.return_value = SimpleNamespace(created_at=started_at)
+            step = "MANUAL_PICKING_RETURN_RACK_OUT" if kind == "cancelled_return" else "MANUAL_PICKING_SOURCE_RACK_OUT"
+            assert (
+                await driver._advance_workline_departure(
+                    db,
+                    line,
+                    rack_id=rack_id,
+                    current_face="270",
+                    step=step,
+                    picking_task_id=task.id,
+                    arrival_transport_task_id="original-arrival",
+                    now=clock[0],
+                )
+                == 0
+            )
+            driver._transports.get_task.side_effect = lambda *_: rejected
+        assert await driver.project_exits_in_session(db, line) == 0
+        assert next(iter(db.rows.values())).next_attempt_at == clock[0] + timedelta(seconds=seconds)
+        clock[0] += timedelta(seconds=seconds) - timedelta(microseconds=1)
+        assert await driver.project_exits_in_session(db, line) == 0
+        clock[0] += timedelta(microseconds=1)
+        assert await driver.project_exits_in_session(db, line) == 1
+        assert scheduler.create_in_session.await_count == attempt
+        assert await driver.project_exits_in_session(db, line) == 0
+        clock[0] += timedelta(seconds=1)
+    assert len(db.rows) == 1
+    assert creator.depart == []

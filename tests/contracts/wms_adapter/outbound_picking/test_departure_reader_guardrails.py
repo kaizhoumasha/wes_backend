@@ -224,3 +224,73 @@ async def test_frozen_departure_read_rejects_other_owner_identity_or_unpublished
             await reader.by_operation_id(object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID)
     repository.latest.assert_not_awaited()
     repository.latest_for_workline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_id", [31, 32])
+async def test_exact_application_read_allows_only_original_unpublished_result(evidence_id):
+    from wes_plugin_sdk import RackDepartureWait
+
+    from src.utils.canonical_json import canonical_json_digest
+
+    request = _request()
+    request["data"]["task_id"] = None
+    confirmation = _confirmation(
+        request_payload=request,
+        request_digest=canonical_json_digest(request),
+        operation=OPERATION,
+        workline_id=7,
+        picking_task_id=None,
+        response_result="WAIT",
+    )
+    reader, repository = _reader(
+        confirmation, _evidence(normalized_payload=_response(result="WAIT"), published_at=None)
+    )
+    repository.by_operation_id = AsyncMock(return_value=confirmation)
+    if evidence_id == 32:
+        with pytest.raises(ValueError, match="application evidence"):
+            await reader.for_evidence(
+                object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID, evidence_id=evidence_id
+            )
+    else:
+        snapshot = await reader.for_evidence(
+            object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID, evidence_id=evidence_id
+        )
+        assert type(snapshot.outcome.result) is RackDepartureWait
+        assert snapshot.outcome.result.retry_after_ms == 1000
+        with pytest.raises(ValueError, match="not published"):
+            await reader.by_operation_id(object(), workline_id=7, rack_id="RACK-1", operation_id=OPERATION_ID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["valid", "owner", "workline", "digest", "response_owner", "response_digest"])
+async def test_task_departure_reads_exact_current_without_requiring_workline_publication(case):
+    from src.utils.canonical_json import canonical_json_digest
+
+    request, response = _request(), _response()
+    confirmation = _confirmation(
+        operation=OPERATION, picking_task_id=11, workline_id=None, request_digest=canonical_json_digest(request)
+    )
+    evidence = _evidence(
+        picking_task_id=11, workline_id=None, published_at=None, payload_digest=canonical_json_digest(response)
+    )
+    if case == "owner":
+        confirmation.picking_task_id = 12
+    elif case == "workline":
+        confirmation.workline_id = 7
+    elif case == "digest":
+        confirmation.request_digest = "drift"
+    elif case == "response_owner":
+        evidence.picking_task_id = 12
+    elif case == "response_digest":
+        evidence.payload_digest = "drift"
+    reader, repo = _reader(confirmation, evidence)
+    repo.by_id = AsyncMock(return_value=confirmation)
+    if case == "valid":
+        snapshot = await reader.by_id(object(), picking_task_id=11, confirmation_id=3)
+        assert snapshot.intent.task_id == "TASK-1" and snapshot.evidence_id == 31
+    else:
+        with pytest.raises(ValueError):
+            await reader.by_id(object(), picking_task_id=11, confirmation_id=3)
+    repo.latest.assert_not_awaited()
+    repo.latest_for_workline.assert_not_awaited()

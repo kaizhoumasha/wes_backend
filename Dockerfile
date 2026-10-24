@@ -75,9 +75,10 @@ ARG WES_PLUGIN_EXTRAS=""
 RUN --mount=type=bind,target=/context \
     cp -a /context/. /app/ && \
     for extra in ${WES_PLUGIN_EXTRAS}; do \
-        case "$extra" in manual-picking) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
+        case "$extra" in manual-picking|automatic-picking) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
     done && \
-    case " ${WES_PLUGIN_EXTRAS} " in *" manual-picking "*) ;; *) rm -rf /app/workline_plugins/manual-picking ;; esac
+    case " ${WES_PLUGIN_EXTRAS} " in *" manual-picking "*) ;; *) rm -rf /app/workline_plugins/manual-picking ;; esac && \
+    case " ${WES_PLUGIN_EXTRAS} " in *" automatic-picking "*) ;; *) rm -rf /app/workline_plugins/automatic-picking ;; esac
 
 # ============================================
 # Stage 2: Builder - 依赖安装
@@ -100,6 +101,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     for extra in ${WES_PLUGIN_EXTRAS}; do \
         case "$extra" in \
             manual-picking) package=wes-manual-picking-plugin ;; \
+            automatic-picking) package=wes-automatic-picking-plugin ;; \
             *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; \
         esac; \
         set -- "$@" --extra "$extra" --no-build-isolation-package "$package"; \

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 import wes_plugin_sdk as sdk
 from manual_picking.application.batch_progress_model import ManualPickingInboundBatch, ManualPickingInboundBatchScan
+from manual_picking.application.manual_source_arrival_model import ManualPickingSourceArrival
 from manual_picking.application.passage_model import ManualPickingPassage
 from sqlalchemy import event, select
 from sqlalchemy.dialects import postgresql
@@ -40,6 +41,7 @@ async def _new_sessions():  # type: ignore[no-untyped-def]
 
     async with engine.begin() as connection:
         for table in (
+            ManualPickingSourceArrival.__table__,
             InboundEvidence.__table__,
             WmsConfirmation.__table__,
             TransportTask.__table__,
@@ -1883,6 +1885,8 @@ async def test_rack_departure_filters_old_confirmation_but_keeps_current_pending
 async def test_rack_departure_requires_unique_current_window(windows):
     repo = import_module("manual_picking.application.batch_repository").BatchRepository()
     db = SimpleNamespace(execute=AsyncMock(), scalars=AsyncMock(return_value=windows), scalar=AsyncMock())
+    repo.manual_source_arrival = AsyncMock(return_value=None)
+    repo.working_rack_position = AsyncMock(return_value=None)
     with pytest.raises(ValueError, match="exactly one active inbound window"):
         await repo.has_unclosed_return_dependency_for_rack(db, workline_id=7, rack_id="510002")
     db.scalar.assert_not_awaited()
@@ -2321,5 +2325,64 @@ async def test_equivalent_inbound_guard_keeps_only_its_direct_dependency(case):
             )
             assert blocked is (case in {"accepted", "reconciling", "unpublished", "failed_unknown"})
             assert task.model_dump() == before
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rack_id", ["CURRENT", "OTHER"])
+async def test_site_current_arrival_is_consumed_without_closing_original_transport(rack_id):
+    engine, sessions = await _new_sessions()
+    now = datetime(2026, 10, 23)
+    repo = import_module("manual_picking.application.batch_repository").BatchRepository()
+    try:
+        async with sessions.begin() as db:
+            binding = TransportDecisionBinding(
+                workline_id=7,
+                picking_task_id=11,
+                correlation_id="current-round",
+                causal_token=100,
+                step="PICKING_TASK_BIN_SOURCE_RACK_IN",
+                resource_fence_id="CURRENT",
+                client_request_id="original-arrival",
+                source_evidence_id=31,
+            )
+            original = TransportTask(
+                transport_task_id="original-arrival",
+                client_request_id="original-arrival",
+                kind="RACK_MOVE",
+                authority_workline_id=7,
+                caller_json={},
+                request_json={},
+                request_digest="a" * 64,
+                submit_operation_id="original-operation",
+                submit_timestamp_ms=1,
+                submit_request_body="{}",
+                submit_request_body_digest="b" * 64,
+                status="ACCEPTED",
+                created_at=now,
+                updated_at=now,
+            )
+            arrival = ManualPickingSourceArrival(
+                workline_id=7,
+                picking_task_id=11,
+                source_evidence_id=31,
+                source_causal_token=100,
+                source_transport_task_id="original-arrival",
+                plan_revision=1,
+                rack_id="CURRENT",
+                rack_face="90",
+                location_code="SOURCE",
+                observed_at=now,
+                audit_id=42,
+                confirmation_digest="c" * 64,
+            )
+            db.add_all([binding, original, arrival])
+            await db.flush()
+            assert await repo.manual_source_arrival(db, workline_id=7) is arrival
+            current = await repo.working_rack_position(db, workline_id=7, rack_id=rack_id, location_code="SOURCE")
+            assert current is (arrival if rack_id == "CURRENT" else None)
+            assert original.status == "ACCEPTED"
+            assert original.submit_operation_id == "original-operation"
     finally:
         await engine.dispose()

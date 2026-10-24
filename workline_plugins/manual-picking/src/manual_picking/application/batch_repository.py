@@ -44,6 +44,8 @@ from .drain_repository import (
     SOURCE_RACK_ROTATE_STEP,
     current_rack_action_predicate,
 )
+from .manual_source_arrival_model import ManualPickingSourceArrival
+from .manual_source_arrival_repository import ManualSourceArrivalRepository
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -94,9 +96,132 @@ class BatchRepository:
             await db.flush()
         return len(rows)
 
+    async def manual_source_arrival(self, db, *, workline_id):
+        repository = ManualSourceArrivalRepository()
+        fact = await repository.current(db, workline_id)
+        if fact is None or await repository.superseded(db, fact):
+            return None
+        return fact
+
+    async def working_rack_position(self, db, *, workline_id, rack_id, location_code):
+        """当前工作位事实优先；保留旧投影但不据其恢复已被接管的作业位。"""
+        repository = ManualSourceArrivalRepository()
+        anchor = await repository.current(db, workline_id)
+        if anchor is not None and anchor.location_code == location_code:
+            # 原生架已取得本点到位事实后，其后继离场失败留位仍属于当前位。
+            prior_binding = aliased(TransportDecisionBinding)
+            prior_task = aliased(TransportTask)
+            prior_member = aliased(TransportMember)
+            arrived_here = (
+                select(prior_binding.resource_fence_id)
+                .join(prior_task, prior_task.client_request_id == prior_binding.client_request_id)
+                .join(prior_member, prior_member.transport_task_id == prior_task.transport_task_id)
+                .where(
+                    prior_binding.workline_id == workline_id,
+                    prior_binding.resource_fence_id == PositionProjection.object_id,
+                    prior_binding.causal_token > anchor.source_causal_token,
+                    prior_binding.causal_token < PositionProjection.source_causal_token,
+                    prior_binding.step.in_(
+                        (
+                            "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                            SOURCE_RACK_ROTATE_STEP,
+                            "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN",
+                            "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE",
+                        )
+                    ),
+                    prior_task.created_at >= anchor.observed_at,
+                    prior_task.authority_workline_id == workline_id,
+                    prior_task.status.in_(("SUCCEEDED", "FAILED")),
+                    prior_task.outcome_version > 0,
+                    prior_task.outcome_version == prior_task.published_outcome_version,
+                    prior_member.object_type == "RACK",
+                    prior_member.object_id == PositionProjection.object_id,
+                    prior_member.position_unknown.is_(False),
+                    prior_member.final_position_json["kind"].as_string() == "RACK_POSITION",
+                    prior_member.final_position_json["location_code"].as_string() == location_code,
+                )
+                .correlate(PositionProjection)
+                .exists()
+            )
+            # 只有较新因果动作的已发布真实到位可接管；ACK、旧身份迟到或历史投影不能接管。
+            arrivals = (
+                await db.execute(
+                    select(PositionProjection, TransportTask)
+                    .join(
+                        TransportDecisionBinding,
+                        TransportDecisionBinding.causal_token == PositionProjection.source_causal_token,
+                    )
+                    .join(TransportTask, TransportTask.transport_task_id == PositionProjection.source_transport_task_id)
+                    .where(
+                        PositionProjection.workline_id == workline_id,
+                        PositionProjection.object_type == "RACK",
+                        PositionProjection.position_unknown.is_(False),
+                        PositionProjection.source_effect_phase == "FINAL_RESULT",
+                        PositionProjection.position_json["kind"].as_string() == "RACK_POSITION",
+                        PositionProjection.position_json["location_code"].as_string() == location_code,
+                        TransportDecisionBinding.workline_id == workline_id,
+                        TransportDecisionBinding.resource_fence_id == PositionProjection.object_id,
+                        TransportDecisionBinding.client_request_id == TransportTask.client_request_id,
+                        TransportDecisionBinding.causal_token > anchor.source_causal_token,
+                        TransportTask.created_at >= anchor.observed_at,
+                        or_(
+                            TransportDecisionBinding.step.in_(
+                                (
+                                    "PICKING_TASK_BIN_SOURCE_RACK_IN",
+                                    SOURCE_RACK_ROTATE_STEP,
+                                    "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_IN",
+                                    "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_ROTATE",
+                                )
+                            ),
+                            and_(
+                                or_(PositionProjection.object_id == anchor.rack_id, arrived_here),
+                                TransportDecisionBinding.step.in_(
+                                    (
+                                        SOURCE_RACK_OUT_STEP,
+                                        "MANUAL_PICKING_RETURN_BUFFER_DRAIN_RACK_OUT",
+                                        "MANUAL_PICKING_RETIRED_DRAIN_RACK_OUT",
+                                    )
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            ).all()
+            if arrivals:
+                if len(arrivals) != 1:
+                    return None
+                position, transport = arrivals[0]
+                if (
+                    transport.status not in {"SUCCEEDED", "FAILED"}
+                    or transport.outcome_version < 1
+                    or transport.outcome_version != transport.published_outcome_version
+                ):
+                    return None
+                return position if position.object_id == rack_id else None
+            if anchor.rack_id == rack_id and not await repository.superseded(db, anchor):
+                return anchor
+            return None
+        return await db.scalar(
+            select(PositionProjection).where(
+                PositionProjection.object_type == "RACK",
+                PositionProjection.object_id == rack_id,
+                PositionProjection.workline_id == workline_id,
+                PositionProjection.position_unknown.is_(False),
+                PositionProjection.position_json["kind"].as_string() == "RACK_POSITION",
+                PositionProjection.position_json["location_code"].as_string() == location_code,
+            )
+        )
+
     async def current_rack_arrival_at(
         self, db: AsyncSession, *, workline_id: int, rack_id: str, transport_task_id: str | None = None
     ) -> datetime | None:
+        fact = await self.manual_source_arrival(db, workline_id=workline_id)
+        if (
+            fact is not None
+            and fact.rack_id == rack_id
+            and (transport_task_id is None or fact.source_transport_task_id == transport_task_id)
+        ):
+            return fact.observed_at
         return await db.scalar(
             select(TransportEvidence.received_at)
             .join(
@@ -171,6 +296,34 @@ class BatchRepository:
             return "WAIT"
         await self._history.read_return(db, evidence, workline_id=workline_id)
         return "DONE"
+
+    async def supersede_return_rack_requests(
+        self, db: AsyncSession, *, workline_id: int, rack_id: str, round_started_at: datetime, now: datetime
+    ) -> None:
+        """PDA 架不接滚筒线回箱；只退役尚无响应、无搬运的旧请求，不中断在途收证。"""
+        requests = await db.scalars(
+            select(WmsConfirmation)
+            .where(
+                WmsConfirmation.workline_id == workline_id,
+                WmsConfirmation.operation == BIN_RETURN_BATCH_OPERATION,
+                WmsConfirmation.request_payload["data"]["rack_id"].as_string() == rack_id,
+                WmsConfirmation.created_at >= round_started_at,
+                WmsConfirmation.status.in_((WmsConfirmationStatus.PENDING, WmsConfirmationStatus.RECONCILING)),
+                WmsConfirmation.response_evidence_id.is_(None),
+                WmsConfirmation.response_result.is_(None),
+                WmsConfirmation.completed_at.is_(None),
+            )
+            .with_for_update()
+        )
+        for request in requests:
+            if await self.has_return_batch_transport(db, workline_id=workline_id, operation_id=request.operation_id):
+                continue
+            request.status = WmsConfirmationStatus.SUPERSEDED
+            request.retry_eligible = False
+            request.next_attempt_at = None
+            request.claim_token = request.claimed_at = request.claim_expires_at = None
+            request.updated_at = now
+        await db.flush()
 
     async def cancelled_source_windows(
         self, db: AsyncSession, *, workline_id: int, target_location_code: str
@@ -255,6 +408,20 @@ class BatchRepository:
                 window = await self._current_round_window(db, workline_id=workline_id, rack_id=rack_id)
                 if window.window_released_at is not None and window.step == step and window.picking_task_id == owner_id:
                     windows.append(window)
+        manual = await ManualSourceArrivalRepository().current(db, workline_id)
+        if members is PickingTaskBinSourceRack and manual is not None and manual.location_code == target_location_code:
+            original = await db.scalar(
+                select(TransportDecisionBinding).where(
+                    TransportDecisionBinding.causal_token == manual.source_causal_token,
+                    TransportDecisionBinding.workline_id == workline_id,
+                    TransportDecisionBinding.picking_task_id == manual.picking_task_id,
+                    TransportDecisionBinding.resource_fence_id == manual.rack_id,
+                    TransportDecisionBinding.step == step,
+                    TransportDecisionBinding.window_target_location_code == target_location_code,
+                )
+            )
+            if original is not None and all(row.id != original.id for row in windows):
+                windows.append(original)
         contexts = []
         binding = cast("Any", TransportDecisionBinding).__table__.c
         task = cast("Any", TransportTask).__table__.c
@@ -328,6 +495,19 @@ class BatchRepository:
                 continue
             if window.window_departure_client_request_id is not None and latest[1].status != "REJECTED":
                 continue
+            position = await self.working_rack_position(
+                db, workline_id=workline_id, rack_id=window.resource_fence_id, location_code=target_location_code
+            )
+            if position is None:
+                continue
+            confirmed_arrival = (
+                manual.source_transport_task_id
+                if manual is not None
+                and manual.picking_task_id == window.picking_task_id
+                and manual.rack_id == window.resource_fence_id
+                and manual.location_code == target_location_code
+                else None
+            )
             in_flight = await db.scalar(
                 select(TransportTask.id)
                 .where(
@@ -335,10 +515,15 @@ class BatchRepository:
                     TransportTask.request_json["rack_id"].as_string() == window.resource_fence_id,
                     TransportTask.created_at >= window.created_at,
                     TransportTask.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                    TransportTask.transport_task_id != confirmed_arrival if confirmed_arrival is not None else True,
                 )
                 .limit(1)
             )
             if in_flight is not None:
+                continue
+            if isinstance(position, ManualPickingSourceArrival):
+                if confirmed_arrival is not None:
+                    contexts.append((window, latest[1], position))
                 continue
             position = await db.scalar(
                 select(PositionProjection).where(
@@ -356,6 +541,10 @@ class BatchRepository:
                 contexts.append((window, latest[1], position))
         return contexts
 
+    async def current_round_client_request_id(self, db: AsyncSession, *, workline_id: int, rack_id: str) -> str:
+        window = await self._current_round_window(db, workline_id=workline_id, rack_id=rack_id)
+        return window.client_request_id
+
     async def current_round_started_at(self, db: AsyncSession, *, workline_id: int, rack_id: str) -> datetime:
         window = await self._current_round_window(db, workline_id=workline_id, rack_id=rack_id)
         return window.created_at
@@ -367,6 +556,19 @@ class BatchRepository:
         windows = await transport_decision_binding_repository.list_active_window_for_rack(
             db, workline_id=workline_id, rack_id=rack_id
         )
+        if not windows:
+            fact = await self.manual_source_arrival(db, workline_id=workline_id)
+            if fact is not None and fact.rack_id == rack_id:
+                original = await db.scalar(
+                    select(TransportDecisionBinding).where(
+                        TransportDecisionBinding.causal_token == fact.source_causal_token,
+                        TransportDecisionBinding.workline_id == workline_id,
+                        TransportDecisionBinding.resource_fence_id == rack_id,
+                        TransportDecisionBinding.window_target_location_code == fact.location_code,
+                    )
+                )
+                if original is not None:
+                    return original
         if not windows:
             # 当前失败离场或退役迟到事实仍有原轮次；只解析当前因果绑定，不恢复历史业务。
             fact_binding = TransportDecisionBinding.__table__.alias("current_rack_fact")
@@ -654,9 +856,15 @@ class BatchRepository:
         return due_earlier is not None
 
     async def has_current_rack_dependency(
-        self, db: AsyncSession, workline_id: int, rack_id: str, arrived_at: datetime
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        rack_id: str,
+        arrived_at: datetime,
+        *,
+        arrival_transport_task_id: str | None = None,
     ) -> bool:
-        """本轮直接动作；新 RACK 动作提交后、ACK 更新投影前也不能被越过。"""
+        """本轮直接动作；当前到位事实只满足其精确原进场的到位依赖，未发布结果仍阻塞。"""
         tasks = cast("Any", TransportTask).__table__.c
         members = cast("Any", TransportMember).__table__.c
         return (
@@ -670,7 +878,21 @@ class BatchRepository:
                             tasks.kind.in_(("RACK_MOVE", "RACK_ROTATE")),
                             tasks.request_json["rack_id"].as_string() == rack_id,
                             or_(
-                                tasks.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                                and_(
+                                    tasks.status.in_(("PENDING", "ACCEPTED", "RECONCILING")),
+                                    # 后继接管当前位不会抹掉原进场已被人工确认的事实。
+                                    ~select(ManualPickingSourceArrival.id)
+                                    .where(
+                                        ManualPickingSourceArrival.workline_id == workline_id,
+                                        ManualPickingSourceArrival.rack_id == rack_id,
+                                        ManualPickingSourceArrival.is_current.is_(True),
+                                        ManualPickingSourceArrival.source_transport_task_id == tasks.transport_task_id,
+                                    )
+                                    .exists(),
+                                    tasks.transport_task_id != arrival_transport_task_id
+                                    if arrival_transport_task_id is not None
+                                    else True,
+                                ),
                                 tasks.outcome_version > tasks.published_outcome_version,
                             ),
                         ),
@@ -987,7 +1209,25 @@ class BatchRepository:
         if (task_id is None) != (plan_revision is None):
             raise ValueError("task_id and plan_revision must be provided together")
         round_started_at = await self.current_round_started_at(db, workline_id=workline_id, rack_id=rack_id)
-        if await self.has_current_rack_dependency(db, workline_id, rack_id, round_started_at):
+        arrival_transport_task_id = None
+        arrival = await self.manual_source_arrival(db, workline_id=workline_id)
+        if arrival is not None and arrival.rack_id == rack_id and arrival.rack_face != rack_face:
+            return True
+        if arrival is not None and (arrival.rack_id, arrival.rack_face) == (rack_id, rack_face):
+            owner = await db.get(PickingTask, arrival.picking_task_id)
+            if (
+                task_id is None
+                or (owner is not None and owner.task_id == task_id and arrival.plan_revision == plan_revision)
+            ) and isinstance(
+                await self.working_rack_position(
+                    db, workline_id=workline_id, rack_id=rack_id, location_code=arrival.location_code
+                ),
+                ManualPickingSourceArrival,
+            ):
+                arrival_transport_task_id = arrival.source_transport_task_id
+        if await self.has_current_rack_dependency(
+            db, workline_id, rack_id, round_started_at, arrival_transport_task_id=arrival_transport_task_id
+        ):
             return True
         confirmations = cast("Any", WmsConfirmation).__table__.c
         inbound_scope = None

@@ -1664,14 +1664,14 @@ class TransportService:
         outcome_revision = _applicable_outcome_revision(evidence, task)
         if outcome_revision is None:
             return True
-        if task.status == "SUCCEEDED" and task.reason_code == "SCAN_TARGET_CONFIRMED":
+        if task.status == "SUCCEEDED" and task.reason_code in {"SCAN_TARGET_CONFIRMED", "MANUAL_TARGET_CONFIRMED"}:
             validated = _validated_member_results(members, results, task)
             if any(
                 result["status"] != "SUCCEEDED" or result.get("final_position") != member.final_position_json
                 for member, result, _, _ in validated
             ):
-                raise TransportContractError("WMS result contradicts confirmed scan arrival")
-            # 留存迟到回执并推进 WMS 自身游标，不重发本地已发布的成功结果或回写旧位置。
+                raise TransportContractError("WMS result contradicts confirmed local delivery")
+            # 留存迟到回执并推进 WMS 自身游标，不重发扫码/人工确认的成功结果或回写旧位置。
             task.last_applied_wms_outcome_revision = outcome_revision
             return True
         if task.status in {TransportTaskStatus.SUCCEEDED.value, TransportTaskStatus.FAILED.value}:
@@ -1762,6 +1762,120 @@ class TransportService:
             )
         )
         return True
+
+    async def confirm_manual_bin_delivery(
+        self,
+        *,
+        transport_task_id: str,
+        bin_code: str,
+        target: HandoffPosition,
+        expected_request_body_digest: str,
+        confirmed_by: str,
+        confirmation_reference: str,
+    ) -> int:
+        """受控人工确认闭合原单箱投料；审计与终态同事务，不写当前位置。"""
+        from src.app.sys.services.audit_service import audit_log_service
+
+        if (
+            not is_persistable_text(confirmed_by, max_length=32)
+            or not confirmed_by.strip()
+            or not is_persistable_text(confirmation_reference, max_length=512)
+            or not confirmation_reference.strip()
+            or not isinstance(target, HandoffPosition)
+        ):
+            raise TransportContractError("manual completion requires a named confirmer, reference and handoff target")
+        confirmation = {
+            "confirmed_by": confirmed_by,
+            "confirmation_reference": confirmation_reference,
+            "bin_code": bin_code,
+            "target": _json_value(target),
+            "request_body_digest": expected_request_body_digest,
+        }
+        async with self._sessions.begin() as db:
+            task = await self._get_task_for_projection_update(db, transport_task_id)
+            if (
+                task is None
+                or task.kind != "BIN_MOVE"
+                or task.authority_workline_id is None
+                or task.submit_request_body_digest != expected_request_body_digest
+                or hashlib.sha256(task.submit_request_body.encode()).hexdigest() != expected_request_body_digest
+            ):
+                raise TransportContractError("manual completion differs from frozen transport identity")
+            members = await self._repository.list_members(db, transport_task_id)
+            if (
+                len(members) != 1
+                or members[0].object_type != "BIN"
+                or members[0].object_id != bin_code
+                or members[0].source_json.get("kind") != "RACK_BIN_SLOT"
+                or members[0].target_json != confirmation["target"]
+            ):
+                raise TransportContractError("manual completion differs from the frozen single-bin target")
+            member = members[0]
+            if task.status == "SUCCEEDED" and task.reason_code == "MANUAL_TARGET_CONFIRMED":
+                origin = member.last_operation_id or ""
+                if not origin.startswith("manual:") or not origin[7:].isdigit():
+                    raise TransportContractError("manual completion lacks its audit identity")
+                audit_id = int(origin[7:])
+                audit = await audit_log_service.get_by_id(db, None, audit_id)
+                if (
+                    audit is None
+                    or audit.object_type != "TransportTask"
+                    or audit.object_id != transport_task_id
+                    or audit.action != "MANUAL_TRANSPORT_COMPLETED"
+                    or not audit.args
+                    or audit.args.get("confirmation") != confirmation
+                ):
+                    raise TransportIdempotencyConflict("manual completion confirmation changed")
+                return audit_id
+            if task.status not in {"ACCEPTED", "RECONCILING"} or member.status in {"SUCCEEDED", "FAILED"}:
+                raise TransportContractError("manual completion cannot replace a definite result or an unaccepted task")
+            if await self._repository.list_pending_result_evidence(db, transport_task_id):
+                raise TransportContractError("pending result evidence must be applied before manual completion")
+            now = timezone.now_for_db()
+            audit = await audit_log_service.create_audit_log(
+                db,
+                method="MANUAL",
+                title="人工确认原投箱搬运完成",
+                path="/maintenance/transport/manual-completion",
+                args={
+                    "model": "TransportTask",
+                    "operation": "MANUAL_TRANSPORT_COMPLETED",
+                    "record_id": transport_task_id,
+                    "confirmation": confirmation,
+                    "changes": {
+                        "previous_status": task.status,
+                        "status": "SUCCEEDED",
+                        "operation_id": task.submit_operation_id,
+                        "client_request_id": task.client_request_id,
+                        "confirmed_at": timezone.now_utc().isoformat(),
+                        "projection_applied": False,
+                    },
+                },
+            )
+            member.status = "SUCCEEDED"
+            member.final_position_json = confirmation["target"]
+            member.position_unknown = False
+            member.failure_code = None
+            member.last_operation_id = f"manual:{audit.id}"
+            member.updated_at = now
+            task.status = "SUCCEEDED"
+            task.reason_code = "MANUAL_TARGET_CONFIRMED"
+            task.next_submit_at = None
+            _clear_submit_claim(task)
+            task.outcome_version += 1
+            task.updated_at = now
+            task.outcome_json = _json_value(
+                TransportOutcome(
+                    transport_task_id=task.transport_task_id,
+                    client_request_id=task.client_request_id,
+                    outcome_version=task.outcome_version,
+                    caller=TransportCaller(**task.caller_json),
+                    status=TransportOutcomeStatus.SUCCEEDED,
+                    reason_code=task.reason_code,
+                    members=(TransportMemberOutcome(object_id=bin_code, final_position=target),),
+                )
+            )
+            return audit.id
 
     async def confirm_bin_arrival_in_session(
         self,

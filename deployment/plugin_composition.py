@@ -28,6 +28,10 @@ from src.app.wms_integration.outbound_picking.services.bin_batch import (
     BinBatchScheduler,
     BinInboundBatchOwnerService,
 )
+from src.app.wms_integration.outbound_picking.services.bin_work_plan import (
+    BinWorkPlanResultReader,
+    BinWorkPlanScheduler,
+)
 from src.app.wms_integration.outbound_picking.services.manual_bin_admission import (
     ManualBinAdmissionOwnerService,
     ManualBinAdmissionScheduler,
@@ -72,6 +76,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class DeploymentRuntime:
+    bin_work_plan_scheduler: BinWorkPlanScheduler
+    bin_work_plan_result_reader: BinWorkPlanResultReader
     execution: ExecutionRuntime
     plugins: tuple[InstalledWorkLinePlugin, ...]
     workline_start_service: WorkLineStartService
@@ -101,10 +107,31 @@ def build_deployment_runtime(
     device_command_service: DeviceCommandService,
     device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
     enabled_plugin_keys: tuple[str, ...] = (),
+    automatic_picking_source_commands: object | None = None,
+    automatic_picking_first_plan_timeout_ms: int | None = None,
+    automatic_picking_direct_pick_requests: object | None = None,
 ) -> DeploymentRuntime:
     """Web/Celery 共用的部署期显式插件装配。"""
 
     definitions = load_plugin_definitions(enabled_plugin_keys)
+    if (
+        any(
+            value is not None
+            for value in (
+                automatic_picking_source_commands,
+                automatic_picking_first_plan_timeout_ms,
+                automatic_picking_direct_pick_requests,
+            )
+        )
+        and "automatic-picking" not in enabled_plugin_keys
+    ):
+        raise ValueError("automatic picking inputs require an installed plugin")
+    if automatic_picking_source_commands is not None and not callable(
+        getattr(automatic_picking_source_commands, "read_in_session", None)
+    ):
+        raise ValueError("automatic picking source association requires read_in_session")
+    if automatic_picking_direct_pick_requests is not None and not callable(automatic_picking_direct_pick_requests):
+        raise ValueError("automatic picking return positioning requires a request factory")
     workline_owner = CombinedWorkLineConfirmationOwner(
         CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner()),
         ReturnBufferDrainOwnerService(),
@@ -214,6 +241,45 @@ def build_deployment_runtime(
                 drain_flow=drain_flow,
             ),
         )
+    if "automatic-picking" in enabled_plugin_keys:
+        from automatic_picking.application.transport_composition import build_transport_plugin
+
+        automatic = build_transport_plugin(
+            session_factory=session_factory,
+            transport_service=transport_runtime.service,
+            commands=device_command_service,
+            workline_owner=workline_owner,
+            task_queue_gateway=task_queue_gateway,
+        )
+        # Web/worker 共用已安装插件的完整链；未知归属延期，未知退料定位不创建动作。
+        from automatic_picking.application.picking_device_ports import (
+            PickingArmBindingReader,
+            PickingArmCommandMapper,
+            PickingDepartureReader,
+            PickingMaterialScanReader,
+            PickingPutReader,
+            PickingSourceReader,
+            PickingTargetReader,
+        )
+        from automatic_picking.application.transport_composition import build_picking_plugin
+
+        automatic = build_picking_plugin(
+            transport_plugin=automatic,
+            commands=device_command_service,
+            physical_reader=PickingSourceReader(),
+            arm_commands=PickingArmCommandMapper(PickingArmBindingReader()),
+            scan_reader=PickingMaterialScanReader(automatic_picking_source_commands),
+            target_reader=PickingTargetReader(),
+            put_reader=PickingPutReader(),
+            rack_transports=ReliableRackTransportCreator(
+                transport_runtime.service, inbound_window=RackInboundWindowService()
+            ),
+            rotation_reader=None,
+            departure_reader=PickingDepartureReader(),
+            first_plan_timeout_ms=automatic_picking_first_plan_timeout_ms,
+            direct_pick_requests=automatic_picking_direct_pick_requests,
+        )
+        plugins += (automatic,)
     plugin_binding = StaticPluginBinding(
         tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
         definitions=definitions,
@@ -231,6 +297,8 @@ def build_deployment_runtime(
         workline_owner=workline_owner,
     )
     return DeploymentRuntime(
+        bin_work_plan_scheduler=BinWorkPlanScheduler(),
+        bin_work_plan_result_reader=BinWorkPlanResultReader(),
         execution=execution,
         plugins=plugins,
         workline_start_service=WorkLineStartService(

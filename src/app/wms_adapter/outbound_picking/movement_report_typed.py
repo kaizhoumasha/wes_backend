@@ -8,6 +8,28 @@ import wes_plugin_sdk as sdk
 from . import movement_report_wire as wire
 
 
+def decode_request(payload: object) -> sdk.MaterialMovementReportIntent:
+    request = wire.parse_material_movement_report_request(payload)
+    source, target = request.data.source_locator, request.data.to_locator
+    return sdk.MaterialMovementReportIntent(
+        operation_id=request.operation_id,
+        task_id=request.data.task_id,
+        source_locator=(
+            sdk.PickingBinCell(source.rack_id, source.rack_face, source.bin_code, source.cell_id)
+            if source.type == "BIN_CELL"
+            else sdk.PickingRackSlot(source.rack_id, source.rack_face, source.slot_id)
+        ),
+        barcode=request.data.barcode,
+        to_locator=(
+            sdk.PickingRackSlot(target.rack_id, target.rack_face, target.slot_id)
+            if target.type == "RACK_SLOT"
+            else sdk.PickingNgZone(target.zone_code)
+        ),
+        occurred_at=request.data.occurred_at,
+        plan_revision=request.data.plan_revision,
+    )
+
+
 def encode_request(intent: sdk.MaterialMovementReportIntent, *, timestamp: int) -> dict[str, Any]:
     if type(intent) is not sdk.MaterialMovementReportIntent:
         raise TypeError("movement report requires MaterialMovementReportIntent")
@@ -18,11 +40,12 @@ def encode_request(intent: sdk.MaterialMovementReportIntent, *, timestamp: int) 
             "timestamp": timestamp,
             "data": {
                 "task_id": intent.task_id,
+                **({"plan_revision": intent.plan_revision} if intent.plan_revision is not None else {}),
                 "source_locator": {
                     "type": "RACK_SLOT" if type(intent.source_locator) is sdk.PickingRackSlot else "BIN_CELL",
                     **asdict(intent.source_locator),
                 },
-                "PkgID": intent.pkg_id,
+                "barcode": intent.barcode,
                 "to_locator": {
                     "type": "RACK_SLOT" if type(intent.to_locator) is sdk.PickingRackSlot else "NG_ZONE",
                     **asdict(intent.to_locator),

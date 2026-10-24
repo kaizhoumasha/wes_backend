@@ -25,19 +25,34 @@ def request(source="BIN_CELL"):
         "operation_id": OPERATION_ID,
         "timestamp": 0,
         "data": {
+            **({"plan_revision": 2} if source == "RACK_SLOT" else {}),
             "task_id": "TASK-1",
             "source_locator": locator,
-            "six_in_one": {
-                "HHPN": "HHPN-1",
-                "MfrPN": "MFR-1",
-                "Qty": " 1e999999 ",
-                "DateCode": "2610",
-                "LotCode": "L-1",
-                "PkgID": "PKG-1",
-            },
+            "barcode": " 原始,条码 ",
             "scanned_at": 123,
         },
     }
+
+
+@pytest.mark.parametrize("source", ["BIN_CELL", "RACK_SLOT"])
+def test_persisted_request_decodes_to_typed_intent_without_losing_contract_fields(source):
+    from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request, encode_request
+
+    body = request(source)
+    intent = decode_request(body)
+    assert type(intent) is sdk.PickingMaterialIntent
+    assert intent.material_execution_id is None and intent.fact_id is None
+    assert intent.barcode == body["data"]["barcode"]
+    assert encode_request(intent, timestamp=body["timestamp"]) == body
+
+
+def test_persisted_request_decode_rejects_invalid_wire_value():
+    from src.app.wms_adapter.outbound_picking.material_decide_typed import decode_request
+
+    body = request()
+    body["data"]["scanned_at"] = True
+    with pytest.raises(ValueError):
+        decode_request(body)
 
 
 def response(data, code="DECIDED"):
@@ -47,8 +62,22 @@ def response(data, code="DECIDED"):
 def accepted(**overrides):
     return {
         "result": "ACCEPT",
-        "target_locator": {"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "S-1"},
-        "next_source_action": "CONTINUE",
+        "target_locator": {
+            "type": "RACK_SLOT",
+            "rack_id": "TARGET-1",
+            "rack_face": "B",
+            "slot_id": "S-1",
+            "rack_layer": 1,
+            "rack_column": 2,
+        },
+        "next_source_action": {
+            "cell_id": "CELL-2",
+            "cell_index": 2,
+            "bin_type": 3,
+            "reel_layer": 1,
+            "reel_thickness": 0.5,
+            "reel_diameter": 15.0,
+        },
     } | overrides
 
 
@@ -102,24 +131,31 @@ def test_typed_request_preserves_scan_text_and_source(source):
         operation_id=OPERATION_ID,
         task_id="TASK-1",
         source_locator=locator,
-        six_in_one=sdk.PickingSixInOne(**body["data"]["six_in_one"]),
+        barcode=body["data"]["barcode"],
+        plan_revision=2 if source == "RACK_SLOT" else None,
         scanned_at=123,
     )
     assert encode_request(intent, timestamp=0) == body
     with pytest.raises(FrozenInstanceError):
-        intent.six_in_one.Qty = "1"
+        intent.barcode = "changed"
 
 
-@pytest.mark.parametrize("field,value", [("Qty", 1), ("Qty", ""), ("HHPN", "x" * 257), ("PkgID", None)])
-def test_scan_requires_bounded_original_strings(field, value):
+@pytest.mark.parametrize("value", [1, True, None, "", "x" * 1001])
+def test_scan_requires_original_bounded_string(value):
     from src.app.wms_adapter.outbound_picking.material_decide_wire import parse_material_decide_request
 
     body = request()
-    body["data"]["six_in_one"][field] = value
+    body["data"]["barcode"] = value
     with pytest.raises(ValueError):
         parse_material_decide_request(body)
-    with pytest.raises((ValueError, TypeError)):
-        sdk.PickingSixInOne(**body["data"]["six_in_one"])
+    with pytest.raises(ValueError):
+        wms_operations.outbound_material_decide(
+            operation_id=OPERATION_ID,
+            task_id="TASK-1",
+            source_locator=sdk.PickingBinCell("RACK-1", "面 A", "BIN-1", "CELL-1"),
+            barcode=value,
+            scanned_at=123,
+        )
 
 
 @pytest.mark.parametrize(
@@ -146,8 +182,10 @@ async def test_final_decisions_preserve_response_without_automatic_followup(data
     outcome = decode_outcome(body)
     assert isinstance(outcome, sdk.PickingMaterialOutcome)
     if data["result"] == "ACCEPT":
-        assert outcome.result.target_locator == sdk.PickingRackSlot("TARGET-1", "B", "S-1")
-        assert outcome.result.next_source_action == "CONTINUE"
+        assert outcome.result.target_locator == sdk.PickingTargetRackSlot("TARGET-1", "B", "S-1", 1, 2)
+        assert outcome.result.next_source_action == sdk.PickingCellSource(
+            cell_id="CELL-2", cell_index=2, bin_type=3, reel_layer=1, reel_thickness=0.5, reel_diameter=15.0
+        )
         preparation = data.get("target_preparation")
         if preparation is None:
             assert outcome.result.target_preparation is None
@@ -172,7 +210,9 @@ async def test_direct_pick_refuses_cell_only_actions(data):
     assert (await dispatch(client_response(response(data)), request("RACK_SLOT"))).code is WmsDispatchCode.RECONCILING
 
 
-@pytest.mark.parametrize("data", [accepted(next_source_action="SOURCE_DONE"), rejected(source_disposition="CLOSE")])
+@pytest.mark.parametrize(
+    "data", [{"result": "ACCEPT", "target_locator": accepted()["target_locator"]}, rejected(source_disposition="CLOSE")]
+)
 @pytest.mark.asyncio
 async def test_direct_pick_accepts_closed_source_results(data):
     assert (await dispatch(client_response(response(data)), request("RACK_SLOT"))).code is WmsDispatchCode.DETERMINATE
@@ -216,7 +256,7 @@ async def test_rejects_unapproved_response_branches(data):
         (
             "REJECTED",
             422,
-            {"reason_code": "INVALID_DATA", "field_path": "/data/six_in_one/Qty"},
+            {"reason_code": "INVALID_DATA", "field_path": "/data/barcode"},
             WmsDispatchCode.RECONCILING,
         ),
     ],
@@ -244,7 +284,7 @@ async def test_response_identity_must_match_frozen_request():
         ("scanned_at", -1),
         ("scanned_at", 2**63),
         ("source_locator", {"type": "RACK_POSITION", "location_code": "X"}),
-        ("six_in_one", {}),
+        ("barcode", {}),
     ],
 )
 @pytest.mark.asyncio
@@ -273,12 +313,11 @@ async def test_frozen_digest_drift_never_sends_request():
     client.post.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ["HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID"])
-def test_all_scan_fields_preserve_unicode_at_length_boundary(field):
+def test_barcode_preserves_unicode_at_length_boundary():
     from src.app.wms_adapter.outbound_picking.material_decide_wire import parse_material_decide_request
 
     body = request()
-    body["data"]["six_in_one"][field] = "盘" * 256
+    body["data"]["barcode"] = "盘" * 1000
     assert parse_material_decide_request(body).model_dump(mode="json") == body
 
 
@@ -292,6 +331,6 @@ def test_sdk_rejects_unapproved_result_and_mutable_source():
             operation_id=OPERATION_ID,
             task_id="TASK-1",
             source_locator=request()["data"]["source_locator"],
-            six_in_one=sdk.PickingSixInOne(**request()["data"]["six_in_one"]),
+            barcode=request()["data"]["barcode"],
             scanned_at=0,
         )

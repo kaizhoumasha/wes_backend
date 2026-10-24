@@ -399,7 +399,6 @@ async def test_picking_task_merge_converges_heads_without_rewriting_existing_dat
 
     merge_revision = "c6e209af714b"
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert scripts.get_heads() == [merge_revision]
     assert set(scripts.get_revision(merge_revision).down_revision) == {"a8c5e2107b94", "f0c2423ac98a"}
     async with temporary_database() as (_database, database_url):
         run_alembic("upgrade", "f72bd038e915", database_url=database_url)
@@ -455,7 +454,7 @@ async def test_picking_task_merge_converges_heads_without_rewriting_existing_dat
         for revision in starting_revisions:
             run_alembic("upgrade", revision, database_url=database_url)
         before = await inspect_database()
-        run_alembic("upgrade", "head", database_url=database_url)
+        run_alembic("upgrade", merge_revision, database_url=database_url)
         after = await inspect_database()
         assert after[3] == [merge_revision]
         assert after[0]["business_type"] == "outbound"
@@ -464,7 +463,7 @@ async def test_picking_task_merge_converges_heads_without_rewriting_existing_dat
         if len(starting_revisions) == 2:
             assert before[3] == ["a8c5e2107b94", "f0c2423ac98a"]
             assert before[:3] == after[:3]
-        run_alembic("upgrade", "head", database_url=database_url)
+        run_alembic("upgrade", merge_revision, database_url=database_url)
         assert await inspect_database() == after
 
 
@@ -580,3 +579,125 @@ async def test_task_cancel_projection_migration_preserves_only_confirmed_cancell
             assert await connection.fetchval("SELECT cancelled_at FROM wes_biz.picking_tasks WHERE id=12") == now
         finally:
             await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("starting_revision", [None, "3a17b9c40d62", "a72d4e6c9b13"])
+async def test_release_merge_preserves_current_plugin_facts_from_both_baselines(starting_revision) -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from src.app.execution.models import InboundEvidence, InboundEvidenceKind
+
+    merge_revision = "0f1be9a476d2"
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert scripts.get_heads() == [merge_revision]
+    assert set(scripts.get_revision(merge_revision).down_revision) == {"3a17b9c40d62", "a72d4e6c9b13"}
+    assert scripts.get_revision("a72d4e6c9b13").down_revision == "f6d0319c8a42"
+    assert scripts.get_revision("f6d0319c8a42").down_revision == "e3fec1d9ffae"
+    async with temporary_database() as (_database, database_url):
+        tables = ["work_lines", "picking_tasks", "inbound_evidences"]
+        before = {}
+        if starting_revision:
+            run_alembic("upgrade", starting_revision, database_url=database_url)
+            engine = create_async_engine(database_url)
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            try:
+                async with sessions.begin() as db:
+                    line = WorkLine(line_code="RELEASE-MERGE", line_name="发布合并验证", line_type="MANUAL")
+                    evidence = InboundEvidence(
+                        kind=InboundEvidenceKind.WMS_EVENT,
+                        source_identity="RELEASE-MERGE-ISSUED",
+                        operation="outbound.picking_task.issued@v1",
+                        operation_id="019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+                        payload_digest="b" * 64,
+                        normalized_payload={"data": {}},
+                        received_at=timezone.now_for_db(),
+                    )
+                    db.add_all([line, evidence])
+                    await db.flush()
+                    await db.execute(
+                        sa.text(
+                            "INSERT INTO wes_biz.picking_tasks "
+                            "(id, task_id, task_type, status, queue_revision, dispatch_sequence, issued_at_ms, "
+                            "issued_evidence_id, workline_id, created_at) "
+                            "VALUES (1, 'RELEASE-MERGE', :type, 'EXECUTING', 1, 1, 1, :evidence, :line, :now)"
+                        ),
+                        {
+                            "type": "AUTO" if starting_revision == "3a17b9c40d62" else "MANUAL",
+                            "evidence": evidence.id,
+                            "line": line.id,
+                            "now": timezone.now_for_db(),
+                        },
+                    )
+                    if starting_revision == "a72d4e6c9b13":
+                        tables += ["manual_picking_source_arrivals", "manual_picking_departure_retries"]
+                        await db.execute(
+                            sa.text(
+                                "INSERT INTO wes_biz.manual_picking_source_arrivals "
+                                "(id, created_at, is_current, workline_id, picking_task_id, source_evidence_id, "
+                                "source_causal_token, source_transport_task_id, plan_revision, rack_id, rack_face, "
+                                "location_code, observed_at, audit_id, confirmation_digest) "
+                                "VALUES (1, :now, true, :line, 1, :evidence, 7, 'ORIGINAL-CTU01', 1, "
+                                "'RACK-1', 'A', 'SOURCE', :now, 42, :digest)"
+                            ),
+                            {
+                                "line": line.id,
+                                "evidence": evidence.id,
+                                "now": timezone.now_for_db(),
+                                "digest": "c" * 64,
+                            },
+                        )
+                        await db.execute(
+                            sa.text(
+                                "INSERT INTO wes_biz.manual_picking_departure_retries "
+                                "(id, created_at, workline_id, scope_identity, rack_id, step, retry_count, "
+                                "last_transport_task_id, last_transport_causal_token, next_attempt_at) "
+                                "VALUES (1, :now, :line, 'original-scope', 'RACK-1', 'CTU03', 2, "
+                                "'ORIGINAL-CTU03', 8, :now)"
+                            ),
+                            {"line": line.id, "now": timezone.now_for_db()},
+                        )
+                    else:
+                        tables += ["automatic_picking_task_completions"]
+                        await db.execute(
+                            sa.text(
+                                "INSERT INTO wes_biz.automatic_picking_task_completions "
+                                "(id, created_at, workline_id, picking_task_id, first_plan_due_at) "
+                                "VALUES (1, :now, :line, 1, :now)"
+                            ),
+                            {"line": line.id, "now": timezone.now_for_db()},
+                        )
+            finally:
+                await engine.dispose()
+
+        async def snapshot():
+            connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+            try:
+                return {
+                    table: [dict(row) for row in await connection.fetch(f'SELECT * FROM wes_biz."{table}" ORDER BY id')]
+                    for table in tables
+                }
+            finally:
+                await connection.close()
+
+        if starting_revision:
+            before = await snapshot()
+        run_alembic("upgrade", "head", database_url=database_url)
+        after = await snapshot()
+        for table, rows in before.items():
+            assert [{key: row[key] for key in old} for row, old in zip(after[table], rows, strict=True)] == rows
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, merge_revision)
+            for table in (
+                "automatic_picking_works",
+                "automatic_picking_task_completions",
+                "manual_picking_source_arrivals",
+                "manual_picking_departure_retries",
+            ):
+                assert await connection.fetchval("SELECT to_regclass($1)", f"wes_biz.{table}")
+        finally:
+            await connection.close()
+        run_alembic("upgrade", "head", database_url=database_url)
+        assert await snapshot() == after

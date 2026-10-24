@@ -12,6 +12,7 @@ API_CONTAINER=""
 CELERY_CONTAINER=""
 FULFILLMENT_CONTAINER=""
 BEAT_CONTAINER=""
+FLOWER_CONTAINER=""
 FRONTEND_CONTAINER=""
 NGINX_CONTAINER=""
 HOT_SERVICES=()
@@ -29,18 +30,20 @@ require_deploy_root() {
         CELERY_CONTAINER=wes_integration-celery-1
         FULFILLMENT_CONTAINER=wes_integration-celery-wms-fulfillment-1
         BEAT_CONTAINER=wes_celery_beat_int
+        FLOWER_CONTAINER=wes_flower_int
         FRONTEND_CONTAINER=wes_integration-frontend-1
         NGINX_CONTAINER=wes_nginx_int
-        HOT_SERVICES=(api celery celery-wms-fulfillment celery_beat frontend nginx)
+        HOT_SERVICES=(api celery celery-wms-fulfillment celery_beat flower frontend nginx)
     elif [[ -f "$DEPLOY_ROOT/.env" && -f "$DEPLOY_ROOT/docker-compose.test-deploy.yml" ]]; then
         DEPLOY_LAYOUT=test
         API_CONTAINER=wes_api_test
         CELERY_CONTAINER=wes_backend_test-celery-1
         FULFILLMENT_CONTAINER=wes_backend_test-celery-wms-fulfillment-1
         BEAT_CONTAINER=wes_celery_beat_test
+        FLOWER_CONTAINER=wes_flower_test
         FRONTEND_CONTAINER=wes_frontend_test
         NGINX_CONTAINER=wes_nginx_test
-        HOT_SERVICES=(api celery celery-wms-fulfillment celery_beat frontend nginx)
+        HOT_SERVICES=(api celery celery-wms-fulfillment celery_beat flower frontend nginx)
     else
         fail "联调部署目录缺少 compose.sh/.env.integration 或 TEST Compose: $DEPLOY_ROOT"
     fi
@@ -90,7 +93,7 @@ validate_archive() {
 }
 
 container_protected_fingerprint() {
-    docker exec -i "$1" python - /app pyproject.toml uv.lock migrations <<'PY'
+    docker exec -i "$1" python - /app pyproject.toml uv.lock migrations workline_plugins/manual-picking/pyproject.toml workline_plugins/automatic-picking/pyproject.toml <<'PY'
 import hashlib
 import sys
 from pathlib import Path
@@ -219,7 +222,7 @@ activate() {
             "${HOT_SERVICES[@]}"
     else
         # 先终止旧进程，再由完整同步后的源码启动；后续探针不能命中旧版本。
-        compose restart --timeout 30 api celery celery-wms-fulfillment celery_beat frontend
+        compose restart --timeout 30 api celery celery-wms-fulfillment celery_beat flower frontend
     fi
     rm -rf -- "$upload_dir"
 }
@@ -249,6 +252,7 @@ runtime_ready() {
         "$CELERY_CONTAINER" \
         "$FULFILLMENT_CONTAINER" \
         "$BEAT_CONTAINER" \
+        "$FLOWER_CONTAINER" \
         "$FRONTEND_CONTAINER" \
         "$NGINX_CONTAINER" \
         --format '{{.State.Status}}' 2>/dev/null)" || return 1
@@ -269,6 +273,9 @@ runtime_ready() {
     probe_pids+=("$!")
     timeout "$remaining" docker exec "$BEAT_CONTAINER" \
         python /app/src/celery_app/beat_healthcheck.py >/dev/null 2>&1 &
+    probe_pids+=("$!")
+    timeout "$remaining" docker exec "$FLOWER_CONTAINER" \
+        curl -fsS http://127.0.0.1:5555/healthcheck >/dev/null 2>&1 &
     probe_pids+=("$!")
     timeout "$remaining" docker exec "$FRONTEND_CONTAINER" node -e \
         "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
@@ -310,7 +317,7 @@ case "$ACTION" in
     probe)
         require_deploy_root
         printf 'DEPLOY_LAYOUT=%s\n' "$DEPLOY_LAYOUT"
-        for container in "$API_CONTAINER" "$CELERY_CONTAINER" "$FULFILLMENT_CONTAINER" "$BEAT_CONTAINER"; do
+        for container in "$API_CONTAINER" "$CELERY_CONTAINER" "$FULFILLMENT_CONTAINER" "$BEAT_CONTAINER" "$FLOWER_CONTAINER"; do
             printf 'BACKEND_REVISION=%s\n' \
                 "$(docker inspect "$container" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
             if [[ "$DEPLOY_LAYOUT" == integration ]]; then

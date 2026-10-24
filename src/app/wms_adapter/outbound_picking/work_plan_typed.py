@@ -31,7 +31,7 @@ def decode_outcome(payload: object) -> sdk.BinWorkPlanOutcome:
     response = wire.parse_bin_work_plan_response(status, payload)
     if isinstance(response, wire.BinWorkPlanDecidedResponse):
         if isinstance(response.data, wire.BinWorkPlanReady):
-            return sdk.BinWorkPlanOutcome(sdk.BinWorkPlanReady(tuple(response.data.cell_ids)))
+            return sdk.BinWorkPlanOutcome(sdk.BinWorkPlanReady(**response.data.model_dump(exclude={"result"})))
         if isinstance(response.data, wire.BinWorkPlanWait):
             return sdk.BinWorkPlanOutcome(sdk.BinWorkPlanWait(response.data.retry_after_ms))
         return sdk.BinWorkPlanOutcome(sdk.BinWorkPlanNoWork())

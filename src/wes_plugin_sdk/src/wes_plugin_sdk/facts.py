@@ -7,7 +7,9 @@ from .decisions import DevicePosition
 from .validation import validate_required_text as _required
 from .wms_types import (
     AdmissionOutcome,
+    MaterialMovementReportOutcome,
     NgPlacementOutcome,
+    PickingMaterialOutcome,
     PickingTaskPrepareOutcome,
     PlacementOutcome,
     ReplacementPlanOutcome,
@@ -54,6 +56,8 @@ class WmsResultReadyFact(FactReference):
             PlacementOutcome,
             NgPlacementOutcome,
             PickingTaskPrepareOutcome,
+            PickingMaterialOutcome,
+            MaterialMovementReportOutcome,
         ):
             raise TypeError("outcome must be a typed WMS operation outcome")
 

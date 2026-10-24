@@ -93,6 +93,12 @@ async def test_result_reader_accepts_only_matched_persisted_completion_evidence(
             snapshot = await PickingTaskCompletionResultReader().latest(db, 11)
             assert type(snapshot.outcome.result) is sdk.PickingTaskCompleted
             assert snapshot.plan_revision == 2
+            assert (
+                await PickingTaskCompletionResultReader().by_id(db, picking_task_id=11, confirmation_id=confirmation.id)
+                == snapshot
+            )
+            with pytest.raises(ValueError, match="owner"):
+                await PickingTaskCompletionResultReader().by_id(db, picking_task_id=12, confirmation_id=confirmation.id)
             confirmation.response_result = "BUSINESS_IN_PROGRESS"
             await db.flush()
             with pytest.raises(ValueError, match="result"):

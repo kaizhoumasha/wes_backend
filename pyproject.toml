@@ -40,9 +40,11 @@ dependencies = [
 [tool.uv.sources]
 wes-plugin-sdk = { path = "src/wes_plugin_sdk" }
 wes-manual-picking-plugin = { path = "workline_plugins/manual-picking" }
+wes-automatic-picking-plugin = { path = "workline_plugins/automatic-picking" }
 
 [project.optional-dependencies]
 manual-picking = ["wes-manual-picking-plugin"]
+automatic-picking = ["wes-automatic-picking-plugin"]
 dev = [
     "aiosqlite>=0.20.0",
     "pytest>=9.0.3",

@@ -16,8 +16,10 @@ from wes_plugin_sdk import (
 )
 from wes_plugin_sdk.wms_types import (
     AdmissionIntent,
-    InboundWmsIntent,
+    MaterialMovementReportIntent,
+    MaterialWmsIntent,
     NgPlacementIntent,
+    PickingMaterialIntent,
     PlacementIntent,
     ReplacementPlanIntent,
     TargetIntent,
@@ -31,6 +33,8 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationIdentityConflictResult,
 )
 from src.app.wms_adapter.inbound_material.typed import encode_request
+from src.app.wms_adapter.outbound_picking.material_decide_typed import encode_request as encode_material_request
+from src.app.wms_adapter.outbound_picking.movement_report_typed import encode_request as encode_movement_request
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -91,6 +95,8 @@ class MaterialExecutionServicePort(Protocol):
 
 _DECISION_DISCRIMINATORS: dict[type[object], str] = {
     Wait: "WAIT",
+    PickingMaterialIntent: "OUTBOUND_MATERIAL_DECIDE",
+    MaterialMovementReportIntent: "OUTBOUND_MATERIAL_MOVEMENT_REPORT",
     CreateDeviceCommand: "CREATE_DEVICE_COMMAND",
     AdmissionIntent: "INBOUND_MATERIAL_ADMISSION_DECIDE",
     TargetIntent: "INBOUND_MATERIAL_TARGET_DECIDE",
@@ -206,7 +212,7 @@ class DecisionApplier:
             return
         if type(decision) is CreateDeviceCommand:
             await self._create_device_command(db, evidence, execution, ordinal, decision, now)
-        elif isinstance(decision, InboundWmsIntent):
+        elif isinstance(decision, MaterialWmsIntent):
             await self._create_wms_confirmation(db, evidence, execution, decision, now)
         elif type(decision) is CreateTransportTask:
             await self._create_transport_task(db, evidence, execution, decision)
@@ -257,11 +263,16 @@ class DecisionApplier:
         db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
-        decision: InboundWmsIntent,
+        decision: MaterialWmsIntent,
         now: datetime,
     ) -> None:
         timestamp = int(timezone.to_utc(evidence.received_at).timestamp() * 1000)
-        request_payload = encode_request(decision, timestamp=timestamp)
+        if type(decision) is PickingMaterialIntent:
+            request_payload = encode_material_request(decision, timestamp=timestamp)
+        elif type(decision) is MaterialMovementReportIntent:
+            request_payload = encode_movement_request(decision, timestamp=timestamp)
+        else:
+            request_payload = encode_request(decision, timestamp=timestamp)
         result = await self._wms_confirmations.create_or_get(
             db,
             operation=request_payload["operation"],

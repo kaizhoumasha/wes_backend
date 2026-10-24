@@ -1421,9 +1421,41 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261009_0800_a16c9b2e7d04_统一外部系统API访问日志.py",
         "migrations/versions/20261011_0000_9d4e6b7a120c_新增人工拣料排空执行.py",
         "migrations/versions/20261013_0000_c47a2b9d610e_允许料箱直达SCAN2.py",
+        "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py",
+        "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py",
+        "migrations/versions/20261017_0230_548db61057e6_add_automatic_material_wait_cursor.py",
+        "migrations/versions/20261017_0328_4e30101440d2_add_automatic_pickup_put_command_.py",
+        "migrations/versions/20261017_0403_55adfc1a25a7_add_automatic_placement_result_.py",
+        "migrations/versions/20261017_0526_bb07c44fb54f_add_automatic_no_work_exit_and_scan3_.py",
+        "migrations/versions/20261017_0606_d028d7c65eb7_add_automatic_first_scan4_fifo_facts.py",
+        "migrations/versions/20261017_0708_71246b611dbf_add_automatic_return_direction_.py",
+        "migrations/versions/20261018_0205_a448148f9636_add_automatic_return_allocation_progress.py",
+        "migrations/versions/20261018_0255_b1692d740313_add_automatic_return_motion_evaluation.py",
+        "migrations/versions/20261018_0326_20d588a3a234_bind_automatic_motion_to_original_.py",
+        "migrations/versions/20261019_2035_d061a18adea9_handoff_automatic_source_rack_rotation.py",
+        "migrations/versions/20261019_2145_43401479b2cc_handoff_automatic_source_rack_departure.py",
+        "migrations/versions/20261019_2246_de97e0860fd5_persist_automatic_source_departure_.py",
+        "migrations/versions/20261019_2356_6680af0fe85b_persist_automatic_source_service_.py",
+        "migrations/versions/20261020_0139_a243886b4a58_add_automatic_drain_decision_progress.py",
+        "migrations/versions/20261020_0209_40e50581119c_add_automatic_drain_rack_handoff.py",
+        "migrations/versions/20261020_0239_588d54e9fe3e_handoff_automatic_drain_return_members.py",
+        "migrations/versions/20261020_0548_77b256c269b3_handoff_automatic_drain_departures.py",
+        "migrations/versions/20261020_2304_c094b575576f_continue_automatic_drain_current.py",
+        "migrations/versions/20261021_0615_f489f59e9b22_bind_automatic_target_rotation.py",
+        "migrations/versions/20261022_0040_6a7b8c9d0112_bind_automatic_target_departure.py",
+        "migrations/versions/20261022_0107_b514fdcfbefc_bind_automatic_replacement_target_.py",
+        "migrations/versions/20261022_0300_8c9d01122445_bind_target_departure_current.py",
+        "migrations/versions/20261023_0322_81daa3e0047d_退料单盘直接成员进度.py",
+        "migrations/versions/20261023_0336_6781e26d6e19_自动退料架收口和任务确认当前引用.py",
+        "migrations/versions/20261023_0424_f5c962df755c_自动最终转运架当前离场义务.py",
+        "migrations/versions/20261023_0900_3a17b9c40d62_自动首批计划持久期限.py",
         "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py",
         "migrations/versions/20261023_0000_a8c5e2107b94_新增人工任务业务类型.py",
         "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py",
+        "migrations/versions/20261024_0010_a72d4e6c9b13_持久化清退拒绝退避.py",
+        "migrations/versions/20261023_0335_e3fec1d9ffae_新增人工来源架独立到位事实.py",
+        "migrations/versions/20261023_0510_f6d0319c8a42_支持排空人工撤出.py",
+        "migrations/versions/20261024_0519_0f1be9a476d2_合并自动拣料与现场修复迁移链.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[
@@ -1589,6 +1621,7 @@ def test_queue_changed_paths_include_queue_transaction_owner(path: str) -> None:
         "src/app/wms_adapter/outbound_picking/material_decide_wire.py",
         "src/app/wms_adapter/outbound_picking/material_decide_typed.py",
         "src/app/wms_adapter/outbound_picking/material_decide_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/material_decide.py",
         "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
         "src/app/wms_adapter/confirmation_adapter.py",
     ],
@@ -1631,6 +1664,7 @@ def test_source_empty_paths_select_production_wiring(changed_path: str) -> None:
         "src/app/wms_adapter/outbound_picking/movement_report_wire.py",
         "src/app/wms_adapter/outbound_picking/movement_report_typed.py",
         "src/app/wms_adapter/outbound_picking/movement_report_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/material_movement_report.py",
         "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
         "src/app/wms_adapter/confirmation_adapter.py",
         "src/wes_plugin_sdk/src/wes_plugin_sdk/wms_types.py",
@@ -1681,3 +1715,13 @@ def test_unified_api_access_log_paths_have_real_postgresql_owner(changed_path):
 def test_outbound_api_access_log_and_worker_paths_have_real_prefork_owner(changed_path):
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
     assert CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST in select_heavy_tests([changed_path], config)
+
+
+def test_departure_typed_reader_uses_its_native_postgresql_owner():
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert select_heavy_tests(
+        ["src/app/wms_integration/outbound_picking/services/rack_departure.py"], config, repo_root=REPO_ROOT
+    ) == [
+        "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
+        "tests/integration/wms_adapter/outbound_picking/test_departure_reader_postgresql.py",
+    ]

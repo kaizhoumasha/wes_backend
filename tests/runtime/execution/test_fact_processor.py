@@ -323,6 +323,39 @@ class _TaskQueue:
             raise self.error
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_plugin_application_uses_applier_transaction_before_publication(fails):
+    evidence = _evidence()
+    processor, _, applier = _processor(evidence)
+    calls = []
+
+    class Application:
+        async def apply_in_session(self, db, *, fact):
+            assert evidence.published_at is None
+            assert len(applier.calls) == 1
+            assert fact.evidence_id == str(evidence.id)
+            calls.append(db)
+            if fails:
+                raise RuntimeError("plugin transaction failed")
+
+    processor._plugins = StaticPluginBinding(
+        (
+            PluginRuntimeBinding(
+                plugin_key="sample_plugin",
+                plugin_version="1.0.0",
+                handlers=(_handle_initial,),
+                fact_factory=_IdentityFactFactory(),
+                initial_execution_correlator=_Correlator(),
+                decision_application=Application(),
+            ),
+        )
+    )
+    assert await processor.process_batch() == (0 if fails else 1)
+    assert calls == [processor._sessions.databases[-1 if not fails else -2]]
+    assert (evidence.published_at is None) is fails
+
+
 @handler(fact_type=DeviceResultReadyFact, name="device_result", supported_versions=("1.0",))
 def _handle_device_result(fact: DeviceResultReadyFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "NEXT_DEVICE"),)
@@ -1243,3 +1276,31 @@ async def test_declared_plugin_without_handlers_only_observes_unowned_device_eve
         assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
         assert evidence.decision_attempt_count == 1
     assert evidence.published_at is None
+
+
+@handler(fact_type=EvidenceReadyFact, name="outbound_wms", supported_versions=("1.0",))
+def _handle_outbound_wms(fact: EvidenceReadyFact) -> tuple[object, ...]:
+    from wes_plugin_sdk import PickingRackSlot
+
+    return (
+        wms_operations.outbound_material_decide(
+            operation_id="019f3405-2200-7b01-8b01-000000000001",
+            task_id="TASK-1",
+            source_locator=PickingRackSlot("RACK-1", "A", "S-1"),
+            plan_revision=2,
+            barcode="raw",
+            scanned_at=123,
+            material_execution_id=fact.material_execution_id,
+            fact_id=fact.fact_id,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_outbound_material_confirmation_wakes_existing_wms_dispatcher():
+    evidence = _evidence()
+    queue = _TaskQueue()
+    processor, _, _ = _processor(evidence, target=_handle_outbound_wms, task_queue=queue)
+    assert await processor.process_batch() == 1
+    assert evidence.published_at == NOW
+    assert queue.wms_wakes == 1

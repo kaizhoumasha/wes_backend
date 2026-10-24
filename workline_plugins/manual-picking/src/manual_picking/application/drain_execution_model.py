@@ -27,7 +27,10 @@ class ManualPickingDrainExecution(EnterpriseMixin, DataTableMixin, table=True):
             "AND blocker_client_request_id IS NULL AND trigger_picking_task_id IS NULL) OR "
             "(status = 'EXCEPTION_RETIRED' AND closed_at IS NOT NULL "
             "AND reason_code IS NOT NULL AND reason_code IN ('DRAIN_ACTION_TERMINAL_EXCEPTION', 'DRAIN_RESULT_OVERDUE', 'DRAIN_RESULT_UNKNOWN') "
-            "AND blocker_client_request_id IS NOT NULL AND trigger_picking_task_id IS NOT NULL)",
+            "AND blocker_client_request_id IS NOT NULL AND trigger_picking_task_id IS NOT NULL) OR "
+            "(status = 'MANUAL_WITHDRAWN' AND closed_at IS NOT NULL "
+            "AND reason_code IS NOT NULL AND reason_code = 'MANUAL_SCOPE_EXIT' AND blocker_client_request_id IS NOT NULL "
+            "AND trigger_picking_task_id IS NOT NULL)",
             name="manual_picking_drain_execution_lifecycle_valid",
         ),
         {"schema": SchemaType.BIZ.value},

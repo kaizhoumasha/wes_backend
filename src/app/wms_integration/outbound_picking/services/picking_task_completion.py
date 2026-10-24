@@ -75,6 +75,23 @@ class PickingTaskCompletionResultReader:
         )
         if confirmation is None:
             return None
+        return await self._snapshot(db, confirmation)
+
+    async def by_id(
+        self, db: AsyncSession, *, picking_task_id: int, confirmation_id: int
+    ) -> CompletionConfirmationSnapshot:
+        confirmation = await db.get(WmsConfirmation, confirmation_id, populate_existing=True)
+        if (
+            confirmation is None
+            or confirmation.operation != COMPLETION_CONFIRM_OPERATION
+            or confirmation.picking_task_id != picking_task_id
+            or confirmation.workline_id is not None
+            or confirmation.material_execution_id is not None
+        ):
+            raise ValueError("completion confirmation owner mismatch")
+        return await self._snapshot(db, confirmation)
+
+    async def _snapshot(self, db: AsyncSession, confirmation: WmsConfirmation) -> CompletionConfirmationSnapshot:
         request = parse_completion_confirm_request(confirmation.request_payload)
         if request.operation_id != confirmation.operation_id:
             raise ValueError("completion request identity differs from confirmation")

@@ -1,3 +1,13 @@
+x-backend-hot-environment: &backend-hot-environment
+  PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/workline_plugins/automatic-picking/src:/app/src/wes_plugin_sdk/src:/app
+
+x-backend-hot-volumes: &backend-hot-volumes
+  - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
+  - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
+  - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
+  - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/automatic-picking/src:/app/workline_plugins/automatic-picking/src:ro,z
+  - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+
 services:
   api:
     entrypoint:
@@ -12,25 +22,18 @@ services:
       - --reload-dir
       - /app
     environment:
-      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
+      <<: *backend-hot-environment
       WATCHFILES_FORCE_POLLING: "true"
-    volumes:
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+    volumes: *backend-hot-volumes
 
   celery:
     entrypoint:
       - /bin/sh
       - /app/src/celery_app/dev_worker_autoreload.sh
     environment:
-      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
-    volumes:
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+      <<: *backend-hot-environment
+      CELERY_WATCH_PATHS: /app/src /app/deployment /app/workline_plugins/manual-picking/src /app/workline_plugins/automatic-picking/src
+    volumes: *backend-hot-volumes
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
 
@@ -39,12 +42,9 @@ services:
       - /bin/sh
       - /app/src/celery_app/dev_worker_autoreload.sh
     environment:
-      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
-    volumes:
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+      <<: *backend-hot-environment
+      CELERY_WATCH_PATHS: /app/src /app/deployment /app/workline_plugins/manual-picking/src /app/workline_plugins/automatic-picking/src
+    volumes: *backend-hot-volumes
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
 
@@ -53,14 +53,15 @@ services:
       - /bin/sh
       - /app/src/celery_app/dev_beat_autoreload.sh
     environment:
-      PYTHONPATH: /app/workline_plugins/manual-picking/src:/app/src/wes_plugin_sdk/src:/app
-    volumes:
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/manual-picking/src:/app/workline_plugins/manual-picking/src:ro,z
-      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+      <<: *backend-hot-environment
+      CELERY_WATCH_PATHS: /app/src /app/deployment /app/workline_plugins/manual-picking/src /app/workline_plugins/automatic-picking/src
+    volumes: *backend-hot-volumes
     healthcheck:
       test: ["CMD", "python", "/app/src/celery_app/beat_healthcheck.py"]
+
+  flower:
+    environment: *backend-hot-environment
+    volumes: *backend-hot-volumes
 
   frontend:
     image: node:22-bookworm-slim

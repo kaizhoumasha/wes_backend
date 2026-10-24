@@ -1340,3 +1340,75 @@ async def test_observed_device_event_does_not_block_deactivate_or_get_claimed_ag
             assert not stopped.is_active
     finally:
         await _cleanup_claim_workline(integration_session_factory, source_identity_prefix=identity, workline=workline)
+
+
+@pytest.mark.asyncio
+async def test_outbound_material_typed_decisions_persist_with_only_execution_owner(integration_session_factory):
+    from wes_plugin_sdk import PickingRackSlot, wms_operations
+
+    from src.app.execution.models import WmsConfirmation
+    from src.app.execution.services import WmsConfirmationService
+
+    identity = uuid4().hex
+    now = datetime(2026, 10, 16)
+    async with integration_session_factory() as db:
+        # 本测试事务回滚，既验证真实约束，也不创建设备/外部交付副作用。
+        async with db.begin():
+            workline = await _claim_workline(db, identity, now)
+            evidence = _claim_evidence(identity, received_at=now, workline_id=workline.id)
+            db.add(evidence)
+            await db.flush()
+            execution = MaterialExecution(
+                execution_code=f"EXEC-{identity}",
+                material_trace_id=f"TRACE-{identity}",
+                workline_id=workline.id,
+                admission_received_at=now,
+                admission_evidence_id=evidence.id,
+                last_transition_reason="INITIAL_EVIDENCE",
+                last_transition_evidence_id=evidence.id,
+                status_changed_at=now,
+            )
+            db.add(execution)
+            await db.flush()
+            evidence.material_execution_id = execution.id
+            fact = EvidenceReadyFact(f"evidence:{evidence.id}", str(evidence.id), "1.0", execution.execution_code)
+            common = {
+                "task_id": "TASK-1",
+                "source_locator": PickingRackSlot("RACK-1", "A", "S-1"),
+                "plan_revision": 2,
+                "material_execution_id": execution.execution_code,
+                "fact_id": fact.fact_id,
+            }
+            decisions = (
+                wms_operations.outbound_material_decide(
+                    **common, operation_id=new_uuid7(), barcode="raw,原文", scanned_at=123
+                ),
+                wms_operations.outbound_material_movement_report(
+                    **common,
+                    operation_id=new_uuid7(),
+                    barcode="raw,原文",
+                    to_locator=PickingRackSlot("RACK-2", "B", "S-2"),
+                    occurred_at=124,
+                ),
+            )
+            applier = DecisionApplier(
+                device_command_service=object(),
+                wms_confirmation_service=WmsConfirmationService(),
+                transport_service=object(),
+                material_execution_service=MaterialExecutionService(),
+                clock=lambda: now,
+            )
+            await applier.apply(db, evidence, execution, fact, decisions)
+            rows = (
+                await db.scalars(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution.id))
+            ).all()
+            assert len(rows) == 2
+            assert {row.operation for row in rows} == {
+                "outbound.material.decide@v1",
+                "outbound.material.movement_report@v1",
+            }
+            for row in rows:
+                assert row.picking_task_id is None and row.workline_id is None
+                assert row.request_payload["data"]["plan_revision"] == 2
+                assert "material_execution_id" not in row.request_payload["data"]
+            await db.rollback()

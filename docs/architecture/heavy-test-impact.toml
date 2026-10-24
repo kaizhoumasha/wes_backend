@@ -78,7 +78,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
-reviewed_content_sha256 = "e75996c786fb8ed0728703c8a3d3099073c14098acd50c348e3d7f6999bf2659"
+reviewed_content_sha256 = "49372cfbcead6b6acc3125dd7745501d221e09260788585586c983e51bf5212e"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
 
@@ -1320,6 +1320,13 @@ heavy_tests = ["tests/integration/wms_adapter/return_buffer_drain/test_productio
 ]
 
 [[mapping]]
+source_glob = "deployment/plugin_configuration.py"
+heavy_tests = [
+    "tests/integration/test_transport_fastapi_lifespan.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/v1/plan_correction.py"
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -1332,7 +1339,8 @@ source_glob = "src/app/wms_integration/outbound_picking/v1/__init__.py"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/**}"
+# 精确 typed departure reader 单独映射；其他现有服务保持原 HEAVY 所有权。
+source_glob = "src/app/wms_integration/outbound_picking/{__init__.py,composition.py,models/**,repositories/**,services/__init__.py,services/bin_batch.py,services/bin_work_plan.py,services/manual_bin_admission.py,services/manual_bin_completed.py,services/manual_rack_direct_pick_completed.py,services/material_decide.py,services/material_movement_report.py,services/picking_task_cancel.py,services/picking_task_confirmation_owner.py,services/picking_task_issued.py,services/picking_task_plan_delta.py,services/picking_task_prepare.py,services/picking_task_prepare_batch.py,services/picking_task_queue_changed.py,services/rack_departure_owner.py,services/return_batch_owner.py}"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_cancel_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_workline_archive_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_picking_task_repository_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
@@ -3244,6 +3252,152 @@ heavy_tests = [
     "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
+# SDK 纯不可变合同边界由 FAST 负责，生产传播由对应 SDK 模块映射选择真实 owner。
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/tests/{test_outbound_material_operations.py,test_outbound_picking_facts.py}"
+heavy_tests = []
+
+# 自动插件私有表由插件 PostgreSQL 套件显式验收；核心仅承接迁移链与模型装配，禁止把插件测试并入 HEAVY。
+[[mapping]]
+source_glob = "migrations/versions/20261016_2142_c106df25b129_add_automatic_picking_work_and_feed.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 来源授权事务由插件 PostgreSQL owner 显式运行；核心只承接通用迁移/工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0045_807514a7776b_add_automatic_pickup_authorization_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# WAIT 业务到期/游标由插件 PostgreSQL owner 验收；核心承接通用迁移及固定 operation 可靠接线。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0230_548db61057e6_add_automatic_material_wait_cursor.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# PUT 创建/关联业务由插件 PostgreSQL owner 显式验收；核心只承接 schema 与工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0328_4e30101440d2_add_automatic_pickup_put_command_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 确定位置/报告原子业务归插件；核心仅承接新增引用迁移和工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0403_55adfc1a25a7_add_automatic_placement_result_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# NO_WORK/SCAN3 交接业务归插件；核心只承接 schema 与部署配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0526_bb07c44fb54f_add_automatic_no_work_exit_and_scan3_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动 SCAN4/FIFO 原子业务由插件验收；核心只承接 schema 与工作线配置。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0606_d028d7c65eb7_add_automatic_first_scan4_fifo_facts.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动回程方向/资格由插件验收；核心仅承接新增引用 schema。
+[[mapping]]
+source_glob = "migrations/versions/20261017_0708_71246b611dbf_add_automatic_return_direction_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 自动回架分配事务由插件独立验收；核心承接模型/schema与部署注册。
+[[mapping]]
+source_glob = "migrations/versions/20261018_0205_a448148f9636_add_automatic_return_allocation_progress.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261018_0255_b1692d740313_add_automatic_return_motion_evaluation.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261018_0326_20d588a3a234_bind_automatic_motion_to_original_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2035_d061a18adea9_handoff_automatic_source_rack_rotation.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2145_43401479b2cc_handoff_automatic_source_rack_departure.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2246_de97e0860fd5_persist_automatic_source_departure_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261019_2356_6680af0fe85b_persist_automatic_source_service_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_0139_a243886b4a58_add_automatic_drain_decision_progress.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/services/rack_departure.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_departure_reader_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py"]
+
+[[mapping]]
+source_glob = "tests/integration/wms_adapter/outbound_picking/test_departure_reader_postgresql.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_departure_reader_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_0209_40e50581119c_add_automatic_drain_rack_handoff.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_0239_588d54e9fe3e_handoff_automatic_drain_return_members.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_0548_77b256c269b3_handoff_automatic_drain_departures.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261020_2304_c094b575576f_continue_automatic_drain_current.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261021_0615_f489f59e9b22_bind_automatic_target_rotation.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261022_0040_6a7b8c9d0112_bind_automatic_target_departure.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261022_0107_b514fdcfbefc_bind_automatic_replacement_target_.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261022_0300_8c9d01122445_bind_target_departure_current.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0322_81daa3e0047d_退料单盘直接成员进度.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0336_6781e26d6e19_自动退料架收口和任务确认当前引用.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+# 精确原 Confirmation 读取只影响两类确认结果消费；不重跑无关 operation 矩阵。
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/services/{picking_task_completion.py,return_rack_arrival.py}"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+]
+
+# 计划扫描只把已形成的候选交回插件过滤；宿主不解释自动单盘完成事实。
+[[mapping]]
+source_glob = "src/app/wms_integration/outbound_picking/services/picking_task_plan_activation.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0424_f5c962df755c_自动最终转运架当前离场义务.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0900_3a17b9c40d62_自动首批计划持久期限.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
 [[mapping]]
 source_glob = "migrations/versions/20261019_2140_f0c2423ac98a_持久化整单取消当前事实.py"
 heavy_tests = [
@@ -3259,4 +3413,21 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postg
 
 [[mapping]]
 source_glob = "migrations/versions/20261023_0100_c6e209af714b_合并上架与整单取消迁移头.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261024_0010_a72d4e6c9b13_持久化清退拒绝退避.py"
+heavy_tests = []
+# 插件游标迁移由 manual-picking/tests/test_departure_retry_postgresql.py 独占验证，不进入核心 HEAVY。
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0335_e3fec1d9ffae_新增人工来源架独立到位事实.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261023_0510_f6d0319c8a42_支持排空人工撤出.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20261024_0519_0f1be9a476d2_合并自动拣料与现场修复迁移链.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]

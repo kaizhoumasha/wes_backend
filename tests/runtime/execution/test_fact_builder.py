@@ -292,3 +292,33 @@ def test_unapplied_or_mismatched_evidence_fails_closed(
 def test_plan_events_cannot_be_interpreted_as_material_recovery(operation: str) -> None:
     with pytest.raises(ValueError, match="WMS_EVENT 只接受 recovery_decided"):
         _builder().build(_evidence(InboundEvidenceKind.WMS_EVENT, operation=operation), _execution())
+
+
+@pytest.mark.parametrize(
+    "operation,data,result_type",
+    [
+        ("outbound.material.decide@v1", {"result": "WAIT", "retry_after_ms": 1000}, "PickingMaterialOutcome"),
+        ("outbound.material.movement_report@v1", {}, "MaterialMovementReportOutcome"),
+    ],
+)
+def test_outbound_material_result_builds_fixed_typed_fact(operation, data, result_type):
+    operation_id = "019f3405-2200-7b01-8b01-000000000001"
+    evidence = _evidence(
+        InboundEvidenceKind.WMS_RESULT,
+        operation=operation,
+        operation_id=operation_id,
+        normalized_payload={
+            "operation": operation,
+            "operation_id": operation_id,
+            "timestamp": 123,
+            "code": "RECORDED" if operation.endswith("movement_report@v1") else "DECIDED",
+            "data": data,
+        },
+    )
+    fact = _builder().build(evidence, _execution())
+    assert isinstance(fact, WmsResultReadyFact)
+    assert type(fact.outcome).__name__ == result_type
+    assert fact.operation_id == operation_id
+    evidence.normalized_payload["operation_id"] = "019f3405-2200-7b01-8b01-000000000002"
+    with pytest.raises(ValueError):
+        _builder().build(evidence, _execution())

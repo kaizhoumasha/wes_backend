@@ -75,7 +75,55 @@ class RackDepartureResultReader:
     def __init__(self, repository: RackDepartureRepository | None = None) -> None:
         self._repository = repository or RackDepartureRepository()
 
+    async def by_id(self, db: AsyncSession, *, picking_task_id: int, confirmation_id: int) -> RackDepartureSnapshot:
+        confirmation = await self._repository.by_id(db, confirmation_id)
+        if (
+            confirmation is None
+            or confirmation.operation != RACK_DEPARTURE_OPERATION
+            or confirmation.picking_task_id != picking_task_id
+            or confirmation.workline_id is not None
+            or canonical_json_digest(confirmation.request_payload) != confirmation.request_digest
+        ):
+            raise ValueError("departure current request owner or digest differs")
+        request = parse_rack_departure_request(confirmation.request_payload)
+        snapshot = await self._snapshot(db, confirmation, request.data.rack_id)
+        if snapshot.intent.task_id is None:
+            raise ValueError("task departure requires real task_id")
+        if snapshot.evidence_id is not None:
+            evidence = await self._repository.evidence(db, snapshot.evidence_id)
+            if (
+                evidence is None
+                or evidence.picking_task_id != picking_task_id
+                or evidence.workline_id is not None
+                or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            ):
+                raise ValueError("departure current response owner or digest differs")
+        return snapshot
+
     async def by_operation_id(
+        self, db: AsyncSession, *, workline_id: int, operation_id: str, rack_id: str
+    ) -> RackDepartureSnapshot | None:
+        snapshot = await self._for_workline(db, workline_id=workline_id, operation_id=operation_id, rack_id=rack_id)
+        if snapshot is not None and snapshot.status == WmsConfirmationStatus.COMPLETED:
+            evidence = await self._repository.evidence(db, snapshot.evidence_id)
+            if evidence.published_at is None:
+                raise ValueError("departure result evidence is not published")
+        return snapshot
+
+    async def for_evidence(
+        self, db: AsyncSession, *, workline_id: int, operation_id: str, rack_id: str, evidence_id: int
+    ) -> RackDepartureSnapshot:
+        """业务应用读取精确原响应；发布仍由 FactProcessor 与业务应用同事务完成。"""
+        snapshot = await self._for_workline(db, workline_id=workline_id, operation_id=operation_id, rack_id=rack_id)
+        if (
+            snapshot is None
+            or snapshot.status != WmsConfirmationStatus.COMPLETED
+            or snapshot.evidence_id != evidence_id
+        ):
+            raise ValueError("departure application evidence differs from original response")
+        return snapshot
+
+    async def _for_workline(
         self, db: AsyncSession, *, workline_id: int, operation_id: str, rack_id: str
     ) -> RackDepartureSnapshot | None:
         confirmation = await self._repository.by_operation_id(db, operation_id)
@@ -92,10 +140,6 @@ class RackDepartureResultReader:
         snapshot = await self._snapshot(db, confirmation, rack_id)
         if snapshot.intent.task_id is not None:
             raise ValueError("WorkLine departure requires null task_id")
-        if snapshot.status == WmsConfirmationStatus.COMPLETED:
-            evidence = await self._repository.evidence(db, snapshot.evidence_id)
-            if evidence.published_at is None:
-                raise ValueError("departure result evidence is not published")
         return snapshot
 
     async def latest(self, db: AsyncSession, picking_task_id: int, rack_id: str) -> RackDepartureSnapshot | None:

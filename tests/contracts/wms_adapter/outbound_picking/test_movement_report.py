@@ -35,7 +35,7 @@ def request(ng=False):
                 "bin_code": "BIN-1",
                 "cell_id": "CELL-1",
             },
-            "PkgID": " 原始扫码 ",
+            "barcode": " 原始扫码 ",
             "to_locator": {"type": "NG_ZONE", "zone_code": "NG-1"}
             if ng
             else {"type": "RACK_SLOT", "rack_id": "TARGET-1", "rack_face": "B", "slot_id": "SLOT-1"},
@@ -85,7 +85,7 @@ def test_typed_request_preserves_exact_fact(ng):
         operation_id=OPERATION_ID,
         task_id="TASK-1",
         source_locator=source,
-        pkg_id=" 原始扫码 ",
+        barcode=" 原始扫码 ",
         to_locator=target,
         occurred_at=123,
     )
@@ -116,9 +116,9 @@ async def test_fact_ack_closes_obligation_through_static_facts_route(ng, code):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("PkgID", ""),
-        ("PkgID", "x" * 257),
-        ("PkgID", 123),
+        ("barcode", ""),
+        ("barcode", "x" * 1001),
+        ("barcode", 123),
         ("occurred_at", -1),
         ("occurred_at", 2**63),
         ("occurred_at", True),
@@ -140,7 +140,7 @@ async def test_invalid_or_unapproved_fact_fields_never_send(field, value):
     [
         (503, "UNAVAILABLE", {}, WmsDispatchCode.RETRY),
         (409, "CONFLICT", {"reason_code": "REFERENCE_CONFLICT"}, WmsDispatchCode.RECONCILING),
-        (422, "REJECTED", {"reason_code": "INVALID_DATA", "field_path": "/data/PkgID"}, WmsDispatchCode.RECONCILING),
+        (422, "REJECTED", {"reason_code": "INVALID_DATA", "field_path": "/data/barcode"}, WmsDispatchCode.RECONCILING),
         (202, "RECORDED", {}, WmsDispatchCode.RECONCILING),
         (200, "RECORDED", {"result": "COMPLETED"}, WmsDispatchCode.DETERMINATE),
     ],
@@ -185,9 +185,9 @@ async def test_saved_movement_obligation_survives_task_completion(state, accepte
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("pkg_id", ""),
-        ("pkg_id", "x" * 257),
-        ("pkg_id", 1),
+        ("barcode", ""),
+        ("barcode", "x" * 1001),
+        ("barcode", 1),
         ("occurred_at", True),
         ("occurred_at", -1),
         ("occurred_at", 2**63),
@@ -201,7 +201,8 @@ def test_sdk_rejects_invalid_facts(field, value):
         "operation_id": OPERATION_ID,
         "task_id": "TASK-1",
         "source_locator": sdk.PickingRackSlot("RACK-1", "A", "SLOT-1"),
-        "pkg_id": "PKG-1",
+        "plan_revision": 2,
+        "barcode": "PKG-1",
         "to_locator": sdk.PickingNgZone("NG-1"),
         "occurred_at": 123,
     }
@@ -216,14 +217,16 @@ def test_direct_pick_report_and_error_outcomes():
         operation_id=OPERATION_ID,
         task_id="TASK-1",
         source_locator=sdk.PickingRackSlot("RACK-1", "A", "SLOT-1"),
-        pkg_id="x" * 256,
+        plan_revision=2,
+        barcode="x" * 1000,
         to_locator=sdk.PickingNgZone("NG-1"),
         occurred_at=0,
     )
     assert encode_request(intent, timestamp=0)["data"] == {
         "task_id": "TASK-1",
         "source_locator": {"type": "RACK_SLOT", "rack_id": "RACK-1", "rack_face": "A", "slot_id": "SLOT-1"},
-        "PkgID": "x" * 256,
+        "plan_revision": 2,
+        "barcode": "x" * 1000,
         "to_locator": {"type": "NG_ZONE", "zone_code": "NG-1"},
         "occurred_at": 0,
     }
@@ -232,11 +235,50 @@ def test_direct_pick_report_and_error_outcomes():
         "REFERENCE_CONFLICT"
     )
     assert decode_outcome(
-        response("REJECTED", {"reason_code": "INVALID_DATA", "field_path": "/data/PkgID"})
-    ).result == sdk.OperationRejected("INVALID_DATA", "/data/PkgID")
+        response("REJECTED", {"reason_code": "INVALID_DATA", "field_path": "/data/barcode"})
+    ).result == sdk.OperationRejected("INVALID_DATA", "/data/barcode")
     with pytest.raises(TypeError):
         sdk.MaterialMovementReportOutcome(sdk.OperationBusy(1))
     with pytest.raises(ValueError):
         sdk.MaterialMovementReportOutcome(sdk.OperationConflict("POSITION_CONFLICT"))
     with pytest.raises(ValueError):
         sdk.PickingNgZone("invalid zone")
+
+
+@pytest.mark.parametrize("ng", [False, True])
+@pytest.mark.parametrize("bin_source", [False, True])
+def test_current_report_request_decodes_all_approved_locators(ng, bin_source):
+    from src.app.wms_adapter.outbound_picking.movement_report_typed import decode_request, encode_request
+
+    payload = request(ng)
+    if not bin_source:
+        payload["data"]["source_locator"] = {
+            "type": "RACK_SLOT",
+            "rack_id": "SOURCE",
+            "rack_face": "A",
+            "slot_id": "S1",
+        }
+        payload["data"]["plan_revision"] = 7
+    intent = decode_request(payload)
+    assert encode_request(intent, timestamp=0) == payload
+    assert intent.barcode == " 原始扫码 " and intent.occurred_at == 123
+
+
+@pytest.mark.asyncio
+async def test_report_rejects_legacy_field_even_when_barcode_is_present():
+    payload = request()
+    payload["data"]["PkgID"] = "legacy"
+    client = client_response(response())
+    assert (await dispatch(client, payload)).code is WmsDispatchCode.RECONCILING
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_report_preserves_a_thousand_character_raw_barcode():
+    payload = request()
+    raw = " 原文\n" + "条" * 996
+    assert len(raw) == 1000
+    payload["data"]["barcode"] = raw
+    client = client_response(response())
+    assert (await dispatch(client, payload)).code is WmsDispatchCode.DETERMINATE
+    assert client.post.await_args.kwargs["json"]["data"]["barcode"] == raw

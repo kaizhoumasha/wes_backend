@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -343,17 +344,38 @@ class BinWorkPlanIntent:
 
 
 @dataclass(frozen=True, slots=True)
-class BinWorkPlanReady:
-    cell_ids: tuple[str, ...]
+class PickingCellSource:
+    cell_id: str
+    cell_index: int
+    bin_type: int
+    reel_layer: int
+    reel_thickness: float
+    reel_diameter: float
 
     def __post_init__(self) -> None:
-        if type(self.cell_ids) is not tuple:
-            raise TypeError("cell_ids must be an immutable tuple")
-        for cell_id in self.cell_ids:
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(cell_id, "cell_id")) is None:
-                raise ValueError("cell_id must be a business identifier")
-        if not self.cell_ids or len(set(self.cell_ids)) != len(self.cell_ids):
-            raise ValueError("cell_ids must be nonempty and unique")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.cell_id, "cell_id")) is None:
+            raise ValueError("cell_id must be a business identifier")
+        if type(self.cell_index) is not int or self.cell_index not in range(1, 8):
+            raise ValueError("cell_index must be an integer from 1 through 7")
+        if type(self.bin_type) is not int or self.bin_type not in (2, 3, 6):
+            raise ValueError("bin_type must be 2, 3 or 6")
+        if type(self.reel_layer) is not int:
+            raise ValueError("reel_layer must be an integer")
+        for name in ("reel_thickness", "reel_diameter"):
+            value = getattr(self, name)
+            if type(value) not in (int, float):
+                raise ValueError(f"{name} must be a finite number")
+            try:
+                finite = math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ValueError(f"{name} must be a finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class BinWorkPlanReady(PickingCellSource):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,20 +466,13 @@ class PickingBinCell:
         validate_opaque_face(self.rack_face, "rack_face")
 
 
-@dataclass(frozen=True, slots=True)
-class PickingSixInOne:
-    HHPN: str
-    MfrPN: str
-    Qty: str
-    DateCode: str
-    LotCode: str
-    PkgID: str
-
-    def __post_init__(self) -> None:
-        for name in ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID"):
-            value = getattr(self, name)
-            if type(value) is not str or not 1 <= len(value) <= 256:
-                raise ValueError(f"{name} must be original scan text of 1..256 characters")
+def _validate_picking_source_revision(source: PickingRackSlot | PickingBinCell, revision: int | None) -> None:
+    if type(source) is PickingRackSlot:
+        if revision is None:
+            raise ValueError("RACK_SLOT source requires plan_revision")
+        _positive(revision, "plan_revision", 2**63 - 1)
+    elif revision is not None:
+        raise ValueError("BIN_CELL source must omit plan_revision")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -465,17 +480,24 @@ class PickingMaterialIntent:
     operation_id: str
     task_id: str
     source_locator: PickingRackSlot | PickingBinCell
-    six_in_one: PickingSixInOne
+    barcode: str
     scanned_at: int
+    plan_revision: int | None = None
+    material_execution_id: str | None = None
+    fact_id: str | None = None
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
+        if self.material_execution_id is not None or self.fact_id is not None:
+            _ = _required(self.material_execution_id, "material_execution_id")
+            _ = _required(self.fact_id, "fact_id")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None:
             raise ValueError("task_id must be a business identifier")
         if type(self.source_locator) not in (PickingRackSlot, PickingBinCell):
             raise TypeError("source_locator requires PickingRackSlot or PickingBinCell")
-        if type(self.six_in_one) is not PickingSixInOne:
-            raise TypeError("six_in_one requires PickingSixInOne")
+        _validate_picking_source_revision(self.source_locator, self.plan_revision)
+        if type(self.barcode) is not str or not 1 <= len(self.barcode) <= 1000:
+            raise ValueError("barcode must be original text of 1..1000 characters")
         if type(self.scanned_at) is not int or not 0 <= self.scanned_at <= 2**63 - 1:
             raise ValueError("scanned_at must be nonnegative int64 milliseconds")
 
@@ -491,16 +513,27 @@ class PickingTargetReplace:
 
 
 @dataclass(frozen=True, slots=True)
+class PickingTargetRackSlot(PickingRackSlot):
+    rack_layer: int
+    rack_column: int
+
+    def __post_init__(self) -> None:
+        PickingRackSlot.__post_init__(self)
+        if type(self.rack_layer) is not int or type(self.rack_column) is not int:
+            raise ValueError("target rack coordinates must be integers")
+
+
+@dataclass(frozen=True, slots=True)
 class PickingMaterialAccept:
-    target_locator: PickingRackSlot
-    next_source_action: Literal["CONTINUE", "SOURCE_DONE"]
+    target_locator: PickingTargetRackSlot
+    next_source_action: PickingCellSource | None = None
     target_preparation: PickingTargetRotate | PickingTargetReplace | None = None
 
     def __post_init__(self) -> None:
-        if type(self.target_locator) is not PickingRackSlot:
-            raise TypeError("target_locator requires PickingRackSlot")
-        if self.next_source_action not in ("CONTINUE", "SOURCE_DONE"):
-            raise ValueError("unsupported next_source_action")
+        if type(self.target_locator) is not PickingTargetRackSlot:
+            raise TypeError("target_locator requires PickingTargetRackSlot")
+        if self.next_source_action is not None and type(self.next_source_action) is not PickingCellSource:
+            raise TypeError("next_source_action requires PickingCellSource")
         if self.target_preparation is not None and type(self.target_preparation) not in (
             PickingTargetRotate,
             PickingTargetReplace,
@@ -539,6 +572,7 @@ class SourceEmptyIntent:
     task_id: str
     source_locator: PickingRackSlot | PickingBinCell
     observed_at: int
+    plan_revision: int | None = None
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
@@ -546,6 +580,7 @@ class SourceEmptyIntent:
             raise ValueError("task_id must be a business identifier")
         if type(self.source_locator) not in (PickingRackSlot, PickingBinCell):
             raise TypeError("source_locator requires PickingRackSlot or PickingBinCell")
+        _validate_picking_source_revision(self.source_locator, self.plan_revision)
         if type(self.observed_at) is not int or not 0 <= self.observed_at <= 2**63 - 1:
             raise ValueError("observed_at must be nonnegative int64 milliseconds")
 
@@ -672,20 +707,27 @@ class MaterialMovementReportIntent:
     operation_id: str
     task_id: str
     source_locator: PickingRackSlot | PickingBinCell
-    pkg_id: str
+    barcode: str
     to_locator: PickingRackSlot | PickingNgZone
     occurred_at: int
+    plan_revision: int | None = None
+    material_execution_id: str | None = None
+    fact_id: str | None = None
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
+        if self.material_execution_id is not None or self.fact_id is not None:
+            _ = _required(self.material_execution_id, "material_execution_id")
+            _ = _required(self.fact_id, "fact_id")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None:
             raise ValueError("task_id must be a business identifier")
         if type(self.source_locator) not in (PickingRackSlot, PickingBinCell):
             raise TypeError("source_locator requires PickingRackSlot or PickingBinCell")
+        _validate_picking_source_revision(self.source_locator, self.plan_revision)
         if type(self.to_locator) not in (PickingRackSlot, PickingNgZone):
             raise TypeError("to_locator requires PickingRackSlot or PickingNgZone")
-        if type(self.pkg_id) is not str or not 1 <= len(self.pkg_id) <= 256:
-            raise ValueError("pkg_id must be original scan text of 1..256 characters")
+        if type(self.barcode) is not str or not 1 <= len(self.barcode) <= 1000:
+            raise ValueError("barcode must be original scan text of 1..1000 characters")
         if type(self.occurred_at) is not int or not 0 <= self.occurred_at <= 2**63 - 1:
             raise ValueError("occurred_at must be nonnegative int64 milliseconds")
 
@@ -747,6 +789,7 @@ class ReturnBufferDrainWait:
 
 
 InboundWmsIntent = AdmissionIntent | TargetIntent | PlacementIntent | NgPlacementIntent | ReplacementPlanIntent
+MaterialWmsIntent = InboundWmsIntent | PickingMaterialIntent | MaterialMovementReportIntent
 WmsOperationIntent = (
     InboundWmsIntent
     | PickingTaskPrepareIntent

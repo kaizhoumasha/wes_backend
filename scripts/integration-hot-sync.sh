@@ -106,7 +106,7 @@ verify_backend_image_compatibility() {
             echo "本地仓库缺少联调后端镜像 revision: $image_revision，请先 fetch 对应提交" >&2
             return 1
         fi
-        if ! git -C "$BACKEND_ROOT" diff --quiet "$image_revision" -- pyproject.toml uv.lock migrations; then
+        if ! git -C "$BACKEND_ROOT" diff --quiet "$image_revision" -- pyproject.toml uv.lock migrations workline_plugins/manual-picking/pyproject.toml workline_plugins/automatic-picking/pyproject.toml; then
             echo "后端依赖或 migration 与联调服务器基础镜像不一致；请先完成一次正式镜像/数据库发布" >&2
             return 1
         fi
@@ -123,7 +123,7 @@ create_archives() {
     [[ -d "$FRONTEND_ROOT/public" ]] && frontend_paths+=(public)
     [[ -f "$FRONTEND_ROOT/tailwind.config.js" ]] && frontend_paths+=(tailwind.config.js)
     tar -czf "$temp_dir/backend.tar.gz" -C "$BACKEND_ROOT" \
-        src deployment workline_plugins/manual-picking/src main.py \
+        src deployment workline_plugins/manual-picking/src workline_plugins/automatic-picking/src main.py \
         scripts/frontend-dev-entrypoint.sh docker-compose.integration-hot.yml
     tar -czf "$temp_dir/frontend.tar.gz" -C "$FRONTEND_ROOT" "${frontend_paths[@]}"
 }
@@ -144,7 +144,7 @@ sync_sources() {
         verify_backend_image_compatibility "$image_revision"
     fi
 
-    backend_sha="$(fingerprint_files "$BACKEND_ROOT" pyproject.toml uv.lock migrations)"
+    backend_sha="$(fingerprint_files "$BACKEND_ROOT" pyproject.toml uv.lock migrations workline_plugins/manual-picking/pyproject.toml workline_plugins/automatic-picking/pyproject.toml)"
     frontend_sha="$(fingerprint_files "$FRONTEND_ROOT" package.json pnpm-lock.yaml .npmrc)"
     control_sha="$(fingerprint_files \
         "$BACKEND_ROOT" main.py docker-compose.integration-hot.yml scripts/frontend-dev-entrypoint.sh \

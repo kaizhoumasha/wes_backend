@@ -28,6 +28,7 @@ from src.app.transport.models import TransportTask
 from src.app.wms_adapter.return_buffer_drain.typed import encode_request
 from src.app.wms_adapter.return_buffer_drain.wire import RETURN_BUFFER_DRAIN_OPERATION
 from src.app.wms_integration.return_buffer_drain import ReturnBufferDrainRecord
+from src.app.workline.models import WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -204,7 +205,17 @@ async def test_execution_constraints_and_identity_concurrency(rack_database, ter
 async def test_runtime_chain_backfill_preserves_unclosed_references(integration_guard, departure):
     async with previous_schema_database() as (url, sessions):
         async with sessions.begin() as db:
-            line, _ = await seed_line(db, bins=0)
+            # 历史迁移只需工作线，不用当前 PickingTask ORM 写入尚不存在的列。
+            line = WorkLine(
+                line_code="LEGACY-DRAIN",
+                line_name="历史排空迁移",
+                line_type="MANUAL",
+                plugin_key="manual-picking",
+                plugin_version="0.1.0",
+                is_active=True,
+            )
+            db.add(line)
+            await db.flush()
             decision = await seed_ready(db, line)
             client = await seed_rack_transport(db, line, decision, departure=departure)
         run_alembic("upgrade", REVISION, database_url=url)
@@ -238,7 +249,17 @@ async def test_unclosed_return_without_frozen_drain_identity_rejects_backfill(in
 
     async with previous_schema_database() as (url, sessions):
         async with sessions.begin() as db:
-            line, _ = await seed_line(db, bins=0)
+            # 历史迁移只需工作线，不用当前 PickingTask ORM 写入尚不存在的列。
+            line = WorkLine(
+                line_code="LEGACY-DRAIN",
+                line_name="历史排空迁移",
+                line_type="MANUAL",
+                plugin_key="manual-picking",
+                plugin_version="0.1.0",
+                is_active=True,
+            )
+            db.add(line)
+            await db.flush()
             decision = await seed_ready(db, line)
             await seed_rack_transport(db, line, decision)
             identity, now = new_uuid7(), timezone.now_for_db()

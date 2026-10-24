@@ -183,6 +183,7 @@ class TransportRepository:
             )
             .where(
                 task.authority_workline_id.is_not(None),
+                task.reason_code.is_distinct_from("MANUAL_TARGET_CONFIRMED"),
                 binding.workline_id == task.authority_workline_id,
                 binding.causal_token > 0,
                 member.status.in_(("SUCCEEDED", "FAILED")),
@@ -250,6 +251,7 @@ class TransportRepository:
             )
             .where(
                 task.authority_workline_id.is_not(None),
+                task.reason_code.is_distinct_from("MANUAL_TARGET_CONFIRMED"),
                 or_(
                     and_(member.status.in_(("SUCCEEDED", "FAILED")), member.last_operation_id.is_not(None)),
                     and_(task.status == "ACCEPTED", task.submit_operation_id.is_not(None), projection.id.is_not(None)),

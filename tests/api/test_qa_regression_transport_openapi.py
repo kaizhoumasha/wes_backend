@@ -273,3 +273,17 @@ def test_wms_business_response_examples_match_strict_operation_parsers() -> None
         for status, response in PICKING_TASK_WMS_RESPONSE_EXAMPLES[operation] + errors:
             parsed = parser(status, response)
             assert parsed.model_dump(mode="json", exclude_unset=True) == response
+
+
+def test_wms_outbound_member_request_examples_match_strict_parsers():
+    from src.app.wms_adapter.outbound_picking import material_decide_wire, movement_report_wire, source_empty_wire
+    from src.app.wms_adapter.outbound_picking.openapi import PICKING_TASK_WMS_REQUEST_EXAMPLES
+
+    parsers = {
+        "outbound.material.decide@v1": material_decide_wire.parse_material_decide_request,
+        "outbound.source.empty_decide@v1": source_empty_wire.parse_source_empty_request,
+        "outbound.material.movement_report@v1": movement_report_wire.parse_material_movement_report_request,
+    }
+    assert parsers.keys() == PICKING_TASK_WMS_REQUEST_EXAMPLES.keys()
+    for operation, request in PICKING_TASK_WMS_REQUEST_EXAMPLES.items():
+        assert parsers[operation](request).model_dump(mode="json", exclude_unset=True) == request

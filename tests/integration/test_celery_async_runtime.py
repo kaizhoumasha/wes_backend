@@ -227,6 +227,27 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     second_runtime.shutdown()
 
 
+@pytest.mark.parametrize("timeout_ms", [None, 2300])
+def test_worker_injects_the_optional_deployment_first_plan_timeout(monkeypatch, timeout_ms):
+    from deployment.plugin_configuration import DeploymentPluginSettings, deployment_plugin_settings
+
+    monkeypatch.setitem(DeploymentPluginSettings.model_config, "env_file", None)
+    if timeout_ms is None:
+        monkeypatch.delenv("AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS", raising=False)
+    else:
+        monkeypatch.setenv("AUTOMATIC_PICKING_FIRST_PLAN_TIMEOUT_MS", str(timeout_ms))
+    deployment_plugin_settings.cache_clear()
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    try:
+        runtime.initialize()
+        assert infra.build_deployment_runtime.call_args.kwargs["automatic_picking_first_plan_timeout_ms"] == timeout_ms
+    finally:
+        runtime.shutdown()
+        deployment_plugin_settings.cache_clear()
+
+
 def test_fulfillment_queue_initializes_target_transport_without_device_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)

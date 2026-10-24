@@ -30,6 +30,10 @@ def test_empty_composition_builds_core_without_a_business_handler() -> None:
         transport_runtime=SimpleNamespace(service=object(), position_projection_service=object(), client=object()),
         device_command_service=object(),
     )
+    from src.app.wms_integration.outbound_picking.services import BinWorkPlanResultReader, BinWorkPlanScheduler
+
+    assert isinstance(runtime.bin_work_plan_scheduler, BinWorkPlanScheduler)
+    assert isinstance(runtime.bin_work_plan_result_reader, BinWorkPlanResultReader)
     assert runtime.plugins == ()
     assert runtime.wms_recovery_event_handler is None
     assert runtime.execution.fact_processor is not None
@@ -158,3 +162,21 @@ async def test_zero_plugins_dispatch_existing_prepare_and_install_picking_owner(
     assert service._picking_task_owner is not None
     assert runtime.plugins == ()
     assert len(transport.requests) == 1
+
+
+def test_base_artifact_probe_rejects_both_missing_plugins(tmp_path, monkeypatch):
+    from scripts import verify_core_plugin_installation as probe
+
+    calls = []
+    packages = {"manual-picking": "manual_picking", "automatic-picking": "automatic_picking"}
+
+    def missing_runtime(**kwargs):
+        key = kwargs["enabled_plugin_keys"][0]
+        calls.append(key)
+        raise ModuleNotFoundError(name=packages[key])
+
+    monkeypatch.setattr(probe, "__file__", str(tmp_path / "scripts" / "probe.py"))
+    monkeypatch.setattr(probe, "find_spec", lambda _package: None)
+    monkeypatch.setattr("deployment.plugin_composition.build_deployment_runtime", missing_runtime)
+    probe.main()
+    assert calls == ["manual-picking", "automatic-picking"]
