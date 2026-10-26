@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from wes_plugin_sdk import BinBatchNoBatch, BinReturnBatchReady, BinReturnCandidate, wms_operations
 
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -131,7 +132,13 @@ class AutomaticPickingReturnBatchFlow:
                 or evidence.apply_status != "APPLIED"
                 or evidence.kind not in {"DEVICE_EVENT", "TRANSPORT_RESULT"}
                 or evidence.published_at is None
-                or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+                or normalize_payload(
+                    evidence.normalized_payload,
+                    digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE
+                    if evidence.kind == "DEVICE_EVENT"
+                    else InboundEvidenceDigestPolicy.EXACT,
+                )[1]
+                != evidence.payload_digest
             ):
                 complete = False
                 continue

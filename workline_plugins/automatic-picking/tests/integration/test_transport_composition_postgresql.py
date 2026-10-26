@@ -14,12 +14,13 @@ from test_returns_postgresql import database, pending
 from test_source_revision_postgresql import source
 
 from deployment.plugin_composition import build_deployment_runtime
-from src.app.device.contracts import EcsCommandResultReport
+from src.app.device.contracts import EcsCommandResultReport, EcsDeviceEventReport
 from src.app.device.models import Device
 from src.app.device.models.command import DeviceCommand
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
 from src.app.execution.models import InboundEvidence, WmsConfirmation
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.execution.services.rack_inbound_window import RackInboundWindowService
 from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.transport.models import TransportTask
@@ -100,34 +101,27 @@ async def advance(p, app):
 
 async def event(p, role, stamp, *, bin_code=None):
     device = "OFFLINE-SCAN3" if role == "SCAN3" else role
-    identity = new_uuid7()
-    payload = {
-        "device_code": device,
-        "contract_key": "FIXTURE_ONLY",
-        "contract_version": "1",
-        "source_event_id": identity,
-        "event_type": "SCAN_COMPLETED",
-        "timestamp": stamp,
-        "is_debug": False,
-        "data": {"bin_code": (bin_code or p.work.bin_code) + ("-C" if role == "SCAN2" else "-B")},
-    }
-    async with p.sessions.begin() as db:
-        fact = InboundEvidence(
-            kind="DEVICE_EVENT",
-            source_identity="transport-scan:" + identity,
-            payload_digest=canonical_json_digest(payload),
-            normalized_payload=payload,
-            received_at=p.now,
-            apply_status="APPLIED",
-            workline_id=p.line.id,
+    service = DeviceEvidenceService(session_factory=p.sessions)
+    receipt = await service.accept_event(
+        EcsDeviceEventReport(
             device_code=device,
-            contract_key="FIXTURE_ONLY",
-            contract_version="1",
-            source_event_id=identity,
+            event_type="SCAN_COMPLETED",
+            timestamp=stamp,
+            data={"bin_code": (bin_code or p.work.bin_code) + ("-C" if role == "SCAN2" else "-B")},
         )
-        db.add(fact)
-        await db.flush()
-        return fact.id
+    )
+    assert await service.process_one()
+    async with p.sessions() as db:
+        fact = await db.get(InboundEvidence, receipt.evidence_id)
+        assert fact.apply_status == "APPLIED"
+        assert fact.normalized_payload["contract_key"] == "FIXTURE_ONLY"
+        assert fact.normalized_payload["contract_version"] == "1"
+        assert (
+            fact.payload_digest
+            == normalize_payload(fact.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+        )
+        assert fact.payload_digest != canonical_json_digest(fact.normalized_payload)
+    return receipt.evidence_id
 
 
 async def test_actual_composition_no_work_to_fifo_drain_and_inbound_recovers_without_dispatch(pending, monkeypatch):

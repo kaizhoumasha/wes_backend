@@ -9,10 +9,10 @@ from automatic_picking.definition import DEFINITION
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.models import WorkLine
 from src.app.workline.repositories.workline_repository import workline_repository
-from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 from .return_flow import AutomaticPickingReturnFlow, MatchedReturnDirection, MatchedScan3, MatchedScan4
@@ -94,7 +94,8 @@ class ReturnScanReader:
             or event.device_code != evidence.device_code
             or event.contract_key != evidence.contract_key
             or event.contract_version != evidence.contract_version
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             return None
         code = raw[:-2]

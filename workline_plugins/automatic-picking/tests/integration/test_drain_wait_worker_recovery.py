@@ -24,6 +24,7 @@ from wes_plugin_sdk import wms_operations
 from src.app.device.contracts import EcsDeviceEvent
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, WmsConfirmation
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask
@@ -101,7 +102,7 @@ async def checkpoint(sessions):
                 source_event_id=payload.get("source_event_id"),
                 source_identity=new_uuid7(),
                 normalized_payload=payload,
-                payload_digest=canonical_json_digest(payload),
+                payload_digest=normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1],
                 command_code=commands[1].command_code if kind == "DEVICE_RESULT" else None,
                 apply_status="APPLIED",
                 received_at=now,

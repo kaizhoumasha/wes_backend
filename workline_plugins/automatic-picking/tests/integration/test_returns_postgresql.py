@@ -28,6 +28,7 @@ from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
 from src.app.execution.plugin_binding import StaticPluginBinding
 from src.app.execution.services import DecisionApplier, FactProcessor, MaterialExecutionService, WmsConfirmationService
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.workline.models import WorkLine
 from src.core.uuid7 import new_uuid7
@@ -187,7 +188,7 @@ async def scan3(p, **changes):
         row = InboundEvidence(
             kind="DEVICE_EVENT",
             source_identity="scan3:" + event_id,
-            payload_digest=canonical_json_digest(payload),
+            payload_digest=normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1],
             normalized_payload=payload,
             received_at=p.now,
             apply_status="APPLIED",

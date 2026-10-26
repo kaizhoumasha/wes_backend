@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.49.19.0] - 2026-10-25
+
+### Fixed
+
+- 修复自动拣料合法扫码证据入库后被错误摘要校验拦截的问题，使 SCAN3/SCAN4、方向恢复、FIFO 与回架接续沿设备入口的摘要策略推进；保留设备身份、合同及 Transport 完整性校验。
+
+
 ## [0.49.18.1] - 2026-10-25
 
 ### Changed

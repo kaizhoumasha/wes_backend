@@ -17,10 +17,10 @@ from test_returns_postgresql import components, database, pending, processor, sc
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import DeviceCommand
 from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.workline.models import WorkLine
 from src.core.uuid7 import new_uuid7
-from src.utils.canonical_json import canonical_json_digest
 from tests.support.postgresql_heavy import run_alembic
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -85,7 +85,7 @@ async def scan4(p, *, return_id=None, timestamp=1000, matched_timestamp=None, **
             kind="DEVICE_EVENT",
             source_identity="scan4:" + event_id,
             normalized_payload=payload,
-            payload_digest=canonical_json_digest(payload),
+            payload_digest=normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1],
             received_at=p.now,
             apply_status="APPLIED",
             workline_id=p.line.id,

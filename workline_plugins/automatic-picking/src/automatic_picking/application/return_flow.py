@@ -8,7 +8,6 @@ from automatic_picking.definition import DEFINITION
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE, DeviceCommandRequest, EcsCommandResult, EcsDeviceEvent
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.workline.installed_plugin import parse_device_bindings
-from src.utils.canonical_json import canonical_json_digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +171,8 @@ class AutomaticPickingReturnFlow:
                 evidence.normalized_payload[key] != getattr(evidence, key)
                 for key in ("contract_key", "contract_version")
             )
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             return "RECONCILING"
         current = await self.repository.by_source_work(db, matched.work_id)
@@ -218,7 +218,8 @@ class AutomaticPickingReturnFlow:
                 evidence.normalized_payload[key] != getattr(evidence, key)
                 for key in ("contract_key", "contract_version")
             )
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
         ):
             return "RECONCILING"
         current = await self.repository.by_id_for_update(db, matched.return_id)
@@ -259,7 +260,8 @@ class AutomaticPickingReturnFlow:
             or event.device_code != parse_device_bindings(line.config, DEFINITION.device_roles).get(role)
             or event.event_type != "SCAN_COMPLETED"
             or event.is_debug
-            or canonical_json_digest(evidence.normalized_payload) != evidence.payload_digest
+            or normalize_payload(evidence.normalized_payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
+            != evidence.payload_digest
             or (role == "SCAN4" and event.timestamp != current.scan4_event_time)
         ):
             raise ValueError("direction arrival differs from current Return")

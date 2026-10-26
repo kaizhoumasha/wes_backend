@@ -14,8 +14,8 @@ from automatic_picking.definition import DEFINITION
 
 from src.app.device.contracts import WORKLINE_BUSINESS_REF_TYPE
 from src.app.execution.models import InboundEvidence
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceDigestPolicy, normalize_payload
 from src.app.workline.models import WorkLine
-from src.utils.canonical_json import canonical_json_digest
 
 
 class Database:
@@ -42,6 +42,7 @@ def scan(role="SCAN3", **changes):
         "timestamp": 2000,
         "source_event_id": "event-1",
         "is_debug": False,
+        "trace_id": "scan-trace",
         "data": {"bin_code": "A123456789-B"},
     }
     payload.update(changes)
@@ -53,7 +54,7 @@ def scan(role="SCAN3", **changes):
         contract_key="SCAN",
         contract_version="1",
         normalized_payload=payload,
-        payload_digest=canonical_json_digest(payload),
+        payload_digest=normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1],
     )
     line = N(id=2, config={"device_bindings": {role.role_key: role.role_key for role in DEFINITION.device_roles}})
     return evidence, line
@@ -110,6 +111,15 @@ async def test_scan_does_not_guess_ng_or_debug_identity(changes):
     evidence, line = scan(**changes)
     db = Database([((InboundEvidence, 1), evidence), ((WorkLine, 2), line)])
     assert await ReturnScanReader("SCAN3").read_in_session(db, evidence_id=1) is None
+
+
+@pytest.mark.parametrize("role", ["SCAN3", "SCAN4"])
+@pytest.mark.parametrize("field,value", [("timestamp", 3000), ("contract_key", "OTHER"), ("contract_version", "2")])
+async def test_scan_rejects_semantic_or_contract_drift_after_ingress(role, field, value):
+    evidence, line = scan(role)
+    evidence.normalized_payload[field] = value
+    db = Database([((InboundEvidence, 1), evidence), ((WorkLine, 2), line)])
+    assert await ReturnScanReader(role).read_in_session(db, evidence_id=1) is None
 
 
 async def test_scan4_rejects_ambiguous_current():
@@ -194,7 +204,7 @@ async def test_success_direction_uses_exact_original_return_command():
         command_code="forward-4",
         workline_id=2,
         normalized_payload=payload,
-        payload_digest=canonical_json_digest(payload),
+        payload_digest=normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1],
     )
     command = N(
         command_code="forward-4",
