@@ -40,6 +40,7 @@ class ManualPickingBatchResultFlow:
         *,
         workline_id: int,
         picking_task_id: int,
+        plan_revision: int,
         confirmed_rack_id: str,
         confirmed_face: str,
         inlet_location: str,
@@ -53,7 +54,12 @@ class ManualPickingBatchResultFlow:
         result = outcome.result
         if isinstance(result, BinInboundBatchReady):
             await self._batches.record_allocation(
-                db, workline_id=workline_id, picking_task_id=picking_task_id, intent=intent, evidence_id=evidence.id
+                db,
+                workline_id=workline_id,
+                picking_task_id=picking_task_id,
+                plan_revision=plan_revision,
+                intent=intent,
+                evidence_id=evidence.id,
             )
             await self.create_inbound_chunk(
                 db,
@@ -68,7 +74,12 @@ class ManualPickingBatchResultFlow:
             return "INBOUND_READY"
         if isinstance(result, BinInboundBatchRackFaceDone):
             await self._batches.record_allocation(
-                db, workline_id=workline_id, picking_task_id=picking_task_id, intent=intent, evidence_id=evidence.id
+                db,
+                workline_id=workline_id,
+                picking_task_id=picking_task_id,
+                plan_revision=plan_revision,
+                intent=intent,
+                evidence_id=evidence.id,
             )
             return "RACK_FACE_DONE"
         return None

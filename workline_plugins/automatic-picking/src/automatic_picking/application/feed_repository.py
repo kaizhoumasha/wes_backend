@@ -89,6 +89,23 @@ class FeedRepository:
             .with_for_update()
         )
 
+    async def open_for_face(self, db, workline_id, member):
+        return await db.scalar(
+            select(AutomaticPickingFeed)
+            .join(PickingTaskBinSourceRack, AutomaticPickingFeed.source_member_id == PickingTaskBinSourceRack.id)
+            .where(
+                AutomaticPickingFeed.workline_id == workline_id,
+                AutomaticPickingFeed.picking_task_id == member.picking_task_id,
+                PickingTaskBinSourceRack.rack_id == member.rack_id,
+                PickingTaskBinSourceRack.rack_face == member.rack_face,
+                AutomaticPickingFeed.phase.in_(("REQUESTED", "ALLOCATED", "FEEDING", "RECONCILING")),
+                AutomaticPickingFeed.archived_at.is_(None),
+            )
+            .order_by(AutomaticPickingFeed.id)
+            .limit(1)
+            .with_for_update(of=AutomaticPickingFeed)
+        )
+
     async def rotation_round(self, db, member):
         position = await db.scalar(
             select(PositionProjection).where(
@@ -209,6 +226,13 @@ class FeedRepository:
         return True
 
     async def inbound(self, db, feed):
+        frozen_feed = await self.by_operation(db, feed.operation_id)
+        if frozen_feed is None or (
+            frozen_feed.workline_id,
+            frozen_feed.picking_task_id,
+            frozen_feed.source_member_id,
+        ) != (feed.workline_id, feed.picking_task_id, feed.source_member_id):
+            raise ValueError("feed result differs from frozen plan member")
         confirmation = await db.scalar(
             select(WmsConfirmation).where(
                 col(WmsConfirmation.operation) == BIN_INBOUND_BATCH_OPERATION,
@@ -233,10 +257,10 @@ class FeedRepository:
         if (
             member is None
             or task is None
+            or intent.operation_id != feed.operation_id
             or intent.task_id != task.task_id
             or member.picking_task_id != task.id
-            or (intent.plan_revision, intent.rack_id, intent.rack_face)
-            != (member.plan_revision, member.rack_id, member.rack_face)
+            or (intent.rack_id, intent.rack_face) != (member.rack_id, member.rack_face)
         ):
             raise ValueError("feed result differs from frozen plan member")
         return intent, outcome.result, evidence

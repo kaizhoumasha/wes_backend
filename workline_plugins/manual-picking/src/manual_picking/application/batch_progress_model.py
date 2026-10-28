@@ -35,7 +35,9 @@ class ManualPickingInboundBatch(EnterpriseMixin, DataTableMixin, table=True):
     plan_revision: int
     rack_id: str = Field(min_length=1, max_length=100)
     rack_face: str = Field(min_length=1, max_length=100)
-    response_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT)
+    response_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
 
 
 class ManualPickingInboundBatchScan(EnterpriseMixin, DataTableMixin, table=True):

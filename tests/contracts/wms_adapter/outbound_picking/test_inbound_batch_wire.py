@@ -17,8 +17,20 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 0,
-        "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "RACK-1", "rack_face": "正面"},
+        "data": {"task_id": "PICK-1", "rack_id": "RACK-1", "rack_face": "正面"},
     }
+
+
+def test_request_uses_only_task_and_rack_face():
+    body = request()
+    assert parse_bin_inbound_batch_request(body).model_dump(mode="json") == body
+
+
+def test_request_rejects_plan_revision():
+    body = request()
+    body["data"]["plan_revision"] = 1
+    with pytest.raises(ValueError, match="plan_revision"):
+        parse_bin_inbound_batch_request(body)
 
 
 def bin_item(bin_code="BIN-1", slot_id="S-1"):

@@ -19,7 +19,7 @@ def request():
         "operation_id": OPERATION_ID,
         "operation": OPERATION,
         "timestamp": 0,
-        "data": {"task_id": "TASK-1", "plan_revision": 1, "rack_id": "RACK-1", "rack_face": "A"},
+        "data": {"task_id": "TASK-1", "rack_id": "RACK-1", "rack_face": "A"},
     }
 
 
@@ -97,6 +97,18 @@ async def test_frozen_identity_and_digest_fail_before_send(overrides):
     client = client_response({"result": "RACK_FACE_DONE"})
     result = await dispatch(client, **overrides)
     assert result.code is WmsDispatchCode.RECONCILING
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plan_revision_is_rejected_without_rewriting_frozen_request():
+    payload = request()
+    payload["data"]["plan_revision"] = 1
+    client = client_response({"result": "RACK_FACE_DONE"})
+    result = await dispatch(client, payload)
+    assert result.code is WmsDispatchCode.RECONCILING
+    assert payload["operation_id"] == OPERATION_ID
+    assert payload["data"]["plan_revision"] == 1
     client.post.assert_not_awaited()
 
 

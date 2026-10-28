@@ -434,7 +434,8 @@ async def test_replay_retired_confirmation_never_reactivates_previous_working_ra
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mismatch", [None, "rack", "face", "revision", "source"])
-async def test_manual_arrival_ready_response_creates_real_bin_transport_slice(mismatch):
+@pytest.mark.parametrize("earlier_valid_source", [False, True])
+async def test_manual_arrival_ready_response_creates_real_bin_transport_slice(mismatch, earlier_valid_source):
     import wes_plugin_sdk as sdk
     from manual_picking.application.batch_result import ManualPickingBatchResultFlow
     from test_scan_flow import _setup, _wms
@@ -443,7 +444,7 @@ async def test_manual_arrival_ready_response_creates_real_bin_transport_slice(mi
     from src.app.execution.plugin_binding import BusinessEvidenceDisposition
 
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-manual", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
+        operation_id="batch-manual", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady(
         (sdk.BinInboundBatchMember("A000000001", sdk.TransportRackBinSlot("RACK-1", "90", "S1")),)
@@ -457,10 +458,24 @@ async def test_manual_arrival_ready_response_creates_real_bin_transport_slice(mi
     flow, evidences, *_ = _setup(batch_reader=reader, batch_result=result, missing_projection=("RACK", "RACK-1"))
     source = (await flow._source_racks.list_bin_source_racks(object(), 31))[0]
     source.source_evidence_id = 51
-    flow._source_racks.list_bin_source_racks = AsyncMock(return_value=[source])
+    source.plan_revision = 13
+    flow._batch_progress.inbound_request.side_effect = None
+    flow._batch_progress.inbound_request.return_value = SimpleNamespace(
+        workline_id=7,
+        picking_task_id=31,
+        task_id=intent.task_id,
+        operation_id=intent.operation_id,
+        rack_id=intent.rack_id,
+        rack_face=intent.rack_face,
+        plan_revision=13,
+    )
+    earlier = SimpleNamespace(**(vars(source) | {"plan_revision": 5, "source_evidence_id": 50}))
+    flow._source_racks.list_bin_source_racks = AsyncMock(
+        return_value=[earlier, source] if earlier_valid_source else [source]
+    )
     fact = SimpleNamespace(
         picking_task_id=31,
-        plan_revision=1,
+        plan_revision=13,
         rack_id="RACK-1",
         rack_face="90",
         source_evidence_id=51,
@@ -946,7 +961,7 @@ async def test_native_workpoint_takeover_needs_unique_new_action_and_published_a
 @pytest.mark.parametrize("stale", ["task", "location"])
 async def test_stale_manual_fact_does_not_block_current_real_arrival_ready(stale):
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id="batch-current", task_id="PICK-001", plan_revision=1, rack_id="RACK-1", rack_face="90"
+        operation_id="batch-current", task_id="PICK-001", rack_id="RACK-1", rack_face="90"
     )
     reader = SimpleNamespace(read_inbound=AsyncMock(return_value=(intent, object())))
     result = SimpleNamespace(apply_inbound_in_session=AsyncMock(return_value="INBOUND_READY"))

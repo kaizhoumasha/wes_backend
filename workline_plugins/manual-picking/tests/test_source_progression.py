@@ -786,6 +786,35 @@ async def test_clearance_owner_prevents_new_batch_even_with_older_uncancelled_me
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_ready", [False, True])
+async def test_cancelled_source_clearance_finishes_frozen_batch_before_departure(chunk_ready) -> None:
+    driver, line, task, positions, plans, flow, _, _, scheduler = setup_driver()
+    for source in plans.rows:
+        source.cancelled_evidence_id = 91
+    flow.complete.clear()
+    flow.created = chunk_ready
+    flow.face_progress = AsyncMock(
+        return_value=SimpleNamespace(feed_complete=False, next_offset=4 if chunk_ready else None)
+    )
+    window = SimpleNamespace(
+        resource_fence_id="R1",
+        picking_task_id=task.id,
+        source_evidence_id=51,
+        created_at=timezone.now_for_db(),
+        window_target_location_code="FIVE-POS",
+    )
+    current = SimpleNamespace(
+        status="SUCCEEDED", outcome_version=1, published_outcome_version=1, transport_task_id="source-move"
+    )
+    driver._batches.cancelled_source_windows.return_value = [(window, current, positions.source)]
+
+    assert await driver.project_exits_in_session(object(), line) == int(chunk_ready)
+    assert len(flow.calls) == 1
+    assert flow.calls[0]["allow_inbound"] is False
+    scheduler.create_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status,published,dependency",
     [
@@ -817,16 +846,16 @@ async def test_cancelled_source_clearance_preserves_current_action_and_round_dep
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["EXECUTING", "EXECUTION_COMPLETED"])
-async def test_arrived_cancelled_source_face_still_requests_wms_final_batch(status: str) -> None:
+async def test_arrived_cancelled_source_face_stops_new_requests_and_advances_to_valid_face(status: str) -> None:
     driver, line, task, _, plans, flow, creator, _, scheduler = setup_driver()
     task.status = status
     plans.rows[0].cancelled_evidence_id = 91
     flow.complete.clear()
-    flow.created = True
+    flow.created = False
 
     assert await driver.advance_in_session(object(), line, task) == 1
-    assert flow.calls[0]["allow_inbound"] is True
-    assert creator.rotate == []
+    assert flow.calls[0]["allow_inbound"] is False
+    assert len(creator.rotate) == 1
     scheduler.create_in_session.assert_not_awaited()
 
 

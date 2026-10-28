@@ -293,7 +293,7 @@ async def test_cancelled_source_window_rechecks_both_facts_and_latest_round_acti
         await engine.dispose()
 
 
-async def _seed_current_inbound(db, intent, result, *, evidence_id=31):  # type: ignore[no-untyped-def]
+async def _seed_current_inbound(db, intent, result, *, evidence_id=31, plan_revision=1):  # type: ignore[no-untyped-def]
     data = (
         {"result": "RACK_FACE_DONE"}
         if isinstance(result, sdk.BinInboundBatchRackFaceDone)
@@ -333,9 +333,39 @@ async def _seed_current_inbound(db, intent, result, *, evidence_id=31):  # type:
     await (
         import_module("manual_picking.application.batch_repository")
         .BatchRepository()
-        .record_allocation(db, workline_id=7, picking_task_id=31, intent=intent, evidence_id=evidence_id)
+        .record_allocation(
+            db, workline_id=7, picking_task_id=31, plan_revision=plan_revision, intent=intent, evidence_id=evidence_id
+        )
     )
     await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_inbound_allocation_replay_keeps_first_local_revision() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    intent = sdk.wms_operations.outbound_bin_inbound_batch(
+        operation_id="019f0000-0000-7000-8000-000000000501", task_id="PICK-1", rack_id="R1", rack_face="90"
+    )
+    try:
+        async with sessions.begin() as db:
+            await _seed_current_inbound(db, intent, sdk.BinInboundBatchRackFaceDone())
+            repo = module.BatchRepository()
+            with pytest.raises(ValueError, match="identity changed"):
+                await repo.record_allocation(
+                    db, workline_id=7, picking_task_id=31, plan_revision=2, intent=intent, evidence_id=31
+                )
+            await repo.record_allocation(
+                db, workline_id=7, picking_task_id=31, plan_revision=1, intent=intent, evidence_id=31
+            )
+            await db.flush()
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
+            assert progress.intent == intent
+            assert progress.complete
+            batches = (await db.scalars(select(ManualPickingInboundBatch))).all()
+            assert len(batches) == 1 and batches[0].plan_revision == 1
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -346,7 +376,7 @@ async def test_scan1_batch_progress_survives_closed_passage_deletion() -> None:
     now = datetime(2026, 9, 13, 12)
     operation_id = "019f0000-0000-7000-8000-000000000001"
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        operation_id=operation_id, task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     repo = BatchRepository()
     try:
@@ -395,7 +425,9 @@ async def test_scan1_batch_progress_survives_closed_passage_deletion() -> None:
             db.add_all((confirmation, evidence))
             await db.flush()
             confirmation.response_evidence_id = evidence.id
-            await repo.record_allocation(db, workline_id=7, picking_task_id=31, intent=intent, evidence_id=evidence.id)
+            await repo.record_allocation(
+                db, plan_revision=1, workline_id=7, picking_task_id=31, intent=intent, evidence_id=evidence.id
+            )
             db.add_all(
                 (
                     TransportDecisionBinding(
@@ -468,7 +500,7 @@ async def test_scan1_batch_progress_survives_closed_passage_deletion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_inbound_results_for_same_rack_remain_revision_scoped() -> None:
+async def test_inbound_results_for_same_rack_reject_multiple_allocations() -> None:
     from src.app.wms_integration.outbound_picking.services.bin_batch import BinBatchResultReader
 
     engine, sessions = await _new_sessions()
@@ -486,7 +518,7 @@ async def test_inbound_results_for_same_rack_remain_revision_scoped() -> None:
                         "operation": "outbound.bin.inbound_batch@v1",
                         "operation_id": operation_id,
                         "timestamp": 1,
-                        "data": {"task_id": "PICK-1", "plan_revision": revision, "rack_id": "A", "rack_face": "90"},
+                        "data": {"task_id": "PICK-1", "rack_id": "A", "rack_face": "90"},
                     },
                     deadline_at=now,
                     status="COMPLETED",
@@ -514,11 +546,8 @@ async def test_inbound_results_for_same_rack_remain_revision_scoped() -> None:
                 await db.flush()
                 confirmation.response_evidence_id = evidence.id
             reader = BinBatchResultReader()
-            for revision in (1, 2):
-                intent, _, _, _ = await reader.latest_inbound_detail(
-                    db, workline_id=7, task_id="PICK-1", plan_revision=revision, rack_id="A", rack_face="90"
-                )
-                assert intent.plan_revision == revision
+            with pytest.raises(ValueError, match="multiple inbound allocations"):
+                await reader.latest_inbound_detail(db, workline_id=7, task_id="PICK-1", rack_id="A", rack_face="90")
     finally:
         await engine.dispose()
 
@@ -589,7 +618,7 @@ async def test_face_gate_ignores_unrelated_pending_batch() -> None:
                     request_digest="a" * 64,
                     request_payload={
                         "operation": "outbound.bin.inbound_batch@v1",
-                        "data": {"task_id": "PICK-2", "plan_revision": 1, "rack_id": "R2", "rack_face": "270"},
+                        "data": {"task_id": "PICK-2", "rack_id": "R2", "rack_face": "270"},
                     },
                     deadline_at=now,
                     status="PENDING",
@@ -652,7 +681,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
                 request_digest="a" * 64,
                 request_payload={
                     "operation": "outbound.bin.inbound_batch@v1",
-                    "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
+                    "data": {"task_id": "PICK-1", "rack_id": "R1", "rack_face": "90"},
                 },
                 deadline_at=now,
                 status="PENDING",
@@ -660,6 +689,7 @@ async def test_face_gate_blocks_unpublished_wms_result_and_other_workline_or_unr
             db.add(confirmation)
             await db.flush()
             assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 1, "R1", "90")
+            assert await repo.has_unclosed_action_for_face(db, 7, "PICK-1", 2, "R1", "90")
             assert not await repo.has_unclosed_action_for_face(db, 8, "PICK-1", 1, "R1", "90")
 
             # 2) COMPLETED confirmation 但 response_evidence 未 published 仍阻塞。
@@ -886,7 +916,6 @@ async def test_face_gate_without_task_scope_tracks_return_confirmation_and_evide
                         "operation": "outbound.bin.inbound_batch@v1",
                         "data": {
                             "task_id": "PICK-2",
-                            "plan_revision": 1,
                             "rack_id": "R1",
                             "rack_face": "90",
                         },
@@ -1000,7 +1029,7 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
                     "operation": "outbound.bin.inbound_batch@v1",
                     "operation_id": "019f0000-0000-7000-8000-000000000003",
                     "timestamp": 1_788_975_600_000,
-                    "data": {"task_id": "PICK-1", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
+                    "data": {"task_id": "PICK-1", "rack_id": "R1", "rack_face": "90"},
                 },
                 deadline_at=now,
                 status="COMPLETED",
@@ -1031,12 +1060,12 @@ async def test_no_batch_retry_and_face_done_are_derived_from_matched_wms_results
             await db.flush()
             await repo.record_allocation(
                 db,
+                plan_revision=1,
                 workline_id=7,
                 picking_task_id=31,
                 intent=sdk.wms_operations.outbound_bin_inbound_batch(
                     operation_id=inbound_confirmation.operation_id,
                     task_id="PICK-1",
-                    plan_revision=1,
                     rack_id="R1",
                     rack_face="90",
                 ),
@@ -1066,7 +1095,6 @@ async def test_inbound_closed_face_does_not_request_again(has_chunk: bool) -> No
             intent = sdk.wms_operations.outbound_bin_inbound_batch(
                 operation_id="019f0000-0000-7000-8000-000000000011",
                 task_id="PICK-1",
-                plan_revision=1,
                 rack_id="R1",
                 rack_face="90",
             )
@@ -1106,7 +1134,7 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
     now = datetime(2026, 9, 13, 12)
     operation_id = "019f0000-0000-7000-8000-000000000012"
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        operation_id=operation_id, task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady(
         tuple(
@@ -1165,12 +1193,15 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
 
     try:
         async with sessions.begin() as db:
-            await _seed_current_inbound(db, intent, ready)
-            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
+            await _seed_current_inbound(db, intent, ready, plan_revision=5)
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 5, "R1", "90", "CNV0301")
             assert progress.next_offset == 0 and not progress.complete
             add_chunk(db, 0)
             await db.flush()
-            assert (await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).next_offset is None
+            assert (await repo.inbound_progress(db, 7, "PICK-1", 5, "R1", "90", "CNV0301")).next_offset is None
+            waiting = await repo.inbound_progress(db, 7, "PICK-1", 13, "R1", "90", "CNV0301")
+            assert waiting.intent.operation_id == operation_id
+            assert waiting.next_offset is None and not waiting.feed_complete
             for index in range(1, 5):
                 db.add(
                     ManualPickingInboundBatchScan(
@@ -1180,12 +1211,18 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
                     )
                 )
             await db.flush()
-            assert (await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")).next_offset == 4
+            assert (await repo.inbound_progress(db, 7, "PICK-1", 5, "R1", "90", "CNV0301")).next_offset == 4
+            resumed = await repo.inbound_progress(db, 7, "PICK-1", 13, "R1", "90", "CNV0301")
+            assert resumed.intent.operation_id == operation_id
+            assert resumed.evidence_id == 31
+            assert resumed.next_offset == 4 and not resumed.feed_complete
+            assert (await db.scalar(select(ManualPickingInboundBatch))).plan_revision == 5
             for offset in range(4, bin_count, 4):
                 add_chunk(db, offset)
             await db.flush()
-            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 5, "R1", "90", "CNV0301")
             assert progress.feed_complete and not progress.complete
+            assert await repo.inbound_progress(db, 7, "PICK-1", 13, "R1", "90", "CNV0301") is None
             for index in range(5, bin_count + 1):
                 db.add(
                     ManualPickingInboundBatchScan(
@@ -1196,10 +1233,31 @@ async def test_frozen_face_advances_only_after_transport_success_and_matching_sc
                 )
             await db.flush()
             queries.clear()
-            progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")
+            progress = await repo.inbound_progress(db, 7, "PICK-1", 5, "R1", "90", "CNV0301")
             assert progress.complete and progress.feed_complete and progress.next_offset is None
             assert progress.last_chunk_created_at == now
             assert len(queries) <= 5, f"{bin_count} bins required {len(queries)} SELECTs"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_current_revision_rejects_multiple_unfinished_face_allocations() -> None:
+    module = import_module("manual_picking.application.batch_repository")
+    engine, sessions = await _new_sessions()
+    ready = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S1")),))
+    try:
+        async with sessions.begin() as db:
+            for revision in (5, 6):
+                intent = sdk.wms_operations.outbound_bin_inbound_batch(
+                    operation_id=f"019f0000-0000-7000-8000-{revision:012d}",
+                    task_id="PICK-1",
+                    rack_id="R1",
+                    rack_face="90",
+                )
+                await _seed_current_inbound(db, intent, ready, evidence_id=30 + revision, plan_revision=revision)
+            with pytest.raises(ValueError, match="multiple unfinished inbound allocations"):
+                await module.BatchRepository().inbound_progress(db, 7, "PICK-1", 13, "R1", "90", "CNV0301")
     finally:
         await engine.dispose()
 
@@ -1210,7 +1268,7 @@ async def test_frozen_face_does_not_redispatch_legacy_inbound_binding() -> None:
     engine, sessions = await _new_sessions()
     operation_id = "019f0000-0000-7000-8000-000000000013"
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        operation_id=operation_id, task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     ready = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S-1")),))
     try:
@@ -1262,7 +1320,7 @@ async def test_feed_complete_requires_published_transport_members_at_inlet(case:
     now = datetime(2026, 9, 15, 12)
     operation_id = "019f0000-0000-7000-8000-000000000014"
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        operation_id=operation_id, task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     result = sdk.BinInboundBatchReady((sdk.BinInboundBatchMember("BIN-1", sdk.TransportRackBinSlot("R1", "90", "S1")),))
     try:
@@ -1597,7 +1655,6 @@ async def test_scan2_membership_preserves_entered_bin_after_source_cancellation(
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="019f0000-0000-7000-8000-000000000099",
         task_id="PICK-1",
-        plan_revision=1,
         rack_id="R1",
         rack_face="90",
     )

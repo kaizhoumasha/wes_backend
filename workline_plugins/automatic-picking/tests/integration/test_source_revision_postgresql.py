@@ -223,7 +223,7 @@ async def snapshot(source):
         return members, feeds, requests, ingress
 
 
-async def test_same_face_revisions_reuse_ingress_and_recover_each_member_once(source):
+async def test_same_face_revisions_reuse_unclosed_batch_and_ingress(source):
     await arrive(source)
     assert await source.runtime.picking_task_plan_activation_service.activate_batch() == 1
     first_members, first_feeds, first_requests, first_ingress = await snapshot(source)
@@ -238,15 +238,14 @@ async def test_same_face_revisions_reuse_ingress_and_recover_each_member_once(so
             source.runtime.picking_task_plan_activation_service.activate_batch(),
             restored.picking_task_plan_activation_service.activate_batch(),
         )
-    ) == [0, 1]
+    ) == [0, 0]
     assert await restored.picking_task_plan_activation_service.activate_batch() == 0
     members, feeds, requests, ingress = await snapshot(source)
     assert [m.plan_revision for m in members] == [1, 2]
-    assert [f.source_member_id for f in feeds] == [m.id for m in members]
-    assert len({f.operation_id for f in feeds}) == 2
+    assert [f.source_member_id for f in feeds] == [members[0].id]
+    assert len({f.operation_id for f in feeds}) == 1
     assert [r.request_payload["data"] for r in requests] == [
-        {"task_id": source.task.task_id, "plan_revision": revision, "rack_id": "SOURCE-1", "rack_face": "A"}
-        for revision in (1, 2)
+        {"task_id": source.task.task_id, "rack_id": "SOURCE-1", "rack_face": "A"}
     ]
     assert [r.operation_id for r in requests] == [f.operation_id for f in feeds]
     assert (members[0].id, feeds[0].id, requests[0].operation_id) == (
@@ -282,9 +281,9 @@ async def test_new_revision_waits_for_current_published_position_and_actual_face
         await publish_arrival(source)
         assert (
             await runtime_for(source.sessions, source.service).picking_task_plan_activation_service.activate_batch()
-            == 2
+            == 1
         )
-        assert len((await snapshot(source))[1]) == 2
+        assert len((await snapshot(source))[1]) == 1
     else:
         assert await source.runtime.picking_task_plan_activation_service.activate_batch() == 0
     # 异面不会据计划伪造到位、旋转或新的进场 Transport。
@@ -295,6 +294,30 @@ async def test_new_revision_waits_for_current_published_position_and_actual_face
 async def test_revision_feed_and_confirmation_rollback_and_restart_together(source):
     await arrive(source)
     assert await source.runtime.picking_task_plan_activation_service.activate_batch() == 1
+    async with source.sessions.begin() as db:
+        original = await db.scalar(select(AutomaticPickingFeed))
+        confirmation = await db.scalar(
+            select(WmsConfirmation).where(WmsConfirmation.operation_id == original.operation_id)
+        )
+        accepted = await InboundEvidenceService().accept(
+            db,
+            kind="WMS_RESULT",
+            source_identity=BIN_INBOUND_BATCH_OPERATION + ":" + original.operation_id,
+            normalized_payload={
+                "operation_id": original.operation_id,
+                "timestamp": 2,
+                "code": "DECIDED",
+                "data": {"result": "RACK_FACE_DONE"},
+            },
+            received_at=source.now,
+            workline_id=source.line.id,
+            operation=BIN_INBOUND_BATCH_OPERATION,
+            operation_id=original.operation_id,
+            apply_status="APPLIED",
+        )
+        original.phase, original.response_evidence_id = "FEED_COMPLETE", accepted.evidence.id
+        confirmation.status, confirmation.response_result = "COMPLETED", "RACK_FACE_DONE"
+        confirmation.response_evidence_id, confirmation.completed_at = accepted.evidence.id, source.now
     await add_revision(source, 2)
     before = await snapshot(source)
     with pytest.raises(RuntimeError, match="crash before commit"):
@@ -419,11 +442,17 @@ async def test_cancelled_old_revision_result_cannot_feed_or_satisfy_new_member(s
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.id == old_request.id))
     assert await runtime_for(source.sessions, source.service).picking_task_plan_activation_service.activate_batch() == 0
     await add_revision(source, 3)
-    assert await runtime_for(source.sessions, source.service).picking_task_plan_activation_service.activate_batch() == 1
+    # revision 2 的同面请求尚未闭合，新增成员继续沿原义务等待，不再次向 WMS 求值。
+    assert await runtime_for(source.sessions, source.service).picking_task_plan_activation_service.activate_batch() == 0
     _, current_feeds, current_requests, current_ingress = await snapshot(source)
-    assert [f.id for f in current_feeds[:2]] == [f.id for f in feeds]
-    assert [r.operation_id for r in current_requests] == [requests[1].operation_id, current_feeds[2].operation_id]
-    assert [r.request_payload["data"]["plan_revision"] for r in current_requests] == [2, 3]
+    assert [f.id for f in current_feeds] == [f.id for f in feeds]
+    assert [f.operation_id for f in current_feeds] == [f.operation_id for f in feeds]
+    assert [f.source_member_id for f in current_feeds] == [f.source_member_id for f in feeds]
+    assert current_feeds[1].phase == "REQUESTED" and current_feeds[1].response_evidence_id is None
+    assert [r.operation_id for r in current_requests] == [requests[1].operation_id]
+    assert [r.request_payload["data"] for r in current_requests] == [
+        {"task_id": source.task.task_id, "rack_id": "SOURCE-1", "rack_face": "A"}
+    ]
     assert current_ingress[0].client_request_id == ingress[0].client_request_id
     async with source.sessions() as db:
         assert len((await db.scalars(select(TransportTask))).all()) == 2

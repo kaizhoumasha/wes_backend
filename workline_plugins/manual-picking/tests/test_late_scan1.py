@@ -167,7 +167,6 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="019f0000-0000-7000-8000-000000000031",
         task_id="OLD-TASK",
-        plan_revision=1,
         rack_id="R1",
         rack_face="90",
     )
@@ -275,11 +274,10 @@ async def test_scan1_source_matches_frozen_member_without_requiring_transport_co
                 next_intent = sdk.wms_operations.outbound_bin_inbound_batch(
                     operation_id="019f0000-0000-7000-8000-000000000032",
                     task_id="OLD-TASK",
-                    plan_revision=2,
                     rack_id="R1",
                     rack_face="90",
                 )
-                await _seed_current_inbound(db, next_intent, ready, evidence_id=32)
+                await _seed_current_inbound(db, next_intent, ready, evidence_id=32, plan_revision=2)
                 db.add(
                     TransportTask(
                         **{

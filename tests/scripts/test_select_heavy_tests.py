@@ -1456,6 +1456,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20261023_0335_e3fec1d9ffae_新增人工来源架独立到位事实.py",
         "migrations/versions/20261023_0510_f6d0319c8a42_支持排空人工撤出.py",
         "migrations/versions/20261024_0519_0f1be9a476d2_合并自动拣料与现场修复迁移链.py",
+        "migrations/versions/20261028_0000_c4b1d8e29f63_冻结人工投料请求本地归属.py",
     ]
     mappings_by_path = {mapping.source_glob: mapping for mapping in revision_mappings}
     assert mappings_by_path[

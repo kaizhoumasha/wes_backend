@@ -582,8 +582,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 4. 每条 WorkLine 只有一台 CTU，入站和退箱批次串行；五层来源成员按 `task_id + plan_revision + rack_id + rack_face` 区分，同一架面在不同 revision 可再次安排。
    WES 为当前有效成员确定货架进场需求，基础层按目标点 `capacity` 滚动下发 CTU01；同一物理货架在同一进场生命周期内跨 revision 新增成员时复用原进场 Transport，新成员仍独立保留业务身份。
    RCS 负责 AGV 排队、自主进位和工作位互斥；当前架由原 CTU01/CTU02、成员成功结果与绑定工作位精确 rack/face 投影共同确认，不以计划顺序代替。只有该架的到位事实成立，才启动依赖它的投料/拣选步骤。
-   当前来源成员的货架面实际到位后，为该成员请求一次 `inbound_batch`，冻结完整最终清单并按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。
-   `inbound_batch` 请求、`PLAN_MEMBERS` 取消选择器和直接取料面完成事件均显式携带成员 `plan_revision`；旧成员结果不得满足或取消新成员。
+   货架面实际到位后，WES 按 `task_id + rack_id + rack_face` 请求 `inbound_batch`；WMS 根据当前有效且尚未投出的业务需求冻结完整最终清单，WES 按最多 4 箱拆分；中间分段仍等待前段 SCAN1 清空入口。同架同面已有未闭合请求或批次时复用原义务，不因计划版本变化重复求值。
+   `inbound_batch` 请求不携带 `plan_revision`，该字段仅保留为 WES 本地来源执行追溯；`PLAN_MEMBERS` 取消选择器和直接取料面完成事件仍显式携带成员 `plan_revision`。相同 operation 技术重试沿原身份和冻结正文返回首次清单；已冻结批次先闭合，后续新业务求值使用新身份。
    全部冻结分段与成员权威成功、结果发布且到达绑定 HANDOFF_POSITION 即 `feed_complete`；无分段的最终 `RACK_FACE_DONE` 同样完成。
    已冻结的相关义务先闭合；之后 feed_complete 立即驱动同架下一面 CTU02，或在所有面完成后请求
    `outbound.rack.departure_decide@v1` 并按 READY destination 创建 CTU03，不等待 SCAN、业务完成或回架。

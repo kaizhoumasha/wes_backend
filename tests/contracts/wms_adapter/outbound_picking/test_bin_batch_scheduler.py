@@ -34,7 +34,6 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
     inbound = sdk.wms_operations.outbound_bin_inbound_batch(
         operation_id="019f0000-0000-7000-8000-000000000001",
         task_id="PICK-001",
-        plan_revision=1,
         rack_id="R1",
         rack_face="90",
     )
@@ -56,7 +55,6 @@ async def test_batch_scheduler_keeps_typed_operation_and_workline_owner() -> Non
     assert [call["workline_id"] for call in confirmations.calls] == [7, 7]
     assert confirmations.calls[0]["request_payload"]["data"] == {
         "task_id": "PICK-001",
-        "plan_revision": 1,
         "rack_id": "R1",
         "rack_face": "90",
     }
@@ -100,7 +98,7 @@ async def test_inbound_batch_owner_keeps_existing_face_obligation_after_parent_t
         "operation_id": "019f0000-0000-7000-8000-000000000001",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
+        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
     }
 
     assert await owner.validate_owner(object(), workline_id=7, request_payload=payload)
@@ -117,7 +115,7 @@ async def test_inbound_result_reader_binds_frozen_request_to_response_evidence()
         "operation": "outbound.bin.inbound_batch@v1",
         "operation_id": operation_id,
         "timestamp": 1_788_975_600_000,
-        "data": {"task_id": "PICK-001", "plan_revision": 1, "rack_id": "R1", "rack_face": "90"},
+        "data": {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"},
     }
     response = {
         "operation_id": operation_id,
@@ -153,10 +151,20 @@ async def test_inbound_result_reader_binds_frozen_request_to_response_evidence()
 
     assert type(intent) is sdk.BinInboundBatchIntent
     assert intent.task_id == "PICK-001"
+    assert intent.rack_id == "R1"
+    assert intent.rack_face == "90"
+    assert confirmation.request_payload is request
+    assert request["data"] == {"task_id": "PICK-001", "rack_id": "R1", "rack_face": "90"}
     assert type(outcome.result) is sdk.BinInboundBatchReady
     assert outcome.result.bins[0].bin_code == "A000000001"
     with pytest.raises(ValueError, match="original confirmation"):
         await reader.read_inbound(object(), SimpleNamespace(**(vars(evidence) | {"id": 32})), workline_id=7)
+    legacy_request = request | {"data": request["data"] | {"plan_revision": 1}}
+    confirmation.request_payload = legacy_request
+    with pytest.raises(ValueError):
+        await reader.read_inbound(object(), evidence, workline_id=7)
+    assert confirmation.request_payload is legacy_request
+    assert legacy_request["data"]["plan_revision"] == 1
 
 
 @pytest.mark.asyncio
@@ -167,9 +175,29 @@ async def test_inbound_face_reader_rejects_multiple_distinct_allocations() -> No
 
     reader = bin_batch.BinBatchResultReader()
     with pytest.raises(ValueError, match="multiple inbound allocations"):
-        await reader.latest_inbound_detail(
-            Db(), workline_id=7, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
-        )
+        await reader.latest_inbound_detail(Db(), workline_id=7, task_id="PICK-1", rack_id="R1", rack_face="90")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["latest_inbound", "latest_inbound_detail"])
+async def test_inbound_face_reader_queries_task_and_face_without_plan_revision(method: str) -> None:
+    from sqlalchemy.dialects import postgresql
+
+    statements = []
+
+    class Db:
+        async def execute(self, statement):  # type: ignore[no-untyped-def]
+            statements.append(statement)
+            return SimpleNamespace(all=list)
+
+    reader = bin_batch.BinBatchResultReader()
+
+    assert await getattr(reader, method)(Db(), workline_id=7, task_id="PICK-1", rack_id="R1", rack_face="90") is None
+    values = tuple(statements[0].compile(dialect=postgresql.dialect()).params.values())
+    assert "task_id" in values
+    assert "rack_id" in values
+    assert "rack_face" in values
+    assert "plan_revision" not in values
 
 
 @pytest.mark.asyncio

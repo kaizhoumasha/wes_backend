@@ -240,10 +240,14 @@ def test_return_rack_arrival_outcome_has_only_approved_branches() -> None:
 
 
 def test_bin_inbound_batch_facade_preserves_face() -> None:
-    values = {"operation_id": "batch", "task_id": "task", "plan_revision": 1, "rack_id": "rack", "rack_face": "来源面"}
+    values = {"operation_id": "batch", "task_id": "task", "rack_id": "rack", "rack_face": "来源面"}
     intent = wms_operations.outbound_bin_inbound_batch(**values)
     assert type(intent) is sdk.BinInboundBatchIntent
     assert intent.rack_face == "来源面"
+    assert not hasattr(intent, "plan_revision")
+    for factory in (wms_operations.outbound_bin_inbound_batch, sdk.BinInboundBatchIntent):
+        with pytest.raises(TypeError, match="plan_revision"):
+            factory(**(values | {"plan_revision": 1}))
     with pytest.raises(FrozenInstanceError):
         intent.rack_face = "other"
     for name, value in [

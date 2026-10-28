@@ -58,10 +58,10 @@ async def _record_inbound_decision(db, operation_id, result):  # type: ignore[no
     db.add(evidence)
     await db.flush()
     intent = sdk.wms_operations.outbound_bin_inbound_batch(
-        operation_id=operation_id, task_id="PICK-1", plan_revision=1, rack_id="R1", rack_face="90"
+        operation_id=operation_id, task_id="PICK-1", rack_id="R1", rack_face="90"
     )
     await BatchRepository().record_allocation(
-        db, workline_id=7, picking_task_id=11, intent=intent, evidence_id=evidence.id
+        db, workline_id=7, picking_task_id=11, plan_revision=1, intent=intent, evidence_id=evidence.id
     )
     await db.flush()
     return evidence

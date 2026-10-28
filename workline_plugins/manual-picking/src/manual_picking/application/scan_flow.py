@@ -9,7 +9,6 @@ from typing import Any, cast
 
 from wes_plugin_sdk import (
     BinBatchNoBatch,
-    BinInboundBatchRackFaceDone,
     ReturnBufferDrainReady,
     ReturnBufferDrainWait,
     TransportRackPosition,
@@ -76,7 +75,7 @@ from .drain_repository import (
     RETURN_RACK_ROTATE_STEP,
     SOURCE_RACK_IN_STEP,
 )
-from .manual_source_arrival_model import ManualPickingSourceArrival, matches_source_arrival
+from .manual_source_arrival_model import ManualPickingSourceArrival
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 from .rack_retry import rack_retry_delay_ms
@@ -249,27 +248,33 @@ class ManualPickingScanFlow:
         positions = {role: binding["location_id"] for role, binding in workline.position_bindings.items()}
         if evidence.operation == BIN_RETURN_BATCH_OPERATION:
             return await self._apply_return_batch_result(db, evidence, workline, positions)
-        intent, outcome = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
+        intent, _ = await self._batch_reader.read_inbound(db, evidence, workline_id=workline.id)
         task = await self._tasks.get_by_task_id_for_update(db, intent.task_id)
         if task is None or task.id is None or task.workline_id != workline.id:
+            return None
+        frozen = await self._batch_progress.inbound_request(
+            db, workline_id=workline.id, operation_id=intent.operation_id
+        )
+        if frozen is None or (
+            frozen.operation_id,
+            frozen.workline_id,
+            frozen.picking_task_id,
+            frozen.task_id,
+            frozen.rack_id,
+            frozen.rack_face,
+        ) != (intent.operation_id, workline.id, task.id, intent.task_id, intent.rack_id, intent.rack_face):
             return None
         source_member = next(
             (
                 source
                 for source in await self._source_racks.list_bin_source_racks(db, task.id)
-                if source.plan_revision == intent.plan_revision
-                and source.rack_id == intent.rack_id
-                and source.rack_face == intent.rack_face
+                if (source.plan_revision, source.rack_id, source.rack_face)
+                == (frozen.plan_revision, frozen.rack_id, frozen.rack_face)
             ),
             None,
         )
         if source_member is None:
             return None
-        # 已取消成员仍须消费最终空清单，否则当前货架会反复申请同一批次。
-        if source_member.cancelled_evidence_id is not None and not isinstance(
-            outcome.result, BinInboundBatchRackFaceDone
-        ):
-            return "INBOUND_RESULT_AFTER_CANCEL"
         readiness = await self._inbound_source_readiness(
             db, workline.id, task.id, source_member, positions[FIVE_RACK.slot_key]
         )
@@ -280,6 +285,7 @@ class ManualPickingScanFlow:
             evidence,
             workline_id=workline.id,
             picking_task_id=cast("int", task.id),
+            plan_revision=source_member.plan_revision,
             confirmed_rack_id=intent.rack_id,
             confirmed_face=intent.rack_face,
             inlet_location=positions[INLET.slot_key],
@@ -1269,10 +1275,6 @@ class ManualPickingScanFlow:
                 target=HandoffPosition(positions[INLET.slot_key]),
                 source_evidence_id=evidence.id,
             )
-        if current_task is not None and current_task.id == task.id and decision.route == "MOVE_FORWARD":
-            readiness = await self._scan1_source_readiness(db, task, source_transport_id, identity)
-            if readiness != "READY":
-                return readiness
         if await self._device_has_unclosed(db, workline_id, bindings, "SCAN1"):
             return _WAIT_FOR_RESULT
         for prior in prior_passages:
@@ -1316,26 +1318,6 @@ class ManualPickingScanFlow:
         passage.scan1_command_code = await self._move(db, workline_id, bindings, "SCAN1", evidence.id, decision.route)
         return decision.route
 
-    async def _scan1_source_readiness(self, db: Any, task: Any, source_transport_id: str, bin_code: str) -> str | None:
-        transport = await self._transport_reader.get_task(db, source_transport_id)
-        if transport is None or transport.kind != "BIN_MOVE":
-            return None
-        moves = transport.request_json.get("moves")
-        if not isinstance(moves, list):
-            return None
-        sources = [move.get("source") for move in moves if isinstance(move, dict) and move.get("bin_code") == bin_code]
-        if len(sources) != 1 or not isinstance(sources[0], dict):
-            return None
-        source = sources[0]
-        if not any(
-            planned.rack_id == source.get("rack_id")
-            and planned.rack_face == source.get("rack_face")
-            and getattr(planned, "cancelled_evidence_id", None) is None
-            for planned in await self._source_racks.list_bin_source_racks(db, task.id)
-        ):
-            return None
-        return "READY"
-
     async def _inbound_source_readiness(self, db, workline_id, picking_task_id, source_member, location):
         working = await self._batch_progress.working_rack_position(
             db, workline_id=workline_id, rack_id=source_member.rack_id, location_code=location
@@ -1351,8 +1333,17 @@ class ManualPickingScanFlow:
         ):
             return (
                 "READY"
-                if matches_source_arrival(
-                    manual_arrival, picking_task_id=picking_task_id, source=source_member, location_code=location
+                if (
+                    manual_arrival.rack_id,
+                    manual_arrival.rack_face,
+                    manual_arrival.plan_revision,
+                    manual_arrival.source_evidence_id,
+                )
+                == (
+                    source_member.rack_id,
+                    source_member.rack_face,
+                    source_member.plan_revision,
+                    source_member.source_evidence_id,
                 )
                 else _WAIT_FOR_RESULT
             )
