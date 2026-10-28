@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.49.20.0] - 2026-10-28
+
+### Fixed
+
+- 料箱到达 SCAN1 后按扫码事实与朝向继续执行，来源货架任务取消不再阻塞滚筒线；保留原批次、搬运身份与重复下发校验。
+- 货架面到位后由 WMS 选择当前有效需求，`inbound_batch` 请求移除 `plan_revision`；同面未闭合批次沿用原分配和投料进度，避免计划修订引起重复求值或漏投。
+
+### Changed
+
+- 同步 SDK、人工与自动拣料插件、Mock 和 WMS 合同；本地 revision 继续用于执行追溯，历史冻结请求与物理证据保持原身份和内容。
+
+
 ## [0.49.19.0] - 2026-10-25
 
 ### Fixed
