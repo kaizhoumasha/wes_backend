@@ -146,7 +146,7 @@ class TransportSubmissionStore:
         self._bin_positions: dict[str, dict[str, Any]] = {}
         self._bin_origin_slots: dict[str, str] = {}
         self._known_slots: set[tuple[str, str, str]] = set()
-        self._served_inbound_faces: set[tuple[str, int, str, str]] = set()
+        self._served_inbound_faces: set[tuple[str, str, str]] = set()
         self._prepared_manual_task_id: str | None = None
         self._good_case_remaining: list[dict[str, Any]] | None = None
 
@@ -370,9 +370,9 @@ class TransportSubmissionStore:
         return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def inbound_batch_result(self, data: BinInboundBatchData) -> dict[str, Any]:
-        # 本机 Mock 按计划成员冻结完整清单；后续搬运与退箱不再改变该分配。
+        # 本机 Mock 按任务架面冻结完整清单；后续搬运与退箱不再改变该分配。
         with self._lock:
-            face = (data.task_id, data.plan_revision, data.rack_id, data.rack_face)
+            face = (data.task_id, data.rack_id, data.rack_face)
             if face in self._served_inbound_faces:
                 return {"result": "RACK_FACE_DONE"}
             self._served_inbound_faces.add(face)

@@ -172,7 +172,7 @@ async def source_facts(p, face, *, root_client=None, revision=1, reuse_arrival=F
         db.add(feed)
         await db.flush()
         intent = wms_operations.outbound_bin_inbound_batch(
-            operation_id=op, task_id=p.task.task_id, plan_revision=member.plan_revision, rack_id=rack, rack_face=side
+            operation_id=op, task_id=p.task.task_id, rack_id=rack, rack_face=side
         )
         await BinBatchScheduler(
             WmsConfirmationLifecycleService(workline_owner=BinInboundBatchOwnerService())

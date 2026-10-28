@@ -168,6 +168,8 @@ class AutomaticPickingBatchDriver:
         for member in await self.feeds.source_members(db, task.id):
             if member.cancelled_evidence_id is not None or await self.feeds.by_member(db, member.id) is not None:
                 continue
+            if await self.feeds.open_for_face(db, line.id, member) is not None:
+                continue
             if not await self.feeds.source_ready(db, line, member):
                 continue
             operation_id, now = self.uuid_factory(), self.clock()
@@ -179,7 +181,6 @@ class AutomaticPickingBatchDriver:
                 wms_operations.outbound_bin_inbound_batch(
                     operation_id=operation_id,
                     task_id=task.task_id,
-                    plan_revision=member.plan_revision,
                     rack_id=member.rack_id,
                     rack_face=member.rack_face,
                 ),

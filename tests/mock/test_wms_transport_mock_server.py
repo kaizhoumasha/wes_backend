@@ -341,7 +341,7 @@ def test_decision_route_returns_scannable_bin_code_for_inbound_batch() -> None:
         "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4475",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1786060800000,
-        "data": {"task_id": "PICK-20260811-001", "plan_revision": 1, "rack_id": "RACK-01", "rack_face": "90"},
+        "data": {"task_id": "PICK-20260811-001", "rack_id": "RACK-01", "rack_face": "90"},
     }
 
     with TestClient(wms_mock_server.app) as client:
@@ -1789,23 +1789,22 @@ def test_inbound_batch_freezes_one_face_before_transport_and_replays_original_re
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4531",
         "operation": "outbound.bin.inbound_batch@v1",
         "timestamp": 1700000000000,
-        "data": {"task_id": "PICK-ONE", "plan_revision": 1, "rack_id": "rack-1", "rack_face": "90"},
+        "data": {"task_id": "PICK-ONE", "rack_id": "rack-1", "rack_face": "90"},
     }
     another = deepcopy(inbound)
     another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4532"
-    next_revision = deepcopy(inbound)
-    next_revision["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4533"
-    next_revision["data"]["plan_revision"] = 2
+    later_request = deepcopy(inbound)
+    later_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4533"
     with TestClient(wms_mock_server.app) as client:
         first = client.post("/api/v1/wes/decisions", json=inbound)
         second = client.post("/api/v1/wes/decisions", json=another)
         replay = client.post("/api/v1/wes/decisions", json=inbound)
-        later = client.post("/api/v1/wes/decisions", json=next_revision)
+        later = client.post("/api/v1/wes/decisions", json=later_request)
 
     assert first.json()["data"]["result"] == "READY"
     assert second.json()["data"] == {"result": "RACK_FACE_DONE"}
     assert replay.json() == first.json()
-    assert later.json()["data"]["result"] == "READY"
+    assert later.json()["data"] == {"result": "RACK_FACE_DONE"}
 
 
 @pytest.mark.parametrize(

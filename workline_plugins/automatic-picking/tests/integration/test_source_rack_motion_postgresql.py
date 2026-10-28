@@ -187,8 +187,11 @@ async def test_success_before_ack_publishes_and_hands_off_next_member(bound):
         )
         assert feed.source_arrival_evidence_id == observed.rotation_result_evidence_id
         request = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == feed.operation_id))
-        assert request.request_payload["data"]["plan_revision"] == 2
-        assert request.request_payload["data"]["rack_face"] == "B"
+        assert request.request_payload["data"] == {
+            "task_id": p.task.task_id,
+            "rack_id": "OFFLINE-RACK",
+            "rack_face": "B",
+        }
         assert (
             await db.scalar(
                 select(TransportTask).where(TransportTask.transport_task_id == before.rotation_transport_task_id)
@@ -618,10 +621,12 @@ async def test_no_executing_task_still_observes_original_result_without_new_busi
     assert (await phase(p)).archived_at is None
 
 
-async def test_normal_batch_cannot_bypass_handoff_and_later_revision_inherits_current_round(bound):
+async def test_normal_batch_cannot_bypass_handoff_and_later_revision_reuses_unclosed_batch(bound):
     from automatic_picking.application.feed_model import AutomaticPickingFeed
     from sqlalchemy import select
 
+    from src.app.execution.models import WmsConfirmation
+    from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
     from src.app.wms_integration.outbound_picking.models import PickingTaskBinSourceRack
 
     p = bound
@@ -634,6 +639,15 @@ async def test_normal_batch_cannot_bypass_handoff_and_later_revision_inherits_cu
     await advance(p, batch=batch)
     first = await next_feed(p)
     async with p.sessions.begin() as db:
+        original_requests = list(
+            (
+                await db.scalars(
+                    select(WmsConfirmation.operation_id)
+                    .where(WmsConfirmation.operation == BIN_INBOUND_BATCH_OPERATION)
+                    .order_by(WmsConfirmation.id)
+                )
+            ).all()
+        )
         member = PickingTaskBinSourceRack(
             picking_task_id=p.task.id,
             plan_revision=4,
@@ -649,8 +663,35 @@ async def test_normal_batch_cannot_bypass_handoff_and_later_revision_inherits_cu
         await batch.advance_in_session(db, p.line, p.task)
     async with p.sessions() as db:
         later = await db.scalar(select(AutomaticPickingFeed).where(AutomaticPickingFeed.source_member_id == member_id))
-        assert later.inbound_client_request_id == first.inbound_client_request_id
-        assert later.source_arrival_evidence_id == first.source_arrival_evidence_id
+        assert later is None
+        retained = await db.get(AutomaticPickingFeed, first.id)
+        assert (
+            retained.operation_id,
+            retained.source_member_id,
+            retained.inbound_client_request_id,
+            retained.round_started_at,
+            retained.round_causal_token,
+            retained.source_arrival_evidence_id,
+        ) == (
+            first.operation_id,
+            first.source_member_id,
+            first.inbound_client_request_id,
+            first.round_started_at,
+            first.round_causal_token,
+            first.source_arrival_evidence_id,
+        )
+        assert (
+            list(
+                (
+                    await db.scalars(
+                        select(WmsConfirmation.operation_id)
+                        .where(WmsConfirmation.operation == BIN_INBOUND_BATCH_OPERATION)
+                        .order_by(WmsConfirmation.id)
+                    )
+                ).all()
+            )
+            == original_requests
+        )
 
 
 async def test_rotation_models_match_schema(bound):

@@ -321,12 +321,11 @@ async def test_cancelled_entry_and_new_revision_keep_their_own_batch_identity(da
         )
         db.add(new_feed)
         await db.flush()
-        for row, revision in ((await db.get(AutomaticPickingFeed, old_feed.id), 1), (new_feed, 2)):
+        for row in (await db.get(AutomaticPickingFeed, old_feed.id), new_feed):
             payload = encode_request(
                 wms_operations.outbound_bin_inbound_batch(
                     operation_id=row.operation_id,
                     task_id=task.task_id,
-                    plan_revision=revision,
                     rack_id="RACK-1",
                     rack_face="A",
                 ),
@@ -452,7 +451,7 @@ async def freeze_ready(db, task, feed, now, *, count=1):
 
     payload = encode_request(
         wms_operations.outbound_bin_inbound_batch(
-            operation_id=feed.operation_id, task_id=task.task_id, plan_revision=1, rack_id="RACK-1", rack_face="A"
+            operation_id=feed.operation_id, task_id=task.task_id, rack_id="RACK-1", rack_face="A"
         ),
         timestamp=123,
     )

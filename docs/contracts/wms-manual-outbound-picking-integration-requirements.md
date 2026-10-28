@@ -81,7 +81,7 @@ flowchart TD
 | \# | 发起方 → 接收方 | Operation / 事件 | 关键字段 | 结果 |
 | --- | --- | --- | --- | --- |
 | 4A-0 | RCS/ECS → WES | 五层来源货架到位 | `RACK-5F-001/90`；原进场 Transport `SUCCEEDED`，投影位置与面向匹配 | 才允许当前面申请批次 |
-| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `plan_revision=1, rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
+| 4A | WES → WMS | `outbound.bin.inbound_batch@v1` | `task_id, rack_id=RACK-5F-001, rack_face=90` | `READY`，`bin_code=A000000001`；空面可为最终 `RACK_FACE_DONE` |
 | 4A-1 | RCS/ECS → WES | 入站 `BIN_MOVE` | WMS 返回的精确来源储位、`A000000001` | 原 Transport `SUCCEEDED` 后等待点1实扫匹配 |
 | 4A-2 | WES/RCS/ECS | `feed_complete` 后，有可派发退箱先按当前实际到位面请求一次，相关义务闭合后换面或换架（与后续 SCAN/业务完成解耦） | 同架下一面 `270` 用 `CTU02`；同架无下一面先请求 `departure_decide`，READY 后用 `CTU03` | CTU02 成功代表已旋转并返回工作位；后续架凭自己的原 Transport、成员结果及精确在位投影回到 4A，不等待旧 CTU03 终态 |
 | 5A | 设备 → WES | 点1 SCAN | `A000000001-B` | `MOVE_FORWARD` 成功后进入点1→点2通道 |
@@ -119,7 +119,7 @@ driver 在原 owner 与当前执行依赖下重新判断，满足条件即创建
 暂缓不丢弃本轮 `READY + destination`，后续位置事实通过 Transport 事务提交后的唤醒、最终结果通过插件结果发布唤醒重新评估，
 并由现有每 10 秒的 plan driver 周期复查兜底。仍有效的 `READY` 直接复用，不因等待依赖重复请求 WMS，不新增货架忙闲状态。
 明确未接纳或终位在目标点外的失败进场任务释放名额；终位仍在目标点的重试沿用原名额。离场明确未接纳后重新请求 WMS 离场决定；已接纳离场失败且留在目标点、当前面向缺失时的恢复要求仍待确认，见 [Transport 履约合同 §5.3](transport-fulfillment-contract.md#53-搬运最终结果)。
-同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员与 `inbound_batch` 义务处理；请求必须携带该成员的 `plan_revision`，不能以旧成员的动作或结果为新成员结案。若该架的原进场生命周期仍占窗，新成员关联原 CTU01，不重复下发或占窗。
+同一任务的同架同面若由更高 `plan_revision` 再次安排，须按[出库合同 §6.1](wms-outbound-picking-task-integration-requirements.md)作为新的来源成员追溯；`inbound_batch` 不携带 revision，同面未闭合请求和批次继续原身份，闭合后的新业务求值由 WMS 决定当前有效需求，不能改写旧清单或借旧物理结果满足新 Action。若该架的原进场生命周期仍占窗，新成员关联原 CTU01，不重复下发或占窗。
 
 `CTU03` 返回 `ACCEPTED`，或发送结果为 `DELIVERY_UNKNOWN` 时，WES 立即把被移动货架在 KT16 的确定位置投影标为
 `position_unknown=true`，但不推定它已经离位、目标区已到达或工作位已经腾空。匹配原 CTU03 身份的成功最终位置回调是该五层架的权威终态：
@@ -185,7 +185,7 @@ operation_id、冻结正文和全部回执，不覆盖较新位置，不恢复�
 `rack_face`、实际工作位、原 Transport 身份及请求正文摘要，记录确认人、原确认引用和观察时间；审计与当前事实同事务提交。
 首次录入只允许当前有效、未取消的人工来源成员及其仍为 `ACCEPTED` 的唯一原进场搬运，且不得已有后续同架当前动作。
 
-该到位事实可触发原成员的 `outbound.bin.inbound_batch@v1`，并用于同一成员 `READY` 结果的投箱消费，WMS 仍决定本批作业内容；事实保存后由既有工作线持久扫描
+该到位事实可触发 `outbound.bin.inbound_batch@v1`，请求只含任务、货架和面，不携带成员 revision；WMS 决定当前有效需求及本批作业内容，同面未闭合义务继续原身份；事实保存后由既有工作线持久扫描
 继续处理，进程重启不要求重新录入。同一原身份和相同确认幂等返回原审计，确认内容漂移冲突。每条工作线只有一个人工确认的
 当前来源架面；新的明确人工确认使原事实退出当前使用并另存事实与审计。旧身份重放只返回原审计，不能重新激活旧工作面。排队位不能按到位处理，也不得同时据此推进其他货架或另一面。
 
@@ -334,8 +334,8 @@ flowchart LR
 
 点1读取 ECS `SCAN_COMPLETED.data.bin_code`，实际值带方向后缀。仅形如 `A00000xxxx-B` 的本点有效箱码创建 `MOVE_FORWARD`；
 不可读、箱码格式错误或后缀不为 `-B` 时记录本次 NG 并创建 `MOVE_RIGHT`，由点1直达点3，不向 WMS 发送猜测的箱码。
-SCAN1 放行不依赖目标货架到位；本点扫码确认到位后，只校验本箱的任务、当前轮次及冻结计划来源，不再等待原下架搬运结果。
-人工线 SCAN1 的有效扫码是本点实际到位事实，不等待原下架 Transport 成功、结果发布或入口位置投影。按本线尚未记录入线的冻结 inbound_batch 成员唯一关联原 Transport 及原 task_id，校验已应用且已发布的 WMS READY 清单、来源储位和目标入口一致；当前任务正常放行还须匹配未取消的计划来源架面。原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务）时，SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 owner 不能已运维归档；归属缺失或不唯一时保留扫码并对账，同箱更新的在途/未知/未发布动作仍保留直接依赖并延迟重试，其他箱和已闭合历史不构成阻塞。可识别但方向后缀错误的原批次箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
+SCAN1 放行不依赖目标货架到位；本点扫码确认到位后，只校验本箱的原任务归属、当前轮次及冻结投箱成员，不再等待原下架搬运结果。
+人工线 SCAN1 的有效扫码是本点实际到位事实，不等待原下架 Transport 成功、结果发布或入口位置投影。按本线尚未记录入线的冻结 inbound_batch 成员唯一关联原 Transport 及原 task_id，校验已应用且已发布的 WMS READY 清单、来源储位和目标入口一致；料箱实际到达 SCAN1 后，来源货架、架面及其计划成员仅保留冻结来源追溯；其取消、换面或离场不再阻止本箱按当前扫码朝向放行。原 owner 不是当前执行任务（包括原任务已完成/取消或当前无执行任务）时，SCAN1 下发 `MOVE_RIGHT`，以 `SCAN1_OUTSIDE_CURRENT_BATCH` 记录为 NG Passage，经旁路到 SCAN3；不进入 SCAN2 人工工作位、不发起人工取料准入、不恢复父任务或改挂新任务。原 owner 不能已运维归档；归属缺失或不唯一时保留扫码并对账，同箱更新的在途/未知/未发布动作仍保留直接依赖并延迟重试，其他箱和已闭合历史不构成阻塞。可识别但方向后缀错误的原批次箱也保留原 owner，按原条码异常原因旁路。原 owner 就是当前任务时保持正常 `MOVE_FORWARD` 准入。
 人工线 SCAN1 有效扫码与冻结投箱成员唯一匹配、且扫码点就是冻结 HANDOFF_POSITION 目标时，扫码本身是该箱已交付目标的权威事实。设备事件 `timestamp` 不得早于原 Transport 创建时间（UTC Unix 毫秒）；延迟首次到达的旧事件不得以较晚的 WES 接收时间归入新轮次。宿主同事务将原成员记为成功，`last_operation_id=scan:<InboundEvidence.id>` 引用真实来源；整笔 BIN_MOVE 的全部成员均成功且终位等于冻结目标后，将原 Transport 记为 `SUCCEEDED / SCAN_TARGET_CONFIRMED`，只递增一次本地 outcome_version，经原发布链路释放 WES 的 CTU 投料门禁。原任务仍在 `RECONCILING`、成员为位置未知的 `FAILED` 时，真实扫码继续按原身份收敛成员及其未知投影；位置已知的终态保持不变。成员未齐时不结束整笔任务；滚筒线仍遵守自身命令顺序。原 Transport、client_request_id、提交 operation_id 和冻结请求不变，不创建替代搬运、WMS 回执或虚构的 WMS outcome_revision。部分成员已扫码后收到一致的整笔成功回执时，保留已确认成员的原扫码身份和投影来源，只补齐其余成员。迟到真实 WMS 成功回执与已确认到位一致时可靠留存，仅推进 WMS 自身 revision，不重复发布成功或覆盖后继位置；相矛盾的回执留冲突证据，不改写已确认事实。该规则仅适用于人工线 SCAN1 的入站 BIN_MOVE，不用于货架搬运、旋转、BIN_EXCHANGE 或箱到货架的回架；RCS 内部车辆及任务释放仍由 RCS 裁决。
 旁路继续沿原 SCAN1 Evidence 冻结 DeviceCommand；重放复用原身份，不重复下发。原 Transport、批次及 Evidence 均保留；SCAN3 按本次实际扫码独立决定方向：有效 `-B` 创建正常 Return 并下发 `MOVE_FORWARD`，条码无效则 `MOVE_LEFT`；不沿用 SCAN1 的旁路原因强制 NG，原 Passage 保留原 task_id，并以同一 SCAN3 Evidence 关联回程。
 目标货架与料箱同时就绪由实际人工拣料的 WMS/PDA 作业准入负责，不提前串联到 SCAN1 或点2到位上报。

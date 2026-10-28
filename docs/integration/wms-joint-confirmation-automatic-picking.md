@@ -34,7 +34,7 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 | API | 业务关联域 | 当前可用身份 / 拟修订字段 | WMS Decision |
 | --- | --- | --- | --- |
 | `plan_delta` | Plan stream / Plan Member | 已有 `data.plan_revision`；跨 revision 同来源的成员规则按 §3 | WMS Accepted |
-| `inbound_batch` | Plan Member | 新增 `data.plan_revision` | WMS Accepted |
+| `inbound_batch` | 当前任务与实际到位架面 | `data={task_id,rack_id,rack_face}`，不携带 revision | 2026-10-29 按用户确认修订 |
 | `PLAN_MEMBERS cancel` | Plan Member | 两类成员选择器各新增 `plan_revision` | WMS Accepted |
 | `direct_pick_completed` | Plan Member | WES 当前严格 DTO 已有 `data.plan_revision`；AUTO 复用该 operation | WMS Accepted |
 | `material.decide`，`RACK_SLOT` | Plan Member | 新增 `data.plan_revision` | WMS Accepted |
@@ -96,11 +96,11 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 
 ## 4. Plan Member API 修订
 
-以下五项目标 wire 的 `plan_revision` 均为本次来源 Requirement Member 的正整数，不是 WMS 最新 revision。WES 不从历史货架或当前最高 revision 猜测。所有相同 `operation_id` 技术重试冻结原正文；不同 revision 或已闭合 Action 后的新业务尝试使用新 `operation_id`。错误结果不因新增字段改变原 `409/422/503` 联合语义。
+除 §4.1 外，下列需要 `plan_revision` 的目标 wire 均使用本次来源 Requirement Member 的正整数，不是 WMS 最新 revision。WES 不从历史货架或当前最高 revision 猜测。所有相同 `operation_id` 技术重试冻结原正文；不同 revision 或已闭合 Action 后的新业务尝试使用新 `operation_id`。错误结果不因新增字段改变原 `409/422/503` 联合语义。
 
 ### 4.1 `outbound.bin.inbound_batch@v1`
 
-**Problem / Current Wire → Target Wire：** 现行 `data={task_id,rack_id,rack_face}` 不能区分跨 revision 同架同面。新增必填 `data.plan_revision`；`READY | RACK_FACE_DONE` 响应联合不变。
+**Problem / Current Wire → Target Wire：** 2026-10-29 按用户确认，将请求收敛为 `data={task_id,rack_id,rack_face}`，删除 `data.plan_revision`。WES 确认当前架面实际到位，WMS 决定当前有效且未投出的需求；`READY | RACK_FACE_DONE` 响应联合不变。
 
 **Request Example：**
 
@@ -111,14 +111,13 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
   "timestamp": 1786064700000,
   "data": {
     "task_id": "PICK-20260811-001",
-    "plan_revision": 2,
     "rack_id": "RACK-A",
     "rack_face": "A"
   }
 }
 ```
 
-**Response Example：** 该成员已完成：
+**Response Example：** 当前架面无待投箱需求：
 
 ```json
 {
@@ -131,9 +130,9 @@ WMS 已确认接受本文 §1–8 的既有候选项，包括跨 revision 成员
 }
 ```
 
-**Identity / Compatibility：** 以 `task_id + plan_revision + rack_id + rack_face` 冻结本次成员清单。已可靠形成的请求在父任务完成或成员后续取消后仍沿原身份交付。替换严格 DTO 与 WMS 成员查询，不做旧形态兼容。
+**Identity / Compatibility：** 以原 `operation_id` 冻结本次当前任务、货架与面清单。同面已有未闭合请求或批次时复用原义务；新 revision 不触发并行等价求值，闭合后的新业务求值使用新身份。已可靠形成的请求在父任务完成或成员后续取消后仍沿原身份交付。旧冻结请求与回执保留，不删除字段重算旧摘要；新请求严格使用无 revision 形态。
 
-**WMS Decision：Accepted。** WMS 按该来源成员返回独立结果。
+**修订边界：** 本节替代此前要求携带 revision 的候选；现场新请求形态与执行验证单独记录，不以旧 Accepted 状态代替新合同验收。
 
 ### 4.2 `outbound.picking_task.cancel@v1` 的 `PLAN_MEMBERS`
 
@@ -675,7 +674,7 @@ WMS DTO 不反向套用设备字符串类型或新增物理枚举；插件设备
 | API | 方向 | revision 字段与作用 | 当前状态 / 示例 |
 | --- | --- | --- | --- |
 | `outbound.picking_task.plan_delta@v1` | WMS → WES | 已有 `data.plan_revision`；连续计划版本，也是本版新增成员的来源 revision | WMS 已确认；WES 已实现，见 §3 |
-| `outbound.bin.inbound_batch@v1` | WES → WMS | `data.plan_revision` 指向五层来源货架面成员 | WMS 已确认；WES 已实现，见 §4.1 |
+| `outbound.bin.inbound_batch@v1` | WES → WMS | 当前 `task_id + rack_id + rack_face`，请求无 revision | 2026-10-29 修订，见 §4.1 |
 | `outbound.picking_task.cancel@v1`，仅 `PLAN_MEMBERS` | WMS → WES | `data.bin_source_racks[].plan_revision`、`data.direct_pick_sources[].plan_revision` 精确选择待取消成员；`TASK` 按任务身份处理 | WMS 已确认；WES 已实现，见 §4.2 |
 | `outbound.manual_rack.direct_pick_completed@v1` | WMS → WES | `data.plan_revision` 指向本次完成的面级直接取料成员 | WMS 已确认；WES 已实现，见 §4.3 |
 | `outbound.material.decide@v1`，仅 `RACK_SLOT` | WES → WMS | `data.plan_revision` 指向本次取料的来源储位成员 | WMS 已确认；WES 待实施，见 §4.4 |

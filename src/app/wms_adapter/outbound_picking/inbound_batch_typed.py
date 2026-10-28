@@ -17,7 +17,6 @@ def encode_request(intent: sdk.BinInboundBatchIntent, *, timestamp: int) -> dict
             "timestamp": timestamp,
             "data": {
                 "task_id": intent.task_id,
-                "plan_revision": intent.plan_revision,
                 "rack_id": intent.rack_id,
                 "rack_face": intent.rack_face,
             },

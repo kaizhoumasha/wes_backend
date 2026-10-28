@@ -847,7 +847,6 @@
         "timestamp": 1790200000000,
         "data": {
           "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
-          "plan_revision": 1,
           "rack_id": "510034",
           "rack_face": "270"
         }
@@ -880,7 +879,6 @@
         "timestamp": 1790200000001,
         "data": {
           "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
-          "plan_revision": 1,
           "rack_id": "510047",
           "rack_face": "270"
         }
@@ -913,7 +911,6 @@
         "timestamp": 1790200000002,
         "data": {
           "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
-          "plan_revision": 1,
           "rack_id": "510013",
           "rack_face": "270"
         }
@@ -946,7 +943,6 @@
         "timestamp": 1790200000003,
         "data": {
           "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
-          "plan_revision": 1,
           "rack_id": "510071",
           "rack_face": "90"
         }
@@ -979,7 +975,6 @@
         "timestamp": 1790200000004,
         "data": {
           "task_id": "A7541FE9CFDD04A0C87584A0DA42711D4",
-          "plan_revision": 1,
           "rack_id": "510035",
           "rack_face": "270"
         }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, TypeAdapter, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from src.app.wms_adapter.outbound_picking.response_wire import (
     ConflictResponse,
@@ -15,7 +15,6 @@ from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTER
 from src.app.wms_adapter.wire_common import (
     NonnegativeMilliseconds,
     OperationId,
-    PositiveInteger,
     RackFaceText,
     StrictWireModel,
 )
@@ -26,8 +25,9 @@ Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTER
 
 
 class BinInboundBatchData(StrictWireModel):
+    model_config = ConfigDict(extra="forbid")
+
     task_id: Identifier
-    plan_revision: PositiveInteger
     rack_id: Identifier
     rack_face: RackFaceText
 

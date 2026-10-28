@@ -229,7 +229,6 @@ class ManualPickingBatchFlow:
                     operation_id=self._uuid_factory(),
                     workline_code=workline_code,
                     task_id=task_id,
-                    plan_revision=plan_revision,
                     rack_id=rack_id,
                     rack_face=rack_face,
                     return_bins=return_bins,
@@ -244,7 +243,6 @@ class ManualPickingBatchFlow:
                 operation_id=self._uuid_factory(),
                 workline_code=workline_code,
                 task_id=task_id,
-                plan_revision=plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_bins=(),
@@ -278,7 +276,6 @@ class ManualPickingBatchFlow:
                 operation_id=self._uuid_factory(),
                 workline_code=workline_code,
                 task_id=task_id,
-                plan_revision=plan_revision,
                 rack_id=rack_id,
                 rack_face=rack_face,
                 return_bins=tuple(return_bins),
@@ -290,8 +287,6 @@ class ManualPickingBatchFlow:
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
         if not progress.feed_complete:
-            if not allow_inbound:
-                return False
             if progress.next_offset is None:
                 return False
             await self._inbound.create_inbound_chunk(

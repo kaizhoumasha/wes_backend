@@ -144,6 +144,8 @@ class SourceRackMotionFlow:
             if member.id in current.completed_source_member_ids:
                 continue
             feed = await self.feeds.by_member(db, member.id)
+            if feed is None:
+                feed = await self.feeds.open_for_face(db, line.id, member)
             if feed is not None:
                 if (
                     feed.inbound_client_request_id,
@@ -180,7 +182,6 @@ class SourceRackMotionFlow:
                 wms_operations.outbound_bin_inbound_batch(
                     operation_id=operation_id,
                     task_id=owner.task_id,
-                    plan_revision=member.plan_revision,
                     rack_id=member.rack_id,
                     rack_face=member.rack_face,
                 ),

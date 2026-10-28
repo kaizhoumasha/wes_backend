@@ -286,6 +286,42 @@ class ManualPickingBatchDriver:
                 )
             ):
                 continue
+            if step == SOURCE_RACK_OUT_STEP and window.picking_task_id is not None:
+                owner = await self._tasks.get_by_id_for_update(db, window.picking_task_id)
+                if owner is not None and owner.status != "ARCHIVED":
+                    pending_source = None
+                    for source in await self._plans.list_bin_source_racks(db, owner.id):
+                        if (source.rack_id, source.rack_face) != (window.resource_fence_id, position.arrival_face):
+                            continue
+                        progress = await self._flow.face_progress(
+                            db,
+                            line.id,
+                            owner.task_id,
+                            source.plan_revision,
+                            source.rack_id,
+                            source.rack_face,
+                            line.position_bindings[INLET.slot_key]["location_id"],
+                        )
+                        if progress is not None and not progress.feed_complete:
+                            pending_source = source
+                            break
+                    if pending_source is not None:
+                        count += await self._flow.advance_in_session(
+                            db,
+                            workline_id=line.id,
+                            workline_code=line.line_code,
+                            picking_task_id=owner.id,
+                            task_id=owner.task_id,
+                            plan_revision=pending_source.plan_revision,
+                            source_evidence_id=pending_source.source_evidence_id,
+                            rack_id=pending_source.rack_id,
+                            rack_face=pending_source.rack_face,
+                            return_location=line.position_bindings[OUTLET.slot_key]["location_id"],
+                            inlet_location=line.position_bindings[INLET.slot_key]["location_id"],
+                            now=timezone.now_for_db(),
+                            allow_inbound=False,
+                        )
+                        continue
             count += await self._advance_workline_departure(
                 db,
                 line,
@@ -661,7 +697,14 @@ class ManualPickingBatchDriver:
         current = None
         projection = None
         current_rack_ids: set[str] = set()
+        active_faces = {
+            (row.rack_id, row.rack_face)
+            for row in ordered_sources
+            if getattr(row, "cancelled_evidence_id", None) is None
+        }
         for row in ordered_sources:
+            if getattr(row, "cancelled_evidence_id", None) is not None and (row.rack_id, row.rack_face) in active_faces:
+                continue
             if manual_arrival is not None:
                 if not matches_source_arrival(
                     manual_arrival, picking_task_id=task.id, source=row, location_code=source_location
@@ -748,7 +791,7 @@ class ManualPickingBatchDriver:
                 return_location=bindings[OUTLET.slot_key]["location_id"],
                 inlet_location=inlet_location,
                 now=timezone.now_for_db(),
-                allow_inbound=progress is None or current.cancelled_evidence_id is None,
+                allow_inbound=getattr(current, "cancelled_evidence_id", None) is None,
             )
             if advanced or getattr(current, "cancelled_evidence_id", None) is None:
                 return int(advanced)

@@ -962,6 +962,7 @@ class BatchRepository:
         *,
         workline_id: int,
         picking_task_id: int,
+        plan_revision: int,
         intent: BinInboundBatchIntent,
         evidence_id: int,
     ) -> None:
@@ -972,7 +973,6 @@ class BatchRepository:
             workline_id,
             picking_task_id,
             intent.task_id,
-            intent.plan_revision,
             intent.rack_id,
             intent.rack_face,
             evidence_id,
@@ -982,7 +982,6 @@ class BatchRepository:
                 row.workline_id,
                 row.picking_task_id,
                 row.task_id,
-                row.plan_revision,
                 row.rack_id,
                 row.rack_face,
                 row.response_evidence_id,
@@ -995,7 +994,7 @@ class BatchRepository:
                 picking_task_id=picking_task_id,
                 operation_id=intent.operation_id,
                 task_id=intent.task_id,
-                plan_revision=intent.plan_revision,
+                plan_revision=plan_revision,
                 rack_id=intent.rack_id,
                 rack_face=intent.rack_face,
                 response_evidence_id=evidence_id,
@@ -1235,7 +1234,6 @@ class BatchRepository:
             inbound_scope = and_(
                 confirmations.operation == BIN_INBOUND_BATCH_OPERATION,
                 confirmations.request_payload["data"]["task_id"].as_string() == task_id,
-                confirmations.request_payload["data"]["plan_revision"].as_integer() == plan_revision,
             )
         pending_scope = confirmations.operation == BIN_RETURN_BATCH_OPERATION
         if inbound_scope is not None:
@@ -1498,7 +1496,24 @@ class BatchRepository:
             )
         )
         if batch is None:
-            return None
+            unfinished = None
+            revisions = await db.scalars(
+                select(batches.plan_revision).where(
+                    batches.workline_id == workline_id,
+                    batches.task_id == task_id,
+                    batches.rack_id == rack_id,
+                    batches.rack_face == rack_face,
+                )
+            )
+            for revision in revisions:
+                progress = await self.inbound_progress(
+                    db, workline_id, task_id, revision, rack_id, rack_face, inlet_location
+                )
+                if progress is not None and not progress.feed_complete:
+                    if unfinished is not None:
+                        raise ValueError("multiple unfinished inbound allocations for rack face require reconciliation")
+                    unfinished = progress
+            return unfinished
         evidence = await db.get(InboundEvidence, batch.response_evidence_id)
         if (
             evidence is None
@@ -1514,7 +1529,6 @@ class BatchRepository:
         intent = wms_operations.outbound_bin_inbound_batch(
             operation_id=batch.operation_id,
             task_id=batch.task_id,
-            plan_revision=batch.plan_revision,
             rack_id=batch.rack_id,
             rack_face=batch.rack_face,
         )
