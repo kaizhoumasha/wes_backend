@@ -351,8 +351,12 @@ async def test_inbound_allocation_replay_keeps_first_local_revision() -> None:
         async with sessions.begin() as db:
             await _seed_current_inbound(db, intent, sdk.BinInboundBatchRackFaceDone())
             repo = module.BatchRepository()
+            with pytest.raises(ValueError, match="identity changed"):
+                await repo.record_allocation(
+                    db, workline_id=7, picking_task_id=31, plan_revision=2, intent=intent, evidence_id=31
+                )
             await repo.record_allocation(
-                db, workline_id=7, picking_task_id=31, plan_revision=2, intent=intent, evidence_id=31
+                db, workline_id=7, picking_task_id=31, plan_revision=1, intent=intent, evidence_id=31
             )
             await db.flush()
             progress = await repo.inbound_progress(db, 7, "PICK-1", 1, "R1", "90", "CNV0301")

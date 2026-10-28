@@ -75,7 +75,7 @@ from .drain_repository import (
     RETURN_RACK_ROTATE_STEP,
     SOURCE_RACK_IN_STEP,
 )
-from .manual_source_arrival_model import ManualPickingSourceArrival, matches_source_arrival
+from .manual_source_arrival_model import ManualPickingSourceArrival
 from .passage_model import ManualPickingPassage
 from .passage_repository import PassageRepository
 from .rack_retry import rack_retry_delay_ms
@@ -252,38 +252,29 @@ class ManualPickingScanFlow:
         task = await self._tasks.get_by_task_id_for_update(db, intent.task_id)
         if task is None or task.id is None or task.workline_id != workline.id:
             return None
-        sources = [
-            source
-            for source in await self._source_racks.list_bin_source_racks(db, task.id)
-            if source.rack_id == intent.rack_id and source.rack_face == intent.rack_face
-        ]
-        if not sources:
-            return None
-        source_member = next((source for source in sources if source.cancelled_evidence_id is None), sources[0])
-        manual_arrival = await self._batch_progress.manual_source_arrival(db, workline_id=workline.id)
-        working = await self._batch_progress.working_rack_position(
-            db, workline_id=workline.id, rack_id=intent.rack_id, location_code=positions[FIVE_RACK.slot_key]
+        frozen = await self._batch_progress.inbound_request(
+            db, workline_id=workline.id, operation_id=intent.operation_id
         )
-        if (
-            manual_arrival is not None
-            and manual_arrival.picking_task_id == task.id
-            and manual_arrival.location_code == positions[FIVE_RACK.slot_key]
-            and working is not None
-            and working.source_transport_task_id == manual_arrival.source_transport_task_id
-        ):
-            source_member = next(
-                (
-                    source
-                    for source in sources
-                    if matches_source_arrival(
-                        manual_arrival,
-                        picking_task_id=task.id,
-                        source=source,
-                        location_code=positions[FIVE_RACK.slot_key],
-                    )
-                ),
-                source_member,
-            )
+        if frozen is None or (
+            frozen.operation_id,
+            frozen.workline_id,
+            frozen.picking_task_id,
+            frozen.task_id,
+            frozen.rack_id,
+            frozen.rack_face,
+        ) != (intent.operation_id, workline.id, task.id, intent.task_id, intent.rack_id, intent.rack_face):
+            return None
+        source_member = next(
+            (
+                source
+                for source in await self._source_racks.list_bin_source_racks(db, task.id)
+                if (source.plan_revision, source.rack_id, source.rack_face)
+                == (frozen.plan_revision, frozen.rack_id, frozen.rack_face)
+            ),
+            None,
+        )
+        if source_member is None:
+            return None
         readiness = await self._inbound_source_readiness(
             db, workline.id, task.id, source_member, positions[FIVE_RACK.slot_key]
         )
@@ -1342,8 +1333,17 @@ class ManualPickingScanFlow:
         ):
             return (
                 "READY"
-                if matches_source_arrival(
-                    manual_arrival, picking_task_id=picking_task_id, source=source_member, location_code=location
+                if (
+                    manual_arrival.rack_id,
+                    manual_arrival.rack_face,
+                    manual_arrival.plan_revision,
+                    manual_arrival.source_evidence_id,
+                )
+                == (
+                    source_member.rack_id,
+                    source_member.rack_face,
+                    source_member.plan_revision,
+                    source_member.source_evidence_id,
                 )
                 else _WAIT_FOR_RESULT
             )

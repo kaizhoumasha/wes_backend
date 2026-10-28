@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, cast
 
-from wes_plugin_sdk import BinReturnCandidate, wms_operations
+from wes_plugin_sdk import BinInboundBatchIntent, BinReturnCandidate, wms_operations
 
 from .batch_policy import choose_next_batch
 from .drain_execution_repository import DrainExecutionRepository
@@ -14,13 +14,24 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
-    from wes_plugin_sdk import BinInboundBatchIntent, BinInboundBatchReady, BinReturnBatchIntent
+    from wes_plugin_sdk import BinInboundBatchReady, BinReturnBatchIntent
 
     from .batch_repository import InboundFaceProgress
     from .bin_line.return_model import BinLineReturn
 
 
 class BatchRepository(Protocol):
+    async def record_allocation(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        picking_task_id: int,
+        plan_revision: int,
+        intent: BinInboundBatchIntent,
+        evidence_id: int | None,
+    ) -> None: ...
+
     async def return_before_motion_state(
         self,
         db: AsyncSession,
@@ -250,7 +261,15 @@ class ManualPickingBatchFlow:
                 return_retry_due=False,
                 allow_inbound=True,
             )
-            assert intent is not None
+            assert isinstance(intent, BinInboundBatchIntent)
+            await self._repository.record_allocation(
+                db,
+                workline_id=workline_id,
+                picking_task_id=picking_task_id,
+                plan_revision=plan_revision,
+                intent=intent,
+                evidence_id=None,
+            )
             await self._scheduler.create_in_session(db, intent, workline_id=workline_id, created_at=now)
             return True
         rows = await self._passages.ready_prefix_for_update(db, workline_id)

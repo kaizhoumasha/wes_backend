@@ -459,6 +459,16 @@ async def test_manual_arrival_ready_response_creates_real_bin_transport_slice(mi
     source = (await flow._source_racks.list_bin_source_racks(object(), 31))[0]
     source.source_evidence_id = 51
     source.plan_revision = 13
+    flow._batch_progress.inbound_request.side_effect = None
+    flow._batch_progress.inbound_request.return_value = SimpleNamespace(
+        workline_id=7,
+        picking_task_id=31,
+        task_id=intent.task_id,
+        operation_id=intent.operation_id,
+        rack_id=intent.rack_id,
+        rack_face=intent.rack_face,
+        plan_revision=13,
+    )
     earlier = SimpleNamespace(**(vars(source) | {"plan_revision": 5, "source_evidence_id": 50}))
     flow._source_racks.list_bin_source_racks = AsyncMock(
         return_value=[earlier, source] if earlier_valid_source else [source]

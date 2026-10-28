@@ -591,7 +591,9 @@ async def test_release_merge_preserves_current_plugin_facts_from_both_baselines(
 
     merge_revision = "0f1be9a476d2"
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert scripts.get_heads() == [merge_revision]
+    current_head_revision = "c4b1d8e29f63"
+    assert scripts.get_heads() == [current_head_revision]
+    assert scripts.get_revision(current_head_revision).down_revision == merge_revision
     assert set(scripts.get_revision(merge_revision).down_revision) == {"3a17b9c40d62", "a72d4e6c9b13"}
     assert scripts.get_revision("a72d4e6c9b13").down_revision == "f6d0319c8a42"
     assert scripts.get_revision("f6d0319c8a42").down_revision == "e3fec1d9ffae"
@@ -689,7 +691,7 @@ async def test_release_merge_preserves_current_plugin_facts_from_both_baselines(
             assert [{key: row[key] for key in old} for row, old in zip(after[table], rows, strict=True)] == rows
         connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
         try:
-            await assert_database_head(connection, merge_revision)
+            await assert_database_head(connection, current_head_revision)
             for table in (
                 "automatic_picking_works",
                 "automatic_picking_task_completions",

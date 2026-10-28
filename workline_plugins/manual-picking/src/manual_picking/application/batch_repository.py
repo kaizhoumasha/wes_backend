@@ -692,6 +692,8 @@ class BatchRepository:
             )
         ).all()
         for batch in rows:
+            if batch.response_evidence_id is None:
+                continue
             evidence = await db.get(InboundEvidence, batch.response_evidence_id)
             if (
                 evidence is None
@@ -956,6 +958,16 @@ class BatchRepository:
                 return True
         return False
 
+    async def inbound_request(
+        self, db: AsyncSession, *, workline_id: int, operation_id: str
+    ) -> ManualPickingInboundBatch | None:
+        batches = cast("Any", ManualPickingInboundBatch).__table__.c
+        return await db.scalar(
+            select(ManualPickingInboundBatch)
+            .where(batches.workline_id == workline_id, batches.operation_id == operation_id)
+            .with_for_update()
+        )
+
     async def record_allocation(
         self,
         db: AsyncSession,
@@ -964,9 +976,9 @@ class BatchRepository:
         picking_task_id: int,
         plan_revision: int,
         intent: BinInboundBatchIntent,
-        evidence_id: int,
+        evidence_id: int | None,
     ) -> None:
-        """冻结仍在运行的 Batch 身份；WMS 确认可在完成后清理。"""
+        """请求创建即冻结本地来源；确定响应只能补记原 operation 的证据。"""
         batches = cast("Any", ManualPickingInboundBatch).__table__.c
         row = await db.scalar(select(ManualPickingInboundBatch).where(batches.operation_id == intent.operation_id))
         identity = (
@@ -975,7 +987,7 @@ class BatchRepository:
             intent.task_id,
             intent.rack_id,
             intent.rack_face,
-            evidence_id,
+            plan_revision,
         )
         if row is not None:
             if (
@@ -984,9 +996,13 @@ class BatchRepository:
                 row.task_id,
                 row.rack_id,
                 row.rack_face,
-                row.response_evidence_id,
+                row.plan_revision,
             ) != identity:
                 raise ValueError("inbound batch identity changed")
+            if evidence_id is not None:
+                if row.response_evidence_id not in (None, evidence_id):
+                    raise ValueError("inbound batch response evidence changed")
+                row.response_evidence_id = evidence_id
             return
         db.add(
             ManualPickingInboundBatch(
@@ -1514,8 +1530,8 @@ class BatchRepository:
                         raise ValueError("multiple unfinished inbound allocations for rack face require reconciliation")
                     unfinished = progress
             return unfinished
-        evidence = await db.get(InboundEvidence, batch.response_evidence_id)
-        if (
+        evidence = await db.get(InboundEvidence, batch.response_evidence_id) if batch.response_evidence_id else None
+        if batch.response_evidence_id is not None and (
             evidence is None
             or evidence.workline_id != workline_id
             or evidence.kind != InboundEvidenceKind.WMS_RESULT
@@ -1524,7 +1540,7 @@ class BatchRepository:
             or evidence.apply_status != "APPLIED"
         ):
             raise ValueError("current inbound batch lacks applied response evidence")
-        if evidence.published_at is None:
+        if evidence is None or evidence.published_at is None:
             return None
         intent = wms_operations.outbound_bin_inbound_batch(
             operation_id=batch.operation_id,

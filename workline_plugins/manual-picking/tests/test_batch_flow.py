@@ -22,6 +22,7 @@ class _Repository:
         face_done: bool = False,
         between_chunks: bool = False,
     ):
+        self.record_allocation = AsyncMock()
         self.busy = busy
         self.return_busy = return_busy
         self.return_due = return_due

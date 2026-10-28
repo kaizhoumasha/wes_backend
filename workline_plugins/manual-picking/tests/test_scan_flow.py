@@ -676,6 +676,17 @@ def _setup(
         return None
 
     flow._batch_progress.working_rack_position = working_position
+    flow._batch_progress.inbound_request = AsyncMock(
+        side_effect=lambda _db, *, workline_id, operation_id: SimpleNamespace(
+            workline_id=workline_id,
+            picking_task_id=31,
+            task_id="PICK-001",
+            operation_id=operation_id,
+            plan_revision=1,
+            rack_id="RACK-1",
+            rack_face="90",
+        )
+    )
     flow._batch_progress.manual_source_arrival = AsyncMock(return_value=None)
     flow._batch_progress.supersede_return_rack_requests = AsyncMock()
     return flow, evidences, passages, commands, admissions
@@ -698,6 +709,16 @@ async def test_inbound_batch_result_routes_to_batch_flow_only_after_rack_positio
             SimpleNamespace(plan_revision=13, rack_id="RACK-1", rack_face="90", cancelled_evidence_id=None),
         ]
     )
+    flow._batch_progress.inbound_request.return_value = SimpleNamespace(
+        workline_id=7,
+        picking_task_id=31,
+        task_id="PICK-001",
+        operation_id="batch-1",
+        plan_revision=13,
+        rack_id="RACK-1",
+        rack_face="90",
+    )
+    flow._batch_progress.inbound_request.side_effect = None
     if different_position_codes:
         flow._worklines.line.config["position_bindings"] = {
             role: f"CONFIG-{role}" for role in flow._worklines.line.position_bindings

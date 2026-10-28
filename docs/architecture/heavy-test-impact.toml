@@ -3431,3 +3431,9 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
 [[mapping]]
 source_glob = "migrations/versions/20261024_0519_0f1be9a476d2_合并自动拣料与现场修复迁移链.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+
+[[mapping]]
+source_glob = "migrations/versions/20261028_0000_c4b1d8e29f63_冻结人工投料请求本地归属.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+# 人工批次的迁移数据保留、冷启动归属和事务回滚由插件 test_inbound_request_postgresql.py 验证。
